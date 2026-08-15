@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "skills": [
+    { "name": "close-issue", "classification": "core" },
+    { "name": "code-review", "classification": "core" },
+    { "name": "codebase-design", "classification": "core" },
+    { "name": "domain-modeling", "classification": "core" },
+    { "name": "fix-review", "classification": "core" },
+    { "name": "grill-me", "classification": "core" },
+    { "name": "grill-with-docs", "classification": "core" },
+    { "name": "grilling", "classification": "core" },
+    { "name": "handoff", "classification": "core" },
+    { "name": "implement", "classification": "core" },
+    { "name": "improve-codebase-architecture", "classification": "core" },
+    { "name": "refactoring", "classification": "core" },
+    { "name": "tdd", "classification": "core" },
+    { "name": "to-spec", "classification": "core" },
+    { "name": "to-tickets", "classification": "core" },
+    { "name": "writing-for-agents", "classification": "core" },
+    { "name": "go-style", "classification": "optional" }
+  ]
+}
