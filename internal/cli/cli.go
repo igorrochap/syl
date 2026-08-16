@@ -8,12 +8,9 @@ import (
 	"os/exec"
 
 	"github.com/igorrochap/rig/internal/config"
+	"github.com/igorrochap/rig/internal/harness"
 	"github.com/spf13/cobra"
 )
-
-type HarnessAdapter interface {
-	Run(ctx context.Context, model, effort, prompt string) (string, error)
-}
 
 type Notifier interface {
 	Notify(ctx context.Context, message string) error
@@ -25,7 +22,7 @@ type GHRunner interface {
 
 type Dependencies struct {
 	Input     io.Reader
-	Harnesses map[string]HarnessAdapter
+	Harnesses map[string]harness.Adapter
 	Notifier  Notifier
 	GH        GHRunner
 }
@@ -80,7 +77,7 @@ func (a *App) Command() *cobra.Command {
 		a.stubCommand("sync", "synchronize tracker data"),
 		a.stubCommand("plan", "plan the next role"),
 		a.stubCommand("implement", "implement the current issue"),
-		a.stubCommand("review", "review the implementation"),
+		a.reviewCommand(),
 	)
 	return root
 }

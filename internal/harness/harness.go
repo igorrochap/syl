@@ -1,0 +1,45 @@
+// Package harness defines the seam between rig roles and agent CLIs.
+package harness
+
+import (
+	"context"
+
+	"github.com/igorrochap/rig/internal/config"
+)
+
+type EventType string
+
+const (
+	EventAssistantText EventType = "assistant_text"
+	EventToolUse       EventType = "tool_use"
+	EventSession       EventType = "session"
+	EventResult        EventType = "result"
+	EventRaw           EventType = "raw"
+)
+
+type Event struct {
+	Type         EventType
+	Text         string
+	ToolName     string
+	ArgumentGist string
+	SessionID    string
+	IsError      bool
+	Raw          string
+}
+
+type Request struct {
+	Model  string
+	Effort config.Effort
+	Prompt string
+}
+
+type Stream interface {
+	Events() <-chan Event
+	Wait() error
+}
+
+type Adapter interface {
+	Run(ctx context.Context, request Request) (Stream, error)
+	Resume(ctx context.Context, sessionID, prompt string) (Stream, error)
+	Attach(ctx context.Context, request Request) error
+}

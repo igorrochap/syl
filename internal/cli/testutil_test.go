@@ -7,6 +7,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
+
+	"github.com/igorrochap/rig/internal/harness"
 )
 
 type topSeamFixture struct {
@@ -59,7 +61,7 @@ effort = "medium"
 	return &topSeamFixture{
 		root: root,
 		app: New(root, Dependencies{
-			Harnesses: map[string]HarnessAdapter{
+			Harnesses: map[string]harness.Adapter{
 				"claude":   fakeHarness{},
 				"codex":    fakeHarness{},
 				"opencode": fakeHarness{},
@@ -72,9 +74,25 @@ effort = "medium"
 
 type fakeHarness struct{}
 
-func (fakeHarness) Run(context.Context, string, string, string) (string, error) {
-	return "", nil
+func (fakeHarness) Run(context.Context, harness.Request) (harness.Stream, error) {
+	return emptyHarnessStream{}, nil
 }
+
+func (fakeHarness) Resume(context.Context, string, string) (harness.Stream, error) {
+	return emptyHarnessStream{}, nil
+}
+
+func (fakeHarness) Attach(context.Context, harness.Request) error { return nil }
+
+type emptyHarnessStream struct{}
+
+func (emptyHarnessStream) Events() <-chan harness.Event {
+	events := make(chan harness.Event)
+	close(events)
+	return events
+}
+
+func (emptyHarnessStream) Wait() error { return nil }
 
 type fakeNotifier struct{}
 
