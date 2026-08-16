@@ -57,7 +57,7 @@ func TestLoadHonorsExplicitOptionalValues(t *testing.T) {
 	root := t.TempDir()
 	writeConfig(t, root, `
 [tracker]
-issues = "local"
+issues = "github"
 reviews = "github"
 
 [roles.plan]
@@ -91,6 +91,18 @@ enabled = false
 	}
 	if got.Notifications.Enabled {
 		t.Fatal("Notifications.Enabled = true, want false")
+	}
+}
+
+func TestLoadRejectsLocalIssuesWithGitHubReviewLog(t *testing.T) {
+	root := t.TempDir()
+	contents := strings.Replace(configWithRoleValue("plan", "model", "planner"), `issues = "github"`, `issues = "local"`, 1)
+	contents = strings.Replace(contents, `reviews = "local"`, `reviews = "github"`, 1)
+	writeConfig(t, root, contents)
+
+	_, err := Load(root)
+	if err == nil || !strings.Contains(err.Error(), `tracker.reviews = "github" requires tracker.issues = "github"`) {
+		t.Fatalf("Load() error = %v, want clear incompatible tracker error", err)
 	}
 }
 

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -82,6 +83,63 @@ func TestReviewWithMissingTicketFailsClearlyBeforeRunningHarness(t *testing.T) {
 	}
 	if harness.runRequest.Prompt != "" {
 		t.Fatalf("harness prompt = %q, want no harness run after resolution failure", harness.runRequest.Prompt)
+	}
+}
+
+func TestReviewWithGitHubReviewLogPostsFencedVerdictWithoutClosingIssue(t *testing.T) {
+	harness := &scriptedHarness{first: []harness.Event{
+		{Type: harness.EventSession, SessionID: "github-review"},
+		{Type: harness.EventAssistantText, Text: approveVerdictText},
+	}}
+	fixture := newReviewFixture(t, harness)
+	configureGitHubReviewLog(t, fixture.root)
+	github := &reviewGitHubRunner{}
+	fixture.app.deps.GH = github
+
+	code := fixture.app.Run(context.Background(), []string{"review", "#42"}, &fixture.stdout, &fixture.stderr)
+	if code != 0 {
+		t.Fatalf("review code = %d, want 0; stderr = %q", code, fixture.stderr.String())
+	}
+	if !strings.Contains(github.commentBody, "```text") || !strings.Contains(github.commentBody, approveVerdictText) {
+		t.Fatalf("GitHub comment = %q, want fenced verbatim verdict", github.commentBody)
+	}
+	if github.hasCall("issue close 42") || github.hasCall("issue edit 42 --state closed") {
+		t.Fatalf("GitHub calls = %#v, want no close operation", github.calls)
+	}
+}
+
+func TestReviewWithGitHubReviewLogRequiresIssueNumber(t *testing.T) {
+	harness := &scriptedHarness{}
+	fixture := newReviewFixture(t, harness)
+	configureGitHubReviewLog(t, fixture.root)
+
+	code := fixture.app.Run(context.Background(), []string{"review"}, &fixture.stdout, &fixture.stderr)
+	if code == 0 || !strings.Contains(fixture.stderr.String(), "requires an issue reference") {
+		t.Fatalf("review code = %d, stderr = %q, want clear issue-reference failure", code, fixture.stderr.String())
+	}
+	if harness.runRequest.Prompt != "" {
+		t.Fatalf("harness prompt = %q, want no harness run", harness.runRequest.Prompt)
+	}
+}
+
+func TestReviewWithGitHubIssueWritesLocalReviewLog(t *testing.T) {
+	harness := &scriptedHarness{first: []harness.Event{
+		{Type: harness.EventSession, SessionID: "github-issue-local-log"},
+		{Type: harness.EventAssistantText, Text: approveVerdictText},
+	}}
+	fixture := newReviewFixture(t, harness)
+	github := &reviewGitHubRunner{}
+	fixture.app.deps.GH = github
+
+	code := fixture.app.Run(context.Background(), []string{"review", "#42"}, &fixture.stdout, &fixture.stderr)
+	if code != 0 {
+		t.Fatalf("review code = %d, want 0; stderr = %q", code, fixture.stderr.String())
+	}
+	if !strings.Contains(readSingleReviewLog(t, fixture.root), "Ticket: #42") {
+		t.Fatalf("review log missing GitHub ticket reference")
+	}
+	if github.hasCall("issue comment 42 --body") {
+		t.Fatalf("GitHub calls = %#v, want no GitHub review comment in local-log mode", github.calls)
 	}
 }
 
@@ -236,6 +294,19 @@ func configureLocalIssues(t *testing.T, root string) {
 	}
 }
 
+func configureGitHubReviewLog(t *testing.T, root string) {
+	t.Helper()
+	path := filepath.Join(root, ".rig", "config.toml")
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated := strings.Replace(string(contents), `reviews = "local"`, `reviews = "github"`, 1)
+	if err := os.WriteFile(path, []byte(updated), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func writeReviewTicket(t *testing.T, root, feature, number, title, body string) {
 	t.Helper()
 	path := filepath.Join(root, ".scratch", feature, "issues", number+"-ticket.md")
@@ -288,3 +359,33 @@ func (s scriptedHarnessStream) Events() <-chan harness.Event {
 }
 
 func (scriptedHarnessStream) Wait() error { return nil }
+
+type reviewGitHubRunner struct {
+	calls       []string
+	commentBody string
+}
+
+func (r *reviewGitHubRunner) Run(_ context.Context, args ...string) (string, error) {
+	call := strings.Join(args, " ")
+	r.calls = append(r.calls, call)
+	switch {
+	case call == "label list --limit 100 --json name":
+		return `[{"name":"todo"},{"name":"doing"}]`, nil
+	case call == "issue view 42 --json number,title,body,state,labels":
+		return `{"number":42,"title":"Review this","body":"Review body","state":"OPEN","labels":[{"name":"doing"}]}`, nil
+	case len(args) >= 5 && args[0] == "issue" && args[1] == "comment":
+		r.commentBody = args[len(args)-1]
+		return "", nil
+	default:
+		return "", fmt.Errorf("unexpected gh command %q", call)
+	}
+}
+
+func (r *reviewGitHubRunner) hasCall(call string) bool {
+	for _, got := range r.calls {
+		if got == call {
+			return true
+		}
+	}
+	return false
+}

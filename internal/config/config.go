@@ -230,6 +230,9 @@ func validate(raw rawConfig, metadata toml.MetaData) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	if issues == TrackerLocal && reviews == TrackerGitHub {
+		return Config{}, errors.New(`tracker.reviews = "github" requires tracker.issues = "github" so review comments have a remote issue`)
+	}
 	plan, err := parseRole("roles.plan", raw.Roles.Plan)
 	if err != nil {
 		return Config{}, err

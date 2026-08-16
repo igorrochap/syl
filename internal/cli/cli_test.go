@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -64,6 +65,23 @@ func TestRunStubCommandThroughTopSeam(t *testing.T) {
 	}
 	if !strings.Contains(fixture.stderr.String(), "sync: not implemented yet") {
 		t.Fatalf("stderr = %q, want stub message", fixture.stderr.String())
+	}
+}
+
+func TestImplementResolvesAndMarksGitHubTicketDoing(t *testing.T) {
+	fixture := newTopSeamFixture(t)
+	github := &implementGitHubRunner{}
+	fixture.app.deps.GH = github
+
+	code := fixture.app.Run(context.Background(), []string{"implement", "#42"}, &fixture.stdout, &fixture.stderr)
+	if code != 0 {
+		t.Fatalf("implement code = %d, want 0; stderr = %q", code, fixture.stderr.String())
+	}
+	if !github.hasCall("issue edit 42 --add-label doing --remove-label todo") {
+		t.Fatalf("GitHub calls = %#v, want todo to doing transition", github.calls)
+	}
+	if github.hasCall("issue close 42") || github.hasCall("issue edit 42 --state closed") {
+		t.Fatalf("GitHub calls = %#v, want no close operation", github.calls)
 	}
 }
 
@@ -135,4 +153,32 @@ func TestNewDefaultsToCurrentDirectoryWhenProjectRootIsEmpty(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(root, ".rig", "config.toml")); err != nil {
 		t.Fatalf("default project root config: %v", err)
 	}
+}
+
+type implementGitHubRunner struct {
+	calls []string
+}
+
+func (r *implementGitHubRunner) Run(_ context.Context, args ...string) (string, error) {
+	call := strings.Join(args, " ")
+	r.calls = append(r.calls, call)
+	switch call {
+	case "label list --limit 100 --json name":
+		return `[{"name":"todo"},{"name":"doing"}]`, nil
+	case "issue view 42 --json number,title,body,state,labels":
+		return `{"number":42,"title":"Implement this","body":"Details","state":"OPEN","labels":[{"name":"todo"}]}`, nil
+	case "issue edit 42 --add-label doing --remove-label todo":
+		return "", nil
+	default:
+		return "", fmt.Errorf("unexpected gh command %q", call)
+	}
+}
+
+func (r *implementGitHubRunner) hasCall(call string) bool {
+	for _, got := range r.calls {
+		if got == call {
+			return true
+		}
+	}
+	return false
 }
