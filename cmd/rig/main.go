@@ -15,6 +15,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	app := cli.New(projectRoot, cli.Dependencies{GH: cli.ExecGHRunner{}})
+	app := cli.New(projectRoot, cli.Dependencies{Input: os.Stdin, GH: cli.ExecGHRunner{}})
 	os.Exit(app.Run(context.Background(), os.Args[1:], os.Stdout, os.Stderr))
 }

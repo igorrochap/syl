@@ -24,6 +24,7 @@ type GHRunner interface {
 }
 
 type Dependencies struct {
+	Input     io.Reader
 	Harnesses map[string]HarnessAdapter
 	Notifier  Notifier
 	GH        GHRunner
@@ -53,6 +54,9 @@ func (a *App) Run(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	command.SetArgs(args)
 	command.SetOut(stdout)
 	command.SetErr(stderr)
+	if a.deps.Input != nil {
+		command.SetIn(a.deps.Input)
+	}
 	if err := command.ExecuteContext(ctx); err != nil {
 		fmt.Fprintf(stderr, "rig: %s\n", err)
 		return 1
@@ -84,15 +88,10 @@ func (a *App) Command() *cobra.Command {
 func (a *App) initCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:   "init",
-		Short: "initialize .rig/config.toml",
+		Short: "scaffold a project for the rig workflow",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			path, err := config.Init(a.projectRoot)
-			if err != nil {
-				return err
-			}
-			fmt.Fprintf(cmd.OutOrStdout(), "Created %s\n", path)
-			return nil
+			return runInit(a.projectRoot, cmd.InOrStdin(), cmd.OutOrStdout())
 		},
 	}
 }

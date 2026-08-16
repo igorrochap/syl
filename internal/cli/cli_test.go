@@ -93,7 +93,7 @@ func TestRunRejectsUnexpectedCommandArguments(t *testing.T) {
 
 func TestRunInitCreatesConfig(t *testing.T) {
 	root := t.TempDir()
-	app := New(root, Dependencies{})
+	app := New(root, Dependencies{Input: defaultInitInput()})
 	var stdout, stderr strings.Builder
 
 	code := app.Run(context.Background(), []string{"init"}, &stdout, &stderr)
@@ -125,7 +125,7 @@ func TestNewDefaultsToCurrentDirectoryWhenProjectRootIsEmpty(t *testing.T) {
 			t.Errorf("restore working directory: %v", err)
 		}
 	})
-	app := New("", Dependencies{})
+	app := New("", Dependencies{Input: defaultInitInput()})
 	var stdout, stderr strings.Builder
 
 	code := app.Run(context.Background(), []string{"init"}, &stdout, &stderr)
