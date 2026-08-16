@@ -35,22 +35,19 @@ func (a *App) reviewCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if projectConfig.Tracker.Reviews == config.TrackerGitHub {
-				return errors.New("github review log: not supported yet")
+			if projectConfig.Tracker.Reviews == config.TrackerGitHub && len(args) == 0 {
+				return errors.New("github review logging requires an issue reference (#N)")
 			}
 
 			var ticket *tracker.Ticket
 			ticketRef := ""
+			var issueTracker tracker.Tracker
 			if len(args) == 1 {
-				if projectConfig.Tracker.Issues == config.TrackerGitHub {
-					// The GitHub tracker backend is deferred to issue #10.
-					return errors.New("github tracker: not supported yet")
-				}
-				localTracker, err := tracker.NewLocal(a.projectRoot, "")
+				issueTracker, err = a.newIssueTracker(projectConfig)
 				if err != nil {
 					return err
 				}
-				resolved, err := localTracker.Resolve(cmd.Context(), args[0])
+				resolved, err := issueTracker.Resolve(cmd.Context(), args[0])
 				if err != nil {
 					return err
 				}
@@ -77,9 +74,15 @@ func (a *App) reviewCommand() *cobra.Command {
 				return err
 			}
 
-			ref := reviewRef(a.projectRoot)
-			if _, err := writeLocalReviewLog(a.projectRoot, ticketRef, ref, time.Now().UTC(), reviewVerdict); err != nil {
-				return err
+			if projectConfig.Tracker.Reviews == config.TrackerGitHub {
+				if err := issueTracker.AddComment(cmd.Context(), ticket.Number, formatGitHubReviewComment(reviewVerdict)); err != nil {
+					return fmt.Errorf("post review to GitHub issue #%d: %w", ticket.Number, err)
+				}
+			} else {
+				ref := reviewRef(a.projectRoot)
+				if _, err := writeLocalReviewLog(a.projectRoot, ticketRef, ref, time.Now().UTC(), reviewVerdict); err != nil {
+					return err
+				}
 			}
 			if !raw {
 				if _, err := io.WriteString(cmd.OutOrStdout(), formatVerdict(reviewVerdict)); err != nil {
@@ -94,6 +97,13 @@ func (a *App) reviewCommand() *cobra.Command {
 	}
 	command.Flags().BoolVar(&raw, "raw", false, "pass the harness output through untouched")
 	return command
+}
+
+func (a *App) newIssueTracker(projectConfig config.Config) (tracker.Tracker, error) {
+	if projectConfig.Tracker.Issues == config.TrackerGitHub {
+		return tracker.NewGitHub(a.deps.GH)
+	}
+	return tracker.NewLocal(a.projectRoot, "")
 }
 
 func composeReviewPrompt(ticketRef string, ticket tracker.Ticket) string {
@@ -240,6 +250,10 @@ func formatVerdict(reviewVerdict verdict.Verdict) string {
 		fmt.Fprintf(&builder, "- [%s] %s — %s\n", finding.Kind, finding.Location, finding.Issue)
 	}
 	return builder.String()
+}
+
+func formatGitHubReviewComment(reviewVerdict verdict.Verdict) string {
+	return fmt.Sprintf("## Review verdict\n\n```text\n%s```\n", formatVerdict(reviewVerdict))
 }
 
 func reviewRef(projectRoot string) string {

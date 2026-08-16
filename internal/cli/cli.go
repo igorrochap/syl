@@ -2,10 +2,13 @@
 package cli
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os/exec"
+	"strings"
 
 	"github.com/igorrochap/rig/internal/config"
 	"github.com/igorrochap/rig/internal/harness"
@@ -76,10 +79,39 @@ func (a *App) Command() *cobra.Command {
 		a.initCommand(),
 		a.stubCommand("sync", "synchronize tracker data"),
 		a.stubCommand("plan", "plan the next role"),
-		a.stubCommand("implement", "implement the current issue"),
+		a.implementCommand(),
 		a.reviewCommand(),
 	)
 	return root
+}
+
+func (a *App) implementCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "implement #N",
+		Short: "implement the current issue",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			projectConfig, err := config.Load(a.projectRoot)
+			if err != nil {
+				return err
+			}
+			if len(args) == 0 {
+				return errors.New("implement requires an issue reference (#N)")
+			}
+			issueTracker, err := a.newIssueTracker(projectConfig)
+			if err != nil {
+				return err
+			}
+			ticket, err := issueTracker.Resolve(cmd.Context(), args[0])
+			if err != nil {
+				return err
+			}
+			if err := issueTracker.UpdateStatus(cmd.Context(), ticket.Number, "doing"); err != nil {
+				return fmt.Errorf("mark ticket #%d as doing: %w", ticket.Number, err)
+			}
+			return nil
+		},
+	}
 }
 
 func (a *App) initCommand() *cobra.Command {
@@ -107,15 +139,26 @@ func (a *App) stubCommand(name, description string) *cobra.Command {
 	}
 }
 
-type ExecGHRunner struct{}
+type ExecGHRunner struct {
+	Dir string
+}
 
 var _ GHRunner = ExecGHRunner{}
 
-func (ExecGHRunner) Run(ctx context.Context, args ...string) (string, error) {
+func (r ExecGHRunner) Run(ctx context.Context, args ...string) (string, error) {
 	command := exec.CommandContext(ctx, "gh", args...)
+	if r.Dir != "" {
+		command.Dir = r.Dir
+	}
+	var stderr bytes.Buffer
+	command.Stderr = &stderr
 	output, err := command.Output()
 	if err != nil {
-		return string(output), fmt.Errorf("run gh: %w", err)
+		errOutput := strings.TrimSpace(stderr.String())
+		if errOutput == "" {
+			return string(output), fmt.Errorf("run gh: %w", err)
+		}
+		return string(output), fmt.Errorf("run gh: %w: %s", err, errOutput)
 	}
 	return string(output), nil
 }

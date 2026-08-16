@@ -10,6 +10,8 @@ type Ticket struct {
 	Title  string
 	Body   string
 	Status string
+	State  string
+	Labels []string
 }
 
 // Tracker provides the ticket operations used across the workflow.
