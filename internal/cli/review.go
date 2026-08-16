@@ -13,6 +13,7 @@ import (
 
 	"github.com/igorrochap/rig/internal/config"
 	"github.com/igorrochap/rig/internal/harness"
+	"github.com/igorrochap/rig/internal/tracker"
 	"github.com/igorrochap/rig/internal/verdict"
 	"github.com/spf13/cobra"
 )
@@ -26,10 +27,10 @@ var errReviewNeedsRevision = errors.New("review verdict is revise")
 func (a *App) reviewCommand() *cobra.Command {
 	var raw bool
 	command := &cobra.Command{
-		Use:   "review",
+		Use:   "review [#N]",
 		Short: "review the current working-tree changes",
-		Args:  cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, _ []string) error {
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
 			projectConfig, err := config.Load(a.projectRoot)
 			if err != nil {
 				return err
@@ -38,23 +39,46 @@ func (a *App) reviewCommand() *cobra.Command {
 				return errors.New("github review log: not supported yet")
 			}
 
+			var ticket *tracker.Ticket
+			ticketRef := ""
+			if len(args) == 1 {
+				if projectConfig.Tracker.Issues == config.TrackerGitHub {
+					// The GitHub tracker backend is deferred to issue #10.
+					return errors.New("github tracker: not supported yet")
+				}
+				localTracker, err := tracker.NewLocal(a.projectRoot, "")
+				if err != nil {
+					return err
+				}
+				resolved, err := localTracker.Resolve(cmd.Context(), args[0])
+				if err != nil {
+					return err
+				}
+				ticket = &resolved
+				ticketRef = strings.TrimSpace(args[0])
+			}
+
 			harnessName := string(projectConfig.Roles.Review.Harness)
 			adapter, ok := a.deps.Harnesses[harnessName]
 			if !ok || adapter == nil {
 				return fmt.Errorf("review harness %q is not configured", harnessName)
 			}
 
+			prompt := reviewPrompt
+			if ticket != nil {
+				prompt = composeReviewPrompt(ticketRef, *ticket)
+			}
 			reviewVerdict, err := runReview(cmd.Context(), adapter, harness.Request{
 				Model:  projectConfig.Roles.Review.Model,
 				Effort: projectConfig.Roles.Review.Effort,
-				Prompt: reviewPrompt,
+				Prompt: prompt,
 			}, cmd.OutOrStdout(), raw)
 			if err != nil {
 				return err
 			}
 
 			ref := reviewRef(a.projectRoot)
-			if _, err := writeLocalReviewLog(a.projectRoot, ref, time.Now().UTC(), reviewVerdict); err != nil {
+			if _, err := writeLocalReviewLog(a.projectRoot, ticketRef, ref, time.Now().UTC(), reviewVerdict); err != nil {
 				return err
 			}
 			if !raw {
@@ -70,6 +94,10 @@ func (a *App) reviewCommand() *cobra.Command {
 	}
 	command.Flags().BoolVar(&raw, "raw", false, "pass the harness output through untouched")
 	return command
+}
+
+func composeReviewPrompt(ticketRef string, ticket tracker.Ticket) string {
+	return fmt.Sprintf("%s\n\nreview the current diff against this ticket (%s).\n\nTicket title: %s\n\nTicket body:\n%s", reviewPrompt, ticketRef, ticket.Title, ticket.Body)
 }
 
 func runReview(ctx context.Context, adapter harness.Adapter, request harness.Request, output io.Writer, raw bool) (verdict.Verdict, error) {
@@ -225,7 +253,7 @@ func reviewRef(projectRoot string) string {
 	return "working-tree"
 }
 
-func writeLocalReviewLog(projectRoot, reviewedRef string, timestamp time.Time, reviewVerdict verdict.Verdict) (string, error) {
+func writeLocalReviewLog(projectRoot, ticketRef, reviewedRef string, timestamp time.Time, reviewVerdict verdict.Verdict) (string, error) {
 	projectName := filepath.Base(filepath.Clean(projectRoot))
 	if projectName == "." || projectName == string(filepath.Separator) || projectName == "" {
 		projectName = "project"
@@ -236,7 +264,13 @@ func writeLocalReviewLog(projectRoot, reviewedRef string, timestamp time.Time, r
 	}
 	filename := timestamp.Format("20060102T150405.000000000Z") + "-working-tree.md"
 	path := filepath.Join(reviewsDir, filename)
-	contents := fmt.Sprintf("# Review: working tree\n\nReviewed ref: %s\nTimestamp: %s\n\n## Verdict\n\n%s", reviewedRef, timestamp.Format(time.RFC3339Nano), formatVerdict(reviewVerdict))
+	ticketLine := ""
+	title := "working tree"
+	if ticketRef != "" {
+		ticketLine = fmt.Sprintf("Ticket: %s\n", ticketRef)
+		title = ticketRef
+	}
+	contents := fmt.Sprintf("# Review: %s\n\n%sReviewed ref: %s\nTimestamp: %s\n\n## Verdict\n\n%s", title, ticketLine, reviewedRef, timestamp.Format(time.RFC3339Nano), formatVerdict(reviewVerdict))
 	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
 		return "", fmt.Errorf("write local review log: %w", err)
 	}

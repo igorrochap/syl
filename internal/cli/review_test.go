@@ -44,6 +44,47 @@ func TestReviewTopSeamApprovePrintsFeedAndWritesLog(t *testing.T) {
 	}
 }
 
+func TestReviewWithTicketIncludesTicketInPromptAndReviewLog(t *testing.T) {
+	harness := &scriptedHarness{first: []harness.Event{
+		{Type: harness.EventSession, SessionID: "session-ticket"},
+		{Type: harness.EventAssistantText, Text: approveVerdictText},
+	}}
+	fixture := newReviewFixture(t, harness)
+	configureLocalIssues(t, fixture.root)
+	writeReviewTicket(t, fixture.root, "feature-a", "07", "Improve the tracker", "Implement the requested tracker behavior.")
+
+	code := fixture.app.Run(context.Background(), []string{"review", "#07"}, &fixture.stdout, &fixture.stderr)
+	if code != 0 {
+		t.Fatalf("review code = %d, want 0; stderr = %q", code, fixture.stderr.String())
+	}
+	for _, expected := range []string{
+		"review the current diff against this ticket",
+		"Improve the tracker",
+		"Implement the requested tracker behavior.",
+	} {
+		if !strings.Contains(harness.runRequest.Prompt, expected) {
+			t.Fatalf("review prompt = %q, want %q", harness.runRequest.Prompt, expected)
+		}
+	}
+	if logContents := readSingleReviewLog(t, fixture.root); !strings.Contains(logContents, "Ticket: #07") {
+		t.Fatalf("review log = %q, want ticket reference", logContents)
+	}
+}
+
+func TestReviewWithMissingTicketFailsClearlyBeforeRunningHarness(t *testing.T) {
+	harness := &scriptedHarness{}
+	fixture := newReviewFixture(t, harness)
+	configureLocalIssues(t, fixture.root)
+
+	code := fixture.app.Run(context.Background(), []string{"review", "#42"}, &fixture.stdout, &fixture.stderr)
+	if code == 0 || !strings.Contains(fixture.stderr.String(), "local ticket #42 not found") {
+		t.Fatalf("review code = %d, stderr = %q, want clear missing-ticket failure", code, fixture.stderr.String())
+	}
+	if harness.runRequest.Prompt != "" {
+		t.Fatalf("harness prompt = %q, want no harness run after resolution failure", harness.runRequest.Prompt)
+	}
+}
+
 func TestReviewTopSeamRevisePrintsVerdictAndExitsNonZero(t *testing.T) {
 	harness := &scriptedHarness{first: []harness.Event{
 		{Type: harness.EventSession, SessionID: "session-revise"},
@@ -180,6 +221,34 @@ func readSingleReviewLog(t *testing.T, root string) string {
 		t.Fatalf("read review log: %v", err)
 	}
 	return string(contents)
+}
+
+func configureLocalIssues(t *testing.T, root string) {
+	t.Helper()
+	path := filepath.Join(root, ".rig", "config.toml")
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated := strings.Replace(string(contents), `issues = "github"`, `issues = "local"`, 1)
+	if err := os.WriteFile(path, []byte(updated), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeReviewTicket(t *testing.T, root, feature, number, title, body string) {
+	t.Helper()
+	path := filepath.Join(root, ".scratch", feature, "issues", number+"-ticket.md")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	contents := "# " + number + " — " + title + "\n\n" +
+		"**What to build:** " + body + "\n\n" +
+		"**Blocked by:** None — can start immediately.\n\n" +
+		"**Status:** todo\n"
+	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+		t.Fatal(err)
+	}
 }
 
 type scriptedHarness struct {
