@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/igorrochap/rig/internal/harness"
+	"github.com/igorrochap/rig/internal/harness/codex"
 )
 
 const nitOnlyReviseVerdictText = "VERDICT: revise\nSUMMARY: Polish the implementation\nFINDINGS:\n- [nit] docs/example.md:3 — style could be clearer\n"
@@ -68,6 +69,63 @@ func TestImplementLoopApprovesOnFirstIteration(t *testing.T) {
 		if !strings.Contains(artifactText, expected) {
 			t.Fatalf("run artifacts = %q, want %q", artifactText, expected)
 		}
+	}
+}
+
+func TestImplementLoopUsesCodexAdapterAtProcessBoundary(t *testing.T) {
+	fixture := newImplementLoopFixture(t)
+	argsPath := filepath.Join(fixture.root, "codex-args")
+	commandDir := t.TempDir()
+	command := filepath.Join(commandDir, "codex")
+	var script strings.Builder
+	script.WriteString("#!/bin/sh\n")
+	script.WriteString("for arg in \"$@\"; do\n")
+	script.WriteString("printf '%s' \"$arg\" | tr '\\n' '\\034'\n")
+	script.WriteString("printf '\\n'\ndone > ")
+	script.WriteString(shellQuote(argsPath))
+	script.WriteString("\nprintf '%s\\n' 'implemented' > change.txt\n")
+	for _, line := range []string{
+		`{"type":"thread.started","thread_id":"codex-implement"}`,
+		`{"type":"item.completed","item":{"id":"item-1","type":"agent_message","text":"Implemented the ticket."}}`,
+		`{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_tokens":1,"output_tokens":1}}`,
+	} {
+		script.WriteString("printf '%s\\n' ")
+		script.WriteString(shellQuote(line))
+		script.WriteByte('\n')
+	}
+	if err := os.WriteFile(command, []byte(script.String()), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", commandDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	fixture.app.deps.Harnesses["codex"] = codex.New(fixture.root)
+	fixture.app.deps.Harnesses["claude"] = &scriptedHarness{first: []harness.Event{
+		{Type: harness.EventSession, SessionID: "review-session"},
+		{Type: harness.EventAssistantText, Text: approveVerdictText},
+	}}
+	fixture.app.deps.GH = &loopGHRunner{}
+
+	code := fixture.app.Run(context.Background(), []string{"implement", "#42"}, &fixture.stdout, &fixture.stderr)
+	if code != 0 {
+		t.Fatalf("implement code = %d, stderr = %q", code, fixture.stderr.String())
+	}
+
+	contents, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := strings.Split(strings.TrimSpace(string(contents)), "\n")
+	for i := range args {
+		args[i] = strings.ReplaceAll(args[i], "\x1c", "\n")
+	}
+	for _, want := range []string{"exec", "--json", "gpt-5.6-luna", `model_reasoning_effort="xhigh"`} {
+		if !containsArg(args, want) {
+			t.Fatalf("Codex args = %#v, want argument %q", args, want)
+		}
+	}
+	prompt := args[len(args)-1]
+	if !strings.Contains(prompt, "$implement") || !strings.Contains(prompt, "Add resilient workflow") || !strings.Contains(prompt, "Acceptance criteria: leave a working implementation.") {
+		t.Fatalf("Codex prompt = %q, want composed implement skill and ticket", prompt)
 	}
 }
 
@@ -359,4 +417,17 @@ func readAllFiles(t *testing.T, root string) string {
 		t.Fatalf("read artifacts: %v", err)
 	}
 	return contents.String()
+}
+
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
+}
+
+func containsArg(args []string, want string) bool {
+	for _, arg := range args {
+		if arg == want {
+			return true
+		}
+	}
+	return false
 }
