@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/igorrochap/rig/internal/adapters/gh"
+	"github.com/igorrochap/rig/internal/adapters/git"
 	"github.com/igorrochap/rig/internal/cli"
 	"github.com/igorrochap/rig/internal/harness"
 	"github.com/igorrochap/rig/internal/harness/claude"
@@ -19,8 +21,8 @@ func main() {
 
 	app := cli.New(projectRoot, cli.Dependencies{
 		Input: os.Stdin,
-		GH:    cli.ExecGHRunner{Dir: projectRoot},
-		Git:   cli.ExecGitRunner{Dir: projectRoot},
+		GH:    gh.Runner{Dir: projectRoot},
+		Git:   git.ExecGitRunner{Dir: projectRoot},
 		Harnesses: map[string]harness.Adapter{
 			"claude": claude.New(projectRoot),
 		},

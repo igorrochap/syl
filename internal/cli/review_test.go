@@ -157,7 +157,7 @@ func TestReviewTopSeamRevisePrintsVerdictAndExitsNonZero(t *testing.T) {
 	if !strings.Contains(fixture.stdout.String(), "VERDICT: revise") || !strings.Contains(fixture.stderr.String(), "review verdict is revise") {
 		t.Fatalf("stdout = %q, stderr = %q, want revise verdict and failure", fixture.stdout.String(), fixture.stderr.String())
 	}
-	if logContents := readSingleReviewLog(t, fixture.root); !strings.Contains(logContents, "[blocking] internal/cli/review.go:42") {
+	if logContents := readSingleReviewLog(t, fixture.root); !strings.Contains(logContents, "[blocking] internal/orchestration/review.go:42") {
 		t.Fatalf("review log = %q, want blocking finding", logContents)
 	}
 }
@@ -247,7 +247,7 @@ func TestReviewRawPassesHarnessOutputWithoutFeedRendering(t *testing.T) {
 
 const approveVerdictText = "VERDICT: approve\nSUMMARY: The working tree is ready\nFINDINGS:\n"
 
-const reviseVerdictText = "VERDICT: revise\nSUMMARY: Fix the remaining issue\nFINDINGS:\n- [blocking] internal/cli/review.go:42 — handle a missing session\n"
+const reviseVerdictText = "VERDICT: revise\nSUMMARY: Fix the remaining issue\nFINDINGS:\n- [blocking] internal/orchestration/review.go:42 — handle a missing session\n"
 
 type reviewFixture struct {
 	root   string

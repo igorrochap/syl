@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/igorrochap/rig/internal/adapters/notify"
 	"github.com/igorrochap/rig/internal/harness"
 )
 
@@ -17,16 +18,16 @@ func TestSelectNotificationBackendByPlatform(t *testing.T) {
 		goos          string
 		kernelRelease string
 		environment   map[string]string
-		want          notificationBackend
+		want          notify.NotificationBackend
 	}{
-		{name: "macOS", goos: "darwin", want: notificationMacOS},
-		{name: "Linux desktop", goos: "linux", environment: map[string]string{"DISPLAY": ":0"}, want: notificationNotifySend},
-		{name: "WSL2", goos: "linux", kernelRelease: "6.1.21-microsoft-standard-WSL2", environment: map[string]string{"DISPLAY": ":0"}, want: notificationPowerShell},
-		{name: "fallback", goos: "freebsd", want: notificationTerminalBell},
+		{name: "macOS", goos: "darwin", want: notify.NotificationMacOS},
+		{name: "Linux desktop", goos: "linux", environment: map[string]string{"DISPLAY": ":0"}, want: notify.NotificationNotifySend},
+		{name: "WSL2", goos: "linux", kernelRelease: "6.1.21-microsoft-standard-WSL2", environment: map[string]string{"DISPLAY": ":0"}, want: notify.NotificationPowerShell},
+		{name: "fallback", goos: "freebsd", want: notify.NotificationTerminalBell},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := selectNotificationBackend(tt.goos, tt.kernelRelease, tt.environment); got != tt.want {
+			if got := notify.SelectNotificationBackend(tt.goos, tt.kernelRelease, tt.environment); got != tt.want {
 				t.Fatalf("selectNotificationBackend() = %q, want %q", got, tt.want)
 			}
 		})

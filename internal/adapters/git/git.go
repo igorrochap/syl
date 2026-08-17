@@ -1,4 +1,4 @@
-package cli
+package git
 
 import (
 	"bytes"
@@ -8,18 +8,14 @@ import (
 	"strings"
 )
 
-// GitRunner is the external boundary used by workflow commands that need to
-// inspect or change the current repository.
-type GitRunner interface {
-	Run(ctx context.Context, args ...string) (string, error)
-}
-
 // ExecGitRunner runs git in one project directory.
 type ExecGitRunner struct {
 	Dir string
 }
 
-var _ GitRunner = ExecGitRunner{}
+var _ interface {
+	Run(context.Context, ...string) (string, error)
+} = ExecGitRunner{}
 
 func (r ExecGitRunner) Run(ctx context.Context, args ...string) (string, error) {
 	command := exec.CommandContext(ctx, "git", args...)

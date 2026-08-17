@@ -1,4 +1,4 @@
-package cli
+package orchestration
 
 import (
 	"bufio"
@@ -19,18 +19,18 @@ END QUESTION
 
 Ambiguity should have been resolved during planning, and trivial choices should be decided without asking. After emitting the block, stop working.`
 
-const questionInputHelp = "When a harness asks a QUESTION, rig prints it and reads a multi-line answer from stdin until an empty line or EOF."
+const QuestionInputHelp = "When a harness asks a QUESTION, rig prints it and reads a multi-line answer from stdin until an empty line or EOF."
 
 type harnessStreamStarter func(context.Context) (harness.Stream, error)
 
 type conversationOptions struct {
 	output    io.Writer
-	mode      harnessOutputMode
-	questions *questionHandler
+	mode      HarnessOutputMode
+	questions *QuestionHandler
 	sessionID string
 }
 
-type questionHandler struct {
+type QuestionHandler struct {
 	answers  *bufio.Reader
 	output   io.Writer
 	notifier Notifier
@@ -44,12 +44,12 @@ type harnessStreamResult struct {
 	Blocked    bool
 }
 
-func newQuestionHandler(input io.Reader, output io.Writer, target string, notifier Notifier) *questionHandler {
+func NewQuestionHandler(input io.Reader, output io.Writer, target string, notifier Notifier) *QuestionHandler {
 	var answers *bufio.Reader
 	if input != nil {
 		answers = bufio.NewReader(input)
 	}
-	return &questionHandler{
+	return &QuestionHandler{
 		answers:  answers,
 		output:   output,
 		notifier: notifier,
@@ -57,7 +57,7 @@ func newQuestionHandler(input io.Reader, output io.Writer, target string, notifi
 	}
 }
 
-func (h *questionHandler) Handle(ctx context.Context, question string) (string, error) {
+func (h *QuestionHandler) Handle(ctx context.Context, question string) (string, error) {
 	if h.notifier != nil {
 		_ = h.notifier.Notify(ctx, fmt.Sprintf("rig is waiting for your answer on %s", h.target))
 	}
@@ -73,7 +73,7 @@ func (h *questionHandler) Handle(ctx context.Context, question string) (string, 
 	return answer, nil
 }
 
-func (h *questionHandler) readAnswer() (string, error) {
+func (h *QuestionHandler) readAnswer() (string, error) {
 	if h.answers == nil {
 		return "", errors.New("cannot answer harness question: terminal input is unavailable")
 	}
@@ -102,17 +102,6 @@ func (h *questionHandler) readAnswer() (string, error) {
 		return "", errors.New("answer to harness question is empty; enter an answer followed by an empty line or EOF")
 	}
 	return answer, nil
-}
-
-func (a *App) questionHandler(input io.Reader, output io.Writer, target string, enabled bool) *questionHandler {
-	var notifier Notifier
-	if enabled {
-		notifier = a.deps.Notifier
-		if notifier == nil {
-			notifier = newPlatformNotifier()
-		}
-	}
-	return newQuestionHandler(input, output, target, notifier)
 }
 
 func questionTarget(reference string) string {
@@ -172,7 +161,7 @@ func runHarnessConversation(ctx context.Context, adapter harness.Adapter, start 
 	}
 }
 
-func consumeHarnessStream(stream harness.Stream, output io.Writer, mode harnessOutputMode) (harnessStreamResult, error) {
+func consumeHarnessStream(stream harness.Stream, output io.Writer, mode HarnessOutputMode) (harnessStreamResult, error) {
 	var transcript strings.Builder
 	var sessionIDs []string
 	parser := newQuestionParser()
@@ -221,7 +210,7 @@ func consumeHarnessStream(stream harness.Stream, output io.Writer, mode harnessO
 	flush := parser.Flush()
 	if flush != "" {
 		transcript.WriteString(flush)
-		if mode != rawHarnessOutput {
+		if mode != RawHarnessOutput {
 			if err := writeParsedEvent(output, harness.Event{Type: harness.EventAssistantText, Text: flush}); err != nil {
 				return harnessStreamResult{}, err
 			}
@@ -233,8 +222,8 @@ func consumeHarnessStream(stream harness.Stream, output io.Writer, mode harnessO
 	return harnessStreamResult{Transcript: transcript.String(), SessionIDs: sessionIDs}, nil
 }
 
-func renderHarnessEvent(output io.Writer, mode harnessOutputMode, event harness.Event, parsed questionParseResult, parser *questionParser, pendingRaw *[]harness.Event) error {
-	if mode != rawHarnessOutput {
+func renderHarnessEvent(output io.Writer, mode HarnessOutputMode, event harness.Event, parsed questionParseResult, parser *questionParser, pendingRaw *[]harness.Event) error {
+	if mode != RawHarnessOutput {
 		visibleEvent := event
 		visibleEvent.Text = parsed.VisibleText
 		return writeParsedEvent(output, visibleEvent)
