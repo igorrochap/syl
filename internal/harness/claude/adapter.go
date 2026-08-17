@@ -40,13 +40,17 @@ func (a *Adapter) Resume(ctx context.Context, sessionID, prompt string) (harness
 	if strings.TrimSpace(prompt) == "" {
 		return nil, errors.New("cannot resume Claude Code session without a prompt")
 	}
-	return a.start(ctx, []string{
-		"--resume", sessionID,
+	args := append([]string{"--resume", sessionID}, baseFlags()...)
+	return a.start(ctx, append(args, prompt))
+}
+
+func baseFlags() []string {
+	return []string{
 		"--print",
 		"--output-format", "stream-json",
+		"--verbose",
 		"--include-partial-messages",
-		prompt,
-	})
+	}
 }
 
 func (*Adapter) Attach(context.Context, harness.Request) error {

@@ -41,7 +41,7 @@ reviews = "local"
 
 [roles.plan]
 harness = "claude"
-model = "opus-5"
+model = "claude-opus-5"
 effort = "high"
 
 [roles.implement]
@@ -51,7 +51,7 @@ effort = "xhigh"
 
 [roles.review]
 harness = "claude"
-model = "sonnet-5"
+model = "claude-sonnet-5"
 effort = "medium"
 `
 	if err := os.WriteFile(configPath, []byte(config), 0o644); err != nil {

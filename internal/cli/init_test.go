@@ -30,7 +30,7 @@ func TestInitBlankDirectoryScaffoldsProject(t *testing.T) {
 		"github",
 		"local",
 		"claude",
-		"opus-5",
+		"claude-opus-5",
 		"high",
 		"codex",
 		"gpt-5.6-luna",
@@ -64,7 +64,7 @@ func TestInitBlankDirectoryScaffoldsProject(t *testing.T) {
 	if got.Tracker.Issues != config.TrackerGitHub || got.Tracker.Reviews != config.TrackerLocal {
 		t.Fatalf("tracker = %#v, want github/local", got.Tracker)
 	}
-	if got.Roles.Plan.Harness != config.HarnessClaude || got.Roles.Plan.Model != "opus-5" || got.Roles.Plan.Effort != config.EffortHigh {
+	if got.Roles.Plan.Harness != config.HarnessClaude || got.Roles.Plan.Model != "claude-opus-5" || got.Roles.Plan.Effort != config.EffortHigh {
 		t.Fatalf("plan role = %#v, want configured values", got.Roles.Plan)
 	}
 	if got.Roles.Implement.Harness != config.HarnessCodex || got.Roles.Implement.Model != "gpt-5.6-luna" || got.Roles.Implement.Effort != config.EffortXHigh {

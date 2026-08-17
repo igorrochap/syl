@@ -32,12 +32,15 @@ type Verdict struct {
 	Findings []Finding
 }
 
+// BlockStartMarker is the line prefix that begins a structured review verdict.
+const BlockStartMarker = "VERDICT:"
+
 // Parse parses the last verdict block in a review response.
 func Parse(text string) (Verdict, error) {
 	lines := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
 	start := -1
 	for i, line := range lines {
-		if strings.HasPrefix(line, "VERDICT:") {
+		if strings.HasPrefix(line, BlockStartMarker) {
 			start = i
 		}
 	}
@@ -48,7 +51,7 @@ func Parse(text string) (Verdict, error) {
 		return Verdict{}, fmt.Errorf("verdict block is incomplete")
 	}
 
-	status, err := parseStatus(strings.TrimSpace(strings.TrimPrefix(lines[start], "VERDICT:")))
+	status, err := parseStatus(strings.TrimSpace(strings.TrimPrefix(lines[start], BlockStartMarker)))
 	if err != nil {
 		return Verdict{}, err
 	}

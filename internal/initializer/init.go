@@ -68,9 +68,9 @@ func initPromptSpecs(manifest skillManifest) []tui.PromptSpec {
 	for _, role := range []struct {
 		name, harness, model, effort string
 	}{
-		{name: "plan", harness: "claude", model: "opus-5", effort: "high"},
+		{name: "plan", harness: "claude", model: "claude-opus-5", effort: "high"},
 		{name: "implement", harness: "codex", model: "gpt-5.6-luna", effort: "xhigh"},
-		{name: "review", harness: "claude", model: "sonnet-5", effort: "medium"},
+		{name: "review", harness: "claude", model: "claude-sonnet-5", effort: "medium"},
 	} {
 		specs = append(specs,
 			tui.PromptSpec{Key: role.name + ".harness", Label: role.name + " harness", Kind: tui.ChoicePrompt, Options: []string{"claude", "codex", "opencode"}, DefaultValue: role.harness},

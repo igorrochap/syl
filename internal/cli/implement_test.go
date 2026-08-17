@@ -13,8 +13,6 @@ import (
 	"github.com/igorrochap/rig/internal/harness/codex"
 )
 
-const nitOnlyReviseVerdictText = "VERDICT: revise\nSUMMARY: Polish the implementation\nFINDINGS:\n- [nit] docs/example.md:3 — style could be clearer\n"
-
 func TestImplementLoopApprovesOnFirstIteration(t *testing.T) {
 	fixture := newImplementLoopFixture(t)
 	implementer := &loopHarness{
@@ -68,6 +66,68 @@ func TestImplementLoopApprovesOnFirstIteration(t *testing.T) {
 	for _, expected := range []string{"implement-session", "review-session", "VERDICT: approve"} {
 		if !strings.Contains(artifactText, expected) {
 			t.Fatalf("run artifacts = %q, want %q", artifactText, expected)
+		}
+	}
+}
+
+func TestImplementLoopStreamsImplementerAndReviewerProgress(t *testing.T) {
+	fixture := newImplementLoopFixture(t)
+	loop := &loopHarness{
+		root: fixture.root,
+		streams: [][]harness.Event{
+			{
+				{Type: harness.EventSession, SessionID: "implement-session"},
+				{Type: harness.EventAssistantText, Text: "Implementer is working.\n"},
+				{Type: harness.EventToolUse, ToolName: "edit", ArgumentGist: "change.txt"},
+			},
+			{
+				{Type: harness.EventSession, SessionID: "review-session"},
+				{Type: harness.EventAssistantText, Text: "Reviewer is checking the diff.\n"},
+				{Type: harness.EventAssistantText, Text: "Verify the diff first.\n"},
+				{Type: harness.EventToolUse, ToolName: "git diff", ArgumentGist: "branch point"},
+				{Type: harness.EventAssistantText, Text: "VER"},
+				{Type: harness.EventAssistantText, Text: strings.TrimPrefix(approveVerdictText, "VER")},
+			},
+		},
+	}
+	fixture.app.deps.Harnesses["codex"] = loop
+	fixture.app.deps.Harnesses["claude"] = loop
+	fixture.app.deps.GH = &loopGHRunner{}
+
+	code := fixture.app.Run(context.Background(), []string{"implement", "#42"}, &fixture.stdout, &fixture.stderr)
+	if code != 0 {
+		t.Fatalf("implement code = %d, want 0; stderr = %q", code, fixture.stderr.String())
+	}
+
+	output := fixture.stdout.String()
+	summaryIndex := strings.Index(output, "Iterations: 1")
+	if summaryIndex < 0 {
+		t.Fatalf("stdout = %q, want final summary", output)
+	}
+	for _, expected := range []string{
+		"Implementer is working.",
+		"tool: edit — change.txt",
+		"Reviewer is checking the diff.",
+		"Verify the diff first.",
+		"tool: git diff — branch point",
+	} {
+		index := strings.Index(output, expected)
+		if index < 0 || index > summaryIndex {
+			t.Fatalf("stdout = %q, want %q before final summary", output, expected)
+		}
+	}
+	if strings.Contains(output, "VERDICT: approve") {
+		t.Fatalf("stdout = %q, want reviewer verdict block withheld for final summary", output)
+	}
+	for _, expected := range []string{
+		"[implement] Implementer is working.",
+		"[implement] tool: edit — change.txt",
+		"[review] Reviewer is checking the diff.",
+		"[review] Verify the diff first.",
+		"[review] tool: git diff — branch point",
+	} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("stdout = %q, want line labeled %q", output, expected)
 		}
 	}
 }
@@ -169,7 +229,11 @@ func TestImplementLoopStillIteratesForNitOnlyRevisionAndSummarizesNits(t *testin
 		root: fixture.root,
 		streams: [][]harness.Event{
 			{{Type: harness.EventSession, SessionID: "implement-1"}},
-			{{Type: harness.EventSession, SessionID: "review-1"}, {Type: harness.EventAssistantText, Text: nitOnlyReviseVerdictText}},
+			{
+				{Type: harness.EventSession, SessionID: "review-1"},
+				{Type: harness.EventAssistantText, Text: "VERDICT: revise\nSUMMARY: Polish the implementation\n"},
+				{Type: harness.EventAssistantText, Text: "FINDINGS:\n- [nit] docs/example.md:3 — style could be clearer\n"},
+			},
 			{{Type: harness.EventSession, SessionID: "implement-2"}},
 			{{Type: harness.EventSession, SessionID: "review-2"}, {Type: harness.EventAssistantText, Text: approveVerdictText}},
 		},

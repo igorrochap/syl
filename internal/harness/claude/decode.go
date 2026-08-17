@@ -35,14 +35,12 @@ func runArgs(request harness.Request) ([]string, error) {
 	if strings.TrimSpace(request.Prompt) == "" {
 		return nil, fmt.Errorf("Claude Code prompt is required")
 	}
-	return []string{
-		"--print",
-		"--output-format", "stream-json",
-		"--include-partial-messages",
+	args := append(baseFlags(),
 		"--model", request.Model,
 		"--effort", effort,
 		request.Prompt,
-	}, nil
+	)
+	return args, nil
 }
 
 type claudeStreamMessage struct {
