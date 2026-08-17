@@ -166,22 +166,31 @@ func consumeHarnessStream(stream harness.Stream, output io.Writer, mode HarnessO
 	var sessionIDs []string
 	parser := newQuestionParser()
 	var pendingRaw []harness.Event
+	// Some harnesses repeat the final assistant message in their result event.
+	// Streamed assistant text is authoritative; result text is only a fallback
+	// for harnesses that emitted no assistant text during this turn.
+	assistantTextSeen := false
 	events := stream.Events()
 	for event := range events {
 		if event.SessionID != "" {
 			sessionIDs = append(sessionIDs, event.SessionID)
 		}
 
+		useEventText := event.Type == harness.EventAssistantText ||
+			(event.Type == harness.EventResult && !assistantTextSeen)
 		parsed := questionParseResult{}
-		if event.Type == harness.EventAssistantText || event.Type == harness.EventResult {
+		if useEventText {
 			parsed = parser.Feed(event.Text)
 		}
 
 		if err := renderHarnessEvent(output, mode, event, parsed, parser, &pendingRaw); err != nil {
 			return harnessStreamResult{}, err
 		}
-		if event.Type == harness.EventAssistantText || event.Type == harness.EventResult {
+		if useEventText {
 			transcript.WriteString(parsed.VisibleText)
+		}
+		if event.Type == harness.EventAssistantText {
+			assistantTextSeen = true
 		}
 
 		if parsed.Found {
