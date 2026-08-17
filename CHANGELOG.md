@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v1.3.0 (2026-08-17)
+
+### Features
+
+- **cli**: Add quiet mode for command output ([#34](https://github.com/igorrochap/rig/pull/34),
+  [`574cd8b`](https://github.com/igorrochap/rig/commit/574cd8bc2551254c5f91ca78d7b368b111c8a2cd))
+
+
 ## v1.2.0 (2026-08-17)
 
 ### Features
