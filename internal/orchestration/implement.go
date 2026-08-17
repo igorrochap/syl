@@ -72,16 +72,17 @@ func newRunArtifacts(projectRoot string, issueNumber int, branch, branchPoint st
 }
 
 type ImplementOptions struct {
-	ProjectRoot   string
-	ProjectConfig config.Config
-	IssueTracker  tracker.Tracker
-	Ticket        tracker.Ticket
-	Implementer   harness.Adapter
-	Reviewer      harness.Adapter
-	Git           GitRunner
-	Notifier      Notifier
-	Input         io.Reader
-	Output        io.Writer
+	ProjectRoot          string
+	ProjectConfig        config.Config
+	IssueTracker         tracker.Tracker
+	Ticket               tracker.Ticket
+	Implementer          harness.Adapter
+	Reviewer             harness.Adapter
+	Git                  GitRunner
+	Notifier             Notifier
+	Input                io.Reader
+	Output               io.Writer
+	IdentificationBanner func(artifactDir string) error
 }
 
 func RunImplement(ctx context.Context, options ImplementOptions) error {
@@ -109,6 +110,11 @@ func RunImplement(ctx context.Context, options ImplementOptions) error {
 	artifacts, err := newRunArtifacts(options.ProjectRoot, ticket.Number, setup.branch, setup.branchPoint)
 	if err != nil {
 		return err
+	}
+	if options.IdentificationBanner != nil {
+		if err := options.IdentificationBanner(artifacts.dir); err != nil {
+			return err
+		}
 	}
 	iterations, final, nits, err := runImplementIterations(ctx, implementIterationsParams{
 		git:           setup.git,

@@ -74,7 +74,7 @@ func (a *App) Command() *cobra.Command {
 	root.AddCommand(
 		a.initCommand(),
 		a.stubCommand("sync", "synchronize tracker data"),
-		a.stubCommand("plan", "plan the next role"),
+		a.planCommand(),
 		a.implementCommand(),
 		a.reviewCommand(),
 	)
@@ -115,6 +115,9 @@ func (a *App) implementCommand() *cobra.Command {
 				ProjectRoot: a.projectRoot, ProjectConfig: projectConfig, IssueTracker: issueTracker, Ticket: ticket,
 				Implementer: implementer, Reviewer: reviewer, Git: a.gitRunner(),
 				Notifier: a.notifier(projectConfig.Notifications.Enabled), Input: cmd.InOrStdin(), Output: cmd.OutOrStdout(),
+				IdentificationBanner: func(artifactDir string) error {
+					return writeImplementBanner(cmd.OutOrStdout(), a.projectRoot, projectConfig, ticket, artifactDir)
+				},
 			})
 		},
 	}
@@ -159,11 +162,39 @@ func (a *App) reviewCommand() *cobra.Command {
 				ProjectRoot: a.projectRoot, ProjectConfig: projectConfig, IssueTracker: issueTracker,
 				Ticket: ticket, TicketRef: ticketRef, Adapter: adapter, Input: cmd.InOrStdin(), Output: cmd.OutOrStdout(),
 				Raw: raw, Notifier: a.notifier(projectConfig.Notifications.Enabled), Git: a.gitRunner(),
+				IdentificationBanner: func() error {
+					return writeReviewBanner(cmd.OutOrStdout(), projectConfig, ticketRef, ticket)
+				},
 			})
 		},
 	}
 	command.Flags().BoolVar(&raw, "raw", false, "pass the harness output through untouched")
 	return command
+}
+
+func (a *App) planCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "plan [target]",
+		Short: "plan the next role",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			projectConfig, err := config.Load(a.projectRoot)
+			if err != nil {
+				return err
+			}
+			if _, err := a.harness("plan", projectConfig.Roles.Plan.Harness); err != nil {
+				return err
+			}
+			target := ""
+			if len(args) == 1 {
+				target = args[0]
+			}
+			if err := writePlanBanner(cmd.OutOrStdout(), projectConfig, target); err != nil {
+				return err
+			}
+			return errors.New("plan: not implemented yet")
+		},
+	}
 }
 
 func (a *App) initCommand() *cobra.Command {
