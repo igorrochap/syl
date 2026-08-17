@@ -135,6 +135,19 @@ func runReview(ctx context.Context, adapter harness.Adapter, request harness.Req
 }
 
 func RunReviewExecution(ctx context.Context, adapter harness.Adapter, request harness.Request, output io.Writer, mode HarnessOutputMode, questions *QuestionHandler) (ReviewExecution, error) {
+	return runReviewExecution(ctx, adapter, request, output, mode, questions, nil)
+}
+
+func RunReviewExecutionWithProgress(ctx context.Context, adapter harness.Adapter, request harness.Request, output io.Writer, mode HarnessOutputMode, questions *QuestionHandler) (ReviewExecution, error) {
+	progress := newReviewProgressWriter(output)
+	return runReviewExecution(ctx, adapter, request, progress, mode, questions, progress)
+}
+
+type reviewTurnOutput interface {
+	EndTurn() error
+}
+
+func runReviewExecution(ctx context.Context, adapter harness.Adapter, request harness.Request, output io.Writer, mode HarnessOutputMode, questions *QuestionHandler, turnOutput reviewTurnOutput) (ReviewExecution, error) {
 	var feed bytes.Buffer
 	feedOutput := io.MultiWriter(output, &feed)
 	first, err := runHarnessConversation(ctx, adapter, func(runContext context.Context) (harness.Stream, error) {
@@ -147,6 +160,11 @@ func RunReviewExecution(ctx context.Context, adapter harness.Adapter, request ha
 	if err != nil {
 		return ReviewExecution{}, fmt.Errorf("run review harness: %w", err)
 	}
+	if turnOutput != nil {
+		if err := turnOutput.EndTurn(); err != nil {
+			return ReviewExecution{}, fmt.Errorf("flush review output: %w", err)
+		}
+	}
 	reviewVerdict, parseErr := verdict.Parse(first.Transcript)
 	if parseErr == nil {
 		return ReviewExecution{Verdict: reviewVerdict, Transcript: first.Transcript, Feed: feed.String(), SessionIDs: first.SessionIDs}, nil
@@ -158,6 +176,11 @@ func RunReviewExecution(ctx context.Context, adapter harness.Adapter, request ha
 	retry, err := retryReviewDetails(ctx, adapter, first.SessionIDs[len(first.SessionIDs)-1], feedOutput, mode, questions)
 	if err != nil {
 		return ReviewExecution{}, err
+	}
+	if turnOutput != nil {
+		if err := turnOutput.EndTurn(); err != nil {
+			return ReviewExecution{}, fmt.Errorf("flush review output: %w", err)
+		}
 	}
 	transcript := appendReviewTranscript(first.Transcript, retry.Transcript)
 	sessions := append(append([]string(nil), first.SessionIDs...), retry.SessionIDs...)
