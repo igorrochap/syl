@@ -57,22 +57,28 @@ const (
 )
 
 type ReviewOptions struct {
-	ProjectRoot   string
-	ProjectConfig config.Config
-	IssueTracker  tracker.Tracker
-	Ticket        *tracker.Ticket
-	TicketRef     string
-	Adapter       harness.Adapter
-	Input         io.Reader
-	Output        io.Writer
-	Raw           bool
-	Notifier      Notifier
-	Git           GitRunner
+	ProjectRoot          string
+	ProjectConfig        config.Config
+	IssueTracker         tracker.Tracker
+	Ticket               *tracker.Ticket
+	TicketRef            string
+	Adapter              harness.Adapter
+	Input                io.Reader
+	Output               io.Writer
+	Raw                  bool
+	Notifier             Notifier
+	Git                  GitRunner
+	IdentificationBanner func() error
 }
 
 func RunReview(ctx context.Context, options ReviewOptions) error {
 	if options.Adapter == nil {
 		return fmt.Errorf("review harness %q is not configured", options.ProjectConfig.Roles.Review.Harness)
+	}
+	if options.IdentificationBanner != nil {
+		if err := options.IdentificationBanner(); err != nil {
+			return err
+		}
 	}
 	prompt := currentReviewPrompt()
 	if options.Ticket != nil {
