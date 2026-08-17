@@ -90,6 +90,7 @@ func (a *App) implementCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:   "implement #N",
 		Short: "implement the current issue",
+		Long:  "implement the current issue\n\n" + questionInputHelp,
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			projectConfig, err := config.Load(a.projectRoot)

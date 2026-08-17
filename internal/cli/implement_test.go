@@ -47,7 +47,7 @@ func TestImplementLoopApprovesOnFirstIteration(t *testing.T) {
 		t.Fatalf("harness requests = %d, want implement and review", len(implementer.requests))
 	}
 	implementPrompt := implementer.requests[0].Prompt
-	for _, expected := range []string{"/implement", "Add resilient workflow", "Acceptance criteria: leave a working implementation."} {
+	for _, expected := range []string{"/implement", "Add resilient workflow", "Acceptance criteria: leave a working implementation.", "QUESTION:", "Ambiguity should have been resolved during planning"} {
 		if !strings.Contains(implementPrompt, expected) {
 			t.Fatalf("implement prompt = %q, want %q", implementPrompt, expected)
 		}
