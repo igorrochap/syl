@@ -15,6 +15,8 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/mattn/go-isatty"
+
 	"github.com/igorrochap/rig/internal/config"
 	"github.com/igorrochap/rig/internal/harness"
 	"github.com/igorrochap/rig/internal/tracker"
@@ -197,7 +199,7 @@ func runImplementIterations(ctx context.Context, params implementIterationsParam
 			Effort: params.projectConfig.Roles.Implement.Effort,
 			Prompt: composeImplementPrompt(params.ticket, blocking, iteration),
 		}
-		implementResult, err := runImplementRole(ctx, params.implementer, implementRequest, params.output, params.artifacts.dir, iteration, params.questions)
+		implementResult, err := runImplementRole(ctx, params.implementer, implementRequest, newRoleLabelWriter(params.output, "implement", ansiColorImplement), params.artifacts.dir, iteration, params.questions)
 		if err != nil {
 			return 0, verdict.Verdict{}, nil, err
 		}
@@ -211,7 +213,7 @@ func runImplementIterations(ctx context.Context, params implementIterationsParam
 			Effort: params.projectConfig.Roles.Review.Effort,
 			Prompt: composeReviewPromptAgainstRef("#"+strconv.Itoa(params.ticket.Number), params.ticket, params.branchPoint),
 		}
-		reviewResult, err := RunReviewExecutionWithProgress(ctx, params.reviewer, reviewRequest, params.output, ParsedHarnessOutput, params.questions)
+		reviewResult, err := RunReviewExecutionWithProgress(ctx, params.reviewer, reviewRequest, newRoleLabelWriter(params.output, "review", ansiColorReview), ParsedHarnessOutput, params.questions)
 		if err != nil {
 			return 0, verdict.Verdict{}, nil, err
 		}
@@ -363,6 +365,60 @@ func (w *reviewProgressWriter) EndTurn() error {
 	}
 	_, err := io.WriteString(w.output, visible)
 	return err
+}
+
+const (
+	ansiColorImplement = "\x1b[34m" // blue
+	ansiColorReview    = "\x1b[33m" // yellow
+	ansiColorReset     = "\x1b[0m"
+)
+
+// roleLabelWriter prefixes each line of live output with which role produced
+// it, so implementer and reviewer text stay distinguishable while they
+// interleave on the same terminal stream. The label is colorized only when
+// output is a real terminal (and NO_COLOR isn't set); redirected output
+// (files, pipes, tests) gets a plain bracketed label instead.
+type roleLabelWriter struct {
+	output      io.Writer
+	prefix      string
+	atLineStart bool
+}
+
+func newRoleLabelWriter(output io.Writer, role, ansiColor string) *roleLabelWriter {
+	label := "[" + role + "] "
+	if shouldColorizeOutput(output) {
+		label = ansiColor + "[" + role + "]" + ansiColorReset + " "
+	}
+	return &roleLabelWriter{output: output, prefix: label, atLineStart: true}
+}
+
+func shouldColorizeOutput(output io.Writer) bool {
+	if os.Getenv("NO_COLOR") != "" {
+		return false
+	}
+	file, ok := output.(interface{ Fd() uintptr })
+	if !ok {
+		return false
+	}
+	return isatty.IsTerminal(file.Fd())
+}
+
+func (w *roleLabelWriter) Write(p []byte) (int, error) {
+	var labeled bytes.Buffer
+	for _, b := range p {
+		if w.atLineStart {
+			labeled.WriteString(w.prefix)
+			w.atLineStart = false
+		}
+		labeled.WriteByte(b)
+		if b == '\n' {
+			w.atLineStart = true
+		}
+	}
+	if _, err := w.output.Write(labeled.Bytes()); err != nil {
+		return 0, err
+	}
+	return len(p), nil
 }
 
 func ensureHeadUnchanged(ctx context.Context, git GitRunner, branchPoint string) error {

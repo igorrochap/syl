@@ -119,6 +119,17 @@ func TestImplementLoopStreamsImplementerAndReviewerProgress(t *testing.T) {
 	if strings.Contains(output, "VERDICT: approve") {
 		t.Fatalf("stdout = %q, want reviewer verdict block withheld for final summary", output)
 	}
+	for _, expected := range []string{
+		"[implement] Implementer is working.",
+		"[implement] tool: edit — change.txt",
+		"[review] Reviewer is checking the diff.",
+		"[review] Verify the diff first.",
+		"[review] tool: git diff — branch point",
+	} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("stdout = %q, want line labeled %q", output, expected)
+		}
+	}
 }
 
 func TestImplementLoopUsesCodexAdapterAtProcessBoundary(t *testing.T) {
