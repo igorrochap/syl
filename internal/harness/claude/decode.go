@@ -38,6 +38,7 @@ func runArgs(request harness.Request) ([]string, error) {
 	return []string{
 		"--print",
 		"--output-format", "stream-json",
+		"--verbose",
 		"--include-partial-messages",
 		"--model", request.Model,
 		"--effort", effort,

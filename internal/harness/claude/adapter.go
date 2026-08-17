@@ -44,6 +44,7 @@ func (a *Adapter) Resume(ctx context.Context, sessionID, prompt string) (harness
 		"--resume", sessionID,
 		"--print",
 		"--output-format", "stream-json",
+		"--verbose",
 		"--include-partial-messages",
 		prompt,
 	})
