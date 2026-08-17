@@ -10,6 +10,7 @@ import (
 	"github.com/igorrochap/rig/internal/cli"
 	"github.com/igorrochap/rig/internal/harness"
 	"github.com/igorrochap/rig/internal/harness/claude"
+	"github.com/igorrochap/rig/internal/harness/codex"
 )
 
 func main() {
@@ -25,6 +26,7 @@ func main() {
 		Git:   git.ExecGitRunner{Dir: projectRoot},
 		Harnesses: map[string]harness.Adapter{
 			"claude": claude.New(projectRoot),
+			"codex":  codex.New(projectRoot),
 		},
 	})
 	os.Exit(app.Run(context.Background(), os.Args[1:], os.Stdout, os.Stderr))
