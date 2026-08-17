@@ -10,7 +10,7 @@ Two-axis review of the diff between `HEAD` and a fixed point the user supplies:
 
 Both axes run as **parallel sub-agents** so they don't pollute each other's context, then this skill aggregates their findings.
 
-The project's issue tracker should have been provided to you. If its details are missing, ask the user before proceeding.
+The project's issue tracker should have been provided to you, including how it tracks reviews specifically (GitHub PR/issue comments, or a local `.scratch/` log) — this determines how you document findings in the Documenting section below. If these details are missing, ask the user before proceeding.
 
 ## Process
 
@@ -75,11 +75,16 @@ Reporting them separately stops one axis from masking the other.
 
 ## Documenting
 
-Do not write review findings into the issue file itself — the issue file is the
-spec/checklist, not a review log. Instead create a **separate review document**
-in the project's `.scratch/<project>/reviews/` directory (sibling to
-`.scratch/<project>/issues/`), named after the issue: `<number>-<slug>.md`,
-matching the issue's own filename.
+If this project tracks reviews on GitHub, the verdict block you print at the
+end (per the Verdict contract below) is the record — it's posted as a PR/issue
+comment by the tool that invoked you. Skip the rest of this section entirely;
+do not also write a `.scratch` review document.
+
+Otherwise (local review tracking): do not write review findings into the issue
+file itself — the issue file is the spec/checklist, not a review log. Instead
+create a **separate review document** in the project's
+`.scratch/<project>/reviews/` directory (sibling to `.scratch/<project>/issues/`),
+named after the issue: `<number>-<slug>.md`, matching the issue's own filename.
 
 Follow the format already established by existing review documents in that
 directory (e.g. `reviews/12-add-optional-end-to-end-benchmark-verification.md`,
