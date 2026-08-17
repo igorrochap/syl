@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v1.2.0 (2026-08-17)
+
+### Features
+
+- **cli**: Display identification banners for commands
+  ([#33](https://github.com/igorrochap/rig/pull/33),
+  [`838e240`](https://github.com/igorrochap/rig/commit/838e24008f5e6b4b02d7e96fbbc82c0483566e5e))
+
+
 ## v1.1.2 (2026-08-17)
 
 ### Bug Fixes
