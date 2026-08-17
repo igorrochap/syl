@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v1.1.1 (2026-08-17)
+
+### Bug Fixes
+
+- **orchestration**: Handle duplicated assistant output in stream
+  ([#31](https://github.com/igorrochap/rig/pull/31),
+  [`8897df9`](https://github.com/igorrochap/rig/commit/8897df903fa75a0eeaa64203d1c7b784b20776ae))
+
+
 ## v1.1.0 (2026-08-17)
 
 ### Bug Fixes
