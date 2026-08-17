@@ -127,7 +127,7 @@ func TestImplementLoopStreamsImplementerAndReviewerProgress(t *testing.T) {
 	fixture.app.deps.Harnesses["claude"] = loop
 	fixture.app.deps.GH = &loopGHRunner{}
 
-	code := fixture.app.Run(context.Background(), []string{"implement", "#42"}, &fixture.stdout, &fixture.stderr)
+	code := fixture.app.Run(context.Background(), []string{"implement", "--verbose", "#42"}, &fixture.stdout, &fixture.stderr)
 	if code != 0 {
 		t.Fatalf("implement code = %d, want 0; stderr = %q", code, fixture.stderr.String())
 	}
@@ -149,8 +149,8 @@ func TestImplementLoopStreamsImplementerAndReviewerProgress(t *testing.T) {
 			t.Fatalf("stdout = %q, want %q before final summary", output, expected)
 		}
 	}
-	if strings.Contains(output, "VERDICT: approve") {
-		t.Fatalf("stdout = %q, want reviewer verdict block withheld for final summary", output)
+	if !strings.Contains(output, "VERDICT: approve") {
+		t.Fatalf("stdout = %q, want the rendered reviewer verdict", output)
 	}
 	for _, expected := range []string{
 		"[implement] Implementer is working.",
@@ -161,6 +161,53 @@ func TestImplementLoopStreamsImplementerAndReviewerProgress(t *testing.T) {
 	} {
 		if !strings.Contains(output, expected) {
 			t.Fatalf("stdout = %q, want line labeled %q", output, expected)
+		}
+	}
+}
+
+func TestImplementLoopQuietlyShowsProgressWithoutAssistantProse(t *testing.T) {
+	fixture := newImplementLoopFixture(t)
+	loop := &loopHarness{
+		root: fixture.root,
+		streams: [][]harness.Event{
+			{
+				{Type: harness.EventSession, SessionID: "implement-session"},
+				{Type: harness.EventAssistantText, Text: "Implementer internal prose.\n"},
+				{Type: harness.EventToolUse, ToolName: "edit", ArgumentGist: "change.txt"},
+			},
+			{
+				{Type: harness.EventSession, SessionID: "review-session"},
+				{Type: harness.EventAssistantText, Text: "Reviewer internal prose.\n"},
+				{Type: harness.EventToolUse, ToolName: "git diff", ArgumentGist: "branch point"},
+				{Type: harness.EventAssistantText, Text: approveVerdictText},
+			},
+		},
+	}
+	fixture.app.deps.Harnesses["codex"] = loop
+	fixture.app.deps.Harnesses["claude"] = loop
+	fixture.app.deps.GH = &loopGHRunner{}
+
+	code := fixture.app.Run(context.Background(), []string{"implement", "#42"}, &fixture.stdout, &fixture.stderr)
+	if code != 0 {
+		t.Fatalf("implement code = %d, stderr = %q", code, fixture.stderr.String())
+	}
+
+	output := fixture.stdout.String()
+	for _, expected := range []string{
+		"iteration 1/3 — implementing",
+		"iteration 1/3 — reviewing",
+		"[implement] tool: edit — change.txt",
+		"[review] tool: git diff — branch point",
+		"VERDICT: approve",
+		"SUMMARY: The working tree is ready",
+	} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("stdout = %q, want %q", output, expected)
+		}
+	}
+	for _, suppressed := range []string{"Implementer internal prose.", "Reviewer internal prose."} {
+		if strings.Contains(output, suppressed) {
+			t.Fatalf("stdout = %q, want assistant prose %q suppressed", output, suppressed)
 		}
 	}
 }
@@ -288,8 +335,56 @@ func TestImplementLoopStillIteratesForNitOnlyRevisionAndSummarizesNits(t *testin
 	if !strings.Contains(fixture.stdout.String(), "Iterations: 2") || !strings.Contains(fixture.stdout.String(), "[nit] docs/example.md:3 — style could be clearer") {
 		t.Fatalf("stdout = %q, want accumulated nit in final summary", fixture.stdout.String())
 	}
-	if got := strings.Count(fixture.stdout.String(), "style could be clearer"); got != 1 {
-		t.Fatalf("stdout = %q, want nit only in final summary once", fixture.stdout.String())
+	if !strings.Contains(fixture.stdout.String(), "iteration 2/3 — revising 0 blocking finding(s)") {
+		t.Fatalf("stdout = %q, want revision transition with zero blocking findings", fixture.stdout.String())
+	}
+	if got := strings.Count(fixture.stdout.String(), "style could be clearer"); got != 2 {
+		t.Fatalf("stdout = %q, want the per-iteration verdict and final summary", fixture.stdout.String())
+	}
+}
+
+func TestImplementQuietAndVerboseRunsPreserveRunArtifacts(t *testing.T) {
+	t.Setenv("GIT_AUTHOR_DATE", "2020-01-01T00:00:00Z")
+	t.Setenv("GIT_COMMITTER_DATE", "2020-01-01T00:00:00Z")
+
+	run := func(verbose bool) string {
+		t.Helper()
+		fixture := newImplementLoopFixture(t)
+		loop := &loopHarness{
+			root: fixture.root,
+			streams: [][]harness.Event{
+				{
+					{Type: harness.EventSession, SessionID: "implement-session"},
+					{Type: harness.EventAssistantText, Text: "Implementer prose.\n"},
+					{Type: harness.EventToolUse, ToolName: "edit", ArgumentGist: "change.txt"},
+				},
+				{
+					{Type: harness.EventSession, SessionID: "review-session"},
+					{Type: harness.EventAssistantText, Text: "Reviewer prose.\n" + approveVerdictText},
+				},
+			},
+		}
+		fixture.app.deps.Harnesses["codex"] = loop
+		fixture.app.deps.Harnesses["claude"] = loop
+		fixture.app.deps.GH = &loopGHRunner{}
+		args := []string{"implement", "#42"}
+		if verbose {
+			args = []string{"implement", "--verbose", "#42"}
+		}
+		if code := fixture.app.Run(context.Background(), args, &fixture.stdout, &fixture.stderr); code != 0 {
+			t.Fatalf("implement code = %d, stderr = %q", code, fixture.stderr.String())
+		}
+		runDirs, err := filepath.Glob(filepath.Join(fixture.root, ".rig", "runs", "*-42"))
+		if err != nil || len(runDirs) != 1 {
+			t.Fatalf("run directories = %v, err = %v; want one issue artifact directory", runDirs, err)
+		}
+		return readAllFiles(t, runDirs[0])
+	}
+
+	quietArtifacts := run(false)
+	verboseArtifacts := run(true)
+	if quietArtifacts != verboseArtifacts {
+		t.Fatalf("quiet artifacts = %q, verbose artifacts = %q; want byte-identical content", quietArtifacts, verboseArtifacts)
 	}
 }
 
@@ -365,6 +460,14 @@ func TestImplementLoopCapReturnsNonZeroAfterThreeRevisions(t *testing.T) {
 	}
 	if !strings.Contains(fixture.stdout.String(), "Iterations: 3") || !strings.Contains(fixture.stdout.String(), "Final verdict: revise") {
 		t.Fatalf("stdout = %q, want capped revise summary", fixture.stdout.String())
+	}
+	for _, expected := range []string{
+		"iteration 2/3 — revising 1 blocking finding(s)",
+		"iteration 3/3 — revising 1 blocking finding(s)",
+	} {
+		if !strings.Contains(fixture.stdout.String(), expected) {
+			t.Fatalf("stdout = %q, want %q", fixture.stdout.String(), expected)
+		}
 	}
 	if !strings.Contains(fixture.stderr.String(), "max iterations") {
 		t.Fatalf("stderr = %q, want iteration-cap error", fixture.stderr.String())

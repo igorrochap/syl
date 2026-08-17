@@ -49,11 +49,12 @@ type harnessTranscript struct {
 	SessionIDs []string
 }
 
-type HarnessOutputMode bool
+type HarnessOutputMode uint8
 
 const (
-	ParsedHarnessOutput HarnessOutputMode = false
-	RawHarnessOutput    HarnessOutputMode = true
+	ParsedHarnessOutput HarnessOutputMode = iota
+	RawHarnessOutput
+	QuietHarnessOutput
 )
 
 type ReviewOptions struct {
@@ -66,12 +67,16 @@ type ReviewOptions struct {
 	Input                io.Reader
 	Output               io.Writer
 	Raw                  bool
+	Verbose              bool
 	Notifier             Notifier
 	Git                  GitRunner
 	IdentificationBanner func() error
 }
 
 func RunReview(ctx context.Context, options ReviewOptions) error {
+	if options.Raw && options.Verbose {
+		return errors.New("review: --raw and --verbose are mutually exclusive")
+	}
 	if options.Adapter == nil {
 		return fmt.Errorf("review harness %q is not configured", options.ProjectConfig.Roles.Review.Harness)
 	}
@@ -89,9 +94,16 @@ func RunReview(ctx context.Context, options ReviewOptions) error {
 		notifier = nil
 	}
 	questions := NewQuestionHandler(options.Input, options.Output, options.TicketRef, notifier)
+	mode := QuietHarnessOutput
+	if options.Verbose {
+		mode = ParsedHarnessOutput
+	}
+	if options.Raw {
+		mode = RawHarnessOutput
+	}
 	reviewVerdict, err := runReview(ctx, options.Adapter, harness.Request{
 		Model: options.ProjectConfig.Roles.Review.Model, Effort: options.ProjectConfig.Roles.Review.Effort, Prompt: prompt,
-	}, options.Output, options.Raw, questions)
+	}, options.Output, mode, questions)
 	if err != nil {
 		var unparseable *UnparseableVerdictError
 		if errors.As(err, &unparseable) {
@@ -148,11 +160,7 @@ func currentReviewPrompt() string {
 	return fmt.Sprintf(reviewPrompt, "")
 }
 
-func runReview(ctx context.Context, adapter harness.Adapter, request harness.Request, output io.Writer, raw bool, questions *QuestionHandler) (verdict.Verdict, error) {
-	mode := ParsedHarnessOutput
-	if raw {
-		mode = RawHarnessOutput
-	}
+func runReview(ctx context.Context, adapter harness.Adapter, request harness.Request, output io.Writer, mode HarnessOutputMode, questions *QuestionHandler) (verdict.Verdict, error) {
 	review, err := RunReviewExecution(ctx, adapter, request, output, mode, questions)
 	if err != nil {
 		return verdict.Verdict{}, err
@@ -175,11 +183,11 @@ type reviewTurnOutput interface {
 
 func runReviewExecution(ctx context.Context, adapter harness.Adapter, request harness.Request, output io.Writer, mode HarnessOutputMode, questions *QuestionHandler, turnOutput reviewTurnOutput) (ReviewExecution, error) {
 	var feed bytes.Buffer
-	feedOutput := io.MultiWriter(output, &feed)
 	first, err := runHarnessConversation(ctx, adapter, func(runContext context.Context) (harness.Stream, error) {
 		return adapter.Run(runContext, request)
 	}, conversationOptions{
-		output:    feedOutput,
+		output:    output,
+		artifact:  &feed,
 		mode:      mode,
 		questions: questions,
 	})
@@ -200,7 +208,7 @@ func runReviewExecution(ctx context.Context, adapter harness.Adapter, request ha
 		return execution, &UnparseableVerdictError{Execution: execution, Cause: parseErr}
 	}
 
-	retry, err := retryReviewDetails(ctx, adapter, first.SessionIDs[len(first.SessionIDs)-1], feedOutput, mode, questions)
+	retry, err := retryReviewDetails(ctx, adapter, first.SessionIDs[len(first.SessionIDs)-1], output, &feed, mode, questions)
 	if err != nil {
 		return ReviewExecution{}, err
 	}
@@ -220,11 +228,12 @@ func runReviewExecution(ctx context.Context, adapter harness.Adapter, request ha
 	return execution, &UnparseableVerdictError{Execution: execution, Cause: parseErr}
 }
 
-func retryReviewDetails(ctx context.Context, adapter harness.Adapter, sessionID string, output io.Writer, mode HarnessOutputMode, questions *QuestionHandler) (harnessTranscript, error) {
+func retryReviewDetails(ctx context.Context, adapter harness.Adapter, sessionID string, output, artifact io.Writer, mode HarnessOutputMode, questions *QuestionHandler) (harnessTranscript, error) {
 	transcript, err := runHarnessConversation(ctx, adapter, func(resumeContext context.Context) (harness.Stream, error) {
 		return adapter.Resume(resumeContext, sessionID, "emit the verdict block")
 	}, conversationOptions{
 		output:    output,
+		artifact:  artifact,
 		mode:      mode,
 		questions: questions,
 		sessionID: sessionID,

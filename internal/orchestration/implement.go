@@ -82,6 +82,7 @@ type ImplementOptions struct {
 	Notifier             Notifier
 	Input                io.Reader
 	Output               io.Writer
+	Verbose              bool
 	IdentificationBanner func(artifactDir string) error
 }
 
@@ -126,6 +127,7 @@ func RunImplement(ctx context.Context, options ImplementOptions) error {
 		artifacts:     &artifacts,
 		questions:     questions,
 		output:        options.Output,
+		verbose:       options.Verbose,
 	})
 	if err != nil {
 		return err
@@ -191,6 +193,7 @@ type implementIterationsParams struct {
 	artifacts     *runArtifacts
 	questions     *QuestionHandler
 	output        io.Writer
+	verbose       bool
 }
 
 func runImplementIterations(ctx context.Context, params implementIterationsParams) (int, verdict.Verdict, []verdict.Finding, error) {
@@ -200,12 +203,24 @@ func runImplementIterations(ctx context.Context, params implementIterationsParam
 	iterations := 0
 	for iteration := 1; iteration <= params.projectConfig.Loop.MaxIterations; iteration++ {
 		iterations = iteration
+		activity := "implementing"
+		if iteration > 1 {
+			activity = fmt.Sprintf("revising %d blocking finding(s)", len(blocking))
+		}
+		if _, err := fmt.Fprintf(params.output, "iteration %d/%d — %s\n", iteration, params.projectConfig.Loop.MaxIterations, activity); err != nil {
+			return 0, verdict.Verdict{}, nil, fmt.Errorf("write implement progress: %w", err)
+		}
+
+		mode := QuietHarnessOutput
+		if params.verbose {
+			mode = ParsedHarnessOutput
+		}
 		implementRequest := harness.Request{
 			Model:  params.projectConfig.Roles.Implement.Model,
 			Effort: params.projectConfig.Roles.Implement.Effort,
 			Prompt: composeImplementPrompt(params.ticket, blocking, iteration),
 		}
-		implementResult, err := runImplementRole(ctx, params.implementer, implementRequest, newRoleLabelWriter(params.output, "implement", ansiColorImplement), params.artifacts.dir, iteration, params.questions)
+		implementResult, err := runImplementRole(ctx, params.implementer, implementRequest, newRoleLabelWriter(params.output, "implement", ansiColorImplement), mode, params.artifacts.dir, iteration, params.questions)
 		if err != nil {
 			return 0, verdict.Verdict{}, nil, err
 		}
@@ -219,7 +234,10 @@ func runImplementIterations(ctx context.Context, params implementIterationsParam
 			Effort: params.projectConfig.Roles.Review.Effort,
 			Prompt: composeReviewPromptAgainstRef("#"+strconv.Itoa(params.ticket.Number), params.ticket, params.branchPoint),
 		}
-		reviewResult, err := RunReviewExecutionWithProgress(ctx, params.reviewer, reviewRequest, newRoleLabelWriter(params.output, "review", ansiColorReview), ParsedHarnessOutput, params.questions)
+		if _, err := fmt.Fprintf(params.output, "iteration %d/%d — reviewing\n", iteration, params.projectConfig.Loop.MaxIterations); err != nil {
+			return 0, verdict.Verdict{}, nil, fmt.Errorf("write review progress: %w", err)
+		}
+		reviewResult, err := RunReviewExecutionWithProgress(ctx, params.reviewer, reviewRequest, newRoleLabelWriter(params.output, "review", ansiColorReview), mode, params.questions)
 		if err != nil {
 			var unparseable *UnparseableVerdictError
 			if errors.As(err, &unparseable) {
@@ -238,6 +256,9 @@ func runImplementIterations(ctx context.Context, params implementIterationsParam
 		}
 		params.artifacts.recordSessions(iteration, "review", reviewResult.SessionIDs)
 		final = reviewResult.Verdict
+		if _, err := io.WriteString(params.output, formatVerdict(final)); err != nil {
+			return 0, verdict.Verdict{}, nil, fmt.Errorf("write review verdict: %w", err)
+		}
 		nits = append(nits, nitFindings(final)...)
 		if final.Status == verdict.Approve {
 			break
@@ -254,13 +275,14 @@ func composeImplementPrompt(ticket tracker.Ticket, blocking []verdict.Finding, i
 	return fmt.Sprintf(reviseImplementPrompt, "#"+strconv.Itoa(ticket.Number), formatBlockingFindings(blocking))
 }
 
-func runImplementRole(ctx context.Context, adapter harness.Adapter, request harness.Request, output io.Writer, artifactDir string, iteration int, questions *QuestionHandler) (harnessTranscript, error) {
+func runImplementRole(ctx context.Context, adapter harness.Adapter, request harness.Request, output io.Writer, mode HarnessOutputMode, artifactDir string, iteration int, questions *QuestionHandler) (harnessTranscript, error) {
 	var feed bytes.Buffer
 	result, err := runHarnessConversation(ctx, adapter, func(runContext context.Context) (harness.Stream, error) {
 		return adapter.Run(runContext, request)
 	}, conversationOptions{
-		output:    io.MultiWriter(output, &feed),
-		mode:      ParsedHarnessOutput,
+		output:    output,
+		artifact:  &feed,
+		mode:      mode,
 		questions: questions,
 	})
 	if err != nil {

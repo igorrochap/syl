@@ -23,7 +23,7 @@ func TestReviewTopSeamApprovePrintsFeedAndWritesLog(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	code := fixture.app.Run(context.Background(), []string{"review"}, &fixture.stdout, &fixture.stderr)
+	code := fixture.app.Run(context.Background(), []string{"review", "--verbose"}, &fixture.stdout, &fixture.stderr)
 	if code != 0 {
 		t.Fatalf("review code = %d, want 0; stderr = %q", code, fixture.stderr.String())
 	}
@@ -42,6 +42,40 @@ func TestReviewTopSeamApprovePrintsFeedAndWritesLog(t *testing.T) {
 	logContents := readSingleReviewLog(t, fixture.root)
 	if !strings.Contains(logContents, "VERDICT: approve") || !strings.Contains(logContents, "Reviewed ref: working-tree") || !strings.Contains(logContents, "Timestamp:") {
 		t.Fatalf("review log = %q, want verdict, ref, and timestamp", logContents)
+	}
+}
+
+func TestReviewTopSeamQuietSuppressesAssistantProse(t *testing.T) {
+	harness := &scriptedHarness{first: []harness.Event{
+		{Type: harness.EventSession, SessionID: "session-quiet"},
+		{Type: harness.EventAssistantText, Text: "Reviewer internal prose.\n"},
+		{Type: harness.EventToolUse, ToolName: "Bash", ArgumentGist: `{"command":"git diff"}`},
+		{Type: harness.EventAssistantText, Text: approveVerdictText},
+	}}
+	fixture := newReviewFixture(t, harness)
+
+	code := fixture.app.Run(context.Background(), []string{"review"}, &fixture.stdout, &fixture.stderr)
+	if code != 0 {
+		t.Fatalf("review code = %d, stderr = %q", code, fixture.stderr.String())
+	}
+	output := fixture.stdout.String()
+	if !strings.Contains(output, "tool: Bash — {\"command\":\"git diff\"}") || !strings.Contains(output, "VERDICT: approve") {
+		t.Fatalf("stdout = %q, want tool progress and rendered verdict", output)
+	}
+	if strings.Contains(output, "Reviewer internal prose.") {
+		t.Fatalf("stdout = %q, want assistant prose suppressed", output)
+	}
+}
+
+func TestReviewRawAndVerboseAreMutuallyExclusive(t *testing.T) {
+	fixture := newReviewFixture(t, &scriptedHarness{})
+
+	code := fixture.app.Run(context.Background(), []string{"review", "--raw", "--verbose"}, &fixture.stdout, &fixture.stderr)
+	if code == 0 || !strings.Contains(fixture.stderr.String(), "[raw verbose]") {
+		t.Fatalf("review code = %d, stderr = %q, want mutually-exclusive flag error", code, fixture.stderr.String())
+	}
+	if fixture.stdout.String() != "" {
+		t.Fatalf("stdout = %q, want no banner for invalid flag combination", fixture.stdout.String())
 	}
 }
 
