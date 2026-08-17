@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v1.1.2 (2026-08-17)
+
+### Bug Fixes
+
+- **review**: Improve verdict parsing and error handling
+  ([#32](https://github.com/igorrochap/rig/pull/32),
+  [`acc0f22`](https://github.com/igorrochap/rig/commit/acc0f22bf182fcbb8b73bfa12ae26987a70edd5c))
+
+
 ## v1.1.1 (2026-08-17)
 
 ### Bug Fixes
