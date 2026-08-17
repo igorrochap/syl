@@ -25,6 +25,7 @@ type harnessStreamStarter func(context.Context) (harness.Stream, error)
 
 type conversationOptions struct {
 	output    io.Writer
+	artifact  io.Writer
 	mode      HarnessOutputMode
 	questions *QuestionHandler
 	sessionID string
@@ -127,7 +128,7 @@ func runHarnessConversation(ctx context.Context, adapter harness.Adapter, start 
 			return harnessTranscript{}, err
 		}
 
-		result, err := consumeHarnessStream(stream, options.output, options.mode)
+		result, err := consumeHarnessStreamWithArtifact(stream, options.output, options.artifact, options.mode)
 		if err != nil {
 			return harnessTranscript{}, err
 		}
@@ -162,10 +163,19 @@ func runHarnessConversation(ctx context.Context, adapter harness.Adapter, start 
 }
 
 func consumeHarnessStream(stream harness.Stream, output io.Writer, mode HarnessOutputMode) (harnessStreamResult, error) {
+	return consumeHarnessStreamWithArtifact(stream, output, nil, mode)
+}
+
+func consumeHarnessStreamWithArtifact(stream harness.Stream, output, artifact io.Writer, mode HarnessOutputMode) (harnessStreamResult, error) {
 	var transcript strings.Builder
 	var sessionIDs []string
 	parser := newQuestionParser()
 	var pendingRaw []harness.Event
+	var artifactPendingRaw []harness.Event
+	artifactMode := mode
+	if mode == QuietHarnessOutput {
+		artifactMode = ParsedHarnessOutput
+	}
 	// Some harnesses repeat the final assistant message in their result event.
 	// Streamed assistant text is authoritative; result text is only a fallback
 	// for harnesses that emitted no assistant text during this turn.
@@ -185,6 +195,11 @@ func consumeHarnessStream(stream harness.Stream, output io.Writer, mode HarnessO
 
 		if err := renderHarnessEvent(output, mode, event, parsed, parser, &pendingRaw); err != nil {
 			return harnessStreamResult{}, err
+		}
+		if artifact != nil {
+			if err := renderHarnessEvent(artifact, artifactMode, event, parsed, parser, &artifactPendingRaw); err != nil {
+				return harnessStreamResult{}, err
+			}
 		}
 		if useEventText {
 			transcript.WriteString(parsed.VisibleText)
@@ -216,11 +231,19 @@ func consumeHarnessStream(stream harness.Stream, output io.Writer, mode HarnessO
 	if err := flushRawEvents(output, pendingRaw); err != nil {
 		return harnessStreamResult{}, err
 	}
+	if err := flushRawEvents(artifact, artifactPendingRaw); err != nil {
+		return harnessStreamResult{}, err
+	}
 	flush := parser.Flush()
 	if flush != "" {
 		transcript.WriteString(flush)
-		if mode != RawHarnessOutput {
+		if mode != RawHarnessOutput && mode != QuietHarnessOutput {
 			if err := writeParsedEvent(output, harness.Event{Type: harness.EventAssistantText, Text: flush}); err != nil {
+				return harnessStreamResult{}, err
+			}
+		}
+		if artifact != nil && mode != RawHarnessOutput {
+			if err := writeParsedEvent(artifact, harness.Event{Type: harness.EventAssistantText, Text: flush}); err != nil {
 				return harnessStreamResult{}, err
 			}
 		}
@@ -233,6 +256,9 @@ func consumeHarnessStream(stream harness.Stream, output io.Writer, mode HarnessO
 
 func renderHarnessEvent(output io.Writer, mode HarnessOutputMode, event harness.Event, parsed questionParseResult, parser *questionParser, pendingRaw *[]harness.Event) error {
 	if mode != RawHarnessOutput {
+		if mode == QuietHarnessOutput && event.Type == harness.EventAssistantText {
+			return nil
+		}
 		visibleEvent := event
 		visibleEvent.Text = parsed.VisibleText
 		return writeParsedEvent(output, visibleEvent)

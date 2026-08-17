@@ -82,7 +82,8 @@ func (a *App) Command() *cobra.Command {
 }
 
 func (a *App) implementCommand() *cobra.Command {
-	return &cobra.Command{
+	var verbose bool
+	command := &cobra.Command{
 		Use:   "implement #N",
 		Short: "implement the current issue",
 		Long:  "implement the current issue\n\n" + orchestration.QuestionInputHelp,
@@ -115,16 +116,20 @@ func (a *App) implementCommand() *cobra.Command {
 				ProjectRoot: a.projectRoot, ProjectConfig: projectConfig, IssueTracker: issueTracker, Ticket: ticket,
 				Implementer: implementer, Reviewer: reviewer, Git: a.gitRunner(),
 				Notifier: a.notifier(projectConfig.Notifications.Enabled), Input: cmd.InOrStdin(), Output: cmd.OutOrStdout(),
+				Verbose: verbose,
 				IdentificationBanner: func(artifactDir string) error {
 					return writeImplementBanner(cmd.OutOrStdout(), a.projectRoot, projectConfig, ticket, artifactDir)
 				},
 			})
 		},
 	}
+	command.Flags().BoolVar(&verbose, "verbose", false, "stream assistant prose in addition to progress output")
+	return command
 }
 
 func (a *App) reviewCommand() *cobra.Command {
 	var raw bool
+	var verbose bool
 	command := &cobra.Command{
 		Use:   "review [#N]",
 		Short: "review the current working-tree changes",
@@ -161,7 +166,7 @@ func (a *App) reviewCommand() *cobra.Command {
 			return orchestration.RunReview(cmd.Context(), orchestration.ReviewOptions{
 				ProjectRoot: a.projectRoot, ProjectConfig: projectConfig, IssueTracker: issueTracker,
 				Ticket: ticket, TicketRef: ticketRef, Adapter: adapter, Input: cmd.InOrStdin(), Output: cmd.OutOrStdout(),
-				Raw: raw, Notifier: a.notifier(projectConfig.Notifications.Enabled), Git: a.gitRunner(),
+				Raw: raw, Verbose: verbose, Notifier: a.notifier(projectConfig.Notifications.Enabled), Git: a.gitRunner(),
 				IdentificationBanner: func() error {
 					return writeReviewBanner(cmd.OutOrStdout(), projectConfig, ticketRef, ticket)
 				},
@@ -169,6 +174,8 @@ func (a *App) reviewCommand() *cobra.Command {
 		},
 	}
 	command.Flags().BoolVar(&raw, "raw", false, "pass the harness output through untouched")
+	command.Flags().BoolVar(&verbose, "verbose", false, "stream assistant prose in addition to progress output")
+	command.MarkFlagsMutuallyExclusive("raw", "verbose")
 	return command
 }
 
