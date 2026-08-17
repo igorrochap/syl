@@ -20,6 +20,7 @@ func main() {
 	app := cli.New(projectRoot, cli.Dependencies{
 		Input: os.Stdin,
 		GH:    cli.ExecGHRunner{Dir: projectRoot},
+		Git:   cli.ExecGitRunner{Dir: projectRoot},
 		Harnesses: map[string]harness.Adapter{
 			"claude": claude.New(projectRoot),
 		},
