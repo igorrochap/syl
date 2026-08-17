@@ -39,6 +39,18 @@ func TestRunSubcommandHelpIsAvailableWithoutConfig(t *testing.T) {
 	}
 }
 
+func TestQuestionAnswerInputProtocolIsDocumentedInHelp(t *testing.T) {
+	fixture := newTopSeamFixture(t)
+
+	code := fixture.app.Run(context.Background(), []string{"review", "--help"}, &fixture.stdout, &fixture.stderr)
+	if code != 0 {
+		t.Fatalf("review help code = %d, stderr = %q", code, fixture.stderr.String())
+	}
+	if !strings.Contains(fixture.stdout.String(), "multi-line answer from stdin until an empty line or EOF") {
+		t.Fatalf("review help = %q, want QUESTION input protocol", fixture.stdout.String())
+	}
+}
+
 func TestRunRefusesCommandsWithoutConfig(t *testing.T) {
 	for _, command := range []string{"sync", "plan", "implement", "review"} {
 		t.Run(command, func(t *testing.T) {

@@ -33,7 +33,7 @@ func TestReviewTopSeamApprovePrintsFeedAndWritesLog(t *testing.T) {
 	if !strings.Contains(fixture.stdout.String(), "VERDICT: approve") {
 		t.Fatalf("stdout = %q, want verdict", fixture.stdout.String())
 	}
-	if !strings.Contains(harness.runRequest.Prompt, "/code-review") || !strings.Contains(harness.runRequest.Prompt, "current working-tree diff") {
+	if !strings.Contains(harness.runRequest.Prompt, "/code-review") || !strings.Contains(harness.runRequest.Prompt, "current working-tree diff") || !strings.Contains(harness.runRequest.Prompt, "QUESTION:") {
 		t.Fatalf("review prompt = %q, want named skill and current diff instruction", harness.runRequest.Prompt)
 	}
 	if harness.runRequest.Model != "sonnet-5" || harness.runRequest.Effort != "medium" {

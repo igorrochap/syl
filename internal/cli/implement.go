@@ -26,6 +26,8 @@ const implementPrompt = `/implement
 
 Implement the ticket below in the current project. Use the vendored implement skill and leave the working tree with the requested changes for review. Do not commit or push changes.
 
+` + questionProtocolInstruction + `
+
 Ticket: %s
 Title: %s
 
@@ -35,6 +37,8 @@ Ticket body (including acceptance criteria):
 const reviseImplementPrompt = `/fix-review
 
 Address ONLY the reviewer's [blocking] findings listed below. Use the vendored fix-review skill. Leave the working tree with the changes for review and do not commit or push changes.
+
+` + questionProtocolInstruction + `
 
 Ticket: %s
 
@@ -76,11 +80,12 @@ func (a *App) runImplement(ctx context.Context, command *cobra.Command, projectC
 	if err != nil {
 		return err
 	}
+	questions := a.questionHandler(command.InOrStdin(), command.OutOrStdout(), "#"+strconv.Itoa(ticket.Number), projectConfig.Notifications.Enabled)
 	artifacts, err := newRunArtifacts(a.projectRoot, ticket.Number, setup.branch, setup.branchPoint)
 	if err != nil {
 		return err
 	}
-	iterations, final, nits, err := runImplementIterations(ctx, setup.git, implementer, reviewer, projectConfig, ticket, setup.branchPoint, &artifacts)
+	iterations, final, nits, err := runImplementIterations(ctx, setup.git, implementer, reviewer, projectConfig, ticket, setup.branchPoint, &artifacts, questions)
 	if err != nil {
 		return err
 	}
@@ -151,7 +156,7 @@ func (a *App) implementationHarnesses(projectConfig config.Config) (harness.Adap
 	return implementer, reviewer, nil
 }
 
-func runImplementIterations(ctx context.Context, git GitRunner, implementer, reviewer harness.Adapter, projectConfig config.Config, ticket tracker.Ticket, branchPoint string, artifacts *runArtifacts) (int, verdict.Verdict, []verdict.Finding, error) {
+func runImplementIterations(ctx context.Context, git GitRunner, implementer, reviewer harness.Adapter, projectConfig config.Config, ticket tracker.Ticket, branchPoint string, artifacts *runArtifacts, questions *questionHandler) (int, verdict.Verdict, []verdict.Finding, error) {
 	var blocking []verdict.Finding
 	var nits []verdict.Finding
 	var final verdict.Verdict
@@ -163,7 +168,7 @@ func runImplementIterations(ctx context.Context, git GitRunner, implementer, rev
 			Effort: projectConfig.Roles.Implement.Effort,
 			Prompt: composeImplementPrompt(ticket, blocking, iteration),
 		}
-		implementResult, err := runImplementRole(ctx, implementer, implementRequest, io.Discard, artifacts.dir, iteration)
+		implementResult, err := runImplementRole(ctx, implementer, implementRequest, io.Discard, artifacts.dir, iteration, questions)
 		if err != nil {
 			return 0, verdict.Verdict{}, nil, err
 		}
@@ -177,7 +182,7 @@ func runImplementIterations(ctx context.Context, git GitRunner, implementer, rev
 			Effort: projectConfig.Roles.Review.Effort,
 			Prompt: composeReviewPromptAgainstRef("#"+strconv.Itoa(ticket.Number), ticket, branchPoint),
 		}
-		reviewResult, err := runReviewExecution(ctx, reviewer, reviewRequest, io.Discard, parsedHarnessOutput)
+		reviewResult, err := runReviewExecution(ctx, reviewer, reviewRequest, io.Discard, parsedHarnessOutput, questions)
 		if err != nil {
 			return 0, verdict.Verdict{}, nil, err
 		}
@@ -205,15 +210,17 @@ func composeImplementPrompt(ticket tracker.Ticket, blocking []verdict.Finding, i
 	return fmt.Sprintf(reviseImplementPrompt, "#"+strconv.Itoa(ticket.Number), formatBlockingFindings(blocking))
 }
 
-func runImplementRole(ctx context.Context, adapter harness.Adapter, request harness.Request, output io.Writer, artifactDir string, iteration int) (harnessTranscript, error) {
-	stream, err := adapter.Run(ctx, request)
+func runImplementRole(ctx context.Context, adapter harness.Adapter, request harness.Request, output io.Writer, artifactDir string, iteration int, questions *questionHandler) (harnessTranscript, error) {
+	var feed bytes.Buffer
+	result, err := runHarnessConversation(ctx, adapter, func(runContext context.Context) (harness.Stream, error) {
+		return adapter.Run(runContext, request)
+	}, conversationOptions{
+		output:    io.MultiWriter(output, &feed),
+		mode:      parsedHarnessOutput,
+		questions: questions,
+	})
 	if err != nil {
 		return harnessTranscript{}, fmt.Errorf("run implement harness: %w", err)
-	}
-	var feed bytes.Buffer
-	result, err := consumeHarnessStreamDetails(stream, io.MultiWriter(output, &feed), parsedHarnessOutput)
-	if err != nil {
-		return harnessTranscript{}, err
 	}
 	if err := writeArtifact(filepath.Join(artifactDir, fmt.Sprintf("iteration-%02d-implement.feed", iteration)), feed.String()); err != nil {
 		return harnessTranscript{}, err

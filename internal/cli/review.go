@@ -21,7 +21,9 @@ import (
 
 const reviewPrompt = `/code-review
 
-Review the current working-tree diff for this project%s. Do not modify files. End the review with the mandatory verdict block from the code-review skill.`
+Review the current working-tree diff for this project%s. Do not modify files. End the review with the mandatory verdict block from the code-review skill.
+
+` + questionProtocolInstruction
 
 var errReviewNeedsRevision = errors.New("review verdict is revise")
 
@@ -49,6 +51,7 @@ func (a *App) reviewCommand() *cobra.Command {
 	command := &cobra.Command{
 		Use:   "review [#N]",
 		Short: "review the current working-tree changes",
+		Long:  "review the current working-tree changes\n\n" + questionInputHelp,
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			projectConfig, err := config.Load(a.projectRoot)
@@ -85,11 +88,12 @@ func (a *App) reviewCommand() *cobra.Command {
 			if ticket != nil {
 				prompt = composeReviewPrompt(ticketRef, *ticket)
 			}
+			questions := a.questionHandler(cmd.InOrStdin(), cmd.OutOrStdout(), ticketRef, projectConfig.Notifications.Enabled)
 			reviewVerdict, err := runReview(cmd.Context(), adapter, harness.Request{
 				Model:  projectConfig.Roles.Review.Model,
 				Effort: projectConfig.Roles.Review.Effort,
 				Prompt: prompt,
-			}, cmd.OutOrStdout(), raw)
+			}, cmd.OutOrStdout(), raw, questions)
 			if err != nil {
 				return err
 			}
@@ -147,28 +151,30 @@ func currentReviewPrompt() string {
 	return fmt.Sprintf(reviewPrompt, "")
 }
 
-func runReview(ctx context.Context, adapter harness.Adapter, request harness.Request, output io.Writer, raw bool) (verdict.Verdict, error) {
+func runReview(ctx context.Context, adapter harness.Adapter, request harness.Request, output io.Writer, raw bool, questions *questionHandler) (verdict.Verdict, error) {
 	mode := parsedHarnessOutput
 	if raw {
 		mode = rawHarnessOutput
 	}
-	review, err := runReviewExecution(ctx, adapter, request, output, mode)
+	review, err := runReviewExecution(ctx, adapter, request, output, mode, questions)
 	if err != nil {
 		return verdict.Verdict{}, err
 	}
 	return review.Verdict, nil
 }
 
-func runReviewExecution(ctx context.Context, adapter harness.Adapter, request harness.Request, output io.Writer, mode harnessOutputMode) (reviewExecution, error) {
-	stream, err := adapter.Run(ctx, request)
-	if err != nil {
-		return reviewExecution{}, fmt.Errorf("run review harness: %w", err)
-	}
+func runReviewExecution(ctx context.Context, adapter harness.Adapter, request harness.Request, output io.Writer, mode harnessOutputMode, questions *questionHandler) (reviewExecution, error) {
 	var feed bytes.Buffer
 	feedOutput := io.MultiWriter(output, &feed)
-	first, err := consumeHarnessStreamDetails(stream, feedOutput, mode)
+	first, err := runHarnessConversation(ctx, adapter, func(runContext context.Context) (harness.Stream, error) {
+		return adapter.Run(runContext, request)
+	}, conversationOptions{
+		output:    feedOutput,
+		mode:      mode,
+		questions: questions,
+	})
 	if err != nil {
-		return reviewExecution{}, err
+		return reviewExecution{}, fmt.Errorf("run review harness: %w", err)
 	}
 	reviewVerdict, parseErr := verdict.Parse(first.Transcript)
 	if parseErr == nil {
@@ -178,7 +184,7 @@ func runReviewExecution(ctx context.Context, adapter harness.Adapter, request ha
 		return reviewExecution{Verdict: syntheticUnparseableVerdict(), Transcript: first.Transcript, Feed: feed.String(), SessionIDs: first.SessionIDs}, nil
 	}
 
-	retry, err := retryReviewDetails(ctx, adapter, first.SessionIDs[len(first.SessionIDs)-1], feedOutput, mode)
+	retry, err := retryReviewDetails(ctx, adapter, first.SessionIDs[len(first.SessionIDs)-1], feedOutput, mode, questions)
 	if err != nil {
 		return reviewExecution{}, err
 	}
@@ -192,14 +198,17 @@ func runReviewExecution(ctx context.Context, adapter harness.Adapter, request ha
 	return reviewExecution{Verdict: syntheticUnparseableVerdict(), Transcript: transcript, Feed: feed.String(), SessionIDs: sessions}, nil
 }
 
-func retryReviewDetails(ctx context.Context, adapter harness.Adapter, sessionID string, output io.Writer, mode harnessOutputMode) (harnessTranscript, error) {
-	retry, err := adapter.Resume(ctx, sessionID, "emit the verdict block")
+func retryReviewDetails(ctx context.Context, adapter harness.Adapter, sessionID string, output io.Writer, mode harnessOutputMode, questions *questionHandler) (harnessTranscript, error) {
+	transcript, err := runHarnessConversation(ctx, adapter, func(resumeContext context.Context) (harness.Stream, error) {
+		return adapter.Resume(resumeContext, sessionID, "emit the verdict block")
+	}, conversationOptions{
+		output:    output,
+		mode:      mode,
+		questions: questions,
+		sessionID: sessionID,
+	})
 	if err != nil {
 		return harnessTranscript{}, fmt.Errorf("re-ask reviewer for verdict: %w", err)
-	}
-	transcript, err := consumeHarnessStreamDetails(retry, output, mode)
-	if err != nil {
-		return harnessTranscript{}, err
 	}
 	return transcript, nil
 }
@@ -223,45 +232,6 @@ func syntheticUnparseableVerdict() verdict.Verdict {
 			Issue:    "verdict was unparseable",
 		}},
 	}
-}
-
-func consumeHarnessStreamDetails(stream harness.Stream, output io.Writer, mode harnessOutputMode) (harnessTranscript, error) {
-	var transcript strings.Builder
-	var sessionIDs []string
-	harnessFailed := false
-	var harnessError string
-	for event := range stream.Events() {
-		if mode == rawHarnessOutput {
-			if err := writeRawEvent(output, event); err != nil {
-				return harnessTranscript{}, err
-			}
-		} else {
-			if err := writeParsedEvent(output, event); err != nil {
-				return harnessTranscript{}, err
-			}
-		}
-
-		if event.SessionID != "" {
-			sessionIDs = append(sessionIDs, event.SessionID)
-		}
-		if event.Type == harness.EventAssistantText || event.Type == harness.EventResult {
-			transcript.WriteString(event.Text)
-		}
-		if event.Type == harness.EventResult && event.IsError {
-			harnessFailed = true
-			harnessError = event.Text
-		}
-	}
-	if err := stream.Wait(); err != nil {
-		return harnessTranscript{}, fmt.Errorf("read review harness: %w", err)
-	}
-	if harnessFailed {
-		if harnessError == "" {
-			harnessError = "unknown harness error"
-		}
-		return harnessTranscript{}, fmt.Errorf("review harness returned an error: %s", harnessError)
-	}
-	return harnessTranscript{Transcript: transcript.String(), SessionIDs: sessionIDs}, nil
 }
 
 func writeRawEvent(output io.Writer, event harness.Event) error {
