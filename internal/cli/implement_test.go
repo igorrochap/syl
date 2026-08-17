@@ -70,6 +70,39 @@ func TestImplementLoopApprovesOnFirstIteration(t *testing.T) {
 	}
 }
 
+func TestImplementFailsAfterOneUnparseableReviewReaskAndSavesTranscript(t *testing.T) {
+	fixture := newImplementLoopFixture(t)
+	harness := &unparseableReviewImplementHarness{root: fixture.root}
+	fixture.app.deps.Harnesses["codex"] = harness
+	fixture.app.deps.Harnesses["claude"] = harness
+	fixture.app.deps.GH = &loopGHRunner{}
+
+	code := fixture.app.Run(context.Background(), []string{"implement", "#42"}, &fixture.stdout, &fixture.stderr)
+	if code == 0 || !strings.Contains(fixture.stderr.String(), "reviewer produced no parseable verdict") {
+		t.Fatalf("implement code = %d, stderr = %q, want clear unparseable-verdict failure", code, fixture.stderr.String())
+	}
+	if harness.resumeCount != 1 {
+		t.Fatalf("resume count = %d, want exactly one review re-ask", harness.resumeCount)
+	}
+	if len(harness.requests) != 2 {
+		t.Fatalf("harness requests = %d, want one implement and one review request", len(harness.requests))
+	}
+	if strings.Contains(fixture.stdout.String(), "reviewer — verdict was unparseable") {
+		t.Fatalf("stdout = %q, want no synthetic finding", fixture.stdout.String())
+	}
+	runDirs, err := filepath.Glob(filepath.Join(fixture.root, ".rig", "runs", "*-42"))
+	if err != nil || len(runDirs) != 1 {
+		t.Fatalf("run directories = %v, err = %v; want one issue artifact directory", runDirs, err)
+	}
+	if !strings.Contains(fixture.stderr.String(), runDirs[0]) {
+		t.Fatalf("stderr = %q, want the failed run artifact directory %q", fixture.stderr.String(), runDirs[0])
+	}
+	artifacts := readAllFiles(t, runDirs[0])
+	if !strings.Contains(artifacts, "The review did not produce a verdict.") || !strings.Contains(artifacts, "The re-ask also omitted the verdict.") {
+		t.Fatalf("run artifacts = %q, want the full failed review transcript", artifacts)
+	}
+}
+
 func TestImplementLoopStreamsImplementerAndReviewerProgress(t *testing.T) {
 	fixture := newImplementLoopFixture(t)
 	loop := &loopHarness{
@@ -407,6 +440,42 @@ type loopHarness struct {
 	streams  [][]harness.Event
 	requests []harness.Request
 }
+
+type unparseableReviewImplementHarness struct {
+	root        string
+	requests    []harness.Request
+	resumeCount int
+}
+
+func (h *unparseableReviewImplementHarness) Run(_ context.Context, request harness.Request) (harness.Stream, error) {
+	h.requests = append(h.requests, request)
+	switch len(h.requests) {
+	case 1:
+		if err := os.WriteFile(filepath.Join(h.root, "change.txt"), []byte("implemented\n"), 0o644); err != nil {
+			return nil, err
+		}
+		return scriptedHarnessStream{events: []harness.Event{
+			{Type: harness.EventSession, SessionID: "implement-session"},
+			{Type: harness.EventAssistantText, Text: "Implemented the ticket.\n"},
+		}}, nil
+	case 2:
+		return scriptedHarnessStream{events: []harness.Event{
+			{Type: harness.EventSession, SessionID: "review-session"},
+			{Type: harness.EventAssistantText, Text: "The review did not produce a verdict."},
+		}}, nil
+	default:
+		return nil, fmt.Errorf("unexpected harness request %d", len(h.requests))
+	}
+}
+
+func (h *unparseableReviewImplementHarness) Resume(context.Context, string, string) (harness.Stream, error) {
+	h.resumeCount++
+	return scriptedHarnessStream{events: []harness.Event{
+		{Type: harness.EventAssistantText, Text: "The re-ask also omitted the verdict."},
+	}}, nil
+}
+
+func (*unparseableReviewImplementHarness) Attach(context.Context, harness.Request) error { return nil }
 
 func (h *loopHarness) Run(_ context.Context, request harness.Request) (harness.Stream, error) {
 	h.requests = append(h.requests, request)

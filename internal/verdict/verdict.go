@@ -4,6 +4,7 @@ package verdict
 import (
 	"fmt"
 	"strings"
+	"unicode"
 )
 
 type Status string
@@ -37,7 +38,7 @@ const BlockStartMarker = "VERDICT:"
 
 // Parse parses the last verdict block in a review response.
 func Parse(text string) (Verdict, error) {
-	lines := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
+	lines := verdictLines(text)
 	start := -1
 	for i, line := range lines {
 		if strings.HasPrefix(line, BlockStartMarker) {
@@ -68,16 +69,60 @@ func Parse(text string) (Verdict, error) {
 
 	parsed := Verdict{Status: status, Summary: summary}
 	for _, line := range lines[start+3:] {
-		if strings.TrimSpace(line) == "" {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
 			continue
 		}
-		finding, err := parseFinding(line)
+		if !strings.HasPrefix(trimmed, "- [") {
+			break
+		}
+		finding, err := parseFinding(trimmed)
 		if err != nil {
 			return Verdict{}, err
 		}
 		parsed.Findings = append(parsed.Findings, finding)
 	}
 	return parsed, nil
+}
+
+func verdictLines(text string) []string {
+	lines := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
+	filtered := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if isIgnorableCodeFenceLine(line) {
+			continue
+		}
+		filtered = append(filtered, line)
+	}
+	return filtered
+}
+
+// isIgnorableCodeFenceLine recognizes standalone Markdown fences with an
+// optional language tag. Other lines remain part of the transcript.
+func isIgnorableCodeFenceLine(line string) bool {
+	value := strings.TrimSpace(line)
+	if len(value) < 3 {
+		return false
+	}
+
+	fenceLength := 0
+	for fenceLength < len(value) && value[fenceLength] == '`' {
+		fenceLength++
+	}
+	if fenceLength < 3 {
+		return false
+	}
+
+	language := strings.TrimSpace(value[fenceLength:])
+	if language == "" {
+		return true
+	}
+	for _, character := range language {
+		if !unicode.IsLetter(character) && !unicode.IsDigit(character) && character != '-' && character != '_' {
+			return false
+		}
+	}
+	return true
 }
 
 func parseStatus(value string) (Status, error) {
@@ -103,7 +148,7 @@ func parseFinding(line string) (Finding, error) {
 		return Finding{}, fmt.Errorf("invalid verdict finding tag %q", kind)
 	}
 	payload := strings.TrimSpace(line[endTag+2:])
-	location, issue, ok := strings.Cut(payload, " — ")
+	location, issue, ok := splitFinding(payload)
 	if !ok || strings.TrimSpace(location) == "" || strings.TrimSpace(issue) == "" {
 		return Finding{}, fmt.Errorf("invalid verdict finding %q", line)
 	}
@@ -113,3 +158,22 @@ func parseFinding(line string) (Finding, error) {
 		Issue:    strings.TrimSpace(issue),
 	}, nil
 }
+
+func splitFinding(payload string) (location, issue string, ok bool) {
+	// Choose the first separator in the payload so the first plain-hyphen
+	// separator wins over later hyphens in the issue text.
+	separatorStart := len(payload)
+	separatorLength := 0
+	for _, separator := range findingSeparators {
+		if start := strings.Index(payload, separator); start >= 0 && start < separatorStart {
+			separatorStart = start
+			separatorLength = len(separator)
+		}
+	}
+	if separatorLength == 0 {
+		return "", "", false
+	}
+	return payload[:separatorStart], payload[separatorStart+separatorLength:], true
+}
+
+var findingSeparators = [...]string{" — ", " – ", " - "}

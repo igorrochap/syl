@@ -53,6 +53,30 @@ func TestRunReviewExecutionUsesResultTextWhenNoAssistantDeltasArrive(t *testing.
 	}
 }
 
+func TestRunReviewExecutionFailsAfterOneUnparseableVerdictReask(t *testing.T) {
+	adapter := &scriptedConversationAdapter{
+		runs: [][]harness.Event{{
+			{Type: harness.EventSession, SessionID: "review-session"},
+			{Type: harness.EventAssistantText, Text: "The review is complete, but the verdict is missing."},
+		}},
+		resumes: [][]harness.Event{{
+			{Type: harness.EventSession, SessionID: "review-session"},
+			{Type: harness.EventAssistantText, Text: "Still no structured verdict."},
+		}},
+	}
+
+	review, err := RunReviewExecution(context.Background(), adapter, harness.Request{}, io.Discard, ParsedHarnessOutput, nil)
+	if err == nil || !strings.Contains(err.Error(), "reviewer produced no parseable verdict") {
+		t.Fatalf("RunReviewExecution() error = %v, want unparseable-verdict failure", err)
+	}
+	if len(adapter.resumeCalls) != 1 || adapter.resumeCalls[0].prompt != "emit the verdict block" {
+		t.Fatalf("resume calls = %#v, want exactly one verdict re-ask", adapter.resumeCalls)
+	}
+	if !strings.Contains(review.Transcript, "Still no structured verdict.") {
+		t.Fatalf("transcript = %q, want the full failed review transcript", review.Transcript)
+	}
+}
+
 func TestConsumeHarnessStreamPreservesResultErrorsWithAndWithoutDeltas(t *testing.T) {
 	for _, tt := range []struct {
 		name        string
