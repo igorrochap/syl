@@ -99,7 +99,7 @@ func TestLoadRejectsClaudeModelWithoutProviderPrefix(t *testing.T) {
 	writeConfig(t, root, configWithRoleValue("review", "model", "sonnet-5"))
 
 	_, err := Load(root)
-	if err == nil || !strings.Contains(err.Error(), `roles.review.model: claude models must start with "claude-"`) {
+	if err == nil || !strings.Contains(err.Error(), `roles.review.model: invalid value "sonnet-5"; want a model starting with "claude-"`) {
 		t.Fatalf("Load() error = %v, want Claude model prefix validation", err)
 	}
 }

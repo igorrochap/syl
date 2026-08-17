@@ -283,7 +283,7 @@ func parseRole(prefix string, raw rawRole) (RoleConfig, error) {
 		return RoleConfig{}, fmt.Errorf("%s.model: is required", prefix)
 	}
 	if harness == HarnessClaude && !strings.HasPrefix(raw.Model, "claude-") {
-		return RoleConfig{}, fmt.Errorf(`%s.model: claude models must start with "claude-"; got %q`, prefix, raw.Model)
+		return RoleConfig{}, fmt.Errorf(`%s.model: invalid value %q; want a model starting with "claude-"`, prefix, raw.Model)
 	}
 
 	effort, err := parseEnum(prefix+".effort", raw.Effort,
