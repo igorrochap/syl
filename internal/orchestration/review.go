@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -24,6 +25,17 @@ Review the current working-tree diff for this project%s. Do not modify files. En
 ` + questionProtocolInstruction
 
 var ErrReviewNeedsRevision = errors.New("review verdict is revise")
+
+type UnparseableVerdictError struct {
+	Execution ReviewExecution
+	Cause     error
+}
+
+func (e *UnparseableVerdictError) Error() string {
+	return fmt.Sprintf("reviewer produced no parseable verdict after one re-ask: %v", e.Cause)
+}
+
+func (e *UnparseableVerdictError) Unwrap() error { return e.Cause }
 
 type ReviewExecution struct {
 	Verdict    verdict.Verdict
@@ -75,6 +87,14 @@ func RunReview(ctx context.Context, options ReviewOptions) error {
 		Model: options.ProjectConfig.Roles.Review.Model, Effort: options.ProjectConfig.Roles.Review.Effort, Prompt: prompt,
 	}, options.Output, options.Raw, questions)
 	if err != nil {
+		var unparseable *UnparseableVerdictError
+		if errors.As(err, &unparseable) {
+			dir, artifactErr := writeReviewFailureArtifacts(options.ProjectRoot, options.TicketRef, unparseable.Execution)
+			if artifactErr != nil {
+				return fmt.Errorf("%w; save review run artifacts: %v", err, artifactErr)
+			}
+			return reviewTranscriptSavedError(err, dir)
+		}
 		return err
 	}
 	if options.ProjectConfig.Tracker.Reviews == config.TrackerGitHub {
@@ -170,7 +190,8 @@ func runReviewExecution(ctx context.Context, adapter harness.Adapter, request ha
 		return ReviewExecution{Verdict: reviewVerdict, Transcript: first.Transcript, Feed: feed.String(), SessionIDs: first.SessionIDs}, nil
 	}
 	if len(first.SessionIDs) == 0 {
-		return ReviewExecution{Verdict: syntheticUnparseableVerdict(), Transcript: first.Transcript, Feed: feed.String(), SessionIDs: first.SessionIDs}, nil
+		execution := ReviewExecution{Transcript: first.Transcript, Feed: feed.String(), SessionIDs: first.SessionIDs}
+		return execution, &UnparseableVerdictError{Execution: execution, Cause: parseErr}
 	}
 
 	retry, err := retryReviewDetails(ctx, adapter, first.SessionIDs[len(first.SessionIDs)-1], feedOutput, mode, questions)
@@ -189,7 +210,8 @@ func runReviewExecution(ctx context.Context, adapter harness.Adapter, request ha
 		return ReviewExecution{Verdict: reviewVerdict, Transcript: transcript, Feed: feed.String(), SessionIDs: sessions}, nil
 	}
 
-	return ReviewExecution{Verdict: syntheticUnparseableVerdict(), Transcript: transcript, Feed: feed.String(), SessionIDs: sessions}, nil
+	execution := ReviewExecution{Transcript: transcript, Feed: feed.String(), SessionIDs: sessions}
+	return execution, &UnparseableVerdictError{Execution: execution, Cause: parseErr}
 }
 
 func retryReviewDetails(ctx context.Context, adapter harness.Adapter, sessionID string, output io.Writer, mode HarnessOutputMode, questions *QuestionHandler) (harnessTranscript, error) {
@@ -214,18 +236,6 @@ func appendReviewTranscript(first, retry string) string {
 		first += "\n"
 	}
 	return first + retry
-}
-
-func syntheticUnparseableVerdict() verdict.Verdict {
-	return verdict.Verdict{
-		Status:  verdict.Revise,
-		Summary: "Reviewer verdict was unparseable after one re-ask",
-		Findings: []verdict.Finding{{
-			Kind:     verdict.Blocking,
-			Location: "reviewer",
-			Issue:    "verdict was unparseable",
-		}},
-	}
 }
 
 func writeRawEvent(output io.Writer, event harness.Event) error {
@@ -309,4 +319,30 @@ func writeLocalReviewLog(projectRoot, ticketRef, reviewedRef string, timestamp t
 		return "", fmt.Errorf("write local review log: %w", err)
 	}
 	return path, nil
+}
+
+func writeReviewFailureArtifacts(projectRoot, ticketRef string, review ReviewExecution) (string, error) {
+	suffix := "review"
+	if number, err := strconv.Atoi(strings.TrimPrefix(strings.TrimSpace(ticketRef), "#")); err == nil && number > 0 {
+		suffix = strconv.Itoa(number)
+	}
+	dir := filepath.Join(projectRoot, ".rig", "runs", time.Now().UTC().Format("20060102T150405.000000000Z")+"-"+suffix)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", fmt.Errorf("create review run artifacts: %w", err)
+	}
+	metadata := fmt.Sprintf("Ticket: %s\n", strings.TrimSpace(ticketRef))
+	if err := writeArtifact(filepath.Join(dir, "metadata.txt"), metadata); err != nil {
+		return "", err
+	}
+	if err := writeArtifact(filepath.Join(dir, "review.feed"), review.Feed); err != nil {
+		return "", err
+	}
+	if err := writeArtifact(filepath.Join(dir, "review.transcript"), review.Transcript); err != nil {
+		return "", err
+	}
+	return dir, nil
+}
+
+func reviewTranscriptSavedError(err error, dir string) error {
+	return fmt.Errorf("%w; full review transcript saved in run artifacts directory %s", err, dir)
 }

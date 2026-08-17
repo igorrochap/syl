@@ -215,6 +215,13 @@ func runImplementIterations(ctx context.Context, params implementIterationsParam
 		}
 		reviewResult, err := RunReviewExecutionWithProgress(ctx, params.reviewer, reviewRequest, newRoleLabelWriter(params.output, "review", ansiColorReview), ParsedHarnessOutput, params.questions)
 		if err != nil {
+			var unparseable *UnparseableVerdictError
+			if errors.As(err, &unparseable) {
+				if artifactErr := params.artifacts.recordReviewOutput(iteration, unparseable.Execution); artifactErr != nil {
+					return 0, verdict.Verdict{}, nil, artifactErr
+				}
+				return 0, verdict.Verdict{}, nil, reviewTranscriptSavedError(err, params.artifacts.dir)
+			}
 			return 0, verdict.Verdict{}, nil, err
 		}
 		if err := params.artifacts.recordReview(iteration, reviewResult); err != nil {
@@ -535,13 +542,20 @@ func (r *runArtifacts) recordSessions(iteration int, role string, sessionIDs []s
 }
 
 func (r *runArtifacts) recordReview(iteration int, review ReviewExecution) error {
+	if err := r.recordReviewOutput(iteration, review); err != nil {
+		return err
+	}
+	return writeArtifact(filepath.Join(r.dir, fmt.Sprintf("iteration-%02d-verdict.txt", iteration)), formatVerdict(review.Verdict))
+}
+
+func (r *runArtifacts) recordReviewOutput(iteration int, review ReviewExecution) error {
 	if err := writeArtifact(filepath.Join(r.dir, fmt.Sprintf("iteration-%02d-review.feed", iteration)), review.Feed); err != nil {
 		return err
 	}
 	if err := writeArtifact(filepath.Join(r.dir, fmt.Sprintf("iteration-%02d-review.transcript", iteration)), review.Transcript); err != nil {
 		return err
 	}
-	return writeArtifact(filepath.Join(r.dir, fmt.Sprintf("iteration-%02d-verdict.txt", iteration)), formatVerdict(review.Verdict))
+	return nil
 }
 
 func (r *runArtifacts) writeSessions() error {

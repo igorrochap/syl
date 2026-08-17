@@ -74,6 +74,74 @@ func TestParseFixtures(t *testing.T) {
 				},
 			},
 		},
+		{
+			name: "fenced repeated verdict uses last block",
+			text: "```text\n" +
+				"VERDICT: approve\n" +
+				"SUMMARY: Earlier answer\n" +
+				"FINDINGS:\n" +
+				"```\n\n" +
+				"```text\n" +
+				"VERDICT: revise\n" +
+				"SUMMARY: Seven findings remain\n" +
+				"FINDINGS:\n" +
+				"- [blocking] one.go:1 — first finding\n" +
+				"- [blocking] two.go:2 — second finding\n" +
+				"- [blocking] three.go:3 — third finding\n" +
+				"- [blocking] four.go:4 — fourth finding\n" +
+				"- [nit] five.go:5 — fifth finding\n" +
+				"- [nit] six.go:6 — sixth finding\n" +
+				"- [nit] seven.go:7 — seventh finding\n" +
+				"```\n",
+			want: Verdict{
+				Status:  Revise,
+				Summary: "Seven findings remain",
+				Findings: []Finding{
+					{Kind: Blocking, Location: "one.go:1", Issue: "first finding"},
+					{Kind: Blocking, Location: "two.go:2", Issue: "second finding"},
+					{Kind: Blocking, Location: "three.go:3", Issue: "third finding"},
+					{Kind: Blocking, Location: "four.go:4", Issue: "fourth finding"},
+					{Kind: Nit, Location: "five.go:5", Issue: "fifth finding"},
+					{Kind: Nit, Location: "six.go:6", Issue: "sixth finding"},
+					{Kind: Nit, Location: "seven.go:7", Issue: "seventh finding"},
+				},
+			},
+		},
+		{
+			name: "en dash and hyphen separators preserve issue text",
+			text: "VERDICT: revise\nSUMMARY: Alternate separators\nFINDINGS:\n" +
+				"- [blocking] en-dash.go:1 – use the supported separator\n" +
+				"- [nit] hyphen.go:2 - preserve this - hyphen in the issue\n",
+			want: Verdict{
+				Status:  Revise,
+				Summary: "Alternate separators",
+				Findings: []Finding{
+					{Kind: Blocking, Location: "en-dash.go:1", Issue: "use the supported separator"},
+					{Kind: Nit, Location: "hyphen.go:2", Issue: "preserve this - hyphen in the issue"},
+				},
+			},
+		},
+		{
+			name: "trailing prose ends findings list",
+			text: "VERDICT: revise\nSUMMARY: Findings are followed by explanation\nFINDINGS:\n" +
+				"- [blocking] change.go:1 — fix the bug\n\n" +
+				"The reviewer added context after the list.\n",
+			want: Verdict{
+				Status:   Revise,
+				Summary:  "Findings are followed by explanation",
+				Findings: []Finding{{Kind: Blocking, Location: "change.go:1", Issue: "fix the bug"}},
+			},
+		},
+		{
+			name:    "malformed finding remains an error after valid findings",
+			text:    "VERDICT: revise\nSUMMARY: One malformed finding\nFINDINGS:\n- [nit] change.go:1 — valid\n- [blocking] malformed finding\ntrailing prose\n",
+			wantErr: true,
+		},
+		{
+			name:    "indented malformed finding remains an error",
+			text:    "VERDICT: revise\nSUMMARY: One indented malformed finding\nFINDINGS:\n  - [blocking] malformed finding\n",
+			wantErr: true,
+		},
 	}
 
 	for _, tt := range tests {

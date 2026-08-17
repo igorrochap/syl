@@ -184,7 +184,7 @@ func TestReviewUnparseableVerdictIsReaskedOnceInSameSession(t *testing.T) {
 	}
 }
 
-func TestReviewUnparseableVerdictFallsBackToSyntheticBlockingFinding(t *testing.T) {
+func TestReviewUnparseableVerdictFailsAfterOneReaskWithoutWritingReviewLog(t *testing.T) {
 	harness := &scriptedHarness{
 		first: []harness.Event{
 			{Type: harness.EventSession, SessionID: "fallback-session"},
@@ -198,17 +198,52 @@ func TestReviewUnparseableVerdictFallsBackToSyntheticBlockingFinding(t *testing.
 
 	code := fixture.app.Run(context.Background(), []string{"review"}, &fixture.stdout, &fixture.stderr)
 	if code == 0 {
-		t.Fatal("review code = 0, want non-zero for synthetic revise")
+		t.Fatal("review code = 0, want non-zero for unparseable verdict")
 	}
-	if harness.resumeCount != 1 || !strings.Contains(fixture.stdout.String(), "verdict was unparseable") {
-		t.Fatalf("resume count = %d, stdout = %q, want one retry and synthetic finding", harness.resumeCount, fixture.stdout.String())
+	if harness.resumeCount != 1 || !strings.Contains(fixture.stderr.String(), "reviewer produced no parseable verdict") {
+		t.Fatalf("resume count = %d, stderr = %q, want one retry and clear failure", harness.resumeCount, fixture.stderr.String())
 	}
-	if logContents := readSingleReviewLog(t, fixture.root); !strings.Contains(logContents, "[blocking] reviewer — verdict was unparseable") {
-		t.Fatalf("review log = %q, want synthetic blocking finding", logContents)
+	if strings.Contains(fixture.stdout.String(), "reviewer — verdict was unparseable") {
+		t.Fatalf("stdout = %q, want no synthetic finding", fixture.stdout.String())
+	}
+	if logs := reviewLogPaths(t, fixture.root); len(logs) != 0 {
+		t.Fatalf("review logs = %v, want none after an unparseable verdict", logs)
+	}
+	runDirs := reviewRunArtifactPaths(t, fixture.root)
+	if len(runDirs) != 1 {
+		t.Fatalf("run artifact directories = %v, want one failed-review artifact directory", runDirs)
+	}
+	artifacts := readAllFiles(t, runDirs[0])
+	if !strings.Contains(artifacts, "not a verdict") || !strings.Contains(artifacts, "still not a verdict") {
+		t.Fatalf("run artifacts = %q, want the full failed review transcript", artifacts)
 	}
 }
 
-func TestReviewUnparseableVerdictWithoutSessionFallsBackToSyntheticFinding(t *testing.T) {
+func TestGitHubReviewUnparseableVerdictDoesNotPostComment(t *testing.T) {
+	harness := &scriptedHarness{
+		first: []harness.Event{
+			{Type: harness.EventSession, SessionID: "github-fallback-session"},
+			{Type: harness.EventAssistantText, Text: "not a verdict"},
+		},
+		retry: []harness.Event{
+			{Type: harness.EventAssistantText, Text: "still not a verdict"},
+		},
+	}
+	fixture := newReviewFixture(t, harness)
+	configureGitHubReviewLog(t, fixture.root)
+	github := &reviewGitHubRunner{}
+	fixture.app.deps.GH = github
+
+	code := fixture.app.Run(context.Background(), []string{"review", "#42"}, &fixture.stdout, &fixture.stderr)
+	if code == 0 || !strings.Contains(fixture.stderr.String(), "reviewer produced no parseable verdict") {
+		t.Fatalf("review code = %d, stderr = %q, want clear unparseable-verdict failure", code, fixture.stderr.String())
+	}
+	if github.hasCall("issue comment 42 --body") {
+		t.Fatalf("GitHub calls = %#v, want no review comment after an unparseable verdict", github.calls)
+	}
+}
+
+func TestReviewUnparseableVerdictWithoutSessionFailsWithoutWritingReviewLog(t *testing.T) {
 	harness := &scriptedHarness{first: []harness.Event{
 		{Type: harness.EventAssistantText, Text: "not a verdict and no session"},
 	}}
@@ -216,13 +251,16 @@ func TestReviewUnparseableVerdictWithoutSessionFallsBackToSyntheticFinding(t *te
 
 	code := fixture.app.Run(context.Background(), []string{"review"}, &fixture.stdout, &fixture.stderr)
 	if code == 0 {
-		t.Fatal("review code = 0, want non-zero for synthetic revise")
+		t.Fatal("review code = 0, want non-zero for unparseable verdict")
 	}
-	if harness.resumeCount != 0 || !strings.Contains(fixture.stdout.String(), "verdict was unparseable") {
-		t.Fatalf("resume count = %d, stdout = %q, want fallback without a session", harness.resumeCount, fixture.stdout.String())
+	if harness.resumeCount != 0 || !strings.Contains(fixture.stderr.String(), "reviewer produced no parseable verdict") {
+		t.Fatalf("resume count = %d, stderr = %q, want clear failure without a session", harness.resumeCount, fixture.stderr.String())
 	}
-	if logContents := readSingleReviewLog(t, fixture.root); !strings.Contains(logContents, "[blocking] reviewer — verdict was unparseable") {
-		t.Fatalf("review log = %q, want synthetic blocking finding", logContents)
+	if logs := reviewLogPaths(t, fixture.root); len(logs) != 0 {
+		t.Fatalf("review logs = %v, want none after an unparseable verdict", logs)
+	}
+	if dirs := reviewRunArtifactPaths(t, fixture.root); len(dirs) != 1 {
+		t.Fatalf("run artifact directories = %v, want one failed-review artifact directory", dirs)
 	}
 }
 
@@ -267,10 +305,7 @@ func newReviewFixture(t *testing.T, adapter harness.Adapter) *reviewFixture {
 
 func readSingleReviewLog(t *testing.T, root string) string {
 	t.Helper()
-	matches, err := filepath.Glob(filepath.Join(root, ".scratch", "*", "reviews", "*.md"))
-	if err != nil {
-		t.Fatalf("glob review logs: %v", err)
-	}
+	matches := reviewLogPaths(t, root)
 	if len(matches) != 1 {
 		t.Fatalf("found %d review logs, want 1: %v", len(matches), matches)
 	}
@@ -279,6 +314,24 @@ func readSingleReviewLog(t *testing.T, root string) string {
 		t.Fatalf("read review log: %v", err)
 	}
 	return string(contents)
+}
+
+func reviewLogPaths(t *testing.T, root string) []string {
+	t.Helper()
+	matches, err := filepath.Glob(filepath.Join(root, ".scratch", "*", "reviews", "*.md"))
+	if err != nil {
+		t.Fatalf("glob review logs: %v", err)
+	}
+	return matches
+}
+
+func reviewRunArtifactPaths(t *testing.T, root string) []string {
+	t.Helper()
+	matches, err := filepath.Glob(filepath.Join(root, ".rig", "runs", "*"))
+	if err != nil {
+		t.Fatalf("glob review run artifacts: %v", err)
+	}
+	return matches
 }
 
 func configureLocalIssues(t *testing.T, root string) {
