@@ -1,4 +1,4 @@
-package cli
+package initializer
 
 import (
 	"bytes"
@@ -10,9 +10,11 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/igorrochap/rig/internal/config"
+	"github.com/igorrochap/rig/internal/tui"
 	vendoredskills "github.com/igorrochap/rig/skills"
 )
 
@@ -53,7 +55,92 @@ type linkPlan struct {
 	needed   bool
 }
 
-func runInit(projectRoot string, input io.Reader, output io.Writer) error {
+func initPromptSpecs(manifest skillManifest) []tui.PromptSpec {
+	optional := optionalSkillNames(manifest)
+	specs := make([]tui.PromptSpec, 0, 12)
+	if len(optional) > 0 {
+		specs = append(specs, tui.PromptSpec{Key: "optional", Label: "Optional skills", Kind: tui.MultiPrompt, Options: optional})
+	}
+	specs = append(specs,
+		tui.PromptSpec{Key: "tracker.issues", Label: "Issues tracker", Kind: tui.ChoicePrompt, Options: []string{"github", "local"}, DefaultValue: "github"},
+		tui.PromptSpec{Key: "tracker.reviews", Label: "Review log", Kind: tui.ChoicePrompt, Options: []string{"github", "local"}, DefaultValue: "local"},
+	)
+	for _, role := range []struct {
+		name, harness, model, effort string
+	}{
+		{name: "plan", harness: "claude", model: "opus-5", effort: "high"},
+		{name: "implement", harness: "codex", model: "gpt-5.6-luna", effort: "xhigh"},
+		{name: "review", harness: "claude", model: "sonnet-5", effort: "medium"},
+	} {
+		specs = append(specs,
+			tui.PromptSpec{Key: role.name + ".harness", Label: role.name + " harness", Kind: tui.ChoicePrompt, Options: []string{"claude", "codex", "opencode"}, DefaultValue: role.harness},
+			tui.PromptSpec{Key: role.name + ".model", Label: role.name + " model", Kind: tui.TextPrompt, DefaultValue: role.model},
+			tui.PromptSpec{Key: role.name + ".effort", Label: role.name + " effort", Kind: tui.ChoicePrompt, Options: []string{"low", "medium", "high", "xhigh"}, DefaultValue: role.effort},
+		)
+	}
+	return specs
+}
+
+func runInitWizard(projectRoot string, input io.Reader, output io.Writer, manifest skillManifest) (initPlan, bool, error) {
+	var plan initPlan
+	finalizer := func(answers map[string]tui.Answer) (tui.PromptSpec, bool, error) {
+		projectConfig, optional, err := configFromAnswers(answers)
+		if err != nil {
+			return tui.PromptSpec{}, false, err
+		}
+		plan, err = makeInitPlan(projectRoot, projectConfig, manifest, optional)
+		if err != nil {
+			return tui.PromptSpec{}, false, err
+		}
+		if len(plan.changes) == 0 || !plan.requiresConfirmation {
+			return tui.PromptSpec{}, false, nil
+		}
+		return tui.PromptSpec{Key: "confirmation", Label: changesPrompt(plan), Kind: tui.ChoicePrompt, Options: []string{"yes", "no"}, DefaultValue: "no"}, true, nil
+	}
+	answers, err := tui.Run(input, output, initPromptSpecs(manifest), finalizer)
+	if err != nil {
+		return initPlan{}, false, err
+	}
+	confirmed := !plan.requiresConfirmation || answers["confirmation"].Value == "yes"
+	return plan, confirmed, nil
+}
+
+func configFromAnswers(answers map[string]tui.Answer) (config.Config, []string, error) {
+	value := func(key string) string { return answers[key].Value }
+	roles := config.RolesConfig{
+		Plan:      config.RoleConfig{Harness: config.Harness(value("plan.harness")), Model: value("plan.model"), Effort: config.Effort(value("plan.effort"))},
+		Implement: config.RoleConfig{Harness: config.Harness(value("implement.harness")), Model: value("implement.model"), Effort: config.Effort(value("implement.effort"))},
+		Review:    config.RoleConfig{Harness: config.Harness(value("review.harness")), Model: value("review.model"), Effort: config.Effort(value("review.effort"))},
+	}
+	return config.Config{
+		Tracker: config.TrackerConfig{Issues: config.Tracker(value("tracker.issues")), Reviews: config.Tracker(value("tracker.reviews"))},
+		Roles:   roles, Loop: config.LoopConfig{MaxIterations: 3}, Notifications: config.NotificationsConfig{Enabled: true},
+	}, answers["optional"].Selected, nil
+}
+
+func optionalSkillNames(manifest skillManifest) []string {
+	optional := make([]string, 0)
+	for _, skill := range manifest.Skills {
+		if skill.Classification == "optional" {
+			optional = append(optional, skill.Name)
+		}
+	}
+	sort.Strings(optional)
+	return optional
+}
+
+func changesPrompt(plan initPlan) string {
+	var builder strings.Builder
+	builder.WriteString("Changes:\n")
+	for _, change := range plan.changes {
+		fmt.Fprintf(&builder, "- %s\n", change)
+	}
+	builder.WriteString("\nApply these changes?")
+	return builder.String()
+}
+
+// Run initializes a project using the vendored skill set and interactive prompt engine.
+func Run(projectRoot string, input io.Reader, output io.Writer) error {
 	if err := rejectRealClaudePath(projectRoot); err != nil {
 		return err
 	}

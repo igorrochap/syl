@@ -1,4 +1,4 @@
-package cli
+package orchestration
 
 import (
 	"bytes"
@@ -19,7 +19,6 @@ import (
 	"github.com/igorrochap/rig/internal/harness"
 	"github.com/igorrochap/rig/internal/tracker"
 	"github.com/igorrochap/rig/internal/verdict"
-	"github.com/spf13/cobra"
 )
 
 const implementPrompt = `/implement
@@ -70,22 +69,46 @@ func newRunArtifacts(projectRoot string, issueNumber int, branch, branchPoint st
 	return runArtifacts{dir: dir}, nil
 }
 
-func (a *App) runImplement(ctx context.Context, command *cobra.Command, projectConfig config.Config, issueTracker tracker.Tracker, ticket tracker.Ticket) error {
-	setup, err := a.prepareImplement(ctx, issueTracker, ticket)
-	if err != nil {
-		return err
-	}
+type ImplementOptions struct {
+	ProjectRoot   string
+	ProjectConfig config.Config
+	IssueTracker  tracker.Tracker
+	Ticket        tracker.Ticket
+	Implementer   harness.Adapter
+	Reviewer      harness.Adapter
+	Git           GitRunner
+	Notifier      Notifier
+	Input         io.Reader
+	Output        io.Writer
+}
 
-	implementer, reviewer, err := a.implementationHarnesses(projectConfig)
+func RunImplement(ctx context.Context, options ImplementOptions) error {
+	projectConfig := options.ProjectConfig
+	issueTracker := options.IssueTracker
+	ticket := options.Ticket
+	if options.Git == nil {
+		return errors.New("implement: git runner is not configured")
+	}
+	if options.Implementer == nil {
+		return fmt.Errorf("implement harness %q is not configured", projectConfig.Roles.Implement.Harness)
+	}
+	if options.Reviewer == nil {
+		return fmt.Errorf("review harness %q is not configured", projectConfig.Roles.Review.Harness)
+	}
+	setup, err := prepareImplement(ctx, options.Git, issueTracker, ticket)
 	if err != nil {
 		return err
 	}
-	questions := a.questionHandler(command.InOrStdin(), command.OutOrStdout(), "#"+strconv.Itoa(ticket.Number), projectConfig.Notifications.Enabled)
-	artifacts, err := newRunArtifacts(a.projectRoot, ticket.Number, setup.branch, setup.branchPoint)
+	notifier := options.Notifier
+	if !projectConfig.Notifications.Enabled {
+		notifier = nil
+	}
+	questions := NewQuestionHandler(options.Input, options.Output, "#"+strconv.Itoa(ticket.Number), notifier)
+	artifacts, err := newRunArtifacts(options.ProjectRoot, ticket.Number, setup.branch, setup.branchPoint)
 	if err != nil {
 		return err
 	}
-	iterations, final, nits, err := runImplementIterations(ctx, setup.git, implementer, reviewer, projectConfig, ticket, setup.branchPoint, &artifacts, questions)
+	iterations, final, nits, err := runImplementIterations(ctx, setup.git, options.Implementer, options.Reviewer, projectConfig, ticket, setup.branchPoint, &artifacts, questions)
 	if err != nil {
 		return err
 	}
@@ -98,16 +121,13 @@ func (a *App) runImplement(ctx context.Context, command *cobra.Command, projectC
 		return err
 	}
 	summary := formatImplementSummary(iterations, final, nits, diffStat)
-	if _, err := io.WriteString(command.OutOrStdout(), summary); err != nil {
+	if _, err := io.WriteString(options.Output, summary); err != nil {
 		return fmt.Errorf("write implement summary: %w", err)
 	}
 	if err := artifacts.writeSessions(); err != nil {
 		return err
 	}
-	if notifier := a.deps.Notifier; projectConfig.Notifications.Enabled {
-		if notifier == nil {
-			notifier = newPlatformNotifier()
-		}
+	if notifier != nil {
 		_ = notifier.Notify(ctx, fmt.Sprintf("implement #%d finished: %s", ticket.Number, final.Status))
 	}
 	if final.Status == verdict.Revise {
@@ -116,8 +136,7 @@ func (a *App) runImplement(ctx context.Context, command *cobra.Command, projectC
 	return nil
 }
 
-func (a *App) prepareImplement(ctx context.Context, issueTracker tracker.Tracker, ticket tracker.Ticket) (implementSetup, error) {
-	git := a.gitRunner()
+func prepareImplement(ctx context.Context, git GitRunner, issueTracker tracker.Tracker, ticket tracker.Ticket) (implementSetup, error) {
 	status, err := git.Run(ctx, "status", "--porcelain", "--untracked-files=all")
 	if err != nil {
 		return implementSetup{}, fmt.Errorf("check working tree: %w", err)
@@ -144,19 +163,7 @@ func (a *App) prepareImplement(ctx context.Context, issueTracker tracker.Tracker
 	return implementSetup{git: git, branch: branch, branchPoint: branchPoint}, nil
 }
 
-func (a *App) implementationHarnesses(projectConfig config.Config) (harness.Adapter, harness.Adapter, error) {
-	implementer, ok := a.deps.Harnesses[string(projectConfig.Roles.Implement.Harness)]
-	if !ok || implementer == nil {
-		return nil, nil, fmt.Errorf("implement harness %q is not configured", projectConfig.Roles.Implement.Harness)
-	}
-	reviewer, ok := a.deps.Harnesses[string(projectConfig.Roles.Review.Harness)]
-	if !ok || reviewer == nil {
-		return nil, nil, fmt.Errorf("review harness %q is not configured", projectConfig.Roles.Review.Harness)
-	}
-	return implementer, reviewer, nil
-}
-
-func runImplementIterations(ctx context.Context, git GitRunner, implementer, reviewer harness.Adapter, projectConfig config.Config, ticket tracker.Ticket, branchPoint string, artifacts *runArtifacts, questions *questionHandler) (int, verdict.Verdict, []verdict.Finding, error) {
+func runImplementIterations(ctx context.Context, git GitRunner, implementer, reviewer harness.Adapter, projectConfig config.Config, ticket tracker.Ticket, branchPoint string, artifacts *runArtifacts, questions *QuestionHandler) (int, verdict.Verdict, []verdict.Finding, error) {
 	var blocking []verdict.Finding
 	var nits []verdict.Finding
 	var final verdict.Verdict
@@ -182,7 +189,7 @@ func runImplementIterations(ctx context.Context, git GitRunner, implementer, rev
 			Effort: projectConfig.Roles.Review.Effort,
 			Prompt: composeReviewPromptAgainstRef("#"+strconv.Itoa(ticket.Number), ticket, branchPoint),
 		}
-		reviewResult, err := runReviewExecution(ctx, reviewer, reviewRequest, io.Discard, parsedHarnessOutput, questions)
+		reviewResult, err := RunReviewExecution(ctx, reviewer, reviewRequest, io.Discard, ParsedHarnessOutput, questions)
 		if err != nil {
 			return 0, verdict.Verdict{}, nil, err
 		}
@@ -210,13 +217,13 @@ func composeImplementPrompt(ticket tracker.Ticket, blocking []verdict.Finding, i
 	return fmt.Sprintf(reviseImplementPrompt, "#"+strconv.Itoa(ticket.Number), formatBlockingFindings(blocking))
 }
 
-func runImplementRole(ctx context.Context, adapter harness.Adapter, request harness.Request, output io.Writer, artifactDir string, iteration int, questions *questionHandler) (harnessTranscript, error) {
+func runImplementRole(ctx context.Context, adapter harness.Adapter, request harness.Request, output io.Writer, artifactDir string, iteration int, questions *QuestionHandler) (harnessTranscript, error) {
 	var feed bytes.Buffer
 	result, err := runHarnessConversation(ctx, adapter, func(runContext context.Context) (harness.Stream, error) {
 		return adapter.Run(runContext, request)
 	}, conversationOptions{
 		output:    io.MultiWriter(output, &feed),
-		mode:      parsedHarnessOutput,
+		mode:      ParsedHarnessOutput,
 		questions: questions,
 	})
 	if err != nil {
@@ -344,7 +351,7 @@ func (r *runArtifacts) recordSessions(iteration int, role string, sessionIDs []s
 	}
 }
 
-func (r *runArtifacts) recordReview(iteration int, review reviewExecution) error {
+func (r *runArtifacts) recordReview(iteration int, review ReviewExecution) error {
 	if err := writeArtifact(filepath.Join(r.dir, fmt.Sprintf("iteration-%02d-review.feed", iteration)), review.Feed); err != nil {
 		return err
 	}

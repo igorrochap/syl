@@ -2,33 +2,28 @@
 package cli
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
-	"os/exec"
 	"strings"
 
+	"github.com/igorrochap/rig/internal/adapters/git"
+	"github.com/igorrochap/rig/internal/adapters/notify"
 	"github.com/igorrochap/rig/internal/config"
 	"github.com/igorrochap/rig/internal/harness"
+	"github.com/igorrochap/rig/internal/initializer"
+	"github.com/igorrochap/rig/internal/orchestration"
+	"github.com/igorrochap/rig/internal/tracker"
 	"github.com/spf13/cobra"
 )
-
-type Notifier interface {
-	Notify(ctx context.Context, message string) error
-}
-
-type GHRunner interface {
-	Run(ctx context.Context, args ...string) (string, error)
-}
 
 type Dependencies struct {
 	Input     io.Reader
 	Harnesses map[string]harness.Adapter
-	Notifier  Notifier
-	GH        GHRunner
-	Git       GitRunner
+	Notifier  orchestration.Notifier
+	GH        tracker.GHRunner
+	Git       orchestration.GitRunner
 }
 
 type App struct {
@@ -90,7 +85,7 @@ func (a *App) implementCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:   "implement #N",
 		Short: "implement the current issue",
-		Long:  "implement the current issue\n\n" + questionInputHelp,
+		Long:  "implement the current issue\n\n" + orchestration.QuestionInputHelp,
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			projectConfig, err := config.Load(a.projectRoot)
@@ -108,16 +103,67 @@ func (a *App) implementCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return a.runImplement(cmd.Context(), cmd, projectConfig, issueTracker, ticket)
+			implementer, err := a.harness("implement", projectConfig.Roles.Implement.Harness)
+			if err != nil {
+				return err
+			}
+			reviewer, err := a.harness("review", projectConfig.Roles.Review.Harness)
+			if err != nil {
+				return err
+			}
+			return orchestration.RunImplement(cmd.Context(), orchestration.ImplementOptions{
+				ProjectRoot: a.projectRoot, ProjectConfig: projectConfig, IssueTracker: issueTracker, Ticket: ticket,
+				Implementer: implementer, Reviewer: reviewer, Git: a.gitRunner(),
+				Notifier: a.notifier(projectConfig.Notifications.Enabled), Input: cmd.InOrStdin(), Output: cmd.OutOrStdout(),
+			})
 		},
 	}
 }
 
-func (a *App) gitRunner() GitRunner {
-	if a.deps.Git != nil {
-		return a.deps.Git
+func (a *App) reviewCommand() *cobra.Command {
+	var raw bool
+	command := &cobra.Command{
+		Use:   "review [#N]",
+		Short: "review the current working-tree changes",
+		Long:  "review the current working-tree changes\n\n" + orchestration.QuestionInputHelp,
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			projectConfig, err := config.Load(a.projectRoot)
+			if err != nil {
+				return err
+			}
+			if projectConfig.Tracker.Reviews == config.TrackerGitHub && len(args) == 0 {
+				return errors.New("github review logging requires an issue reference (#N)")
+			}
+
+			var ticket *tracker.Ticket
+			ticketRef := ""
+			var issueTracker tracker.Tracker
+			if len(args) == 1 {
+				issueTracker, err = a.newIssueTracker(projectConfig)
+				if err != nil {
+					return err
+				}
+				resolved, err := issueTracker.Resolve(cmd.Context(), args[0])
+				if err != nil {
+					return err
+				}
+				ticket = &resolved
+				ticketRef = strings.TrimSpace(args[0])
+			}
+			adapter, err := a.harness("review", projectConfig.Roles.Review.Harness)
+			if err != nil {
+				return err
+			}
+			return orchestration.RunReview(cmd.Context(), orchestration.ReviewOptions{
+				ProjectRoot: a.projectRoot, ProjectConfig: projectConfig, IssueTracker: issueTracker,
+				Ticket: ticket, TicketRef: ticketRef, Adapter: adapter, Input: cmd.InOrStdin(), Output: cmd.OutOrStdout(),
+				Raw: raw, Notifier: a.notifier(projectConfig.Notifications.Enabled), Git: a.gitRunner(),
+			})
+		},
 	}
-	return ExecGitRunner{Dir: a.projectRoot}
+	command.Flags().BoolVar(&raw, "raw", false, "pass the harness output through untouched")
+	return command
 }
 
 func (a *App) initCommand() *cobra.Command {
@@ -126,7 +172,7 @@ func (a *App) initCommand() *cobra.Command {
 		Short: "scaffold a project for the rig workflow",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runInit(a.projectRoot, cmd.InOrStdin(), cmd.OutOrStdout())
+			return initializer.Run(a.projectRoot, cmd.InOrStdin(), cmd.OutOrStdout())
 		},
 	}
 }
@@ -145,26 +191,34 @@ func (a *App) stubCommand(name, description string) *cobra.Command {
 	}
 }
 
-type ExecGHRunner struct {
-	Dir string
+func (a *App) harness(role string, name config.Harness) (harness.Adapter, error) {
+	adapter, ok := a.deps.Harnesses[string(name)]
+	if !ok || adapter == nil {
+		return nil, fmt.Errorf("%s harness %q is not configured", role, name)
+	}
+	return adapter, nil
 }
 
-var _ GHRunner = ExecGHRunner{}
+func (a *App) gitRunner() orchestration.GitRunner {
+	if a.deps.Git != nil {
+		return a.deps.Git
+	}
+	return git.ExecGitRunner{Dir: a.projectRoot}
+}
 
-func (r ExecGHRunner) Run(ctx context.Context, args ...string) (string, error) {
-	command := exec.CommandContext(ctx, "gh", args...)
-	if r.Dir != "" {
-		command.Dir = r.Dir
+func (a *App) notifier(enabled bool) orchestration.Notifier {
+	if !enabled {
+		return nil
 	}
-	var stderr bytes.Buffer
-	command.Stderr = &stderr
-	output, err := command.Output()
-	if err != nil {
-		errOutput := strings.TrimSpace(stderr.String())
-		if errOutput == "" {
-			return string(output), fmt.Errorf("run gh: %w", err)
-		}
-		return string(output), fmt.Errorf("run gh: %w: %s", err, errOutput)
+	if a.deps.Notifier != nil {
+		return a.deps.Notifier
 	}
-	return string(output), nil
+	return notify.New()
+}
+
+func (a *App) newIssueTracker(projectConfig config.Config) (tracker.Tracker, error) {
+	if projectConfig.Tracker.Issues == config.TrackerGitHub {
+		return tracker.NewGitHub(a.deps.GH)
+	}
+	return tracker.NewLocal(a.projectRoot, "")
 }

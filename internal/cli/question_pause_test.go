@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/igorrochap/rig/internal/harness"
+	"github.com/igorrochap/rig/internal/orchestration"
 	"github.com/igorrochap/rig/internal/verdict"
 )
 
@@ -167,9 +168,9 @@ func TestOneShotReviewRawQuestionIsPrintedOnce(t *testing.T) {
 
 func TestQuestionDoesNotCancelHarnessContextBeforeResume(t *testing.T) {
 	adapter := &contextAwareQuestionHarness{}
-	questions := newQuestionHandler(strings.NewReader("Use the existing schema.\n\n"), io.Discard, "review", nil)
+	questions := orchestration.NewQuestionHandler(strings.NewReader("Use the existing schema.\n\n"), io.Discard, "review", nil)
 
-	review, err := runReviewExecution(context.Background(), adapter, harness.Request{}, io.Discard, parsedHarnessOutput, questions)
+	review, err := orchestration.RunReviewExecution(context.Background(), adapter, harness.Request{}, io.Discard, orchestration.ParsedHarnessOutput, questions)
 	if err != nil {
 		t.Fatalf("run review execution: %v", err)
 	}

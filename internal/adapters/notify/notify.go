@@ -1,4 +1,4 @@
-package cli
+package notify
 
 import (
 	"context"
@@ -11,11 +11,20 @@ import (
 
 type notificationBackend string
 
+type NotificationBackend = notificationBackend
+
 const (
 	notificationMacOS        notificationBackend = "macos"
 	notificationNotifySend   notificationBackend = "notify-send"
 	notificationPowerShell   notificationBackend = "powershell.exe"
 	notificationTerminalBell notificationBackend = "terminal-bell"
+)
+
+const (
+	NotificationMacOS        = notificationMacOS
+	NotificationNotifySend   = notificationNotifySend
+	NotificationPowerShell   = notificationPowerShell
+	NotificationTerminalBell = notificationTerminalBell
 )
 
 // selectNotificationBackend keeps platform detection separate from command
@@ -33,12 +42,18 @@ func selectNotificationBackend(goos, kernelRelease string, environment map[strin
 	return notificationTerminalBell
 }
 
-type platformNotifier struct {
+// SelectNotificationBackend exposes platform selection for adapter tests and diagnostics.
+func SelectNotificationBackend(goos, kernelRelease string, environment map[string]string) NotificationBackend {
+	return selectNotificationBackend(goos, kernelRelease, environment)
+}
+
+type PlatformNotifier struct {
 	backend notificationBackend
 	stderr  *os.File
 }
 
-func newPlatformNotifier() Notifier {
+// New creates the platform notification adapter.
+func New() *PlatformNotifier {
 	environment := map[string]string{
 		"DISPLAY":             os.Getenv("DISPLAY"),
 		"WAYLAND_DISPLAY":     os.Getenv("WAYLAND_DISPLAY"),
@@ -48,13 +63,13 @@ func newPlatformNotifier() Notifier {
 	if output, err := exec.Command("uname", "-r").Output(); err == nil {
 		kernelRelease = string(output)
 	}
-	return &platformNotifier{
+	return &PlatformNotifier{
 		backend: selectNotificationBackend(runtime.GOOS, kernelRelease, environment),
 		stderr:  os.Stderr,
 	}
 }
 
-func (n *platformNotifier) Notify(ctx context.Context, message string) error {
+func (n *PlatformNotifier) Notify(ctx context.Context, message string) error {
 	if n == nil {
 		return nil
 	}
@@ -86,7 +101,7 @@ func (n *platformNotifier) Notify(ctx context.Context, message string) error {
 	}
 }
 
-func (n *platformNotifier) ringFallback() error {
+func (n *PlatformNotifier) ringFallback() error {
 	if n.stderr == nil {
 		return nil
 	}

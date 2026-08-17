@@ -94,7 +94,7 @@ func TestImplementLoopFeedsBlockingFindingsIntoSecondImplementerPrompt(t *testin
 		t.Fatalf("harness requests = %d, want two implement and two review requests", len(implementer.requests))
 	}
 	secondPrompt := implementer.requests[2].Prompt
-	if !strings.Contains(secondPrompt, "/fix-review") || !strings.Contains(secondPrompt, "Address ONLY") || !strings.Contains(secondPrompt, "- [blocking] internal/cli/review.go:42 — handle a missing session") {
+	if !strings.Contains(secondPrompt, "/fix-review") || !strings.Contains(secondPrompt, "Address ONLY") || !strings.Contains(secondPrompt, "- [blocking] internal/orchestration/review.go:42 — handle a missing session") {
 		t.Fatalf("second implementer prompt = %q, want only the verbatim blocking finding", secondPrompt)
 	}
 	if strings.Contains(secondPrompt, "Acceptance criteria: leave a working implementation.") {

@@ -1,4 +1,4 @@
-package cli
+package orchestration
 
 import (
 	"bytes"
@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -16,7 +15,6 @@ import (
 	"github.com/igorrochap/rig/internal/harness"
 	"github.com/igorrochap/rig/internal/tracker"
 	"github.com/igorrochap/rig/internal/verdict"
-	"github.com/spf13/cobra"
 )
 
 const reviewPrompt = `/code-review
@@ -25,9 +23,9 @@ Review the current working-tree diff for this project%s. Do not modify files. En
 
 ` + questionProtocolInstruction
 
-var errReviewNeedsRevision = errors.New("review verdict is revise")
+var ErrReviewNeedsRevision = errors.New("review verdict is revise")
 
-type reviewExecution struct {
+type ReviewExecution struct {
 	Verdict    verdict.Verdict
 	Transcript string
 	Feed       string
@@ -39,95 +37,68 @@ type harnessTranscript struct {
 	SessionIDs []string
 }
 
-type harnessOutputMode bool
+type HarnessOutputMode bool
 
 const (
-	parsedHarnessOutput harnessOutputMode = false
-	rawHarnessOutput    harnessOutputMode = true
+	ParsedHarnessOutput HarnessOutputMode = false
+	RawHarnessOutput    HarnessOutputMode = true
 )
 
-func (a *App) reviewCommand() *cobra.Command {
-	var raw bool
-	command := &cobra.Command{
-		Use:   "review [#N]",
-		Short: "review the current working-tree changes",
-		Long:  "review the current working-tree changes\n\n" + questionInputHelp,
-		Args:  cobra.MaximumNArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			projectConfig, err := config.Load(a.projectRoot)
-			if err != nil {
-				return err
-			}
-			if projectConfig.Tracker.Reviews == config.TrackerGitHub && len(args) == 0 {
-				return errors.New("github review logging requires an issue reference (#N)")
-			}
-
-			var ticket *tracker.Ticket
-			ticketRef := ""
-			var issueTracker tracker.Tracker
-			if len(args) == 1 {
-				issueTracker, err = a.newIssueTracker(projectConfig)
-				if err != nil {
-					return err
-				}
-				resolved, err := issueTracker.Resolve(cmd.Context(), args[0])
-				if err != nil {
-					return err
-				}
-				ticket = &resolved
-				ticketRef = strings.TrimSpace(args[0])
-			}
-
-			harnessName := string(projectConfig.Roles.Review.Harness)
-			adapter, ok := a.deps.Harnesses[harnessName]
-			if !ok || adapter == nil {
-				return fmt.Errorf("review harness %q is not configured", harnessName)
-			}
-
-			prompt := currentReviewPrompt()
-			if ticket != nil {
-				prompt = composeReviewPrompt(ticketRef, *ticket)
-			}
-			questions := a.questionHandler(cmd.InOrStdin(), cmd.OutOrStdout(), ticketRef, projectConfig.Notifications.Enabled)
-			reviewVerdict, err := runReview(cmd.Context(), adapter, harness.Request{
-				Model:  projectConfig.Roles.Review.Model,
-				Effort: projectConfig.Roles.Review.Effort,
-				Prompt: prompt,
-			}, cmd.OutOrStdout(), raw, questions)
-			if err != nil {
-				return err
-			}
-
-			if projectConfig.Tracker.Reviews == config.TrackerGitHub {
-				if err := issueTracker.AddComment(cmd.Context(), ticket.Number, formatGitHubReviewComment(reviewVerdict)); err != nil {
-					return fmt.Errorf("post review to GitHub issue #%d: %w", ticket.Number, err)
-				}
-			} else {
-				ref := reviewRef(a.projectRoot)
-				if _, err := writeLocalReviewLog(a.projectRoot, ticketRef, ref, time.Now().UTC(), reviewVerdict); err != nil {
-					return err
-				}
-			}
-			if !raw {
-				if _, err := io.WriteString(cmd.OutOrStdout(), formatVerdict(reviewVerdict)); err != nil {
-					return fmt.Errorf("write verdict: %w", err)
-				}
-			}
-			if reviewVerdict.Status == verdict.Revise {
-				return errReviewNeedsRevision
-			}
-			return nil
-		},
-	}
-	command.Flags().BoolVar(&raw, "raw", false, "pass the harness output through untouched")
-	return command
+type ReviewOptions struct {
+	ProjectRoot   string
+	ProjectConfig config.Config
+	IssueTracker  tracker.Tracker
+	Ticket        *tracker.Ticket
+	TicketRef     string
+	Adapter       harness.Adapter
+	Input         io.Reader
+	Output        io.Writer
+	Raw           bool
+	Notifier      Notifier
+	Git           GitRunner
 }
 
-func (a *App) newIssueTracker(projectConfig config.Config) (tracker.Tracker, error) {
-	if projectConfig.Tracker.Issues == config.TrackerGitHub {
-		return tracker.NewGitHub(a.deps.GH)
+func RunReview(ctx context.Context, options ReviewOptions) error {
+	if options.Adapter == nil {
+		return fmt.Errorf("review harness %q is not configured", options.ProjectConfig.Roles.Review.Harness)
 	}
-	return tracker.NewLocal(a.projectRoot, "")
+	prompt := currentReviewPrompt()
+	if options.Ticket != nil {
+		prompt = composeReviewPrompt(options.TicketRef, *options.Ticket)
+	}
+	notifier := options.Notifier
+	if !options.ProjectConfig.Notifications.Enabled {
+		notifier = nil
+	}
+	questions := NewQuestionHandler(options.Input, options.Output, options.TicketRef, notifier)
+	reviewVerdict, err := runReview(ctx, options.Adapter, harness.Request{
+		Model: options.ProjectConfig.Roles.Review.Model, Effort: options.ProjectConfig.Roles.Review.Effort, Prompt: prompt,
+	}, options.Output, options.Raw, questions)
+	if err != nil {
+		return err
+	}
+	if options.ProjectConfig.Tracker.Reviews == config.TrackerGitHub {
+		if options.IssueTracker == nil || options.Ticket == nil {
+			return errors.New("github review logging requires an issue reference (#N)")
+		}
+		if err := options.IssueTracker.AddComment(ctx, options.Ticket.Number, formatGitHubReviewComment(reviewVerdict)); err != nil {
+			return fmt.Errorf("post review to GitHub issue #%d: %w", options.Ticket.Number, err)
+		}
+	} else {
+		ref := reviewRef(ctx, options.Git)
+		if _, err := writeLocalReviewLog(options.ProjectRoot, options.TicketRef, ref, time.Now().UTC(), reviewVerdict); err != nil {
+			return err
+		}
+	}
+	if !options.Raw {
+		if _, err := io.WriteString(options.Output, formatVerdict(reviewVerdict)); err != nil {
+			return fmt.Errorf("write verdict: %w", err)
+		}
+	}
+	if reviewVerdict.Status == verdict.Revise {
+		return ErrReviewNeedsRevision
+	}
+	return nil
 }
 
 func composeReviewPrompt(ticketRef string, ticket tracker.Ticket) string {
@@ -151,19 +122,19 @@ func currentReviewPrompt() string {
 	return fmt.Sprintf(reviewPrompt, "")
 }
 
-func runReview(ctx context.Context, adapter harness.Adapter, request harness.Request, output io.Writer, raw bool, questions *questionHandler) (verdict.Verdict, error) {
-	mode := parsedHarnessOutput
+func runReview(ctx context.Context, adapter harness.Adapter, request harness.Request, output io.Writer, raw bool, questions *QuestionHandler) (verdict.Verdict, error) {
+	mode := ParsedHarnessOutput
 	if raw {
-		mode = rawHarnessOutput
+		mode = RawHarnessOutput
 	}
-	review, err := runReviewExecution(ctx, adapter, request, output, mode, questions)
+	review, err := RunReviewExecution(ctx, adapter, request, output, mode, questions)
 	if err != nil {
 		return verdict.Verdict{}, err
 	}
 	return review.Verdict, nil
 }
 
-func runReviewExecution(ctx context.Context, adapter harness.Adapter, request harness.Request, output io.Writer, mode harnessOutputMode, questions *questionHandler) (reviewExecution, error) {
+func RunReviewExecution(ctx context.Context, adapter harness.Adapter, request harness.Request, output io.Writer, mode HarnessOutputMode, questions *QuestionHandler) (ReviewExecution, error) {
 	var feed bytes.Buffer
 	feedOutput := io.MultiWriter(output, &feed)
 	first, err := runHarnessConversation(ctx, adapter, func(runContext context.Context) (harness.Stream, error) {
@@ -174,31 +145,31 @@ func runReviewExecution(ctx context.Context, adapter harness.Adapter, request ha
 		questions: questions,
 	})
 	if err != nil {
-		return reviewExecution{}, fmt.Errorf("run review harness: %w", err)
+		return ReviewExecution{}, fmt.Errorf("run review harness: %w", err)
 	}
 	reviewVerdict, parseErr := verdict.Parse(first.Transcript)
 	if parseErr == nil {
-		return reviewExecution{Verdict: reviewVerdict, Transcript: first.Transcript, Feed: feed.String(), SessionIDs: first.SessionIDs}, nil
+		return ReviewExecution{Verdict: reviewVerdict, Transcript: first.Transcript, Feed: feed.String(), SessionIDs: first.SessionIDs}, nil
 	}
 	if len(first.SessionIDs) == 0 {
-		return reviewExecution{Verdict: syntheticUnparseableVerdict(), Transcript: first.Transcript, Feed: feed.String(), SessionIDs: first.SessionIDs}, nil
+		return ReviewExecution{Verdict: syntheticUnparseableVerdict(), Transcript: first.Transcript, Feed: feed.String(), SessionIDs: first.SessionIDs}, nil
 	}
 
 	retry, err := retryReviewDetails(ctx, adapter, first.SessionIDs[len(first.SessionIDs)-1], feedOutput, mode, questions)
 	if err != nil {
-		return reviewExecution{}, err
+		return ReviewExecution{}, err
 	}
 	transcript := appendReviewTranscript(first.Transcript, retry.Transcript)
 	sessions := append(append([]string(nil), first.SessionIDs...), retry.SessionIDs...)
 	reviewVerdict, parseErr = verdict.Parse(transcript)
 	if parseErr == nil {
-		return reviewExecution{Verdict: reviewVerdict, Transcript: transcript, Feed: feed.String(), SessionIDs: sessions}, nil
+		return ReviewExecution{Verdict: reviewVerdict, Transcript: transcript, Feed: feed.String(), SessionIDs: sessions}, nil
 	}
 
-	return reviewExecution{Verdict: syntheticUnparseableVerdict(), Transcript: transcript, Feed: feed.String(), SessionIDs: sessions}, nil
+	return ReviewExecution{Verdict: syntheticUnparseableVerdict(), Transcript: transcript, Feed: feed.String(), SessionIDs: sessions}, nil
 }
 
-func retryReviewDetails(ctx context.Context, adapter harness.Adapter, sessionID string, output io.Writer, mode harnessOutputMode, questions *questionHandler) (harnessTranscript, error) {
+func retryReviewDetails(ctx context.Context, adapter harness.Adapter, sessionID string, output io.Writer, mode HarnessOutputMode, questions *QuestionHandler) (harnessTranscript, error) {
 	transcript, err := runHarnessConversation(ctx, adapter, func(resumeContext context.Context) (harness.Stream, error) {
 		return adapter.Resume(resumeContext, sessionID, "emit the verdict block")
 	}, conversationOptions{
@@ -279,12 +250,15 @@ func formatGitHubReviewComment(reviewVerdict verdict.Verdict) string {
 	return fmt.Sprintf("## Review verdict\n\n```text\n%s```\n", formatVerdict(reviewVerdict))
 }
 
-func reviewRef(projectRoot string) string {
-	output, err := exec.Command("git", "-C", projectRoot, "rev-parse", "HEAD").Output()
+func reviewRef(ctx context.Context, git GitRunner) string {
+	if git == nil {
+		return "working-tree"
+	}
+	output, err := git.Run(ctx, "rev-parse", "HEAD")
 	if err != nil {
 		return "working-tree"
 	}
-	if ref := strings.TrimSpace(string(output)); ref != "" {
+	if ref := strings.TrimSpace(output); ref != "" {
 		return ref
 	}
 	return "working-tree"
