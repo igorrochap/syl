@@ -212,9 +212,9 @@ func defaultConfigValue() Config {
 	return Config{
 		Tracker: TrackerConfig{Issues: TrackerGitHub, Reviews: TrackerLocal},
 		Roles: RolesConfig{
-			Plan:      RoleConfig{Harness: HarnessClaude, Model: "opus-5", Effort: EffortHigh},
+			Plan:      RoleConfig{Harness: HarnessClaude, Model: "claude-opus-5", Effort: EffortHigh},
 			Implement: RoleConfig{Harness: HarnessCodex, Model: "gpt-5.6-luna", Effort: EffortXHigh},
-			Review:    RoleConfig{Harness: HarnessClaude, Model: "sonnet-5", Effort: EffortMedium},
+			Review:    RoleConfig{Harness: HarnessClaude, Model: "claude-sonnet-5", Effort: EffortMedium},
 		},
 		Loop:          LoopConfig{MaxIterations: 3},
 		Notifications: NotificationsConfig{Enabled: true},
@@ -281,6 +281,9 @@ func parseRole(prefix string, raw rawRole) (RoleConfig, error) {
 	}
 	if strings.TrimSpace(raw.Model) == "" {
 		return RoleConfig{}, fmt.Errorf("%s.model: is required", prefix)
+	}
+	if harness == HarnessClaude && !strings.HasPrefix(raw.Model, "claude-") {
+		return RoleConfig{}, fmt.Errorf(`%s.model: claude models must start with "claude-"; got %q`, prefix, raw.Model)
 	}
 
 	effort, err := parseEnum(prefix+".effort", raw.Effort,

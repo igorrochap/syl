@@ -17,7 +17,7 @@ reviews = "local"
 
 [roles.plan]
 harness = "claude"
-model = "opus-5"
+model = "claude-opus-5"
 effort = "high"
 
 [roles.implement]
@@ -27,7 +27,7 @@ effort = "xhigh"
 
 [roles.review]
 harness = "claude"
-model = "sonnet-5"
+model = "claude-sonnet-5"
 effort = "medium"
 `)
 
@@ -72,7 +72,7 @@ effort = "medium"
 
 [roles.review]
 harness = "claude"
-model = "reviewer"
+model = "claude-reviewer"
 effort = "xhigh"
 
 [loop]
@@ -91,6 +91,16 @@ enabled = false
 	}
 	if got.Notifications.Enabled {
 		t.Fatal("Notifications.Enabled = true, want false")
+	}
+}
+
+func TestLoadRejectsClaudeModelWithoutProviderPrefix(t *testing.T) {
+	root := t.TempDir()
+	writeConfig(t, root, configWithRoleValue("review", "model", "sonnet-5"))
+
+	_, err := Load(root)
+	if err == nil || !strings.Contains(err.Error(), `roles.review.model: claude models must start with "claude-"`) {
+		t.Fatalf("Load() error = %v, want Claude model prefix validation", err)
 	}
 }
 
@@ -153,7 +163,7 @@ reviews = "local"
 
 [roles.plan]
 harness = "claude"
-model = "opus-5"
+model = "claude-opus-5"
 effort = "extreme"
 `,
 			wantKey: "roles.plan.effort",
@@ -248,7 +258,7 @@ func configWithRoleValue(role, field, value string) string {
 	roles := map[string]map[string]string{
 		"plan": {
 			"harness": "claude",
-			"model":   "planner",
+			"model":   "claude-planner",
 			"effort":  "high",
 		},
 		"implement": {
@@ -258,7 +268,7 @@ func configWithRoleValue(role, field, value string) string {
 		},
 		"review": {
 			"harness": "claude",
-			"model":   "reviewer",
+			"model":   "claude-reviewer",
 			"effort":  "medium",
 		},
 	}

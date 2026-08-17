@@ -36,7 +36,7 @@ func TestReviewTopSeamApprovePrintsFeedAndWritesLog(t *testing.T) {
 	if !strings.Contains(harness.runRequest.Prompt, "/code-review") || !strings.Contains(harness.runRequest.Prompt, "current working-tree diff") || !strings.Contains(harness.runRequest.Prompt, "QUESTION:") {
 		t.Fatalf("review prompt = %q, want named skill and current diff instruction", harness.runRequest.Prompt)
 	}
-	if harness.runRequest.Model != "sonnet-5" || harness.runRequest.Effort != "medium" {
+	if harness.runRequest.Model != "claude-sonnet-5" || harness.runRequest.Effort != "medium" {
 		t.Fatalf("review request = %#v, want configured model and effort", harness.runRequest)
 	}
 	logContents := readSingleReviewLog(t, fixture.root)
