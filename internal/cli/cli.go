@@ -28,6 +28,7 @@ type Dependencies struct {
 	Harnesses map[string]harness.Adapter
 	Notifier  Notifier
 	GH        GHRunner
+	Git       GitRunner
 }
 
 type App struct {
@@ -106,12 +107,16 @@ func (a *App) implementCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if err := issueTracker.UpdateStatus(cmd.Context(), ticket.Number, "doing"); err != nil {
-				return fmt.Errorf("mark ticket #%d as doing: %w", ticket.Number, err)
-			}
-			return nil
+			return a.runImplement(cmd.Context(), cmd, projectConfig, issueTracker, ticket)
 		},
 	}
+}
+
+func (a *App) gitRunner() GitRunner {
+	if a.deps.Git != nil {
+		return a.deps.Git
+	}
+	return ExecGitRunner{Dir: a.projectRoot}
 }
 
 func (a *App) initCommand() *cobra.Command {

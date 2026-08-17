@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/igorrochap/rig/internal/config"
+	"github.com/igorrochap/rig/internal/harness"
 )
 
 func TestRunHelpListsAllCommands(t *testing.T) {
@@ -69,7 +70,16 @@ func TestRunStubCommandThroughTopSeam(t *testing.T) {
 }
 
 func TestImplementResolvesAndMarksGitHubTicketDoing(t *testing.T) {
-	fixture := newTopSeamFixture(t)
+	fixture := newImplementLoopFixture(t)
+	loop := &loopHarness{
+		root: fixture.root,
+		streams: [][]harness.Event{
+			{{Type: harness.EventSession, SessionID: "implement"}},
+			{{Type: harness.EventSession, SessionID: "review"}, {Type: harness.EventAssistantText, Text: approveVerdictText}},
+		},
+	}
+	fixture.app.deps.Harnesses["codex"] = loop
+	fixture.app.deps.Harnesses["claude"] = loop
 	github := &implementGitHubRunner{}
 	fixture.app.deps.GH = github
 

@@ -250,6 +250,9 @@ func validate(raw rawConfig, metadata toml.MetaData) (Config, error) {
 	if metadata.IsDefined("loop", "max_iterations") {
 		maxIterations = raw.Loop.MaxIterations
 	}
+	if maxIterations < 1 {
+		return Config{}, fmt.Errorf("loop.max_iterations must be positive; got %d", maxIterations)
+	}
 
 	notificationsEnabled := true
 	if metadata.IsDefined("notifications", "enabled") {
