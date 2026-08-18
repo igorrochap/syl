@@ -5,18 +5,18 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/igorrochap/rig/internal/adapters/gh"
-	"github.com/igorrochap/rig/internal/adapters/git"
-	"github.com/igorrochap/rig/internal/cli"
-	"github.com/igorrochap/rig/internal/harness"
-	"github.com/igorrochap/rig/internal/harness/claude"
-	"github.com/igorrochap/rig/internal/harness/codex"
+	"github.com/igorrochap/syl/internal/adapters/gh"
+	"github.com/igorrochap/syl/internal/adapters/git"
+	"github.com/igorrochap/syl/internal/cli"
+	"github.com/igorrochap/syl/internal/harness"
+	"github.com/igorrochap/syl/internal/harness/claude"
+	"github.com/igorrochap/syl/internal/harness/codex"
 )
 
 func main() {
 	projectRoot, err := os.Getwd()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "rig: determine project root: %s\n", err)
+		fmt.Fprintf(os.Stderr, "syl: determine project root: %s\n", err)
 		os.Exit(1)
 	}
 

@@ -12,10 +12,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/igorrochap/rig/internal/config"
-	"github.com/igorrochap/rig/internal/harness"
-	"github.com/igorrochap/rig/internal/tracker"
-	"github.com/igorrochap/rig/internal/verdict"
+	"github.com/igorrochap/syl/internal/config"
+	"github.com/igorrochap/syl/internal/harness"
+	"github.com/igorrochap/syl/internal/tracker"
+	"github.com/igorrochap/syl/internal/verdict"
 )
 
 const reviewPrompt = `/code-review
@@ -341,7 +341,7 @@ func writeReviewFailureArtifacts(projectRoot, ticketRef string, review ReviewExe
 	if number, err := strconv.Atoi(strings.TrimPrefix(strings.TrimSpace(ticketRef), "#")); err == nil && number > 0 {
 		suffix = strconv.Itoa(number)
 	}
-	dir := filepath.Join(projectRoot, ".rig", "runs", time.Now().UTC().Format("20060102T150405.000000000Z")+"-"+suffix)
+	dir := filepath.Join(projectRoot, ".syl", "runs", time.Now().UTC().Format("20060102T150405.000000000Z")+"-"+suffix)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", fmt.Errorf("create review run artifacts: %w", err)
 	}

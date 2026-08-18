@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/igorrochap/rig/internal/harness"
-	"github.com/igorrochap/rig/internal/harness/codex"
+	"github.com/igorrochap/syl/internal/harness"
+	"github.com/igorrochap/syl/internal/harness/codex"
 )
 
 func TestImplementLoopApprovesOnFirstIteration(t *testing.T) {
@@ -58,7 +58,7 @@ func TestImplementLoopApprovesOnFirstIteration(t *testing.T) {
 		t.Fatalf("stdout = %q, want final loop summary", fixture.stdout.String())
 	}
 
-	runDirs, err := filepath.Glob(filepath.Join(fixture.root, ".rig", "runs", "*-42"))
+	runDirs, err := filepath.Glob(filepath.Join(fixture.root, ".syl", "runs", "*-42"))
 	if err != nil || len(runDirs) != 1 {
 		t.Fatalf("run directories = %v, err = %v; want one issue artifact directory", runDirs, err)
 	}
@@ -90,7 +90,7 @@ func TestImplementFailsAfterOneUnparseableReviewReaskAndSavesTranscript(t *testi
 	if strings.Contains(fixture.stdout.String(), "reviewer — verdict was unparseable") {
 		t.Fatalf("stdout = %q, want no synthetic finding", fixture.stdout.String())
 	}
-	runDirs, err := filepath.Glob(filepath.Join(fixture.root, ".rig", "runs", "*-42"))
+	runDirs, err := filepath.Glob(filepath.Join(fixture.root, ".syl", "runs", "*-42"))
 	if err != nil || len(runDirs) != 1 {
 		t.Fatalf("run directories = %v, err = %v; want one issue artifact directory", runDirs, err)
 	}
@@ -374,7 +374,7 @@ func TestImplementQuietAndVerboseRunsPreserveRunArtifacts(t *testing.T) {
 		if code := fixture.app.Run(context.Background(), args, &fixture.stdout, &fixture.stderr); code != 0 {
 			t.Fatalf("implement code = %d, stderr = %q", code, fixture.stderr.String())
 		}
-		runDirs, err := filepath.Glob(filepath.Join(fixture.root, ".rig", "runs", "*-42"))
+		runDirs, err := filepath.Glob(filepath.Join(fixture.root, ".syl", "runs", "*-42"))
 		if err != nil || len(runDirs) != 1 {
 			t.Fatalf("run directories = %v, err = %v; want one issue artifact directory", runDirs, err)
 		}
@@ -390,7 +390,7 @@ func TestImplementQuietAndVerboseRunsPreserveRunArtifacts(t *testing.T) {
 
 func TestImplementLoopRunsAgainstLocalTracker(t *testing.T) {
 	fixture := newImplementLoopFixture(t)
-	configPath := filepath.Join(fixture.root, ".rig", "config.toml")
+	configPath := filepath.Join(fixture.root, ".syl", "config.toml")
 	configContents, err := os.ReadFile(configPath)
 	if err != nil {
 		t.Fatal(err)
@@ -532,7 +532,7 @@ func commitWorkingTree(t *testing.T, root, message string) {
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("git add: %v\n%s", err, output)
 	}
-	command = exec.Command("git", "-C", root, "-c", "user.name=rig test", "-c", "user.email=rig@example.test", "commit", "--quiet", "-m", message)
+	command = exec.Command("git", "-C", root, "-c", "user.name=syl test", "-c", "user.email=syl@example.test", "commit", "--quiet", "-m", message)
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("git commit: %v\n%s", err, output)
 	}

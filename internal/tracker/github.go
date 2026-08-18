@@ -225,7 +225,7 @@ func (g *GitHub) run(ctx context.Context, operation string, args ...string) (str
 	case githubErrorUnauthenticated:
 		return "", fmt.Errorf("GitHub CLI is not authenticated; run `gh auth login` and try again: %s", details)
 	case githubErrorNoRemote:
-		return "", fmt.Errorf("no GitHub remote found; run rig from a GitHub repository: %s", details)
+		return "", fmt.Errorf("no GitHub remote found; run syl from a GitHub repository: %s", details)
 	default:
 		return "", fmt.Errorf("gh %s: %s", operation, details)
 	}

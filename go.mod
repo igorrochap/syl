@@ -1,4 +1,4 @@
-module github.com/igorrochap/rig
+module github.com/igorrochap/syl
 
 go 1.23.0
 

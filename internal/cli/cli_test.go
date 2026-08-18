@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/igorrochap/rig/internal/config"
-	"github.com/igorrochap/rig/internal/harness"
+	"github.com/igorrochap/syl/internal/config"
+	"github.com/igorrochap/syl/internal/harness"
 )
 
 func TestRunHelpListsAllCommands(t *testing.T) {
@@ -62,7 +62,7 @@ func TestRunRefusesCommandsWithoutConfig(t *testing.T) {
 			if code == 0 {
 				t.Fatal("Run() code = 0, want failure")
 			}
-			if !strings.Contains(stderr.String(), "run rig init") {
+			if !strings.Contains(stderr.String(), "run syl init") {
 				t.Fatalf("stderr = %q, want init guidance", stderr.String())
 			}
 		})
@@ -140,13 +140,13 @@ func TestRunInitCreatesConfig(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("Run() code = %d, want 0; stderr = %q", code, stderr.String())
 	}
-	if _, err := os.Stat(filepath.Join(root, ".rig", "config.toml")); err != nil {
+	if _, err := os.Stat(filepath.Join(root, ".syl", "config.toml")); err != nil {
 		t.Fatalf("init config: %v", err)
 	}
 	if _, err := config.Load(root); err != nil {
 		t.Fatalf("init wrote invalid config: %v", err)
 	}
-	if !strings.Contains(stdout.String(), ".rig/config.toml") {
+	if !strings.Contains(stdout.String(), ".syl/config.toml") {
 		t.Fatalf("stdout = %q, want config path", stdout.String())
 	}
 }
@@ -172,7 +172,7 @@ func TestNewDefaultsToCurrentDirectoryWhenProjectRootIsEmpty(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("Run() code = %d, want 0; stderr = %q", code, stderr.String())
 	}
-	if _, err := os.Stat(filepath.Join(root, ".rig", "config.toml")); err != nil {
+	if _, err := os.Stat(filepath.Join(root, ".syl", "config.toml")); err != nil {
 		t.Fatalf("default project root config: %v", err)
 	}
 }

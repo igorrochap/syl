@@ -9,10 +9,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/igorrochap/rig/internal/config"
-	"github.com/igorrochap/rig/internal/harness"
-	"github.com/igorrochap/rig/internal/orchestration"
-	"github.com/igorrochap/rig/internal/verdict"
+	"github.com/igorrochap/syl/internal/config"
+	"github.com/igorrochap/syl/internal/harness"
+	"github.com/igorrochap/syl/internal/orchestration"
+	"github.com/igorrochap/syl/internal/verdict"
 )
 
 func TestRunInvokesCodexWithModelEffortAndComposedSkillPrompt(t *testing.T) {

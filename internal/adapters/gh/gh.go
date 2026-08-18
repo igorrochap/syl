@@ -8,7 +8,7 @@ import (
 	"os/exec"
 	"strings"
 
-	"github.com/igorrochap/rig/internal/tracker"
+	"github.com/igorrochap/syl/internal/tracker"
 )
 
 // Runner runs gh commands in one project directory and satisfies tracker.GHRunner.

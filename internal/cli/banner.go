@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/igorrochap/rig/internal/config"
-	"github.com/igorrochap/rig/internal/tracker"
+	"github.com/igorrochap/syl/internal/config"
+	"github.com/igorrochap/syl/internal/tracker"
 )
 
 func writeImplementBanner(output io.Writer, projectRoot string, projectConfig config.Config, ticket tracker.Ticket, artifactDir string) error {
@@ -16,7 +16,7 @@ func writeImplementBanner(output io.Writer, projectRoot string, projectConfig co
 		return fmt.Errorf("make run artifacts path relative to project root: %w", err)
 	}
 	_, err = fmt.Fprintf(output,
-		"rig implement #%d — %s\n"+
+		"syl implement #%d — %s\n"+
 			"  implementer: %s · %s · effort %s\n"+
 			"  reviewer:    %s · %s · effort %s\n"+
 			"  max iterations: %d\n"+
@@ -33,9 +33,9 @@ func writeImplementBanner(output io.Writer, projectRoot string, projectConfig co
 }
 
 func writeReviewBanner(output io.Writer, projectConfig config.Config, ticketRef string, ticket *tracker.Ticket) error {
-	heading := "rig review — working tree"
+	heading := "syl review — working tree"
 	if ticket != nil {
-		heading = fmt.Sprintf("rig review %s — %s", ticketRef, ticket.Title)
+		heading = fmt.Sprintf("syl review %s — %s", ticketRef, ticket.Title)
 	}
 	_, err := fmt.Fprintf(output, "%s\n  reviewer: %s · %s · effort %s\n",
 		heading,
@@ -48,7 +48,7 @@ func writeReviewBanner(output io.Writer, projectConfig config.Config, ticketRef 
 }
 
 func writePlanBanner(output io.Writer, projectConfig config.Config, target string) error {
-	heading := "rig plan"
+	heading := "syl plan"
 	if target = strings.TrimSpace(target); target != "" {
 		heading += " " + target
 	}

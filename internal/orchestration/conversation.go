@@ -8,7 +8,7 @@ import (
 	"io"
 	"strings"
 
-	"github.com/igorrochap/rig/internal/harness"
+	"github.com/igorrochap/syl/internal/harness"
 )
 
 const questionProtocolInstruction = `If you are genuinely blocked on a decision that cannot be resolved from the ticket or the code, stop working and emit exactly this block:
@@ -19,7 +19,7 @@ END QUESTION
 
 Ambiguity should have been resolved during planning, and trivial choices should be decided without asking. After emitting the block, stop working.`
 
-const QuestionInputHelp = "When a harness asks a QUESTION, rig prints it and reads a multi-line answer from stdin until an empty line or EOF."
+const QuestionInputHelp = "When a harness asks a QUESTION, syl prints it and reads a multi-line answer from stdin until an empty line or EOF."
 
 type harnessStreamStarter func(context.Context) (harness.Stream, error)
 
@@ -60,7 +60,7 @@ func NewQuestionHandler(input io.Reader, output io.Writer, target string, notifi
 
 func (h *QuestionHandler) Handle(ctx context.Context, question string) (string, error) {
 	if h.notifier != nil {
-		_ = h.notifier.Notify(ctx, fmt.Sprintf("rig is waiting for your answer on %s", h.target))
+		_ = h.notifier.Notify(ctx, fmt.Sprintf("syl is waiting for your answer on %s", h.target))
 	}
 	if h.output != nil {
 		if _, err := fmt.Fprintf(h.output, "QUESTION:\n%s\nEND QUESTION\n", question); err != nil {

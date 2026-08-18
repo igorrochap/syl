@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/igorrochap/rig/internal/adapters/notify"
-	"github.com/igorrochap/rig/internal/harness"
+	"github.com/igorrochap/syl/internal/adapters/notify"
+	"github.com/igorrochap/syl/internal/harness"
 )
 
 func TestSelectNotificationBackendByPlatform(t *testing.T) {
@@ -36,7 +36,7 @@ func TestSelectNotificationBackendByPlatform(t *testing.T) {
 
 func TestImplementDoesNotNotifyWhenNotificationsAreDisabled(t *testing.T) {
 	fixture := newImplementLoopFixture(t)
-	configPath := filepath.Join(fixture.root, ".rig", "config.toml")
+	configPath := filepath.Join(fixture.root, ".syl", "config.toml")
 	configContents, err := os.ReadFile(configPath)
 	if err != nil {
 		t.Fatal(err)
@@ -45,11 +45,11 @@ func TestImplementDoesNotNotifyWhenNotificationsAreDisabled(t *testing.T) {
 	if err := os.WriteFile(configPath, configContents, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	command := exec.Command("git", "-C", fixture.root, "add", ".rig/config.toml")
+	command := exec.Command("git", "-C", fixture.root, "add", ".syl/config.toml")
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("git add config: %v\n%s", err, output)
 	}
-	command = exec.Command("git", "-C", fixture.root, "-c", "user.name=rig test", "-c", "user.email=rig@example.test", "commit", "--quiet", "-m", "notifications disabled")
+	command = exec.Command("git", "-C", fixture.root, "-c", "user.name=syl test", "-c", "user.email=syl@example.test", "commit", "--quiet", "-m", "notifications disabled")
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("git commit config: %v\n%s", err, output)
 	}

@@ -17,10 +17,10 @@ import (
 
 	"github.com/mattn/go-isatty"
 
-	"github.com/igorrochap/rig/internal/config"
-	"github.com/igorrochap/rig/internal/harness"
-	"github.com/igorrochap/rig/internal/tracker"
-	"github.com/igorrochap/rig/internal/verdict"
+	"github.com/igorrochap/syl/internal/config"
+	"github.com/igorrochap/syl/internal/harness"
+	"github.com/igorrochap/syl/internal/tracker"
+	"github.com/igorrochap/syl/internal/verdict"
 )
 
 const implementPrompt = `/implement
@@ -60,7 +60,7 @@ type runArtifacts struct {
 }
 
 func newRunArtifacts(projectRoot string, issueNumber int, branch, branchPoint string) (runArtifacts, error) {
-	dir := filepath.Join(projectRoot, ".rig", "runs", time.Now().UTC().Format("20060102T150405.000000000Z")+"-"+strconv.Itoa(issueNumber))
+	dir := filepath.Join(projectRoot, ".syl", "runs", time.Now().UTC().Format("20060102T150405.000000000Z")+"-"+strconv.Itoa(issueNumber))
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return runArtifacts{}, fmt.Errorf("create implement run artifacts: %w", err)
 	}
@@ -496,7 +496,7 @@ func branchName(ticket tracker.Ticket) string {
 		if branchType == "" && branchTypePattern.MatchString(candidate) {
 			branchType = candidate
 		}
-		if branchType != "" || strings.Contains(candidate, "implement") || strings.Contains(candidate, "rig") {
+		if branchType != "" || strings.Contains(candidate, "implement") || strings.Contains(candidate, "syl") {
 			contextTitle = strings.TrimSpace(after)
 		}
 	}

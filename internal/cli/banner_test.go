@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/igorrochap/rig/internal/harness"
+	"github.com/igorrochap/syl/internal/harness"
 )
 
 func TestImplementPrintsIdentificationBannerWithResolvedConfigAndArtifacts(t *testing.T) {
@@ -34,7 +34,7 @@ func TestImplementPrintsIdentificationBannerWithResolvedConfigAndArtifacts(t *te
 		t.Fatalf("implement code = %d, stderr = %q", code, fixture.stderr.String())
 	}
 
-	runDirs, err := filepath.Glob(filepath.Join(fixture.root, ".rig", "runs", "*-42"))
+	runDirs, err := filepath.Glob(filepath.Join(fixture.root, ".syl", "runs", "*-42"))
 	if err != nil || len(runDirs) != 1 {
 		t.Fatalf("run directories = %v, err = %v; want one issue artifact directory", runDirs, err)
 	}
@@ -42,7 +42,7 @@ func TestImplementPrintsIdentificationBannerWithResolvedConfigAndArtifacts(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantPrefix := "rig implement #42 — Add resilient workflow\n" +
+	wantPrefix := "syl implement #42 — Add resilient workflow\n" +
 		"  implementer: codex · custom-implementer · effort high\n" +
 		"  reviewer:    claude · claude-custom-reviewer · effort low\n" +
 		"  max iterations: 2\n" +
@@ -65,7 +65,7 @@ func TestReviewPrintsTicketIdentificationBannerBeforeVerdict(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("review code = %d, stderr = %q", code, fixture.stderr.String())
 	}
-	wantPrefix := "rig review #07 — Improve the tracker\n" +
+	wantPrefix := "syl review #07 — Improve the tracker\n" +
 		"  reviewer: claude · claude-sonnet-5 · effort medium\n"
 	if got := fixture.stdout.String(); !strings.HasPrefix(got, wantPrefix) {
 		t.Fatalf("stdout = %q, want prefix %q", got, wantPrefix)
@@ -82,7 +82,7 @@ func TestPlanPrintsIdentificationBannerForInvokedTarget(t *testing.T) {
 	if code == 0 {
 		t.Fatal("plan code = 0, want the existing not-implemented failure")
 	}
-	wantPrefix := "rig plan #42\n" +
+	wantPrefix := "syl plan #42\n" +
 		"  planner:    claude · claude-opus-5 · effort high\n"
 	if got := fixture.stdout.String(); !strings.HasPrefix(got, wantPrefix) {
 		t.Fatalf("stdout = %q, want prefix %q", got, wantPrefix)
@@ -94,7 +94,7 @@ func TestPlanPrintsIdentificationBannerForInvokedTarget(t *testing.T) {
 
 func TestReviewValidationFailurePrintsNoIdentificationBanner(t *testing.T) {
 	fixture := newReviewFixture(t, &scriptedHarness{})
-	if err := os.WriteFile(filepath.Join(fixture.root, ".rig", "config.toml"), []byte("[roles.review]\nharness = \"claude\"\nmodel = \"invalid\"\neffort = \"medium\"\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(fixture.root, ".syl", "config.toml"), []byte("[roles.review]\nharness = \"claude\"\nmodel = \"invalid\"\neffort = \"medium\"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -122,7 +122,7 @@ func TestReviewUnconfiguredHarnessPrintsNoIdentificationBanner(t *testing.T) {
 
 func configureBannerRole(t *testing.T, root, role, model, effort string) {
 	t.Helper()
-	path := filepath.Join(root, ".rig", "config.toml")
+	path := filepath.Join(root, ".syl", "config.toml")
 	contents, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -145,7 +145,7 @@ func configureBannerRole(t *testing.T, root, role, model, effort string) {
 
 func configureBannerMaxIterations(t *testing.T, root string, max int) {
 	t.Helper()
-	path := filepath.Join(root, ".rig", "config.toml")
+	path := filepath.Join(root, ".syl", "config.toml")
 	contents, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)

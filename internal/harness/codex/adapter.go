@@ -19,7 +19,7 @@ import (
 	"os/exec"
 	"strings"
 
-	"github.com/igorrochap/rig/internal/harness"
+	"github.com/igorrochap/syl/internal/harness"
 )
 
 type Adapter struct {

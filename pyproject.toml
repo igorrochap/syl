@@ -1,5 +1,5 @@
 [project]
-name = "rig"
+name = "syl"
 version = "1.4.0"
 
 [tool.setuptools]

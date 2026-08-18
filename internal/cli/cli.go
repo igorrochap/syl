@@ -1,4 +1,4 @@
-// Package cli contains the in-process command entrypoint used by rig and its tests.
+// Package cli contains the in-process command entrypoint used by syl and its tests.
 package cli
 
 import (
@@ -8,13 +8,13 @@ import (
 	"io"
 	"strings"
 
-	"github.com/igorrochap/rig/internal/adapters/git"
-	"github.com/igorrochap/rig/internal/adapters/notify"
-	"github.com/igorrochap/rig/internal/config"
-	"github.com/igorrochap/rig/internal/harness"
-	"github.com/igorrochap/rig/internal/initializer"
-	"github.com/igorrochap/rig/internal/orchestration"
-	"github.com/igorrochap/rig/internal/tracker"
+	"github.com/igorrochap/syl/internal/adapters/git"
+	"github.com/igorrochap/syl/internal/adapters/notify"
+	"github.com/igorrochap/syl/internal/config"
+	"github.com/igorrochap/syl/internal/harness"
+	"github.com/igorrochap/syl/internal/initializer"
+	"github.com/igorrochap/syl/internal/orchestration"
+	"github.com/igorrochap/syl/internal/tracker"
 	"github.com/spf13/cobra"
 )
 
@@ -54,7 +54,7 @@ func (a *App) Run(ctx context.Context, args []string, stdout, stderr io.Writer) 
 		command.SetIn(a.deps.Input)
 	}
 	if err := command.ExecuteContext(ctx); err != nil {
-		fmt.Fprintf(stderr, "rig: %s\n", err)
+		fmt.Fprintf(stderr, "syl: %s\n", err)
 		return 1
 	}
 	return 0
@@ -62,7 +62,7 @@ func (a *App) Run(ctx context.Context, args []string, stdout, stderr io.Writer) 
 
 func (a *App) Command() *cobra.Command {
 	root := &cobra.Command{
-		Use:           "rig",
+		Use:           "syl",
 		Short:         "orchestrate an agentic coding workflow",
 		SilenceErrors: true,
 		SilenceUsage:  true,
@@ -207,7 +207,7 @@ func (a *App) planCommand() *cobra.Command {
 func (a *App) initCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:   "init",
-		Short: "scaffold a project for the rig workflow",
+		Short: "scaffold a project for the syl workflow",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return initializer.Run(a.projectRoot, cmd.InOrStdin(), cmd.OutOrStdout())

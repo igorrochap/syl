@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/igorrochap/rig/internal/harness"
+	"github.com/igorrochap/syl/internal/harness"
 )
 
 type topSeamFixture struct {
@@ -31,7 +31,7 @@ func newTopSeamFixtureWithGit(t *testing.T, initGit bool) *topSeamFixture {
 			t.Fatalf("git init: %v\n%s", err, output)
 		}
 	}
-	configPath := filepath.Join(root, ".rig", "config.toml")
+	configPath := filepath.Join(root, ".syl", "config.toml")
 	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
 		t.Fatal(err)
 	}

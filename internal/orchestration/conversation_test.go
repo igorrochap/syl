@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/igorrochap/rig/internal/harness"
-	"github.com/igorrochap/rig/internal/verdict"
+	"github.com/igorrochap/syl/internal/harness"
+	"github.com/igorrochap/syl/internal/verdict"
 )
 
 const conversationTestVerdict = "VERDICT: approve\nSUMMARY: The working tree is ready\nFINDINGS:\n"

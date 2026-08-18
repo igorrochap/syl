@@ -91,8 +91,8 @@ jobs:
           CGO_ENABLED: "0"
         run: |
           mkdir -p dist/package
-          go build -trimpath -ldflags="-s -w" -o dist/package/rig ./cmd/rig
-          tar -C dist/package -czf "dist/rig_${{ matrix.release_os }}_${GOARCH}.tar.gz" rig
+          go build -trimpath -ldflags="-s -w" -o dist/package/syl ./cmd/syl
+          tar -C dist/package -czf "dist/syl_${{ matrix.release_os }}_${GOARCH}.tar.gz" syl
 
       - name: Store release archive
         uses: actions/upload-artifact@v4

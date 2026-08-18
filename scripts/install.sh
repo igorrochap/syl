@@ -1,8 +1,8 @@
 #!/bin/sh
 set -eu
 
-repository="igorrochap/rig"
-download_base="${RIG_DOWNLOAD_BASE:-https://github.com/$repository/releases}"
+repository="igorrochap/syl"
+download_base="${SYL_DOWNLOAD_BASE:-https://github.com/$repository/releases}"
 install_dir="${INSTALL_DIR:-${HOME}/.local/bin}"
 version="latest"
 
@@ -64,7 +64,7 @@ case "$(uname -m)" in
     ;;
 esac
 
-asset="rig_${os}_${arch}.tar.gz"
+asset="syl_${os}_${arch}.tar.gz"
 if [ "$version" = "latest" ]; then
   release_url="$download_base/latest/download"
 else
@@ -75,13 +75,13 @@ else
   release_url="$download_base/download/$version"
 fi
 
-temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/rig-install.XXXXXX")"
+temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/syl-install.XXXXXX")"
 cleanup() {
   rm -rf "$temp_dir"
 }
 trap cleanup EXIT HUP INT TERM
 
-echo "Downloading rig ${version} for ${os}/${arch}..."
+echo "Downloading syl ${version} for ${os}/${arch}..."
 curl --fail --location --silent --show-error \
   --output "$temp_dir/$asset" "$release_url/$asset"
 curl --fail --location --silent --show-error \
@@ -110,14 +110,14 @@ fi
 mkdir -p "$temp_dir/extracted" "$install_dir"
 tar -xzf "$temp_dir/$asset" -C "$temp_dir/extracted"
 
-if [ ! -f "$temp_dir/extracted/rig" ]; then
-  echo "Error: release archive does not contain rig." >&2
+if [ ! -f "$temp_dir/extracted/syl" ]; then
+  echo "Error: release archive does not contain syl." >&2
   exit 1
 fi
-install -m 0755 "$temp_dir/extracted/rig" "$install_dir/rig"
+install -m 0755 "$temp_dir/extracted/syl" "$install_dir/syl"
 
-echo "Installed rig to $install_dir."
+echo "Installed syl to $install_dir."
 case ":${PATH}:" in
   *":$install_dir:"*) ;;
-  *) echo "Add $install_dir to PATH to run rig from any directory." ;;
+  *) echo "Add $install_dir to PATH to run syl from any directory." ;;
 esac

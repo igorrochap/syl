@@ -1,4 +1,4 @@
-// Package tui contains the interactive prompt engine used by rig init.
+// Package tui contains the interactive prompt engine used by syl init.
 package tui
 
 import (

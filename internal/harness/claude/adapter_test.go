@@ -3,8 +3,8 @@ package claude
 import (
 	"testing"
 
-	"github.com/igorrochap/rig/internal/config"
-	"github.com/igorrochap/rig/internal/harness"
+	"github.com/igorrochap/syl/internal/config"
+	"github.com/igorrochap/syl/internal/harness"
 )
 
 func TestClaudeEffortMapping(t *testing.T) {

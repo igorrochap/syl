@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/igorrochap/rig/internal/config"
+	"github.com/igorrochap/syl/internal/config"
 )
 
 const defaultInitPromptCount = 12
@@ -112,7 +112,7 @@ func TestInitAbortsWithoutChangesWhenClaudeDirectoryExists(t *testing.T) {
 	if !strings.Contains(stderr.String(), "real directory") {
 		t.Fatalf("stderr = %q, want real-directory guidance", stderr.String())
 	}
-	for _, path := range []string{".agents", ".rig", "AGENTS.md", "CLAUDE.md"} {
+	for _, path := range []string{".agents", ".syl", "AGENTS.md", "CLAUDE.md"} {
 		if _, err := os.Lstat(filepath.Join(root, path)); !os.IsNotExist(err) {
 			t.Fatalf("%s exists after abort; want no changes", path)
 		}
@@ -155,7 +155,7 @@ func TestInitRerunShowsChangesAndDoesNotModifyWithoutConfirmation(t *testing.T) 
 	if code != 0 {
 		t.Fatalf("rerun code = %d, want 0; stderr = %q", code, stderr.String())
 	}
-	if !strings.Contains(stdout.String(), "Changes:") || !strings.Contains(stdout.String(), ".rig/config.toml") {
+	if !strings.Contains(stdout.String(), "Changes:") || !strings.Contains(stdout.String(), ".syl/config.toml") {
 		t.Fatalf("stdout = %q, want changed config and confirmation prompt", stdout.String())
 	}
 	current, err := os.ReadFile(config.Path(root))
@@ -202,7 +202,7 @@ func TestInitEnsuresRunsAreGitignoredExactlyOnce(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte("dist/\n.rig/runs/\n.rig/runs/\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte("dist/\n.syl/runs/\n.syl/runs/\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	app := New(root, Dependencies{Input: defaultInitInput()})
@@ -216,8 +216,8 @@ func TestInitEnsuresRunsAreGitignoredExactlyOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Count(string(contents), ".rig/runs/"); got != 1 {
-		t.Fatalf(".gitignore contains .rig/runs/ %d times, want exactly once: %q", got, contents)
+	if got := strings.Count(string(contents), ".syl/runs/"); got != 1 {
+		t.Fatalf(".gitignore contains .syl/runs/ %d times, want exactly once: %q", got, contents)
 	}
 	if !strings.Contains(string(contents), "dist/") {
 		t.Fatalf(".gitignore lost existing entry: %q", contents)

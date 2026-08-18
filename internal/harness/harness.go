@@ -1,10 +1,10 @@
-// Package harness defines the seam between rig roles and agent CLIs.
+// Package harness defines the seam between syl roles and agent CLIs.
 package harness
 
 import (
 	"context"
 
-	"github.com/igorrochap/rig/internal/config"
+	"github.com/igorrochap/syl/internal/config"
 )
 
 type EventType string

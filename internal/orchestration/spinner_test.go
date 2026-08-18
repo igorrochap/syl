@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/igorrochap/rig/internal/harness"
+	"github.com/igorrochap/syl/internal/harness"
 )
 
 // fakeTerminal is a writer that reports as a real terminal so spinner logic can

@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/igorrochap/rig/internal/harness"
-	"github.com/igorrochap/rig/internal/orchestration"
-	"github.com/igorrochap/rig/internal/verdict"
+	"github.com/igorrochap/syl/internal/harness"
+	"github.com/igorrochap/syl/internal/orchestration"
+	"github.com/igorrochap/syl/internal/verdict"
 )
 
 func TestImplementQuestionPausesAndResumesTheSameSession(t *testing.T) {
@@ -37,7 +37,7 @@ func TestImplementQuestionPausesAndResumesTheSameSession(t *testing.T) {
 	if len(loop.resumes) != 1 || loop.resumes[0].sessionID != "implement-session" || loop.resumes[0].prompt != "Use SQLite.\nwith WAL." {
 		t.Fatalf("resumes = %#v, want one answer on the original implement session", loop.resumes)
 	}
-	if len(notifier.messages) < 1 || notifier.messages[0] != "rig is waiting for your answer on #42" {
+	if len(notifier.messages) < 1 || notifier.messages[0] != "syl is waiting for your answer on #42" {
 		t.Fatalf("notifications = %v, want blocked notification for #42", notifier.messages)
 	}
 	if !strings.Contains(fixture.stdout.String(), "Which database should this use?") || !strings.Contains(fixture.stdout.String(), "Iterations: 1") || !strings.Contains(fixture.stdout.String(), "Final verdict: approve") {
@@ -70,7 +70,7 @@ func TestReviewerQuestionPausesAndResumesTheSameSession(t *testing.T) {
 	if len(loop.resumes) != 1 || loop.resumes[0].sessionID != "review-session" || loop.resumes[0].prompt != "Yes, it is a blocker." {
 		t.Fatalf("resumes = %#v, want one answer on the original review session", loop.resumes)
 	}
-	if len(notifier.messages) < 1 || notifier.messages[0] != "rig is waiting for your answer on #42" {
+	if len(notifier.messages) < 1 || notifier.messages[0] != "syl is waiting for your answer on #42" {
 		t.Fatalf("notifications = %v, want blocked notification for #42", notifier.messages)
 	}
 }
@@ -132,7 +132,7 @@ func TestOneShotReviewHonorsQuestionProtocol(t *testing.T) {
 	if len(loop.resumes) != 1 || loop.resumes[0].sessionID != "review-session" || loop.resumes[0].prompt != "The current working-tree diff." {
 		t.Fatalf("resumes = %#v, want one same-session review resume", loop.resumes)
 	}
-	if len(notifier.messages) != 1 || notifier.messages[0] != "rig is waiting for your answer on review" {
+	if len(notifier.messages) != 1 || notifier.messages[0] != "syl is waiting for your answer on review" {
 		t.Fatalf("notifications = %v, want one-shot review blocked notification", notifier.messages)
 	}
 	if !strings.Contains(fixture.stdout.String(), "VERDICT: approve") {

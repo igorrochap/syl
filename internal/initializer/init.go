@@ -13,14 +13,14 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/igorrochap/rig/internal/config"
-	"github.com/igorrochap/rig/internal/tui"
-	vendoredskills "github.com/igorrochap/rig/skills"
+	"github.com/igorrochap/syl/internal/config"
+	"github.com/igorrochap/syl/internal/tui"
+	vendoredskills "github.com/igorrochap/syl/skills"
 )
 
 const (
-	gitignoreEntry = ".rig/runs/"
-	minimalAgents  = "# Project instructions\n\nThis project is managed with rig.\n"
+	gitignoreEntry = ".syl/runs/"
+	minimalAgents  = "# Project instructions\n\nThis project is managed with syl.\n"
 )
 
 type skillManifest struct {
@@ -172,7 +172,7 @@ func Run(projectRoot string, input io.Reader, output io.Writer) error {
 	if err := applyInitPlan(plan); err != nil {
 		return err
 	}
-	fmt.Fprintf(output, "Initialized project in %s (config %s).\n", projectRoot, filepath.ToSlash(filepath.Join(".rig", "config.toml")))
+	fmt.Fprintf(output, "Initialized project in %s (config %s).\n", projectRoot, filepath.ToSlash(filepath.Join(".syl", "config.toml")))
 	return nil
 }
 
@@ -244,7 +244,7 @@ func makeInitPlan(projectRoot string, projectConfig config.Config, manifest skil
 		return initPlan{}, err
 	}
 	if plan.updateGitignore {
-		plan.changes = append(plan.changes, "ensure .rig/runs/ is gitignored")
+		plan.changes = append(plan.changes, "ensure .syl/runs/ is gitignored")
 	}
 	if plan.initialized && len(plan.changes) > 0 {
 		plan.requiresConfirmation = true
@@ -317,7 +317,7 @@ func planConfig(projectRoot string, projectConfig config.Config) (bool, string, 
 	configInfo, err := os.Lstat(configPath)
 	switch {
 	case errors.Is(err, os.ErrNotExist):
-		return true, "write " + filepath.ToSlash(filepath.Join(".rig", "config.toml")), false, nil
+		return true, "write " + filepath.ToSlash(filepath.Join(".syl", "config.toml")), false, nil
 	case err != nil:
 		return false, "", false, fmt.Errorf("inspect config %s: %w", configPath, err)
 	case configInfo.IsDir():
@@ -330,7 +330,7 @@ func planConfig(projectRoot string, projectConfig config.Config) (bool, string, 
 	if bytes.Equal(contents, []byte(config.Render(projectConfig))) {
 		return false, "", false, nil
 	}
-	return true, "update " + filepath.ToSlash(filepath.Join(".rig", "config.toml")), true, nil
+	return true, "update " + filepath.ToSlash(filepath.Join(".syl", "config.toml")), true, nil
 }
 
 func applyInitPlan(plan initPlan) error {
@@ -454,9 +454,9 @@ func rejectRealClaudePath(projectRoot string) error {
 	}
 	if info.Mode()&os.ModeSymlink == 0 {
 		if info.IsDir() {
-			return fmt.Errorf("%s already exists as a real directory; resolve it manually before running rig init", claudePath)
+			return fmt.Errorf("%s already exists as a real directory; resolve it manually before running syl init", claudePath)
 		}
-		return fmt.Errorf("%s already exists and is not a symlink; resolve it manually before running rig init", claudePath)
+		return fmt.Errorf("%s already exists and is not a symlink; resolve it manually before running syl init", claudePath)
 	}
 	return nil
 }
@@ -488,7 +488,7 @@ func planLink(projectRoot, relativePath, target, label string) (linkPlan, error)
 		return link, nil
 	}
 	if info.IsDir() {
-		return linkPlan{}, fmt.Errorf("%s is a real directory; resolve it manually before running rig init", link.linkPath)
+		return linkPlan{}, fmt.Errorf("%s is a real directory; resolve it manually before running syl init", link.linkPath)
 	}
 	link.needed = true
 	link.replace = true
@@ -518,7 +518,7 @@ func applyLink(link linkPlan) error {
 }
 
 func hasInitMarker(projectRoot string) bool {
-	for _, relativePath := range []string{".rig/config.toml", ".claude", "CLAUDE.md", ".agents/skills"} {
+	for _, relativePath := range []string{".syl/config.toml", ".claude", "CLAUDE.md", ".agents/skills"} {
 		if _, err := os.Lstat(filepath.Join(projectRoot, filepath.FromSlash(relativePath))); err == nil {
 			return true
 		}

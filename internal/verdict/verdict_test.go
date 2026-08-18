@@ -53,12 +53,12 @@ func TestParseFixtures(t *testing.T) {
 			text: "VERDICT: approve\nSUMMARY: Earlier answer\nFINDINGS:\n\n" +
 				"More discussion\n\n" +
 				"VERDICT: revise\nSUMMARY: Later answer\nFINDINGS:\n" +
-				"- [blocking] cmd/rig/main.go:9 — later block wins: ✓ and 日本語\n",
+				"- [blocking] cmd/syl/main.go:9 — later block wins: ✓ and 日本語\n",
 			want: Verdict{
 				Status:  Revise,
 				Summary: "Later answer",
 				Findings: []Finding{
-					{Kind: Blocking, Location: "cmd/rig/main.go:9", Issue: "later block wins: ✓ and 日本語"},
+					{Kind: Blocking, Location: "cmd/syl/main.go:9", Issue: "later block wins: ✓ and 日本語"},
 				},
 			},
 		},

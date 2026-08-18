@@ -245,7 +245,7 @@ func TestLoadReportsMalformedTOML(t *testing.T) {
 
 func writeConfig(t *testing.T, root, contents string) {
 	t.Helper()
-	path := filepath.Join(root, ".rig", "config.toml")
+	path := filepath.Join(root, ".syl", "config.toml")
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}

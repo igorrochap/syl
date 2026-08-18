@@ -76,22 +76,22 @@ func (n *PlatformNotifier) Notify(ctx context.Context, message string) error {
 	switch n.backend {
 	case notificationMacOS:
 		if _, err := exec.LookPath("terminal-notifier"); err == nil {
-			if err := runNotificationCommand(ctx, "terminal-notifier", "-title", "rig", "-message", message); err == nil {
+			if err := runNotificationCommand(ctx, "terminal-notifier", "-title", "syl", "-message", message); err == nil {
 				return nil
 			}
 			return n.ringFallback()
 		}
-		if err := runNotificationCommand(ctx, "osascript", "-e", fmt.Sprintf(`display notification %q with title "rig"`, message)); err == nil {
+		if err := runNotificationCommand(ctx, "osascript", "-e", fmt.Sprintf(`display notification %q with title "syl"`, message)); err == nil {
 			return nil
 		}
 		return n.ringFallback()
 	case notificationNotifySend:
-		if err := runNotificationCommand(ctx, "notify-send", "rig", message); err == nil {
+		if err := runNotificationCommand(ctx, "notify-send", "syl", message); err == nil {
 			return nil
 		}
 		return n.ringFallback()
 	case notificationPowerShell:
-		command := fmt.Sprintf(`[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] > $null; $xml = New-Object Windows.Data.Xml.Dom.XmlDocument; $xml.LoadXml('<toast><visual><binding template="ToastGeneric"><text>rig</text><text>%s</text></binding></visual></toast>'); [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('rig').Show([Windows.UI.Notifications.ToastNotification]::new($xml))`, strings.ReplaceAll(message, "'", "&apos;"))
+		command := fmt.Sprintf(`[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] > $null; $xml = New-Object Windows.Data.Xml.Dom.XmlDocument; $xml.LoadXml('<toast><visual><binding template="ToastGeneric"><text>syl</text><text>%s</text></binding></visual></toast>'); [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('syl').Show([Windows.UI.Notifications.ToastNotification]::new($xml))`, strings.ReplaceAll(message, "'", "&apos;"))
 		if err := runNotificationCommand(ctx, "powershell.exe", "-NoProfile", "-Command", command); err == nil {
 			return nil
 		}
