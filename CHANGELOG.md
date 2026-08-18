@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v1.7.0 (2026-08-18)
+
+### Features
+
+- **config**: Add MCP configuration support for roles
+  ([#43](https://github.com/igorrochap/syl/pull/43),
+  [`49928df`](https://github.com/igorrochap/syl/commit/49928dfdb0a19f2fd8cafc3143cf29b7182e1ad9))
+
+
 ## v1.6.0 (2026-08-18)
 
 ### Documentation
