@@ -20,7 +20,7 @@ import (
 
 const reviewPrompt = `/code-review
 
-Review the current working-tree diff for this project%s. Do not modify files. Do not read or write review documents; the invoking tool records the verdict. The verdict block you print is the only record. End the review with the mandatory verdict block from the code-review skill.
+Review the pre-computed diff at %s against the recorded branch point %s. This file is the authoritative diff for this review. Do not run Git to re-derive the diff. You may still open individual files for surrounding context. Do not modify files. Do not read or write review documents; the invoking tool records the verdict. The verdict block you print is the only record. End the review with the mandatory verdict block from the code-review skill.
 
 ` + questionProtocolInstruction
 
@@ -73,6 +73,12 @@ type ReviewOptions struct {
 	IdentificationBanner func() error
 }
 
+type reviewPreparation struct {
+	branchPoint string
+	diffPath    string
+	artifactDir string
+}
+
 func RunReview(ctx context.Context, options ReviewOptions) error {
 	if options.Raw && options.Verbose {
 		return errors.New("review: --raw and --verbose are mutually exclusive")
@@ -80,15 +86,16 @@ func RunReview(ctx context.Context, options ReviewOptions) error {
 	if options.Adapter == nil {
 		return fmt.Errorf("review harness %q is not configured", options.ProjectConfig.Roles.Review.Harness)
 	}
+	preparation, err := prepareReview(ctx, options.ProjectRoot, options.TicketRef, options.Git)
+	if err != nil {
+		return err
+	}
 	if options.IdentificationBanner != nil {
 		if err := options.IdentificationBanner(); err != nil {
 			return err
 		}
 	}
-	prompt := currentReviewPrompt()
-	if options.Ticket != nil {
-		prompt = composeReviewPrompt(options.TicketRef, *options.Ticket)
-	}
+	prompt := composeReviewPrompt(options.TicketRef, options.Ticket, preparation.branchPoint, preparation.diffPath)
 	notifier := options.Notifier
 	if !options.ProjectConfig.Notifications.Enabled {
 		notifier = nil
@@ -107,11 +114,10 @@ func RunReview(ctx context.Context, options ReviewOptions) error {
 	if err != nil {
 		var unparseable *UnparseableVerdictError
 		if errors.As(err, &unparseable) {
-			dir, artifactErr := writeReviewFailureArtifacts(options.ProjectRoot, options.TicketRef, unparseable.Execution)
-			if artifactErr != nil {
+			if artifactErr := recordReviewFailureArtifacts(preparation.artifactDir, unparseable.Execution); artifactErr != nil {
 				return fmt.Errorf("%w; save review run artifacts: %v", err, artifactErr)
 			}
-			return reviewTranscriptSavedError(err, dir)
+			return reviewTranscriptSavedError(err, preparation.artifactDir)
 		}
 		return err
 	}
@@ -123,8 +129,7 @@ func RunReview(ctx context.Context, options ReviewOptions) error {
 			return fmt.Errorf("post review to GitHub issue #%d: %w", options.Ticket.Number, err)
 		}
 	} else {
-		ref := reviewRef(ctx, options.Git)
-		if _, err := writeLocalReviewLog(options.ProjectRoot, options.TicketRef, ref, time.Now().UTC(), reviewVerdict); err != nil {
+		if _, err := writeLocalReviewLog(options.ProjectRoot, options.TicketRef, preparation.branchPoint, time.Now().UTC(), reviewVerdict); err != nil {
 			return err
 		}
 	}
@@ -139,25 +144,39 @@ func RunReview(ctx context.Context, options ReviewOptions) error {
 	return nil
 }
 
-func composeReviewPrompt(ticketRef string, ticket tracker.Ticket) string {
-	return composeReviewPromptWithRef(ticketRef, ticket, "")
-}
-
-func composeReviewPromptAgainstRef(ticketRef string, ticket tracker.Ticket, reviewedRef string) string {
-	return composeReviewPromptWithRef(ticketRef, ticket, reviewedRef)
-}
-
-func composeReviewPromptWithRef(ticketRef string, ticket tracker.Ticket, reviewedRef string) string {
-	scope := ""
-	if reviewedRef != "" {
-		scope = fmt.Sprintf(" against the recorded branch point %s by examining `git diff %s`", reviewedRef, reviewedRef)
+func composeReviewPrompt(ticketRef string, ticket *tracker.Ticket, branchPoint, diffPath string) string {
+	prompt := fmt.Sprintf(reviewPrompt, diffPath, branchPoint)
+	if ticket == nil {
+		return prompt
 	}
-	prompt := fmt.Sprintf(reviewPrompt, scope)
-	return fmt.Sprintf("%s\n\nreview the current diff against this ticket (%s).\n\nTicket title: %s\n\nTicket body:\n%s", prompt, ticketRef, ticket.Title, ticket.Body)
+	return fmt.Sprintf("%s\n\nReview the current diff against this ticket (%s).\n\nTicket title: %s\n\nTicket body:\n%s", prompt, ticketRef, ticket.Title, ticket.Body)
 }
 
-func currentReviewPrompt() string {
-	return fmt.Sprintf(reviewPrompt, "")
+func prepareReview(ctx context.Context, projectRoot, ticketRef string, git GitRunner) (reviewPreparation, error) {
+	if git == nil {
+		return reviewPreparation{}, errors.New("review: git runner is not configured")
+	}
+	branchPoint, err := git.Run(ctx, "rev-parse", "HEAD")
+	if err != nil {
+		return reviewPreparation{}, fmt.Errorf("review: record branch point: %w", err)
+	}
+	branchPoint = strings.TrimSpace(branchPoint)
+	if branchPoint == "" {
+		return reviewPreparation{}, errors.New("review: record branch point: git returned an empty ref")
+	}
+	diff, err := computeReviewDiff(ctx, git, branchPoint)
+	if err != nil {
+		return reviewPreparation{}, fmt.Errorf("review: %w", err)
+	}
+	artifactDir, err := newReviewRunArtifacts(projectRoot, ticketRef, branchPoint)
+	if err != nil {
+		return reviewPreparation{}, err
+	}
+	diffPath := filepath.Join(artifactDir, "review.diff")
+	if err := writeReviewDiffArtifact(diffPath, diff); err != nil {
+		return reviewPreparation{}, fmt.Errorf("review: %w", err)
+	}
+	return reviewPreparation{branchPoint: branchPoint, diffPath: diffPath, artifactDir: artifactDir}, nil
 }
 
 func runReview(ctx context.Context, adapter harness.Adapter, request harness.Request, output io.Writer, mode HarnessOutputMode, questions *QuestionHandler) (verdict.Verdict, error) {
@@ -300,21 +319,7 @@ func formatGitHubReviewComment(reviewVerdict verdict.Verdict) string {
 	return fmt.Sprintf("## Review verdict\n\n```text\n%s```\n", formatVerdict(reviewVerdict))
 }
 
-func reviewRef(ctx context.Context, git GitRunner) string {
-	if git == nil {
-		return "working-tree"
-	}
-	output, err := git.Run(ctx, "rev-parse", "HEAD")
-	if err != nil {
-		return "working-tree"
-	}
-	if ref := strings.TrimSpace(output); ref != "" {
-		return ref
-	}
-	return "working-tree"
-}
-
-func writeLocalReviewLog(projectRoot, ticketRef, reviewedRef string, timestamp time.Time, reviewVerdict verdict.Verdict) (string, error) {
+func writeLocalReviewLog(projectRoot, ticketRef, branchPoint string, timestamp time.Time, reviewVerdict verdict.Verdict) (string, error) {
 	projectName := filepath.Base(filepath.Clean(projectRoot))
 	if projectName == "." || projectName == string(filepath.Separator) || projectName == "" {
 		projectName = "project"
@@ -331,14 +336,14 @@ func writeLocalReviewLog(projectRoot, ticketRef, reviewedRef string, timestamp t
 		ticketLine = fmt.Sprintf("Ticket: %s\n", ticketRef)
 		title = ticketRef
 	}
-	contents := fmt.Sprintf("# Review: %s\n\n%sReviewed ref: %s\nTimestamp: %s\n\n## Verdict\n\n%s", title, ticketLine, reviewedRef, timestamp.Format(time.RFC3339Nano), formatVerdict(reviewVerdict))
+	contents := fmt.Sprintf("# Review: %s\n\n%sReviewed ref: %s\nTimestamp: %s\n\n## Verdict\n\n%s", title, ticketLine, branchPoint, timestamp.Format(time.RFC3339Nano), formatVerdict(reviewVerdict))
 	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
 		return "", fmt.Errorf("write local review log: %w", err)
 	}
 	return path, nil
 }
 
-func writeReviewFailureArtifacts(projectRoot, ticketRef string, review ReviewExecution) (string, error) {
+func newReviewRunArtifacts(projectRoot, ticketRef, branchPoint string) (string, error) {
 	suffix := "review"
 	if number, err := strconv.Atoi(strings.TrimPrefix(strings.TrimSpace(ticketRef), "#")); err == nil && number > 0 {
 		suffix = strconv.Itoa(number)
@@ -347,17 +352,39 @@ func writeReviewFailureArtifacts(projectRoot, ticketRef string, review ReviewExe
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", fmt.Errorf("create review run artifacts: %w", err)
 	}
-	metadata := fmt.Sprintf("Ticket: %s\n", strings.TrimSpace(ticketRef))
+	metadata := fmt.Sprintf("Ticket: %s\nBranch point: %s\n", strings.TrimSpace(ticketRef), branchPoint)
 	if err := writeArtifact(filepath.Join(dir, "metadata.txt"), metadata); err != nil {
 		return "", err
 	}
+	return dir, nil
+}
+
+func recordReviewFailureArtifacts(dir string, review ReviewExecution) error {
 	if err := writeArtifact(filepath.Join(dir, "review.feed"), review.Feed); err != nil {
-		return "", err
+		return err
 	}
 	if err := writeArtifact(filepath.Join(dir, "review.transcript"), review.Transcript); err != nil {
-		return "", err
+		return err
 	}
-	return dir, nil
+	return nil
+}
+
+func computeReviewDiff(ctx context.Context, git GitRunner, branchPoint string) (string, error) {
+	diff, err := git.Run(ctx, "diff", branchPoint)
+	if err != nil {
+		return "", fmt.Errorf("compute review diff against %s: %w", branchPoint, err)
+	}
+	if strings.TrimSpace(diff) == "" {
+		return "", fmt.Errorf("pre-computed diff against %s is empty", branchPoint)
+	}
+	return diff, nil
+}
+
+func writeReviewDiffArtifact(path, diff string) error {
+	if err := writeArtifact(path, diff); err != nil {
+		return fmt.Errorf("write pre-computed diff: %w", err)
+	}
+	return nil
 }
 
 func reviewTranscriptSavedError(err error, dir string) error {

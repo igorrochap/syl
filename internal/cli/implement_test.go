@@ -123,7 +123,7 @@ func TestImplementLoopStreamsImplementerAndReviewerProgress(t *testing.T) {
 				{Type: harness.EventSession, SessionID: "review-session"},
 				{Type: harness.EventAssistantText, Text: "Reviewer is checking the diff.\n"},
 				{Type: harness.EventAssistantText, Text: "Verify the diff first.\n"},
-				{Type: harness.EventToolUse, ToolName: "git diff", ArgumentGist: "branch point"},
+				{Type: harness.EventToolUse, ToolName: "cat", ArgumentGist: "iteration review diff"},
 				{Type: harness.EventAssistantText, Text: "VER"},
 				{Type: harness.EventAssistantText, Text: strings.TrimPrefix(approveVerdictText, "VER")},
 			},
@@ -148,7 +148,7 @@ func TestImplementLoopStreamsImplementerAndReviewerProgress(t *testing.T) {
 		"tool: edit — change.txt",
 		"Reviewer is checking the diff.",
 		"Verify the diff first.",
-		"tool: git diff — branch point",
+		"tool: cat — iteration review diff",
 	} {
 		index := strings.Index(output, expected)
 		if index < 0 || index > summaryIndex {
@@ -163,7 +163,7 @@ func TestImplementLoopStreamsImplementerAndReviewerProgress(t *testing.T) {
 		"[implement] tool: edit — change.txt",
 		"[review] Reviewer is checking the diff.",
 		"[review] Verify the diff first.",
-		"[review] tool: git diff — branch point",
+		"[review] tool: cat — iteration review diff",
 	} {
 		if !strings.Contains(output, expected) {
 			t.Fatalf("stdout = %q, want line labeled %q", output, expected)
@@ -184,7 +184,7 @@ func TestImplementLoopQuietlyShowsProgressWithoutToolCalls(t *testing.T) {
 			{
 				{Type: harness.EventSession, SessionID: "review-session"},
 				{Type: harness.EventAssistantText, Text: "Reviewer internal prose.\n"},
-				{Type: harness.EventToolUse, ToolName: "git diff", ArgumentGist: "branch point"},
+				{Type: harness.EventToolUse, ToolName: "cat", ArgumentGist: "iteration review diff"},
 				{Type: harness.EventAssistantText, Text: approveVerdictText},
 			},
 		},
@@ -211,7 +211,7 @@ func TestImplementLoopQuietlyShowsProgressWithoutToolCalls(t *testing.T) {
 			t.Fatalf("stdout = %q, want %q", output, expected)
 		}
 	}
-	for _, suppressed := range []string{"tool: edit — change.txt", "tool: git diff — branch point"} {
+	for _, suppressed := range []string{"tool: edit — change.txt", "tool: cat — iteration review diff"} {
 		if strings.Contains(output, suppressed) {
 			t.Fatalf("stdout = %q, want tool call %q suppressed", output, suppressed)
 		}
@@ -230,6 +230,7 @@ func TestImplementLoopUsesCodexAdapterAtProcessBoundary(t *testing.T) {
 	script.WriteString("printf '\\n'\ndone > ")
 	script.WriteString(shellQuote(argsPath))
 	script.WriteString("\nprintf '%s\\n' 'implemented' > change.txt\n")
+	script.WriteString("git add change.txt\n")
 	for _, line := range []string{
 		`{"type":"thread.started","thread_id":"codex-implement"}`,
 		`{"type":"item.completed","item":{"id":"item-1","type":"agent_message","text":"Implemented the ticket."}}`,
@@ -308,6 +309,32 @@ func TestImplementLoopFeedsBlockingFindingsIntoSecondImplementerPrompt(t *testin
 		for _, expected := range []string{
 			"Do not read or write review documents; the invoking tool records the verdict.",
 			"The verdict block you print is the only record.",
+		} {
+			if !strings.Contains(reviewRequest.Prompt, expected) {
+				t.Fatalf("review prompt = %q, want %q", reviewRequest.Prompt, expected)
+			}
+		}
+	}
+	runDirs, err := filepath.Glob(filepath.Join(fixture.root, ".syl", "runs", "*-42"))
+	if err != nil || len(runDirs) != 1 {
+		t.Fatalf("run directories = %v, err = %v; want one issue artifact directory", runDirs, err)
+	}
+	firstDiff, err := os.ReadFile(filepath.Join(runDirs[0], "iteration-01-review.diff"))
+	if err != nil {
+		t.Fatalf("read first review diff: %v", err)
+	}
+	secondDiff, err := os.ReadFile(filepath.Join(runDirs[0], "iteration-02-review.diff"))
+	if err != nil {
+		t.Fatalf("read second review diff: %v", err)
+	}
+	if string(firstDiff) == string(secondDiff) {
+		t.Fatalf("review diffs = %q and %q, want recomputation after the second implementation", firstDiff, secondDiff)
+	}
+	for iteration, reviewRequest := range []harness.Request{implementer.requests[1], implementer.requests[3]} {
+		for _, expected := range []string{
+			fmt.Sprintf("iteration-%02d-review.diff", iteration+1),
+			"authoritative diff",
+			"Do not run Git to re-derive the diff",
 		} {
 			if !strings.Contains(reviewRequest.Prompt, expected) {
 				t.Fatalf("review prompt = %q, want %q", reviewRequest.Prompt, expected)
@@ -573,6 +600,9 @@ func (h *unparseableReviewImplementHarness) Run(_ context.Context, request harne
 		if err := os.WriteFile(filepath.Join(h.root, "change.txt"), []byte("implemented\n"), 0o644); err != nil {
 			return nil, err
 		}
+		if output, err := exec.Command("git", "-C", h.root, "add", "change.txt").CombinedOutput(); err != nil {
+			return nil, fmt.Errorf("stage fixture change: %v\n%s", err, output)
+		}
 		return scriptedHarnessStream{events: []harness.Event{
 			{Type: harness.EventSession, SessionID: "implement-session"},
 			{Type: harness.EventAssistantText, Text: "Implemented the ticket.\n"},
@@ -599,9 +629,12 @@ func (*unparseableReviewImplementHarness) Attach(context.Context, harness.Reques
 func (h *loopHarness) Run(_ context.Context, request harness.Request) (harness.Stream, error) {
 	h.requests = append(h.requests, request)
 	index := len(h.requests) - 1
-	if index == 0 {
-		if err := os.WriteFile(filepath.Join(h.root, "change.txt"), []byte("implemented\n"), 0o644); err != nil {
+	if index%2 == 0 {
+		if err := os.WriteFile(filepath.Join(h.root, "change.txt"), []byte(fmt.Sprintf("implemented-%d\n", index/2+1)), 0o644); err != nil {
 			return nil, err
+		}
+		if output, err := exec.Command("git", "-C", h.root, "add", "change.txt").CombinedOutput(); err != nil {
+			return nil, fmt.Errorf("stage fixture change: %v\n%s", err, output)
 		}
 	}
 	if index >= len(h.streams) {
