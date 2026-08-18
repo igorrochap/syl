@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v1.7.1 (2026-08-18)
+
+### Bug Fixes
+
+- **orchestration**: Deduplicate session IDs during recording
+  ([#44](https://github.com/igorrochap/syl/pull/44),
+  [`1a29b9e`](https://github.com/igorrochap/syl/commit/1a29b9e28d8183920acb699e4be2d7d08a808262))
+
+
 ## v1.7.0 (2026-08-18)
 
 ### Features
