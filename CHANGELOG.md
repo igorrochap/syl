@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v1.4.0 (2026-08-18)
+
+### Features
+
+- **cli**: Add activity spinner for quiet mode
+  ([`bf070ee`](https://github.com/igorrochap/rig/commit/bf070ee1ee6e9ae48cbfd7f461adfac4d239dd71))
+
+
 ## v1.3.0 (2026-08-17)
 
 ### Features
