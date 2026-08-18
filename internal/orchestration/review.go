@@ -190,6 +190,7 @@ func runReviewExecution(ctx context.Context, adapter harness.Adapter, request ha
 		artifact:  &feed,
 		mode:      mode,
 		questions: questions,
+		role:      "review",
 	})
 	if err != nil {
 		return ReviewExecution{}, fmt.Errorf("run review harness: %w", err)
@@ -236,6 +237,7 @@ func retryReviewDetails(ctx context.Context, adapter harness.Adapter, sessionID 
 		artifact:  artifact,
 		mode:      mode,
 		questions: questions,
+		role:      "review",
 		sessionID: sessionID,
 	})
 	if err != nil {

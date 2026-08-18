@@ -17,9 +17,10 @@ QUESTION:
 <the question, one or more lines>
 END QUESTION
 
+The QUESTION: marker must begin at the start of its own line; the block format is otherwise unchanged.
 Ambiguity should have been resolved during planning, and trivial choices should be decided without asking. After emitting the block, stop working.`
 
-const QuestionInputHelp = "When a harness asks a QUESTION, syl prints it and reads a multi-line answer from stdin until an empty line or EOF."
+const QuestionInputHelp = "When a harness asks a QUESTION, syl prints it as a block and reads a single-line answer from stdin. A trailing backslash continues onto the next line; an empty answer re-prompts; EOF without an answer is an error."
 
 type harnessStreamStarter func(context.Context) (harness.Stream, error)
 
@@ -29,6 +30,7 @@ type conversationOptions struct {
 	mode      HarnessOutputMode
 	questions *QuestionHandler
 	sessionID string
+	role      string
 }
 
 type QuestionHandler struct {
@@ -59,16 +61,22 @@ func NewQuestionHandler(input io.Reader, output io.Writer, target string, notifi
 }
 
 func (h *QuestionHandler) Handle(ctx context.Context, question string) (string, error) {
+	return h.handle(ctx, "harness", question)
+}
+
+func (h *QuestionHandler) handle(ctx context.Context, role, question string) (string, error) {
+	role = questionRole(role)
 	if h.notifier != nil {
 		_ = h.notifier.Notify(ctx, fmt.Sprintf("syl is waiting for your answer on %s", h.target))
 	}
-	if h.output != nil {
-		if _, err := fmt.Fprintf(h.output, "QUESTION:\n%s\nEND QUESTION\n", question); err != nil {
-			return "", fmt.Errorf("print harness question: %w", err)
-		}
+	if err := h.printQuestion(role, question); err != nil {
+		return "", err
 	}
 	answer, err := h.readAnswer()
 	if err != nil {
+		return "", err
+	}
+	if err := h.printResume(role); err != nil {
 		return "", err
 	}
 	return answer, nil
@@ -82,27 +90,98 @@ func (h *QuestionHandler) readAnswer() (string, error) {
 	var lines []string
 	for {
 		line, err := h.answers.ReadString('\n')
-		if len(line) > 0 {
-			line = strings.TrimSuffix(line, "\n")
-			line = strings.TrimSuffix(line, "\r")
-			if line == "" {
-				break
-			}
-			lines = append(lines, line)
-		}
-		if err != nil {
-			if err == io.EOF {
-				break
-			}
+		if err != nil && !errors.Is(err, io.EOF) {
 			return "", fmt.Errorf("read answer to harness question: %w", err)
 		}
-	}
+		line = strings.TrimSuffix(line, "\n")
+		line = strings.TrimSuffix(line, "\r")
+		continuation := strings.HasSuffix(line, `\`)
+		if continuation {
+			line = strings.TrimSuffix(line, `\`)
+		}
+		lines = append(lines, line)
 
-	answer := strings.TrimSpace(strings.Join(lines, "\n"))
-	if answer == "" {
-		return "", errors.New("answer to harness question is empty; enter an answer followed by an empty line or EOF")
+		if continuation {
+			if errors.Is(err, io.EOF) {
+				return "", errors.New("cannot answer harness question: terminal input is unavailable")
+			}
+			if err := h.printAnswerPrompt(); err != nil {
+				return "", err
+			}
+			continue
+		}
+
+		answer := strings.TrimSpace(strings.Join(lines, "\n"))
+		if answer != "" {
+			return answer, nil
+		}
+		if errors.Is(err, io.EOF) {
+			return "", errors.New("cannot answer harness question: terminal input is unavailable")
+		}
+		lines = nil
+		if err := h.printEmptyAnswerHint(); err != nil {
+			return "", err
+		}
 	}
-	return answer, nil
+}
+
+func (h *QuestionHandler) printQuestion(role, question string) error {
+	if h.output == nil {
+		return nil
+	}
+	if _, err := fmt.Fprintf(h.output, "\n---\n[%s] question on %s\n%s\nanswer> ", role, h.target, question); err != nil {
+		return fmt.Errorf("print harness question: %w", err)
+	}
+	return nil
+}
+
+func (h *QuestionHandler) printAnswerPrompt() error {
+	if h.output == nil {
+		return nil
+	}
+	if _, err := io.WriteString(h.output, "\nanswer> "); err != nil {
+		return fmt.Errorf("print harness answer prompt: %w", err)
+	}
+	return nil
+}
+
+func (h *QuestionHandler) printEmptyAnswerHint() error {
+	if h.output == nil {
+		return nil
+	}
+	if _, err := io.WriteString(h.output, "\nanswer cannot be empty; please try again\nanswer> "); err != nil {
+		return fmt.Errorf("print harness answer hint: %w", err)
+	}
+	return nil
+}
+
+func (h *QuestionHandler) printResume(role string) error {
+	if h.output == nil {
+		return nil
+	}
+	if _, err := fmt.Fprintf(h.output, "\nanswer sent — resuming %s…\n--- %s output resumes ---\n", roleNoun(role), role); err != nil {
+		return fmt.Errorf("print harness resume confirmation: %w", err)
+	}
+	return nil
+}
+
+func questionRole(role string) string {
+	role = strings.TrimSpace(role)
+	if role == "" {
+		return "harness"
+	}
+	return role
+}
+
+func roleNoun(role string) string {
+	switch role = questionRole(role); role {
+	case "implement":
+		return "implementer"
+	case "review":
+		return "reviewer"
+	default:
+		return role
+	}
 }
 
 func questionTarget(reference string) string {
@@ -152,7 +231,7 @@ func runHarnessConversation(ctx context.Context, adapter harness.Adapter, start 
 			return harnessTranscript{}, errors.New("harness asked a question before emitting a session id")
 		}
 
-		answer, err := options.questions.Handle(ctx, result.Question)
+		answer, err := options.questions.handle(ctx, options.role, result.Question)
 		if err != nil {
 			return harnessTranscript{}, err
 		}
