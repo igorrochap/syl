@@ -55,8 +55,15 @@ type implementSetup struct {
 }
 
 type runArtifacts struct {
-	dir      string
-	sessions []string
+	dir         string
+	sessions    []string
+	sessionKeys map[sessionKey]struct{}
+}
+
+type sessionKey struct {
+	iteration int
+	role      string
+	sessionID string
 }
 
 func newRunArtifacts(projectRoot string, issueNumber int, branch, branchPoint string) (runArtifacts, error) {
@@ -68,7 +75,7 @@ func newRunArtifacts(projectRoot string, issueNumber int, branch, branchPoint st
 	if err := writeArtifact(filepath.Join(dir, "metadata.txt"), metadata); err != nil {
 		return runArtifacts{}, err
 	}
-	return runArtifacts{dir: dir}, nil
+	return runArtifacts{dir: dir, sessionKeys: make(map[sessionKey]struct{})}, nil
 }
 
 type ImplementOptions struct {
@@ -590,10 +597,18 @@ func formatImplementSummary(iterations int, final verdict.Verdict, nits []verdic
 }
 
 func (r *runArtifacts) recordSessions(iteration int, role string, sessionIDs []string) {
+	if r.sessionKeys == nil {
+		r.sessionKeys = make(map[sessionKey]struct{})
+	}
 	for _, sessionID := range sessionIDs {
 		if strings.TrimSpace(sessionID) == "" {
 			continue
 		}
+		key := sessionKey{iteration: iteration, role: role, sessionID: sessionID}
+		if _, exists := r.sessionKeys[key]; exists {
+			continue
+		}
+		r.sessionKeys[key] = struct{}{}
 		r.sessions = append(r.sessions, fmt.Sprintf("iteration %d %s: %s", iteration, role, sessionID))
 	}
 }
