@@ -18,9 +18,14 @@ The project's issue tracker should have been provided to you, including how it t
 
 Whatever the user said is the fixed point — a commit SHA, branch name, tag, `main`, `HEAD~5`, etc. If they didn't specify one, ask for it.
 
-Capture the diff command once: `git diff <fixed-point>...HEAD` (three-dot, so the comparison is against the merge-base). Also note the list of commits via `git log <fixed-point>..HEAD --oneline`.
+Capture the inputs once, using the minimum metadata calls needed to hand accurate inputs to the sub-agents:
 
-Before going further, confirm the fixed point resolves (`git rev-parse <fixed-point>`) and the diff is non-empty. A bad ref or empty diff should fail here — not inside two parallel sub-agents.
+- Resolve the ref with `git rev-parse <fixed-point>`.
+- Record the full diff command, `git diff <fixed-point>...HEAD` (three-dot, so the comparison is against the merge-base), for the sub-agents to run.
+- Record the commit subjects with `git log <fixed-point>..HEAD --oneline`.
+- Verify that the diff is non-empty with `git diff <fixed-point>...HEAD --stat`.
+
+The coordinator needs the resolved ref, command, commit list, and diff stat. A bad ref or empty diff should fail here — not inside two parallel sub-agents. Keep the full diff for the sub-agents to inspect.
 
 ### 2. Identify the spec source
 
@@ -31,9 +36,11 @@ Look for the originating spec, in this order:
 3. A PRD/spec file under `docs/`, `specs/`, or `.scratch/` matching the branch name or feature.
 4. If nothing is found, ask the user where the spec is. If they say there isn't one, the **Spec** sub-agent will skip and report "no spec available".
 
+Identify the source with commit subjects, user-provided references, and file paths. Pass the issue/PR reference or spec path directly to the Spec sub-agent; if no stable reference exists, forward the retrieved spec body as unexamined prompt input. Keep the spec as sub-agent input rather than performing the requirements analysis in the coordinator.
+
 ### 3. Identify the standards sources
 
-Anything in the repo that documents how code should be written, such as `CODING_STANDARDS.md` or `CONTRIBUTING.md`.
+Use the minimum listing/search calls needed to collect paths to anything in the repo that documents how code should be written, such as `CODING_STANDARDS.md` or `CONTRIBUTING.md`. Pass those paths to the Standards sub-agent; the coordinator needs the path list, not the file contents.
 
 On top of whatever the repo documents, the Standards axis always carries the **smell baseline** — Fowler's code smells (_Refactoring_, ch.3), cataloged in [`skills/refactoring/references/smells.md`](../refactoring/references/smells.md), applying even when a repo documents nothing. Two rules bind it:
 
@@ -42,7 +49,7 @@ On top of whatever the repo documents, the Standards axis always carries the **s
 
 ### 4. Spawn both sub-agents in parallel
 
-Send a single message with two `Agent` tool calls. Use the `general-purpose` subagent for both.
+The coordinator's analysis ends at this handoff. Send a single message with two `Agent` tool calls. Use the `general-purpose` subagent for both. Put the fixed-point command, commit list, spec reference or input, and standards-source paths into the prompts so the sub-agents can do the substantive review with their own context.
 
 **Standards sub-agent prompt** — include:
 
@@ -53,10 +60,14 @@ Send a single message with two `Agent` tool calls. Use the `general-purpose` sub
 **Spec sub-agent prompt** — include:
 
 - The diff command and commit list.
-- The path or fetched contents of the spec.
+- The issue/PR reference or spec path from step 2; if step 2 retrieved an external body, pass it through as prompt input without analyzing it.
 - The brief: "Report: (a) requirements the spec asked for that are missing or partial; (b) behaviour in the diff that wasn't asked for (scope creep); (c) requirements that look implemented but where the implementation looks wrong. Quote the spec line for each finding. Under 400 words."
 
 If the spec is missing, skip the Spec sub-agent and note this in the final report.
+
+#### Coordinator boundary after the handoff
+
+Once the sub-agents are spawned, the coordinator's work is limited to collecting their reports, aggregating them, and — when applicable — documenting the review. The coordinator must not read the diff, standards sources, smell catalog, or any source files, and must not run builds or tests. Its only tool use after spawning is what is required to collect sub-agent results and produce or post the review output.
 
 ### 5. Aggregate
 
