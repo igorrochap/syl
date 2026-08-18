@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v1.8.0 (2026-08-18)
+
+### Features
+
+- **orchestration**: Support resuming reviewer sessions
+  ([#45](https://github.com/igorrochap/syl/pull/45),
+  [`9b0432b`](https://github.com/igorrochap/syl/commit/9b0432ba5504c09715cae0ec7f3702cdbff03509))
+
+
 ## v1.7.1 (2026-08-18)
 
 ### Bug Fixes
