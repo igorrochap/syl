@@ -46,6 +46,11 @@ Ticket: %s
 Blocking findings:
 %s`
 
+const reviewResumePrompt = `This is an incremental re-review in the existing reviewer session. Do not spawn fresh Standards/Spec sub-agents. The implementer has addressed your blocking findings, listed below. The updated diff for this iteration is at %s. Re-examine the changes, verify each blocking finding is resolved, check that the fixes introduced no new problems, and end with the mandatory verdict block from the code-review skill.
+
+Blocking findings:
+%s`
+
 var branchTypePattern = regexp.MustCompile(`^(feat|fix|refactor|chore|docs|test|perf|build|ci)$`)
 
 type implementSetup struct {
@@ -207,6 +212,7 @@ func runImplementIterations(ctx context.Context, params implementIterationsParam
 	var blocking []verdict.Finding
 	var nits []verdict.Finding
 	var final verdict.Verdict
+	var previousReviewerSession string
 	iterations := 0
 	for iteration := 1; iteration <= params.projectConfig.Loop.MaxIterations; iteration++ {
 		iterations = iteration
@@ -250,7 +256,17 @@ func runImplementIterations(ctx context.Context, params implementIterationsParam
 		if _, err := fmt.Fprintf(params.output, "iteration %d/%d — reviewing\n", iteration, params.projectConfig.Loop.MaxIterations); err != nil {
 			return 0, verdict.Verdict{}, nil, fmt.Errorf("write review progress: %w", err)
 		}
-		reviewResult, err := RunReviewExecutionWithProgress(ctx, params.reviewer, reviewRequest, newRoleLabelWriter(params.output, "review", ansiColorReview), mode, params.questions)
+		reviewOptions := reviewResumeOptions{
+			sessionID: previousReviewerSession,
+			request:   reviewRequest,
+			output:    newRoleLabelWriter(params.output, "review", ansiColorReview),
+			mode:      mode,
+			questions: params.questions,
+		}
+		if previousReviewerSession != "" {
+			reviewOptions.resumePrompt = composeReviewResumePrompt(diffPath, blocking)
+		}
+		reviewResult, err := runReviewExecutionWithResumeFallback(ctx, params.reviewer, reviewOptions)
 		if err != nil {
 			var unparseable *UnparseableVerdictError
 			if errors.As(err, &unparseable) {
@@ -277,8 +293,13 @@ func runImplementIterations(ctx context.Context, params implementIterationsParam
 			break
 		}
 		blocking = blockingFindings(final)
+		previousReviewerSession = lastUsableSessionID(reviewResult.SessionIDs)
 	}
 	return iterations, final, nits, nil
+}
+
+func composeReviewResumePrompt(diffPath string, blocking []verdict.Finding) string {
+	return fmt.Sprintf(reviewResumePrompt, diffPath, formatBlockingFindings(blocking))
 }
 
 func precomputeReviewDiff(ctx context.Context, git GitRunner, branchPoint, diffPath string) error {
@@ -600,8 +621,9 @@ func (r *runArtifacts) recordSessions(iteration int, role string, sessionIDs []s
 	if r.sessionKeys == nil {
 		r.sessionKeys = make(map[sessionKey]struct{})
 	}
-	for _, sessionID := range sessionIDs {
-		if strings.TrimSpace(sessionID) == "" {
+	for _, recordedSessionID := range sessionIDs {
+		sessionID, ok := normalizeSessionID(recordedSessionID)
+		if !ok {
 			continue
 		}
 		key := sessionKey{iteration: iteration, role: role, sessionID: sessionID}

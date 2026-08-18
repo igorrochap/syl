@@ -201,23 +201,115 @@ type reviewTurnOutput interface {
 	EndTurn() error
 }
 
+type reviewExecutionOptions struct {
+	request          harness.Request
+	output           io.Writer
+	mode             HarnessOutputMode
+	questions        *QuestionHandler
+	turnOutput       reviewTurnOutput
+	initialSessionID string
+	start            harnessStreamStarter
+}
+
+type reviewResumeOptions struct {
+	sessionID    string
+	request      harness.Request
+	resumePrompt string
+	output       io.Writer
+	mode         HarnessOutputMode
+	questions    *QuestionHandler
+}
+
 func runReviewExecution(ctx context.Context, adapter harness.Adapter, request harness.Request, output io.Writer, mode HarnessOutputMode, questions *QuestionHandler, turnOutput reviewTurnOutput) (ReviewExecution, error) {
+	return runReviewExecutionFrom(ctx, adapter, reviewExecutionOptions{
+		request:    request,
+		output:     output,
+		mode:       mode,
+		questions:  questions,
+		turnOutput: turnOutput,
+		start: func(runContext context.Context) (harness.Stream, error) {
+			return adapter.Run(runContext, request)
+		},
+	})
+}
+
+func runReviewExecutionWithResumeFallback(ctx context.Context, adapter harness.Adapter, options reviewResumeOptions) (ReviewExecution, error) {
+	sessionID, hasSession := normalizeSessionID(options.sessionID)
+	if !hasSession {
+		return RunReviewExecutionWithProgress(ctx, adapter, options.request, options.output, options.mode, options.questions)
+	}
+
+	progress := newReviewProgressWriter(options.output)
+	resumeRequest := options.request
+	resumeRequest.Prompt = options.resumePrompt
+	review, err := runReviewExecutionFrom(ctx, adapter, reviewExecutionOptions{
+		request:          resumeRequest,
+		output:           progress,
+		mode:             options.mode,
+		questions:        options.questions,
+		turnOutput:       progress,
+		initialSessionID: sessionID,
+		start: func(runContext context.Context) (harness.Stream, error) {
+			stream, resumeErr := adapter.Resume(runContext, sessionID, resumeRequest)
+			if resumeErr != nil {
+				return nil, &reviewResumeError{cause: resumeErr}
+			}
+			return stream, nil
+		},
+	})
+	if err == nil {
+		return review, nil
+	}
+
+	var resumeErr *reviewResumeError
+	if !errors.As(err, &resumeErr) {
+		return ReviewExecution{}, err
+	}
+	if err := progress.EndTurn(); err != nil {
+		return ReviewExecution{}, fmt.Errorf("flush failed resumed review output: %w", err)
+	}
+	return runReviewExecutionFrom(ctx, adapter, reviewExecutionOptions{
+		request:    options.request,
+		output:     progress,
+		mode:       options.mode,
+		questions:  options.questions,
+		turnOutput: progress,
+		start: func(runContext context.Context) (harness.Stream, error) {
+			return adapter.Run(runContext, options.request)
+		},
+	})
+}
+
+type reviewResumeError struct {
+	cause error
+}
+
+func (e *reviewResumeError) Error() string {
+	return fmt.Sprintf("resume reviewer session: %v", e.cause)
+}
+
+func (e *reviewResumeError) Unwrap() error { return e.cause }
+
+func runReviewExecutionFrom(ctx context.Context, adapter harness.Adapter, options reviewExecutionOptions) (ReviewExecution, error) {
 	var feed bytes.Buffer
-	first, err := runHarnessConversation(ctx, adapter, func(runContext context.Context) (harness.Stream, error) {
-		return adapter.Run(runContext, request)
-	}, conversationOptions{
-		request:   request,
-		output:    output,
+	first, err := runHarnessConversation(ctx, adapter, options.start, conversationOptions{
+		request:   options.request,
+		output:    options.output,
 		artifact:  &feed,
-		mode:      mode,
-		questions: questions,
+		mode:      options.mode,
+		questions: options.questions,
 		role:      "review",
+		sessionID: options.initialSessionID,
 	})
 	if err != nil {
-		return ReviewExecution{}, fmt.Errorf("run review harness: %w", err)
+		reviewErr := fmt.Errorf("run review harness: %w", err)
+		if options.initialSessionID != "" {
+			return ReviewExecution{}, &reviewResumeError{cause: reviewErr}
+		}
+		return ReviewExecution{}, reviewErr
 	}
-	if turnOutput != nil {
-		if err := turnOutput.EndTurn(); err != nil {
+	if options.turnOutput != nil {
+		if err := options.turnOutput.EndTurn(); err != nil {
 			return ReviewExecution{}, fmt.Errorf("flush review output: %w", err)
 		}
 	}
@@ -231,11 +323,11 @@ func runReviewExecution(ctx context.Context, adapter harness.Adapter, request ha
 	}
 
 	retryOptions := conversationOptions{
-		request:   request,
-		output:    output,
+		request:   options.request,
+		output:    options.output,
 		artifact:  &feed,
-		mode:      mode,
-		questions: questions,
+		mode:      options.mode,
+		questions: options.questions,
 		role:      "review",
 		sessionID: first.SessionIDs[len(first.SessionIDs)-1],
 	}
@@ -244,8 +336,8 @@ func runReviewExecution(ctx context.Context, adapter harness.Adapter, request ha
 	if err != nil {
 		return ReviewExecution{}, err
 	}
-	if turnOutput != nil {
-		if err := turnOutput.EndTurn(); err != nil {
+	if options.turnOutput != nil {
+		if err := options.turnOutput.EndTurn(); err != nil {
 			return ReviewExecution{}, fmt.Errorf("flush review output: %w", err)
 		}
 	}
@@ -258,6 +350,15 @@ func runReviewExecution(ctx context.Context, adapter harness.Adapter, request ha
 
 	execution := ReviewExecution{Transcript: transcript, Feed: feed.String(), SessionIDs: sessions}
 	return execution, &UnparseableVerdictError{Execution: execution, Cause: parseErr}
+}
+
+func lastUsableSessionID(sessionIDs []string) string {
+	for index := len(sessionIDs) - 1; index >= 0; index-- {
+		if sessionID, ok := normalizeSessionID(sessionIDs[index]); ok {
+			return sessionID
+		}
+	}
+	return ""
 }
 
 func retryReviewDetails(ctx context.Context, adapter harness.Adapter, options conversationOptions) (harnessTranscript, error) {

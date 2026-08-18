@@ -34,6 +34,24 @@ type conversationOptions struct {
 	role      string
 }
 
+func normalizeSessionID(value string) (string, bool) {
+	value = strings.TrimSpace(value)
+	return value, value != ""
+}
+
+func appendSessionID(sessionIDs []string, sessionID string) []string {
+	sessionID, ok := normalizeSessionID(sessionID)
+	if !ok {
+		return sessionIDs
+	}
+	for _, recorded := range sessionIDs {
+		if recorded == sessionID {
+			return sessionIDs
+		}
+	}
+	return append([]string{sessionID}, sessionIDs...)
+}
+
 type QuestionHandler struct {
 	answers  *bufio.Reader
 	output   io.Writer
@@ -199,7 +217,7 @@ func questionTarget(reference string) string {
 func runHarnessConversation(ctx context.Context, adapter harness.Adapter, start harnessStreamStarter, options conversationOptions) (harnessTranscript, error) {
 	var transcript strings.Builder
 	var sessionIDs []string
-	sessionID := options.sessionID
+	sessionID, _ := normalizeSessionID(options.sessionID)
 	next := start
 
 	for {
@@ -223,7 +241,7 @@ func runHarnessConversation(ctx context.Context, adapter harness.Adapter, start 
 			sessionID = result.SessionIDs[0]
 		}
 		if !result.Blocked {
-			return harnessTranscript{Transcript: transcript.String(), SessionIDs: sessionIDs}, nil
+			return harnessTranscript{Transcript: transcript.String(), SessionIDs: appendSessionID(sessionIDs, sessionID)}, nil
 		}
 		if options.questions == nil {
 			return harnessTranscript{}, errors.New("harness asked a question but no terminal question handler is configured")

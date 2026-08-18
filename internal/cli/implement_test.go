@@ -352,6 +352,176 @@ func TestImplementLoopFeedsBlockingFindingsIntoSecondImplementerPrompt(t *testin
 	}
 }
 
+func TestImplementLoopResumesPreviousReviewerSession(t *testing.T) {
+	fixture := newImplementLoopFixture(t)
+	loop := &resumingLoopHarness{
+		root: fixture.root,
+		streams: [][]harness.Event{
+			{{Type: harness.EventSession, SessionID: "implement-1"}, {Type: harness.EventAssistantText, Text: "First pass.\n"}},
+			{{Type: harness.EventSession, SessionID: "review-1a"}, {Type: harness.EventSession, SessionID: "review-1b"}, {Type: harness.EventAssistantText, Text: reviseVerdictText}},
+			{{Type: harness.EventSession, SessionID: "implement-2"}, {Type: harness.EventAssistantText, Text: "Blocking finding fixed.\n"}},
+		},
+		resumes: [][]harness.Event{
+			{{Type: harness.EventAssistantText, Text: "The blocking finding is resolved, but I omitted the structured verdict."}},
+			{{Type: harness.EventAssistantText, Text: approveVerdictText}},
+		},
+	}
+	fixture.app.deps.Harnesses["codex"] = loop
+	fixture.app.deps.Harnesses["claude"] = loop
+	fixture.app.deps.GH = &loopGHRunner{}
+
+	code := fixture.app.Run(context.Background(), []string{"implement", "#42"}, &fixture.stdout, &fixture.stderr)
+	if code != 0 {
+		t.Fatalf("implement code = %d, want 0; stderr = %q", code, fixture.stderr.String())
+	}
+	if len(loop.requests) != 3 {
+		t.Fatalf("harness Run requests = %d, want two implement turns and one review turn", len(loop.requests))
+	}
+	if len(loop.resumeCalls) != 2 {
+		t.Fatalf("harness Resume calls = %d, want warm re-review plus one verdict re-ask", len(loop.resumeCalls))
+	}
+	if got := loop.resumeCalls[0].sessionID; got != "review-1b" {
+		t.Fatalf("resumed session = %q, want last review session review-1b", got)
+	}
+	if got := loop.resumeCalls[1].request.Prompt; got != "emit the verdict block" {
+		t.Fatalf("verdict re-ask prompt = %q, want mandatory verdict prompt", got)
+	}
+
+	runDirs, err := filepath.Glob(filepath.Join(fixture.root, ".syl", "runs", "*-42"))
+	if err != nil || len(runDirs) != 1 {
+		t.Fatalf("run directories = %v, err = %v; want one issue artifact directory", runDirs, err)
+	}
+	resumePrompt := loop.resumeCalls[0].request.Prompt
+	for _, expected := range []string{
+		filepath.Join(runDirs[0], "iteration-02-review.diff"),
+		"internal/orchestration/review.go:42 — handle a missing session",
+		"incremental re-review",
+		"Do not spawn fresh Standards/Spec sub-agents",
+		"mandatory verdict block",
+	} {
+		if !strings.Contains(resumePrompt, expected) {
+			t.Fatalf("resume prompt = %q, want %q", resumePrompt, expected)
+		}
+	}
+	if strings.Contains(resumePrompt, "/code-review") {
+		t.Fatalf("resume prompt = %q, want no fresh review skill invocation", resumePrompt)
+	}
+
+	sessions, err := os.ReadFile(filepath.Join(runDirs[0], "sessions.txt"))
+	if err != nil {
+		t.Fatalf("read sessions.txt: %v", err)
+	}
+	for _, expected := range []string{"iteration 1 review: review-1a", "iteration 1 review: review-1b", "iteration 2 review: review-1b"} {
+		if !strings.Contains(string(sessions), expected) {
+			t.Fatalf("sessions.txt = %q, want %q", sessions, expected)
+		}
+	}
+	for _, artifact := range []string{
+		"iteration-02-review.feed",
+		"iteration-02-review.transcript",
+		"iteration-02-verdict.txt",
+	} {
+		if _, err := os.Stat(filepath.Join(runDirs[0], artifact)); err != nil {
+			t.Fatalf("stat resumed review artifact %s: %v", artifact, err)
+		}
+	}
+}
+
+func TestImplementLoopFallsBackToFreshReviewWhenResumeCannotStart(t *testing.T) {
+	fixture := newImplementLoopFixture(t)
+	loop := &resumingLoopHarness{
+		root: fixture.root,
+		streams: [][]harness.Event{
+			{{Type: harness.EventSession, SessionID: "implement-1"}, {Type: harness.EventAssistantText, Text: "First pass.\n"}},
+			{{Type: harness.EventSession, SessionID: "review-1"}, {Type: harness.EventAssistantText, Text: reviseVerdictText}},
+			{{Type: harness.EventSession, SessionID: "implement-2"}, {Type: harness.EventAssistantText, Text: "Blocking finding fixed.\n"}},
+			{{Type: harness.EventSession, SessionID: "review-2"}, {Type: harness.EventAssistantText, Text: approveVerdictText}},
+		},
+		resumeErr: fmt.Errorf("review session is unavailable"),
+	}
+	fixture.app.deps.Harnesses["codex"] = loop
+	fixture.app.deps.Harnesses["claude"] = loop
+	fixture.app.deps.GH = &loopGHRunner{}
+
+	code := fixture.app.Run(context.Background(), []string{"implement", "#42"}, &fixture.stdout, &fixture.stderr)
+	if code != 0 {
+		t.Fatalf("implement code = %d, want 0; stderr = %q", code, fixture.stderr.String())
+	}
+	if len(loop.resumeCalls) != 1 {
+		t.Fatalf("harness Resume calls = %d, want one attempted warm re-review", len(loop.resumeCalls))
+	}
+	if len(loop.requests) != 4 {
+		t.Fatalf("harness Run requests = %d, want fresh review fallback", len(loop.requests))
+	}
+	if !strings.Contains(loop.requests[3].Prompt, "/code-review") {
+		t.Fatalf("fallback review prompt = %q, want full review prompt", loop.requests[3].Prompt)
+	}
+	if !strings.Contains(fixture.stdout.String(), "Iterations: 2") || !strings.Contains(fixture.stdout.String(), "Final verdict: approve") {
+		t.Fatalf("stdout = %q, want successful two-iteration fallback summary", fixture.stdout.String())
+	}
+}
+
+func TestImplementLoopFallsBackWhenResumedReviewStreamFails(t *testing.T) {
+	fixture := newImplementLoopFixture(t)
+	loop := &resumingLoopHarness{
+		root: fixture.root,
+		streams: [][]harness.Event{
+			{{Type: harness.EventSession, SessionID: "implement-1"}, {Type: harness.EventAssistantText, Text: "First pass.\n"}},
+			{{Type: harness.EventSession, SessionID: "review-1"}, {Type: harness.EventAssistantText, Text: reviseVerdictText}},
+			{{Type: harness.EventSession, SessionID: "implement-2"}, {Type: harness.EventAssistantText, Text: "Blocking finding fixed.\n"}},
+			{{Type: harness.EventSession, SessionID: "review-2"}, {Type: harness.EventAssistantText, Text: approveVerdictText}},
+		},
+		resumes: [][]harness.Event{
+			{{Type: harness.EventSession, SessionID: "review-1"}, {Type: harness.EventAssistantText, Text: "The resumed review started, then failed."}},
+		},
+		resumeWaitErr: fmt.Errorf("review process exited during streaming"),
+	}
+	fixture.app.deps.Harnesses["codex"] = loop
+	fixture.app.deps.Harnesses["claude"] = loop
+	fixture.app.deps.GH = &loopGHRunner{}
+
+	code := fixture.app.Run(context.Background(), []string{"implement", "#42"}, &fixture.stdout, &fixture.stderr)
+	if code != 0 {
+		t.Fatalf("implement code = %d, want 0; stderr = %q", code, fixture.stderr.String())
+	}
+	if len(loop.resumeCalls) != 1 {
+		t.Fatalf("harness Resume calls = %d, want one failed warm re-review", len(loop.resumeCalls))
+	}
+	if len(loop.requests) != 4 || !strings.Contains(loop.requests[3].Prompt, "/code-review") {
+		t.Fatalf("harness requests = %#v, want a fresh review after stream failure", loop.requests)
+	}
+	if !strings.Contains(fixture.stdout.String(), "Final verdict: approve") {
+		t.Fatalf("stdout = %q, want successful fallback verdict", fixture.stdout.String())
+	}
+}
+
+func TestImplementLoopStartsFreshReviewWithoutUsableSessionID(t *testing.T) {
+	fixture := newImplementLoopFixture(t)
+	loop := &resumingLoopHarness{
+		root: fixture.root,
+		streams: [][]harness.Event{
+			{{Type: harness.EventSession, SessionID: "implement-1"}, {Type: harness.EventAssistantText, Text: "First pass.\n"}},
+			{{Type: harness.EventAssistantText, Text: reviseVerdictText}},
+			{{Type: harness.EventSession, SessionID: "implement-2"}, {Type: harness.EventAssistantText, Text: "Blocking finding fixed.\n"}},
+			{{Type: harness.EventSession, SessionID: "review-2"}, {Type: harness.EventAssistantText, Text: approveVerdictText}},
+		},
+	}
+	fixture.app.deps.Harnesses["codex"] = loop
+	fixture.app.deps.Harnesses["claude"] = loop
+	fixture.app.deps.GH = &loopGHRunner{}
+
+	code := fixture.app.Run(context.Background(), []string{"implement", "#42"}, &fixture.stdout, &fixture.stderr)
+	if code != 0 {
+		t.Fatalf("implement code = %d, want 0; stderr = %q", code, fixture.stderr.String())
+	}
+	if len(loop.resumeCalls) != 0 {
+		t.Fatalf("harness Resume calls = %d, want no resume without a usable session ID", len(loop.resumeCalls))
+	}
+	if len(loop.requests) != 4 || !strings.Contains(loop.requests[3].Prompt, "/code-review") {
+		t.Fatalf("harness requests = %#v, want a fresh full review on iteration 2", loop.requests)
+	}
+}
+
 func TestImplementLoopStillIteratesForNitOnlyRevisionAndSummarizesNits(t *testing.T) {
 	fixture := newImplementLoopFixture(t)
 	implementer := &loopHarness{
@@ -592,6 +762,73 @@ type loopHarness struct {
 	streams  [][]harness.Event
 	requests []harness.Request
 }
+
+type resumingLoopHarness struct {
+	root          string
+	streams       [][]harness.Event
+	resumes       [][]harness.Event
+	requests      []harness.Request
+	resumeCalls   []resumeCall
+	resumeErr     error
+	resumeWaitErr error
+}
+
+type resumeCall struct {
+	sessionID string
+	request   harness.Request
+}
+
+func (h *resumingLoopHarness) Run(_ context.Context, request harness.Request) (harness.Stream, error) {
+	h.requests = append(h.requests, request)
+	index := len(h.requests) - 1
+	if strings.Contains(request.Prompt, "/implement") || strings.Contains(request.Prompt, "/fix-review") {
+		if err := os.WriteFile(filepath.Join(h.root, "change.txt"), []byte(fmt.Sprintf("implemented-%d\n", index)), 0o644); err != nil {
+			return nil, err
+		}
+		if output, err := exec.Command("git", "-C", h.root, "add", "change.txt").CombinedOutput(); err != nil {
+			return nil, fmt.Errorf("stage fixture change: %v\n%s", err, output)
+		}
+	}
+	if index >= len(h.streams) {
+		return nil, fmt.Errorf("no scripted harness stream for request %d", index+1)
+	}
+	return scriptedHarnessStream{events: h.streams[index]}, nil
+}
+
+func (h *resumingLoopHarness) Resume(_ context.Context, sessionID string, request harness.Request) (harness.Stream, error) {
+	h.resumeCalls = append(h.resumeCalls, resumeCall{sessionID: sessionID, request: request})
+	if h.resumeErr != nil {
+		return nil, h.resumeErr
+	}
+	index := len(h.resumeCalls) - 1
+	if index >= len(h.resumes) {
+		return nil, fmt.Errorf("no scripted resume stream for call %d", index+1)
+	}
+	if h.resumeWaitErr != nil {
+		return failingHarnessStream{events: h.resumes[index], err: h.resumeWaitErr}, nil
+	}
+	return scriptedHarnessStream{events: h.resumes[index]}, nil
+}
+
+func (*resumingLoopHarness) Attach(context.Context, harness.Request) error {
+	return fmt.Errorf("unexpected harness attach")
+}
+
+type failingHarnessStream struct {
+	events []harness.Event
+	err    error
+}
+
+func (s failingHarnessStream) Events() <-chan harness.Event {
+	channel := make(chan harness.Event, len(s.events))
+	for _, event := range s.events {
+		channel <- event
+	}
+	close(channel)
+	return channel
+}
+
+func (s failingHarnessStream) Wait() error { return s.err }
 
 type unparseableReviewImplementHarness struct {
 	root        string
