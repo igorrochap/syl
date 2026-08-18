@@ -222,8 +222,8 @@ func (h *questionHarness) Run(_ context.Context, _ harness.Request) (harness.Str
 	return scriptedHarnessStream{events: events}, nil
 }
 
-func (h *questionHarness) Resume(_ context.Context, sessionID, prompt string) (harness.Stream, error) {
-	h.resumes = append(h.resumes, questionResume{sessionID: sessionID, prompt: prompt})
+func (h *questionHarness) Resume(_ context.Context, sessionID string, request harness.Request) (harness.Stream, error) {
+	h.resumes = append(h.resumes, questionResume{sessionID: sessionID, prompt: request.Prompt})
 	index := len(h.resumes) - 1
 	if index >= len(h.resumeStreams) {
 		return nil, fmt.Errorf("no scripted resume stream remains")
@@ -246,7 +246,7 @@ func (h *contextAwareQuestionHarness) Run(ctx context.Context, _ harness.Request
 	}}, nil
 }
 
-func (h *contextAwareQuestionHarness) Resume(_ context.Context, sessionID, _ string) (harness.Stream, error) {
+func (h *contextAwareQuestionHarness) Resume(_ context.Context, sessionID string, _ harness.Request) (harness.Stream, error) {
 	select {
 	case <-h.runContext.Done():
 		h.cancelledBeforeResume = true

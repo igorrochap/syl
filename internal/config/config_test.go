@@ -51,6 +51,15 @@ effort = "medium"
 	if got.Roles.Implement.Harness != HarnessCodex {
 		t.Fatalf("Roles.Implement.Harness = %q, want %q", got.Roles.Implement.Harness, HarnessCodex)
 	}
+	if !got.Roles.Plan.MCP {
+		t.Fatal("Roles.Plan.MCP = false, want true by default")
+	}
+	if !got.Roles.Implement.MCP {
+		t.Fatal("Roles.Implement.MCP = false, want true by default")
+	}
+	if got.Roles.Review.MCP {
+		t.Fatal("Roles.Review.MCP = true, want false by default")
+	}
 }
 
 func TestLoadHonorsExplicitOptionalValues(t *testing.T) {
@@ -74,6 +83,7 @@ effort = "medium"
 harness = "claude"
 model = "claude-reviewer"
 effort = "xhigh"
+mcp = true
 
 [loop]
 max_iterations = 7
@@ -91,6 +101,24 @@ enabled = false
 	}
 	if got.Notifications.Enabled {
 		t.Fatal("Notifications.Enabled = true, want false")
+	}
+	if !got.Roles.Review.MCP {
+		t.Fatal("Roles.Review.MCP = false, want true when explicitly enabled")
+	}
+}
+
+func TestLoadHonorsExplicitMCPDisableForNonReviewRole(t *testing.T) {
+	root := t.TempDir()
+	contents := strings.Replace(configWithRoleValue("plan", "model", "claude-planner"),
+		"effort = \"high\"", "effort = \"high\"\nmcp = false", 1)
+	writeConfig(t, root, contents)
+
+	got, err := Load(root)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if got.Roles.Plan.MCP {
+		t.Fatal("Roles.Plan.MCP = true, want false when explicitly disabled")
 	}
 }
 
@@ -167,6 +195,21 @@ model = "claude-opus-5"
 effort = "extreme"
 `,
 			wantKey: "roles.plan.effort",
+		},
+		{
+			name: "mcp",
+			config: `
+[tracker]
+issues = "github"
+reviews = "local"
+
+[roles.plan]
+harness = "claude"
+model = "claude-opus-5"
+effort = "high"
+mcp = "sometimes"
+`,
+			wantKey: "roles.plan.mcp",
 		},
 	}
 

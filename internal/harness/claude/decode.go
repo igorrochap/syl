@@ -2,6 +2,7 @@ package claude
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -35,12 +36,23 @@ func runArgs(request harness.Request) ([]string, error) {
 	if strings.TrimSpace(request.Prompt) == "" {
 		return nil, fmt.Errorf("Claude Code prompt is required")
 	}
-	args := append(baseFlags(),
+	args := append(baseFlags(mcpEnabled(request.MCP)),
 		"--model", request.Model,
 		"--effort", effort,
 		request.Prompt,
 	)
 	return args, nil
+}
+
+func resumeArgs(sessionID string, request harness.Request) ([]string, error) {
+	if strings.TrimSpace(sessionID) == "" {
+		return nil, errors.New("cannot resume Claude Code session without a session id")
+	}
+	if strings.TrimSpace(request.Prompt) == "" {
+		return nil, errors.New("cannot resume Claude Code session without a prompt")
+	}
+	args := append([]string{"--resume", sessionID}, baseFlags(mcpEnabled(request.MCP))...)
+	return append(args, request.Prompt), nil
 }
 
 type claudeStreamMessage struct {

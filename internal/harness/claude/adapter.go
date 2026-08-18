@@ -19,6 +19,8 @@ type Adapter struct {
 	projectRoot string
 }
 
+type mcpEnabled bool
+
 func New(projectRoot string) *Adapter {
 	return &Adapter{command: "claude", projectRoot: projectRoot}
 }
@@ -33,19 +35,16 @@ func (a *Adapter) Run(ctx context.Context, request harness.Request) (harness.Str
 	return a.start(ctx, args)
 }
 
-func (a *Adapter) Resume(ctx context.Context, sessionID, prompt string) (harness.Stream, error) {
-	if strings.TrimSpace(sessionID) == "" {
-		return nil, errors.New("cannot resume Claude Code session without a session id")
+func (a *Adapter) Resume(ctx context.Context, sessionID string, request harness.Request) (harness.Stream, error) {
+	args, err := resumeArgs(sessionID, request)
+	if err != nil {
+		return nil, err
 	}
-	if strings.TrimSpace(prompt) == "" {
-		return nil, errors.New("cannot resume Claude Code session without a prompt")
-	}
-	args := append([]string{"--resume", sessionID}, baseFlags()...)
-	return a.start(ctx, append(args, prompt))
+	return a.start(ctx, args)
 }
 
-func baseFlags() []string {
-	return []string{
+func baseFlags(enabled mcpEnabled) []string {
+	args := []string{
 		"--print",
 		"--output-format", "stream-json",
 		"--verbose",
@@ -57,6 +56,10 @@ func baseFlags() []string {
 		// approval model the Codex adapter already relies on.
 		"--permission-mode", "bypassPermissions",
 	}
+	if !enabled {
+		args = append(args, "--strict-mcp-config")
+	}
+	return args
 }
 
 func (*Adapter) Attach(context.Context, harness.Request) error {

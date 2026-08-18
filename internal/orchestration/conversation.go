@@ -25,6 +25,7 @@ const QuestionInputHelp = "When a harness asks a QUESTION, syl prints it as a bl
 type harnessStreamStarter func(context.Context) (harness.Stream, error)
 
 type conversationOptions struct {
+	request   harness.Request
 	output    io.Writer
 	artifact  io.Writer
 	mode      HarnessOutputMode
@@ -236,7 +237,9 @@ func runHarnessConversation(ctx context.Context, adapter harness.Adapter, start 
 			return harnessTranscript{}, err
 		}
 		next = func(resumeContext context.Context) (harness.Stream, error) {
-			return adapter.Resume(resumeContext, sessionID, answer)
+			resumeRequest := options.request
+			resumeRequest.Prompt = answer
+			return adapter.Resume(resumeContext, sessionID, resumeRequest)
 		}
 	}
 }

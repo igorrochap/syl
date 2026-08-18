@@ -49,6 +49,9 @@ func TestReviewTopSeamApprovePrintsFeedAndWritesLog(t *testing.T) {
 	if harness.runRequest.Model != "claude-sonnet-5" || harness.runRequest.Effort != "medium" {
 		t.Fatalf("review request = %#v, want configured model and effort", harness.runRequest)
 	}
+	if harness.runRequest.MCP {
+		t.Fatal("review request MCP = true, want lean default false")
+	}
 	logContents := readSingleReviewLog(t, fixture.root)
 	if !strings.Contains(logContents, "VERDICT: approve") || !strings.Contains(logContents, "Reviewed ref: branch-point") || !strings.Contains(logContents, "Timestamp:") {
 		t.Fatalf("review log = %q, want verdict, ref, and timestamp", logContents)
@@ -501,10 +504,10 @@ func (h *scriptedHarness) Run(_ context.Context, request harness.Request) (harne
 	return scriptedHarnessStream{events: h.first}, nil
 }
 
-func (h *scriptedHarness) Resume(_ context.Context, sessionID, prompt string) (harness.Stream, error) {
+func (h *scriptedHarness) Resume(_ context.Context, sessionID string, request harness.Request) (harness.Stream, error) {
 	h.resumeCount++
 	h.resumedSession = sessionID
-	h.resumePrompt = prompt
+	h.resumePrompt = request.Prompt
 	return scriptedHarnessStream{events: h.retry}, nil
 }
 

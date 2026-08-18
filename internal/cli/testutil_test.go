@@ -78,7 +78,7 @@ func (fakeHarness) Run(context.Context, harness.Request) (harness.Stream, error)
 	return emptyHarnessStream{}, nil
 }
 
-func (fakeHarness) Resume(context.Context, string, string) (harness.Stream, error) {
+func (fakeHarness) Resume(context.Context, string, harness.Request) (harness.Stream, error) {
 	return emptyHarnessStream{}, nil
 }
 

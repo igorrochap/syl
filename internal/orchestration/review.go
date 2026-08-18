@@ -109,7 +109,8 @@ func RunReview(ctx context.Context, options ReviewOptions) error {
 		mode = RawHarnessOutput
 	}
 	reviewVerdict, err := runReview(ctx, options.Adapter, harness.Request{
-		Model: options.ProjectConfig.Roles.Review.Model, Effort: options.ProjectConfig.Roles.Review.Effort, Prompt: prompt,
+		Model: options.ProjectConfig.Roles.Review.Model, Effort: options.ProjectConfig.Roles.Review.Effort,
+		Prompt: prompt, MCP: options.ProjectConfig.Roles.Review.MCP,
 	}, options.Output, mode, questions)
 	if err != nil {
 		var unparseable *UnparseableVerdictError
@@ -205,6 +206,7 @@ func runReviewExecution(ctx context.Context, adapter harness.Adapter, request ha
 	first, err := runHarnessConversation(ctx, adapter, func(runContext context.Context) (harness.Stream, error) {
 		return adapter.Run(runContext, request)
 	}, conversationOptions{
+		request:   request,
 		output:    output,
 		artifact:  &feed,
 		mode:      mode,
@@ -228,7 +230,17 @@ func runReviewExecution(ctx context.Context, adapter harness.Adapter, request ha
 		return execution, &UnparseableVerdictError{Execution: execution, Cause: parseErr}
 	}
 
-	retry, err := retryReviewDetails(ctx, adapter, first.SessionIDs[len(first.SessionIDs)-1], output, &feed, mode, questions)
+	retryOptions := conversationOptions{
+		request:   request,
+		output:    output,
+		artifact:  &feed,
+		mode:      mode,
+		questions: questions,
+		role:      "review",
+		sessionID: first.SessionIDs[len(first.SessionIDs)-1],
+	}
+	retryOptions.request.Prompt = "emit the verdict block"
+	retry, err := retryReviewDetails(ctx, adapter, retryOptions)
 	if err != nil {
 		return ReviewExecution{}, err
 	}
@@ -248,17 +260,10 @@ func runReviewExecution(ctx context.Context, adapter harness.Adapter, request ha
 	return execution, &UnparseableVerdictError{Execution: execution, Cause: parseErr}
 }
 
-func retryReviewDetails(ctx context.Context, adapter harness.Adapter, sessionID string, output, artifact io.Writer, mode HarnessOutputMode, questions *QuestionHandler) (harnessTranscript, error) {
+func retryReviewDetails(ctx context.Context, adapter harness.Adapter, options conversationOptions) (harnessTranscript, error) {
 	transcript, err := runHarnessConversation(ctx, adapter, func(resumeContext context.Context) (harness.Stream, error) {
-		return adapter.Resume(resumeContext, sessionID, "emit the verdict block")
-	}, conversationOptions{
-		output:    output,
-		artifact:  artifact,
-		mode:      mode,
-		questions: questions,
-		role:      "review",
-		sessionID: sessionID,
-	})
+		return adapter.Resume(resumeContext, options.sessionID, options.request)
+	}, options)
 	if err != nil {
 		return harnessTranscript{}, fmt.Errorf("re-ask reviewer for verdict: %w", err)
 	}

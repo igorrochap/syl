@@ -298,6 +298,12 @@ func TestImplementLoopFeedsBlockingFindingsIntoSecondImplementerPrompt(t *testin
 	if len(implementer.requests) != 4 {
 		t.Fatalf("harness requests = %d, want two implement and two review requests", len(implementer.requests))
 	}
+	for i, request := range implementer.requests {
+		wantMCP := i%2 == 0
+		if request.MCP != wantMCP {
+			t.Fatalf("request %d MCP = %t, want %t", i+1, request.MCP, wantMCP)
+		}
+	}
 	secondPrompt := implementer.requests[2].Prompt
 	if !strings.Contains(secondPrompt, "/fix-review") || !strings.Contains(secondPrompt, "Address ONLY") || !strings.Contains(secondPrompt, "- [blocking] internal/orchestration/review.go:42 — handle a missing session") {
 		t.Fatalf("second implementer prompt = %q, want only the verbatim blocking finding", secondPrompt)
@@ -617,7 +623,7 @@ func (h *unparseableReviewImplementHarness) Run(_ context.Context, request harne
 	}
 }
 
-func (h *unparseableReviewImplementHarness) Resume(context.Context, string, string) (harness.Stream, error) {
+func (h *unparseableReviewImplementHarness) Resume(context.Context, string, harness.Request) (harness.Stream, error) {
 	h.resumeCount++
 	return scriptedHarnessStream{events: []harness.Event{
 		{Type: harness.EventAssistantText, Text: "The re-ask also omitted the verdict."},
@@ -643,7 +649,7 @@ func (h *loopHarness) Run(_ context.Context, request harness.Request) (harness.S
 	return scriptedHarnessStream{events: h.streams[index]}, nil
 }
 
-func (*loopHarness) Resume(context.Context, string, string) (harness.Stream, error) {
+func (*loopHarness) Resume(context.Context, string, harness.Request) (harness.Stream, error) {
 	return nil, fmt.Errorf("unexpected harness resume")
 }
 

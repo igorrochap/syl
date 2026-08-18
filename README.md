@@ -149,16 +149,26 @@ reviews = "local"
 harness = "claude"
 model = "claude-opus-5"
 effort = "high"
+# mcp = true inherits user/project MCP configuration; false strips it for Claude.
+# Codex ignores this field. Omitted defaults are true for plan and implement, and false for review.
+mcp = true
 
 [roles.implement]
 harness = "codex"
 model = "gpt-5.6-luna"
 effort = "xhigh"
+# mcp = true inherits user/project MCP configuration; false strips it for Claude.
+# Codex ignores this field. Omitted defaults are true for plan and implement, and false for review.
+mcp = true
 
 [roles.review]
 harness = "claude"
 model = "claude-sonnet-5"
 effort = "medium"
+# mcp = true inherits user/project MCP configuration; false strips it for Claude.
+# Codex ignores this field. Omitted defaults are true for plan and implement, and false for review.
+# Hooks that require MCP may cause one blocked-then-retried tool call in lean sessions.
+mcp = false
 
 [loop]
 max_iterations = 3
@@ -228,6 +238,7 @@ then submit it with an empty line or end-of-file (Ctrl-D).
 | `roles.<role>.harness` | `claude`, `codex`, `opencode` | Harness for the Role. |
 | `roles.<role>.model` | any string | Model identifier passed to the Harness. |
 | `roles.<role>.effort` | `low`, `medium`, `high`, `xhigh` | Effort level passed to the Harness. |
+| `roles.<role>.mcp` | `true`, `false` | Whether Claude sessions inherit user/project MCP configuration. Defaults to `true` for plan and implement, `false` for review. Codex ignores it. |
 | `loop.max_iterations` | integer | Cap on implement/review iterations for `syl implement`. |
 | `notifications.enabled` | `true`, `false` | Send a desktop or terminal-bell notification on completion or on a `QUESTION`. |
 

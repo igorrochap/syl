@@ -41,16 +41,16 @@ func (a *Adapter) Run(ctx context.Context, request harness.Request) (harness.Str
 	return a.start(ctx, args)
 }
 
-func (a *Adapter) Resume(ctx context.Context, sessionID, prompt string) (harness.Stream, error) {
+func (a *Adapter) Resume(ctx context.Context, sessionID string, request harness.Request) (harness.Stream, error) {
 	if strings.TrimSpace(sessionID) == "" {
 		return nil, errors.New("cannot resume Codex session without a session id")
 	}
-	if strings.TrimSpace(prompt) == "" {
+	if strings.TrimSpace(request.Prompt) == "" {
 		return nil, errors.New("cannot resume Codex session without a prompt")
 	}
 	args := []string{"exec", "resume", "--json"}
 	args = a.withProjectRoot(args)
-	args = append(args, sessionID, prompt)
+	args = append(args, sessionID, request.Prompt)
 	return a.start(ctx, args)
 }
 
