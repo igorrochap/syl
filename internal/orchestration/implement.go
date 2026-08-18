@@ -381,6 +381,13 @@ func newReviewProgressWriter(output io.Writer) *reviewProgressWriter {
 	return &reviewProgressWriter{output: output, parser: newStreamMarkerParser(verdict.BlockStartMarker)}
 }
 
+// Unwrap exposes the underlying writer so the quiet-mode spinner can detect the
+// real terminal through this verdict-hiding wrapper, giving the reviewer role
+// the same animation as the implementer instead of no spinner at all.
+func (w *reviewProgressWriter) Unwrap() io.Writer {
+	return w.output
+}
+
 func (w *reviewProgressWriter) Write(p []byte) (int, error) {
 	visible := w.parser.Feed(string(p))
 	if visible == "" {
@@ -427,6 +434,12 @@ func newRoleLabelWriter(output io.Writer, role, ansiColor string) *roleLabelWrit
 	return &roleLabelWriter{output: output, prefix: label, atLineStart: true}
 }
 
+// Unwrap exposes the underlying writer so callers like the quiet-mode
+// spinner can detect the real terminal through this label-prefixing wrapper.
+func (w *roleLabelWriter) Unwrap() io.Writer {
+	return w.output
+}
+
 func shouldColorizeOutput(output io.Writer) bool {
 	if os.Getenv("NO_COLOR") != "" {
 		return false
@@ -446,7 +459,7 @@ func (w *roleLabelWriter) Write(p []byte) (int, error) {
 			w.atLineStart = false
 		}
 		labeled.WriteByte(b)
-		if b == '\n' {
+		if b == '\n' || b == '\r' {
 			w.atLineStart = true
 		}
 	}

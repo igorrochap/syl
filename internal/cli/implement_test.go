@@ -165,7 +165,7 @@ func TestImplementLoopStreamsImplementerAndReviewerProgress(t *testing.T) {
 	}
 }
 
-func TestImplementLoopQuietlyShowsProgressWithoutAssistantProse(t *testing.T) {
+func TestImplementLoopQuietlyShowsProgressWithoutToolCalls(t *testing.T) {
 	fixture := newImplementLoopFixture(t)
 	loop := &loopHarness{
 		root: fixture.root,
@@ -196,8 +196,8 @@ func TestImplementLoopQuietlyShowsProgressWithoutAssistantProse(t *testing.T) {
 	for _, expected := range []string{
 		"iteration 1/3 — implementing",
 		"iteration 1/3 — reviewing",
-		"[implement] tool: edit — change.txt",
-		"[review] tool: git diff — branch point",
+		"[implement] Implementer internal prose.",
+		"[review] Reviewer internal prose.",
 		"VERDICT: approve",
 		"SUMMARY: The working tree is ready",
 	} {
@@ -205,9 +205,9 @@ func TestImplementLoopQuietlyShowsProgressWithoutAssistantProse(t *testing.T) {
 			t.Fatalf("stdout = %q, want %q", output, expected)
 		}
 	}
-	for _, suppressed := range []string{"Implementer internal prose.", "Reviewer internal prose."} {
+	for _, suppressed := range []string{"tool: edit — change.txt", "tool: git diff — branch point"} {
 		if strings.Contains(output, suppressed) {
-			t.Fatalf("stdout = %q, want assistant prose %q suppressed", output, suppressed)
+			t.Fatalf("stdout = %q, want tool call %q suppressed", output, suppressed)
 		}
 	}
 }

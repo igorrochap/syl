@@ -45,7 +45,7 @@ func TestReviewTopSeamApprovePrintsFeedAndWritesLog(t *testing.T) {
 	}
 }
 
-func TestReviewTopSeamQuietSuppressesAssistantProse(t *testing.T) {
+func TestReviewTopSeamQuietSuppressesToolCalls(t *testing.T) {
 	harness := &scriptedHarness{first: []harness.Event{
 		{Type: harness.EventSession, SessionID: "session-quiet"},
 		{Type: harness.EventAssistantText, Text: "Reviewer internal prose.\n"},
@@ -59,11 +59,11 @@ func TestReviewTopSeamQuietSuppressesAssistantProse(t *testing.T) {
 		t.Fatalf("review code = %d, stderr = %q", code, fixture.stderr.String())
 	}
 	output := fixture.stdout.String()
-	if !strings.Contains(output, "tool: Bash — {\"command\":\"git diff\"}") || !strings.Contains(output, "VERDICT: approve") {
-		t.Fatalf("stdout = %q, want tool progress and rendered verdict", output)
+	if !strings.Contains(output, "Reviewer internal prose.") || !strings.Contains(output, "VERDICT: approve") {
+		t.Fatalf("stdout = %q, want assistant prose and rendered verdict", output)
 	}
-	if strings.Contains(output, "Reviewer internal prose.") {
-		t.Fatalf("stdout = %q, want assistant prose suppressed", output)
+	if strings.Contains(output, "tool: Bash — {\"command\":\"git diff\"}") {
+		t.Fatalf("stdout = %q, want tool call suppressed", output)
 	}
 }
 
