@@ -228,11 +228,15 @@ func runImplementIterations(ctx context.Context, params implementIterationsParam
 		if err := ensureHeadUnchanged(ctx, params.git, params.branchPoint); err != nil {
 			return 0, verdict.Verdict{}, nil, err
 		}
+		diffPath := filepath.Join(params.artifacts.dir, fmt.Sprintf("iteration-%02d-review.diff", iteration))
+		if err := precomputeReviewDiff(ctx, params.git, params.branchPoint, diffPath); err != nil {
+			return 0, verdict.Verdict{}, nil, err
+		}
 
 		reviewRequest := harness.Request{
 			Model:  params.projectConfig.Roles.Review.Model,
 			Effort: params.projectConfig.Roles.Review.Effort,
-			Prompt: composeReviewPromptAgainstRef("#"+strconv.Itoa(params.ticket.Number), params.ticket, params.branchPoint),
+			Prompt: composeReviewPrompt("#"+strconv.Itoa(params.ticket.Number), &params.ticket, params.branchPoint, diffPath),
 		}
 		if _, err := fmt.Fprintf(params.output, "iteration %d/%d — reviewing\n", iteration, params.projectConfig.Loop.MaxIterations); err != nil {
 			return 0, verdict.Verdict{}, nil, fmt.Errorf("write review progress: %w", err)
@@ -266,6 +270,14 @@ func runImplementIterations(ctx context.Context, params implementIterationsParam
 		blocking = blockingFindings(final)
 	}
 	return iterations, final, nits, nil
+}
+
+func precomputeReviewDiff(ctx context.Context, git GitRunner, branchPoint, diffPath string) error {
+	diff, err := computeReviewDiff(ctx, git, branchPoint)
+	if err != nil {
+		return err
+	}
+	return writeReviewDiffArtifact(diffPath, diff)
 }
 
 func composeImplementPrompt(ticket tracker.Ticket, blocking []verdict.Finding, iteration int) string {

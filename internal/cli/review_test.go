@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -15,7 +16,7 @@ func TestReviewTopSeamApprovePrintsFeedAndWritesLog(t *testing.T) {
 	harness := &scriptedHarness{first: []harness.Event{
 		{Type: harness.EventSession, SessionID: "session-approve"},
 		{Type: harness.EventAssistantText, Text: "Reviewing the diff...\n"},
-		{Type: harness.EventToolUse, ToolName: "Bash", ArgumentGist: `{"command":"git diff"}`},
+		{Type: harness.EventToolUse, ToolName: "Bash", ArgumentGist: `{"command":"cat review.diff"}`},
 		{Type: harness.EventAssistantText, Text: "Done.\n" + approveVerdictText},
 	}}
 	fixture := newReviewFixture(t, harness)
@@ -27,7 +28,7 @@ func TestReviewTopSeamApprovePrintsFeedAndWritesLog(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("review code = %d, want 0; stderr = %q", code, fixture.stderr.String())
 	}
-	if !strings.Contains(fixture.stdout.String(), "Reviewing the diff...") || !strings.Contains(fixture.stdout.String(), "tool: Bash — {\"command\":\"git diff\"}") {
+	if !strings.Contains(fixture.stdout.String(), "Reviewing the diff...") || !strings.Contains(fixture.stdout.String(), "tool: Bash — {\"command\":\"cat review.diff\"}") {
 		t.Fatalf("stdout = %q, want parsed feed", fixture.stdout.String())
 	}
 	if !strings.Contains(fixture.stdout.String(), "VERDICT: approve") {
@@ -35,7 +36,8 @@ func TestReviewTopSeamApprovePrintsFeedAndWritesLog(t *testing.T) {
 	}
 	for _, expected := range []string{
 		"/code-review",
-		"current working-tree diff",
+		"pre-computed diff",
+		"authoritative",
 		"Do not read or write review documents; the invoking tool records the verdict.",
 		"The verdict block you print is the only record.",
 		"QUESTION:",
@@ -48,8 +50,74 @@ func TestReviewTopSeamApprovePrintsFeedAndWritesLog(t *testing.T) {
 		t.Fatalf("review request = %#v, want configured model and effort", harness.runRequest)
 	}
 	logContents := readSingleReviewLog(t, fixture.root)
-	if !strings.Contains(logContents, "VERDICT: approve") || !strings.Contains(logContents, "Reviewed ref: working-tree") || !strings.Contains(logContents, "Timestamp:") {
+	if !strings.Contains(logContents, "VERDICT: approve") || !strings.Contains(logContents, "Reviewed ref: branch-point") || !strings.Contains(logContents, "Timestamp:") {
 		t.Fatalf("review log = %q, want verdict, ref, and timestamp", logContents)
+	}
+}
+
+func TestReviewPrecomputesAuthoritativeDiffOnceAndPassesArtifactPath(t *testing.T) {
+	harness := &scriptedHarness{first: []harness.Event{
+		{Type: harness.EventSession, SessionID: "session-diff"},
+		{Type: harness.EventAssistantText, Text: approveVerdictText},
+	}}
+	fixture := newReviewFixture(t, harness)
+	git := fixture.app.deps.Git.(*reviewGitRunner)
+
+	code := fixture.app.Run(context.Background(), []string{"review"}, &fixture.stdout, &fixture.stderr)
+	if code != 0 {
+		t.Fatalf("review code = %d, want 0; stderr = %q", code, fixture.stderr.String())
+	}
+
+	runDirs := reviewRunArtifactPaths(t, fixture.root)
+	if len(runDirs) != 1 {
+		t.Fatalf("run artifact directories = %v, want one", runDirs)
+	}
+	diffPath := filepath.Join(runDirs[0], "review.diff")
+	diff, err := os.ReadFile(diffPath)
+	if err != nil {
+		t.Fatalf("read pre-computed diff: %v", err)
+	}
+	if string(diff) != git.diff {
+		t.Fatalf("review diff = %q, want %q", diff, git.diff)
+	}
+	for _, expected := range []string{
+		diffPath,
+		"branch-point",
+		"authoritative diff",
+		"Do not run Git to re-derive the diff",
+	} {
+		if !strings.Contains(harness.runRequest.Prompt, expected) {
+			t.Fatalf("review prompt = %q, want %q", harness.runRequest.Prompt, expected)
+		}
+	}
+	if got := strings.Join(git.calls, "\n"); got != "rev-parse HEAD\ndiff branch-point" {
+		t.Fatalf("git calls = %q, want one ref lookup and one diff", got)
+	}
+}
+
+func TestReviewRejectsEmptyPrecomputedDiffBeforeRunningHarness(t *testing.T) {
+	fixture := newReviewFixture(t, &scriptedHarness{})
+	fixture.app.deps.Git.(*reviewGitRunner).diff = "  \n"
+
+	code := fixture.app.Run(context.Background(), []string{"review"}, &fixture.stdout, &fixture.stderr)
+	if code == 0 || !strings.Contains(fixture.stderr.String(), "pre-computed diff") || !strings.Contains(fixture.stderr.String(), "empty") {
+		t.Fatalf("review code = %d, stderr = %q, want empty-diff failure", code, fixture.stderr.String())
+	}
+	if fixture.app.deps.Harnesses["claude"].(*scriptedHarness).runRequest.Prompt != "" {
+		t.Fatal("harness ran despite an empty pre-computed diff")
+	}
+}
+
+func TestReviewReportsDiffComputationFailureBeforeRunningHarness(t *testing.T) {
+	fixture := newReviewFixture(t, &scriptedHarness{})
+	fixture.app.deps.Git.(*reviewGitRunner).diffErr = errors.New("git unavailable")
+
+	code := fixture.app.Run(context.Background(), []string{"review"}, &fixture.stdout, &fixture.stderr)
+	if code == 0 || !strings.Contains(fixture.stderr.String(), "compute review diff") || !strings.Contains(fixture.stderr.String(), "git unavailable") {
+		t.Fatalf("review code = %d, stderr = %q, want diff-computation failure", code, fixture.stderr.String())
+	}
+	if fixture.app.deps.Harnesses["claude"].(*scriptedHarness).runRequest.Prompt != "" {
+		t.Fatal("harness ran despite a diff-computation failure")
 	}
 }
 
@@ -57,7 +125,7 @@ func TestReviewTopSeamQuietSuppressesToolCalls(t *testing.T) {
 	harness := &scriptedHarness{first: []harness.Event{
 		{Type: harness.EventSession, SessionID: "session-quiet"},
 		{Type: harness.EventAssistantText, Text: "Reviewer internal prose.\n"},
-		{Type: harness.EventToolUse, ToolName: "Bash", ArgumentGist: `{"command":"git diff"}`},
+		{Type: harness.EventToolUse, ToolName: "Bash", ArgumentGist: `{"command":"cat review.diff"}`},
 		{Type: harness.EventAssistantText, Text: approveVerdictText},
 	}}
 	fixture := newReviewFixture(t, harness)
@@ -70,7 +138,7 @@ func TestReviewTopSeamQuietSuppressesToolCalls(t *testing.T) {
 	if !strings.Contains(output, "Reviewer internal prose.") || !strings.Contains(output, "VERDICT: approve") {
 		t.Fatalf("stdout = %q, want assistant prose and rendered verdict", output)
 	}
-	if strings.Contains(output, "tool: Bash — {\"command\":\"git diff\"}") {
+	if strings.Contains(output, "tool: Bash — {\"command\":\"cat review.diff\"}") {
 		t.Fatalf("stdout = %q, want tool call suppressed", output)
 	}
 }
@@ -101,7 +169,7 @@ func TestReviewWithTicketIncludesTicketInPromptAndReviewLog(t *testing.T) {
 		t.Fatalf("review code = %d, want 0; stderr = %q", code, fixture.stderr.String())
 	}
 	for _, expected := range []string{
-		"review the current diff against this ticket",
+		"Review the current diff against this ticket",
 		"Improve the tracker",
 		"Implement the requested tracker behavior.",
 	} {
@@ -342,6 +410,7 @@ func newReviewFixture(t *testing.T, adapter harness.Adapter) *reviewFixture {
 	base := newTopSeamFixture(t)
 	base.app = New(base.root, Dependencies{
 		Harnesses: map[string]harness.Adapter{"claude": adapter},
+		Git:       &reviewGitRunner{diff: "diff --git a/tracked.txt b/tracked.txt\n+reviewed\n"},
 	})
 	return &reviewFixture{root: base.root, app: base.app}
 }
@@ -459,6 +528,25 @@ func (scriptedHarnessStream) Wait() error { return nil }
 type reviewGitHubRunner struct {
 	calls       []string
 	commentBody string
+}
+
+type reviewGitRunner struct {
+	calls   []string
+	diff    string
+	diffErr error
+}
+
+func (r *reviewGitRunner) Run(_ context.Context, args ...string) (string, error) {
+	call := strings.Join(args, " ")
+	r.calls = append(r.calls, call)
+	switch call {
+	case "rev-parse HEAD":
+		return "branch-point\n", nil
+	case "diff branch-point":
+		return r.diff, r.diffErr
+	default:
+		return "", fmt.Errorf("unexpected git command %q", call)
+	}
 }
 
 func (r *reviewGitHubRunner) Run(_ context.Context, args ...string) (string, error) {

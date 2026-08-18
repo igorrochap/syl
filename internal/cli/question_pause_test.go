@@ -4,6 +4,9 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -16,6 +19,7 @@ func TestImplementQuestionPausesAndResumesTheSameSession(t *testing.T) {
 	fixture := newImplementLoopFixture(t)
 	notifier := &recordingNotifier{}
 	loop := &questionHarness{
+		root: fixture.root,
 		runs: [][]harness.Event{
 			{{Type: harness.EventSession, SessionID: "implement-session"}, {Type: harness.EventAssistantText, Text: "Before the decision.\nQUESTION:\nWhich database should this use?\nEND QUESTION\nignored"}},
 			{{Type: harness.EventSession, SessionID: "review-session"}, {Type: harness.EventAssistantText, Text: approveVerdictText}},
@@ -49,6 +53,7 @@ func TestReviewerQuestionPausesAndResumesTheSameSession(t *testing.T) {
 	fixture := newImplementLoopFixture(t)
 	notifier := &recordingNotifier{}
 	loop := &questionHarness{
+		root: fixture.root,
 		runs: [][]harness.Event{
 			{{Type: harness.EventSession, SessionID: "implement-session"}},
 			{{Type: harness.EventSession, SessionID: "review-session"}, {Type: harness.EventAssistantText, Text: "QUESTION:\nShould this be treated as a blocker?\nEND QUESTION"}},
@@ -78,6 +83,7 @@ func TestReviewerQuestionPausesAndResumesTheSameSession(t *testing.T) {
 func TestTwoQuestionsPauseTwiceWithoutRestartingTheIteration(t *testing.T) {
 	fixture := newImplementLoopFixture(t)
 	loop := &questionHarness{
+		root: fixture.root,
 		runs: [][]harness.Event{
 			{{Type: harness.EventSession, SessionID: "implement-session"}, {Type: harness.EventAssistantText, Text: "QUESTION:\nFirst question\nEND QUESTION"}},
 			{{Type: harness.EventSession, SessionID: "review-session"}, {Type: harness.EventAssistantText, Text: approveVerdictText}},
@@ -186,6 +192,7 @@ func TestQuestionDoesNotCancelHarnessContextBeforeResume(t *testing.T) {
 }
 
 type questionHarness struct {
+	root          string
 	runs          [][]harness.Event
 	resumeStreams [][]harness.Event
 	resumes       []questionResume
@@ -200,6 +207,15 @@ type questionResume struct {
 func (h *questionHarness) Run(_ context.Context, _ harness.Request) (harness.Stream, error) {
 	if len(h.streams) >= len(h.runs) {
 		return nil, fmt.Errorf("no scripted run stream remains")
+	}
+	if h.root != "" && len(h.streams) == 0 {
+		changePath := filepath.Join(h.root, "change.txt")
+		if err := os.WriteFile(changePath, []byte("implemented\n"), 0o644); err != nil {
+			return nil, err
+		}
+		if output, err := exec.Command("git", "-C", h.root, "add", changePath).CombinedOutput(); err != nil {
+			return nil, fmt.Errorf("stage fixture change: %v\n%s", err, output)
+		}
 	}
 	events := h.runs[len(h.streams)]
 	h.streams = append(h.streams, events)

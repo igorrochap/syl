@@ -27,6 +27,8 @@ Capture the inputs once, using the minimum metadata calls needed to hand accurat
 
 The coordinator needs the resolved ref, command, commit list, and diff stat. A bad ref or empty diff should fail here — not inside two parallel sub-agents. Keep the full diff for the sub-agents to inspect.
 
+When the invoking prompt supplies a pre-computed diff file, use that file as the diff source instead of running the diff command. Verify that the file exists and is non-empty before proceeding. The supplied file is authoritative for this review; do not invoke Git to re-derive it. Keep the supplied branch-point ref as review context, and allow individual file reads for surrounding context.
+
 ### 2. Identify the spec source
 
 Look for the originating spec, in this order:
@@ -53,13 +55,13 @@ The coordinator's analysis ends at this handoff. Send a single message with two 
 
 **Standards sub-agent prompt** — include:
 
-- The full diff command and commit list.
+- In normal mode, the full diff command and commit list. In pre-computed-diff mode, the exact diff-file path and branch-point ref instead; tell the sub-agent that the file is authoritative, must be verified non-empty, and must be read directly without invoking Git to re-derive the diff.
 - The list of standards-source files you found in step 3, plus the path `skills/refactoring/references/smells.md` — tell the sub-agent to read it for the smell baseline (it has repo file access).
 - The brief: "Report — per file/hunk where relevant — (a) every place the diff violates a documented standard: cite the standard (file + the rule); and (b) any baseline smell from `skills/refactoring/references/smells.md` you spot: name it and quote the hunk. Distinguish hard violations from judgement calls — documented-standard breaches can be hard, but baseline smells are always judgement calls, and a documented repo standard overrides the baseline. Skip anything tooling enforces. Under 400 words."
 
 **Spec sub-agent prompt** — include:
 
-- The diff command and commit list.
+- In normal mode, the diff command and commit list. In pre-computed-diff mode, the same exact diff-file path and branch-point ref used for the Standards sub-agent; tell the sub-agent to read that authoritative, non-empty file directly and not invoke Git to re-derive the diff.
 - The issue/PR reference or spec path from step 2; if step 2 retrieved an external body, pass it through as prompt input without analyzing it.
 - The brief: "Report: (a) requirements the spec asked for that are missing or partial; (b) behaviour in the diff that wasn't asked for (scope creep); (c) requirements that look implemented but where the implementation looks wrong. Quote the spec line for each finding. Under 400 words."
 
@@ -67,7 +69,7 @@ If the spec is missing, skip the Spec sub-agent and note this in the final repor
 
 #### Coordinator boundary after the handoff
 
-Once the sub-agents are spawned, the coordinator's work is limited to collecting their reports, aggregating them, and — when applicable — documenting the review. The coordinator must not read the diff, standards sources, smell catalog, or any source files, and must not run builds or tests. Its only tool use after spawning is what is required to collect sub-agent results and produce or post the review output.
+Once the sub-agents are spawned, the coordinator's work is limited to collecting their reports, aggregating them, and — when applicable — documenting the review. The coordinator must not read the diff, standards sources, smell catalog, or any source files, and must not run builds or tests. Its only tool use after spawning is what is required to collect sub-agent results and produce or post the review output. When a pre-computed diff file was supplied, pass its exact path and the branch-point ref to both sub-agents; both must use that file as their diff source.
 
 ### 5. Aggregate
 
