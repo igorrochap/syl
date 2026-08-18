@@ -2,6 +2,25 @@
 
 <!-- version list -->
 
+## v1.6.0 (2026-08-18)
+
+### Documentation
+
+- **code-review**: Clarify coordinator responsibilities
+  ([`b4b2633`](https://github.com/igorrochap/syl/commit/b4b2633d0c54930a265952e1542bc230b85f9b91))
+
+### Features
+
+- **review**: Precompute authoritative diff for reviews
+  ([#42](https://github.com/igorrochap/syl/pull/42),
+  [`36374db`](https://github.com/igorrochap/syl/commit/36374db9a04819e060588544951b9f452d85f4f8))
+
+### Refactoring
+
+- **orchestration**: Optimize review verdict handling
+  ([`8ad2fa7`](https://github.com/igorrochap/syl/commit/8ad2fa7853088aefa3868281db845a55d000e620))
+
+
 ## v1.5.0 (2026-08-18)
 
 ### Chores
