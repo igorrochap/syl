@@ -2,6 +2,21 @@
 
 <!-- version list -->
 
+## v1.5.0 (2026-08-18)
+
+### Chores
+
+- **config**: Initialize syl project configuration
+  ([#35](https://github.com/igorrochap/syl/pull/35),
+  [`659e324`](https://github.com/igorrochap/syl/commit/659e3241232fbbb876e33599d2000088df9144cc))
+
+### Features
+
+- **orchestration**: Improve harness question interface
+  ([#35](https://github.com/igorrochap/syl/pull/35),
+  [`659e324`](https://github.com/igorrochap/syl/commit/659e3241232fbbb876e33599d2000088df9144cc))
+
+
 ## v1.4.1 (2026-08-18)
 
 ### Features
