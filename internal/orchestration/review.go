@@ -20,7 +20,7 @@ import (
 
 const reviewPrompt = `/code-review
 
-Review the current working-tree diff for this project%s. Do not modify files. End the review with the mandatory verdict block from the code-review skill.
+Review the current working-tree diff for this project%s. Do not modify files. Do not read or write review documents; the invoking tool records the verdict. The verdict block you print is the only record. End the review with the mandatory verdict block from the code-review skill.
 
 ` + questionProtocolInstruction
 

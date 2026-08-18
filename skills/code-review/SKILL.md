@@ -86,6 +86,8 @@ Reporting them separately stops one axis from masking the other.
 
 ## Documenting
 
+**Tool-driven mode.** When the invoking prompt explicitly says that the tool records the verdict, skip the rest of this section. Do not read prior review documents or write a new review document; the verdict block is the only record. Choose this mode only from that prompt instruction, never from an inference about who invoked the skill.
+
 If this project tracks reviews on GitHub, the verdict block you print at the
 end (per the Verdict contract below) is the record — it's posted as a PR/issue
 comment by the tool that invoked you. Skip the rest of this section entirely;

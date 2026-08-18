@@ -51,8 +51,14 @@ func TestImplementLoopApprovesOnFirstIteration(t *testing.T) {
 			t.Fatalf("implement prompt = %q, want %q", implementPrompt, expected)
 		}
 	}
-	if !strings.Contains(implementer.requests[1].Prompt, branchPoint) {
-		t.Fatalf("review prompt = %q, want recorded branch point %q", implementer.requests[1].Prompt, branchPoint)
+	for _, expected := range []string{
+		branchPoint,
+		"Do not read or write review documents; the invoking tool records the verdict.",
+		"The verdict block you print is the only record.",
+	} {
+		if !strings.Contains(implementer.requests[1].Prompt, expected) {
+			t.Fatalf("review prompt = %q, want %q", implementer.requests[1].Prompt, expected)
+		}
 	}
 	if !strings.Contains(fixture.stdout.String(), "Iterations: 1") || !strings.Contains(fixture.stdout.String(), "Final verdict: approve") {
 		t.Fatalf("stdout = %q, want final loop summary", fixture.stdout.String())
@@ -297,6 +303,16 @@ func TestImplementLoopFeedsBlockingFindingsIntoSecondImplementerPrompt(t *testin
 	}
 	if strings.Contains(secondPrompt, "Acceptance criteria: leave a working implementation.") {
 		t.Fatalf("second implementer prompt = %q, want reviewer findings prompt instead of first-pass ticket prompt", secondPrompt)
+	}
+	for _, reviewRequest := range []harness.Request{implementer.requests[1], implementer.requests[3]} {
+		for _, expected := range []string{
+			"Do not read or write review documents; the invoking tool records the verdict.",
+			"The verdict block you print is the only record.",
+		} {
+			if !strings.Contains(reviewRequest.Prompt, expected) {
+				t.Fatalf("review prompt = %q, want %q", reviewRequest.Prompt, expected)
+			}
+		}
 	}
 	if !strings.Contains(fixture.stdout.String(), "Iterations: 2") || !strings.Contains(fixture.stdout.String(), "Final verdict: approve") {
 		t.Fatalf("stdout = %q, want two-iteration approval summary", fixture.stdout.String())
