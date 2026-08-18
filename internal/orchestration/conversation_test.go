@@ -113,7 +113,7 @@ func TestRunHarnessConversationPausesOnceForQuestionWithDuplicatedResult(t *test
 			{Type: harness.EventAssistantText, Text: conversationTestVerdict},
 		}},
 	}
-	questions := NewQuestionHandler(strings.NewReader("Use SQLite.\n\n"), io.Discard, "review", nil)
+	questions := NewQuestionHandler(strings.NewReader("Use SQLite.\n"), io.Discard, "review", nil)
 
 	result, err := runHarnessConversation(context.Background(), adapter, func(ctx context.Context) (harness.Stream, error) {
 		return adapter.Run(ctx, harness.Request{})
@@ -130,6 +130,154 @@ func TestRunHarnessConversationPausesOnceForQuestionWithDuplicatedResult(t *test
 	}
 	if result.Transcript != "Before the decision.\n"+conversationTestVerdict {
 		t.Fatalf("transcript = %q, want one question prefix and resumed assistant message", result.Transcript)
+	}
+}
+
+func TestRunHarnessConversationRendersQuestionAndConfirmsResume(t *testing.T) {
+	adapter := &scriptedConversationAdapter{
+		runs: [][]harness.Event{{
+			{Type: harness.EventSession, SessionID: "implement-session"},
+			{Type: harness.EventAssistantText, Text: "Before the decision.\nQUESTION:\nWhich database should this use?\nEND QUESTION"},
+		}},
+		resumes: [][]harness.Event{{
+			{Type: harness.EventSession, SessionID: "implement-session"},
+			{Type: harness.EventAssistantText, Text: "Continuing after the answer."},
+		}},
+	}
+	var output strings.Builder
+	questions := NewQuestionHandler(strings.NewReader("Use SQLite.\n"), &output, "#42", nil)
+
+	result, err := runHarnessConversation(context.Background(), adapter, func(ctx context.Context) (harness.Stream, error) {
+		return adapter.Run(ctx, harness.Request{})
+	}, conversationOptions{
+		output:    &output,
+		mode:      ParsedHarnessOutput,
+		questions: questions,
+		role:      "implement",
+	})
+	if err != nil {
+		t.Fatalf("runHarnessConversation() error = %v", err)
+	}
+	if len(adapter.resumeCalls) != 1 || adapter.resumeCalls[0].prompt != "Use SQLite." {
+		t.Fatalf("resume calls = %#v, want one single-line answer", adapter.resumeCalls)
+	}
+	got := output.String()
+	for _, unwanted := range []string{"QUESTION:", "END QUESTION"} {
+		if strings.Contains(got, unwanted) {
+			t.Fatalf("output = %q, must not contain raw protocol marker %q", got, unwanted)
+		}
+	}
+	for _, expected := range []string{
+		"[implement] question on #42",
+		"Which database should this use?",
+		"answer> ",
+		"answer sent — resuming implementer…",
+		"--- implement output resumes ---",
+		"Continuing after the answer.",
+	} {
+		if !strings.Contains(got, expected) {
+			t.Fatalf("output = %q, want %q", got, expected)
+		}
+	}
+	if strings.Index(got, "answer sent") > strings.Index(got, "Continuing after the answer.") {
+		t.Fatalf("output = %q, want confirmation before resumed output", got)
+	}
+	if result.Transcript != "Before the decision.\nContinuing after the answer." {
+		t.Fatalf("transcript = %q, want question prefix and resumed output", result.Transcript)
+	}
+}
+
+func TestQuestionAnswerSupportsBackslashContinuation(t *testing.T) {
+	adapter := &scriptedConversationAdapter{
+		runs: [][]harness.Event{{
+			{Type: harness.EventSession, SessionID: "session"},
+			{Type: harness.EventAssistantText, Text: "QUESTION:\nWhich details?\nEND QUESTION"},
+		}},
+		resumes: [][]harness.Event{{
+			{Type: harness.EventAssistantText, Text: conversationTestVerdict},
+		}},
+	}
+	questions := NewQuestionHandler(strings.NewReader("first line\\\nsecond line\n"), io.Discard, "#42", nil)
+
+	_, err := runHarnessConversation(context.Background(), adapter, func(ctx context.Context) (harness.Stream, error) {
+		return adapter.Run(ctx, harness.Request{})
+	}, conversationOptions{
+		output:    io.Discard,
+		mode:      ParsedHarnessOutput,
+		questions: questions,
+		role:      "review",
+	})
+	if err != nil {
+		t.Fatalf("runHarnessConversation() error = %v", err)
+	}
+	if len(adapter.resumeCalls) != 1 || adapter.resumeCalls[0].prompt != "first line\nsecond line" {
+		t.Fatalf("resume calls = %#v, want joined multi-line answer", adapter.resumeCalls)
+	}
+}
+
+func TestQuestionAnswerRepromptsAfterEmptyLine(t *testing.T) {
+	adapter := &scriptedConversationAdapter{
+		runs: [][]harness.Event{{
+			{Type: harness.EventSession, SessionID: "session"},
+			{Type: harness.EventAssistantText, Text: "QUESTION:\nWhich details?\nEND QUESTION"},
+		}},
+		resumes: [][]harness.Event{{
+			{Type: harness.EventAssistantText, Text: conversationTestVerdict},
+		}},
+	}
+	var output strings.Builder
+	questions := NewQuestionHandler(strings.NewReader("\nUseful answer\n"), &output, "#42", nil)
+
+	_, err := runHarnessConversation(context.Background(), adapter, func(ctx context.Context) (harness.Stream, error) {
+		return adapter.Run(ctx, harness.Request{})
+	}, conversationOptions{
+		output:    &output,
+		mode:      ParsedHarnessOutput,
+		questions: questions,
+		role:      "review",
+	})
+	if err != nil {
+		t.Fatalf("runHarnessConversation() error = %v", err)
+	}
+	if len(adapter.resumeCalls) != 1 || adapter.resumeCalls[0].prompt != "Useful answer" {
+		t.Fatalf("resume calls = %#v, want answer after empty-line retry", adapter.resumeCalls)
+	}
+	if !strings.Contains(output.String(), "answer cannot be empty; please try again") {
+		t.Fatalf("output = %q, want empty-answer hint", output.String())
+	}
+}
+
+func TestQuestionAnswerEOFWithoutAnswerExplainsUnavailableInput(t *testing.T) {
+	var output strings.Builder
+	questions := NewQuestionHandler(strings.NewReader(""), &output, "#42", nil)
+
+	_, err := questions.Handle(context.Background(), "Which details?")
+	if err == nil || !strings.Contains(err.Error(), "terminal input is unavailable") {
+		t.Fatalf("Handle() error = %v, want unavailable terminal input", err)
+	}
+}
+
+func TestMidLineQuestionMentionDoesNotPauseConversation(t *testing.T) {
+	adapter := &scriptedConversationAdapter{runs: [][]harness.Event{{
+		{Type: harness.EventSession, SessionID: "review-session"},
+		{Type: harness.EventAssistantText, Text: "The protocol mentions QUESTION: in prose.\n" + conversationTestVerdict},
+	}}}
+
+	result, err := runHarnessConversation(context.Background(), adapter, func(ctx context.Context) (harness.Stream, error) {
+		return adapter.Run(ctx, harness.Request{})
+	}, conversationOptions{
+		output: io.Discard,
+		mode:   ParsedHarnessOutput,
+		role:   "review",
+	})
+	if err != nil {
+		t.Fatalf("runHarnessConversation() error = %v", err)
+	}
+	if len(adapter.resumeCalls) != 0 {
+		t.Fatal("runHarnessConversation() paused for a mid-line QUESTION mention")
+	}
+	if result.Transcript != "The protocol mentions QUESTION: in prose.\n"+conversationTestVerdict {
+		t.Fatalf("transcript = %q, want ordinary assistant output", result.Transcript)
 	}
 }
 

@@ -27,7 +27,7 @@ func TestImplementQuestionPausesAndResumesTheSameSession(t *testing.T) {
 	fixture.app.deps.Harnesses["codex"] = loop
 	fixture.app.deps.Harnesses["claude"] = loop
 	fixture.app.deps.GH = &loopGHRunner{}
-	fixture.app.deps.Input = strings.NewReader("Use SQLite.\nwith WAL.\n\n")
+	fixture.app.deps.Input = strings.NewReader("Use SQLite.\\\nwith WAL.\n")
 	fixture.app.deps.Notifier = notifier
 
 	code := fixture.app.Run(context.Background(), []string{"implement", "#42"}, &fixture.stdout, &fixture.stderr)
@@ -40,7 +40,7 @@ func TestImplementQuestionPausesAndResumesTheSameSession(t *testing.T) {
 	if len(notifier.messages) < 1 || notifier.messages[0] != "syl is waiting for your answer on #42" {
 		t.Fatalf("notifications = %v, want blocked notification for #42", notifier.messages)
 	}
-	if !strings.Contains(fixture.stdout.String(), "Which database should this use?") || !strings.Contains(fixture.stdout.String(), "Iterations: 1") || !strings.Contains(fixture.stdout.String(), "Final verdict: approve") {
+	if !strings.Contains(fixture.stdout.String(), "[implement] question on #42") || strings.Contains(fixture.stdout.String(), "QUESTION:") || !strings.Contains(fixture.stdout.String(), "answer sent — resuming implementer…") || !strings.Contains(fixture.stdout.String(), "Iterations: 1") || !strings.Contains(fixture.stdout.String(), "Final verdict: approve") {
 		t.Fatalf("stdout = %q, want question and one-iteration approval", fixture.stdout.String())
 	}
 }
@@ -60,7 +60,7 @@ func TestReviewerQuestionPausesAndResumesTheSameSession(t *testing.T) {
 	fixture.app.deps.Harnesses["codex"] = loop
 	fixture.app.deps.Harnesses["claude"] = loop
 	fixture.app.deps.GH = &loopGHRunner{}
-	fixture.app.deps.Input = strings.NewReader("Yes, it is a blocker.\n\n")
+	fixture.app.deps.Input = strings.NewReader("Yes, it is a blocker.\n")
 	fixture.app.deps.Notifier = notifier
 
 	code := fixture.app.Run(context.Background(), []string{"implement", "#42"}, &fixture.stdout, &fixture.stderr)
@@ -90,7 +90,7 @@ func TestTwoQuestionsPauseTwiceWithoutRestartingTheIteration(t *testing.T) {
 	fixture.app.deps.Harnesses["codex"] = loop
 	fixture.app.deps.Harnesses["claude"] = loop
 	fixture.app.deps.GH = &loopGHRunner{}
-	fixture.app.deps.Input = strings.NewReader("First answer\n\nSecond answer\n\n")
+	fixture.app.deps.Input = strings.NewReader("First answer\nSecond answer\n")
 
 	code := fixture.app.Run(context.Background(), []string{"implement", "#42"}, &fixture.stdout, &fixture.stderr)
 	if code != 0 {
@@ -122,7 +122,7 @@ func TestOneShotReviewHonorsQuestionProtocol(t *testing.T) {
 		}},
 	}
 	fixture := newReviewFixture(t, loop)
-	fixture.app.deps.Input = strings.NewReader("The current working-tree diff.\n\n")
+	fixture.app.deps.Input = strings.NewReader("The current working-tree diff.\n")
 	fixture.app.deps.Notifier = notifier
 
 	code := fixture.app.Run(context.Background(), []string{"review"}, &fixture.stdout, &fixture.stderr)
@@ -140,7 +140,7 @@ func TestOneShotReviewHonorsQuestionProtocol(t *testing.T) {
 	}
 }
 
-func TestOneShotReviewRawQuestionIsPrintedOnce(t *testing.T) {
+func TestOneShotReviewRawQuestionRendersWithoutProtocolMarkers(t *testing.T) {
 	loop := &questionHarness{
 		runs: [][]harness.Event{{
 			{Type: harness.EventSession, SessionID: "review-session"},
@@ -155,20 +155,23 @@ func TestOneShotReviewRawQuestionIsPrintedOnce(t *testing.T) {
 		}},
 	}
 	fixture := newReviewFixture(t, loop)
-	fixture.app.deps.Input = strings.NewReader("The current working-tree diff.\n\n")
+	fixture.app.deps.Input = strings.NewReader("The current working-tree diff.\n")
 
 	code := fixture.app.Run(context.Background(), []string{"review", "--raw"}, &fixture.stdout, &fixture.stderr)
 	if code != 0 {
 		t.Fatalf("review code = %d, stderr = %q", code, fixture.stderr.String())
 	}
-	if got := strings.Count(fixture.stdout.String(), "QUESTION:"); got != 1 {
-		t.Fatalf("stdout = %q, want one printed QUESTION block, got %d", fixture.stdout.String(), got)
+	if strings.Contains(fixture.stdout.String(), "QUESTION:") || strings.Contains(fixture.stdout.String(), "END QUESTION") {
+		t.Fatalf("stdout = %q, want raw QUESTION markers hidden in raw mode", fixture.stdout.String())
+	}
+	if !strings.Contains(fixture.stdout.String(), "[review] question on review") {
+		t.Fatalf("stdout = %q, want rendered review question in raw mode", fixture.stdout.String())
 	}
 }
 
 func TestQuestionDoesNotCancelHarnessContextBeforeResume(t *testing.T) {
 	adapter := &contextAwareQuestionHarness{}
-	questions := orchestration.NewQuestionHandler(strings.NewReader("Use the existing schema.\n\n"), io.Discard, "review", nil)
+	questions := orchestration.NewQuestionHandler(strings.NewReader("Use the existing schema.\n"), io.Discard, "review", nil)
 
 	review, err := orchestration.RunReviewExecution(context.Background(), adapter, harness.Request{}, io.Discard, orchestration.ParsedHarnessOutput, questions)
 	if err != nil {

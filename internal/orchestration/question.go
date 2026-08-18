@@ -30,9 +30,9 @@ func (p *questionParser) Feed(chunk string) questionParseResult {
 	}
 	p.buffer += chunk
 
-	start := strings.Index(p.buffer, questionStartMarker)
+	start := lineMarkerStart(p.buffer, questionStartMarker)
 	if start == -1 {
-		safeLength := len(p.buffer) - suffixPrefixLength(p.buffer, questionStartMarker)
+		safeLength := len(p.buffer) - lineMarkerPrefixLength(p.buffer, questionStartMarker)
 		visible := p.buffer[:safeLength]
 		p.buffer = p.buffer[safeLength:]
 		return questionParseResult{VisibleText: visible}

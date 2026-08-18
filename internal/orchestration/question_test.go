@@ -37,6 +37,17 @@ func TestQuestionParser(t *testing.T) {
 			wantQuestion:    "Which option?",
 			wantVisibleText: "before\n",
 		},
+		{
+			name:            "mid-line marker is ordinary output",
+			chunks:          []string{"The protocol mentions QUESTION:\nWhich option?\nEND QUESTION\n"},
+			wantVisibleText: "The protocol mentions QUESTION:\nWhich option?\nEND QUESTION\n",
+		},
+		{
+			name:            "line-start marker still pauses",
+			chunks:          []string{"ordinary output\nQUESTION:\nWhich option?\nEND QUESTION\n"},
+			wantQuestion:    "Which option?",
+			wantVisibleText: "ordinary output\n",
+		},
 	}
 
 	for _, tt := range tests {
