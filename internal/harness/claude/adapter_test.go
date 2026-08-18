@@ -30,6 +30,28 @@ func TestClaudeEffortMapping(t *testing.T) {
 	}
 }
 
+// TestRunArgsGrantAutonomousPermissions guards against the headless-permission
+// regression: without bypassPermissions Claude Code denies every tool call, so
+// the implementer cannot write files and the reviewer cannot run git.
+func TestRunArgsGrantAutonomousPermissions(t *testing.T) {
+	args, err := runArgs(harness.Request{Model: "claude-sonnet-5", Effort: config.EffortMedium, Prompt: "do it"})
+	if err != nil {
+		t.Fatalf("runArgs() error = %v", err)
+	}
+	if !containsFlagValue(args, "--permission-mode", "bypassPermissions") {
+		t.Fatalf("runArgs() = %v, want --permission-mode bypassPermissions", args)
+	}
+}
+
+func containsFlagValue(args []string, flag, value string) bool {
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == flag && args[i+1] == value {
+			return true
+		}
+	}
+	return false
+}
+
 func TestDecodeClaudeStreamMapsStructuredEvents(t *testing.T) {
 	line := `{"type":"assistant","session_id":"session-1","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"git diff --stat"}}]}}`
 	events := decodeLine(line + "\n")

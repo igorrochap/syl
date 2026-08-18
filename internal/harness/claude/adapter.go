@@ -50,6 +50,12 @@ func baseFlags() []string {
 		"--output-format", "stream-json",
 		"--verbose",
 		"--include-partial-messages",
+		// rig drives Claude Code headlessly, so there is no interactive prompt
+		// to approve tool use. Without this both roles are blocked: the
+		// implementer cannot write files and the reviewer cannot run git or
+		// spawn sub-agents. bypassPermissions matches the autonomous, sandboxed
+		// approval model the Codex adapter already relies on.
+		"--permission-mode", "bypassPermissions",
 	}
 }
 
