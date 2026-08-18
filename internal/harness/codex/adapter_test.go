@@ -155,7 +155,10 @@ func TestCodexResumeReusesSessionAndInjectsAnswer(t *testing.T) {
 	})
 	adapter := &Adapter{command: command, projectRoot: root}
 
-	stream, err := adapter.Resume(context.Background(), "codex-session", "Use SQLite.")
+	stream, err := adapter.Resume(context.Background(), "codex-session", harness.Request{
+		Prompt: "Use SQLite.",
+		MCP:    false,
+	})
 	if err != nil {
 		t.Fatalf("Resume() error = %v", err)
 	}

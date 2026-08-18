@@ -108,8 +108,8 @@ func runInitWizard(projectRoot string, input io.Reader, output io.Writer, manife
 func configFromAnswers(answers map[string]tui.Answer) (config.Config, []string, error) {
 	value := func(key string) string { return answers[key].Value }
 	roles := config.RolesConfig{
-		Plan:      config.RoleConfig{Harness: config.Harness(value("plan.harness")), Model: value("plan.model"), Effort: config.Effort(value("plan.effort"))},
-		Implement: config.RoleConfig{Harness: config.Harness(value("implement.harness")), Model: value("implement.model"), Effort: config.Effort(value("implement.effort"))},
+		Plan:      config.RoleConfig{Harness: config.Harness(value("plan.harness")), Model: value("plan.model"), Effort: config.Effort(value("plan.effort")), MCP: true},
+		Implement: config.RoleConfig{Harness: config.Harness(value("implement.harness")), Model: value("implement.model"), Effort: config.Effort(value("implement.effort")), MCP: true},
 		Review:    config.RoleConfig{Harness: config.Harness(value("review.harness")), Model: value("review.model"), Effort: config.Effort(value("review.effort"))},
 	}
 	return config.Config{

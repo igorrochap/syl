@@ -219,6 +219,7 @@ func runImplementIterations(ctx context.Context, params implementIterationsParam
 			Model:  params.projectConfig.Roles.Implement.Model,
 			Effort: params.projectConfig.Roles.Implement.Effort,
 			Prompt: composeImplementPrompt(params.ticket, blocking, iteration),
+			MCP:    params.projectConfig.Roles.Implement.MCP,
 		}
 		implementResult, err := runImplementRole(ctx, params.implementer, implementRequest, newRoleLabelWriter(params.output, "implement", ansiColorImplement), mode, params.artifacts.dir, iteration, params.questions)
 		if err != nil {
@@ -237,6 +238,7 @@ func runImplementIterations(ctx context.Context, params implementIterationsParam
 			Model:  params.projectConfig.Roles.Review.Model,
 			Effort: params.projectConfig.Roles.Review.Effort,
 			Prompt: composeReviewPrompt("#"+strconv.Itoa(params.ticket.Number), &params.ticket, params.branchPoint, diffPath),
+			MCP:    params.projectConfig.Roles.Review.MCP,
 		}
 		if _, err := fmt.Fprintf(params.output, "iteration %d/%d — reviewing\n", iteration, params.projectConfig.Loop.MaxIterations); err != nil {
 			return 0, verdict.Verdict{}, nil, fmt.Errorf("write review progress: %w", err)
@@ -292,6 +294,7 @@ func runImplementRole(ctx context.Context, adapter harness.Adapter, request harn
 	result, err := runHarnessConversation(ctx, adapter, func(runContext context.Context) (harness.Stream, error) {
 		return adapter.Run(runContext, request)
 	}, conversationOptions{
+		request:   request,
 		output:    output,
 		artifact:  &feed,
 		mode:      mode,

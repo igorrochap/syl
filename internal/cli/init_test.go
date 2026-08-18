@@ -67,11 +67,35 @@ func TestInitBlankDirectoryScaffoldsProject(t *testing.T) {
 	if got.Roles.Plan.Harness != config.HarnessClaude || got.Roles.Plan.Model != "claude-opus-5" || got.Roles.Plan.Effort != config.EffortHigh {
 		t.Fatalf("plan role = %#v, want configured values", got.Roles.Plan)
 	}
+	if !got.Roles.Plan.MCP {
+		t.Fatal("plan role MCP = false, want true in generated config")
+	}
 	if got.Roles.Implement.Harness != config.HarnessCodex || got.Roles.Implement.Model != "gpt-5.6-luna" || got.Roles.Implement.Effort != config.EffortXHigh {
 		t.Fatalf("implement role = %#v, want configured values", got.Roles.Implement)
 	}
+	if !got.Roles.Implement.MCP {
+		t.Fatal("implement role MCP = false, want true in generated config")
+	}
 	if got.Roles.Review.Harness != config.HarnessOpenCode || got.Roles.Review.Model != "reviewer" || got.Roles.Review.Effort != config.EffortMedium {
 		t.Fatalf("review role = %#v, want configured values", got.Roles.Review)
+	}
+	if got.Roles.Review.MCP {
+		t.Fatal("review role MCP = true, want false in generated config")
+	}
+	generated, err := os.ReadFile(config.Path(root))
+	if err != nil {
+		t.Fatalf("read generated config: %v", err)
+	}
+	for _, expected := range []string{
+		"mcp = true",
+		"mcp = false",
+		"user/project MCP configuration",
+		"Codex ignores this field",
+		"blocked-then-retried tool call",
+	} {
+		if !strings.Contains(string(generated), expected) {
+			t.Fatalf("generated config = %q, want %q", generated, expected)
+		}
 	}
 }
 

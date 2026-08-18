@@ -43,6 +43,50 @@ func TestRunArgsGrantAutonomousPermissions(t *testing.T) {
 	}
 }
 
+func TestClaudeMCPConfigurationIsAppliedToRunAndResume(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		mcp  bool
+		want bool
+	}{
+		{name: "inherit MCP", mcp: true, want: false},
+		{name: "strip MCP", mcp: false, want: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			request := harness.Request{
+				Model:  "claude-sonnet-5",
+				Effort: config.EffortMedium,
+				Prompt: "do it",
+				MCP:    tt.mcp,
+			}
+			run, err := runArgs(request)
+			if err != nil {
+				t.Fatalf("runArgs() error = %v", err)
+			}
+			resume, err := resumeArgs("session-1", request)
+			if err != nil {
+				t.Fatalf("resumeArgs() error = %v", err)
+			}
+
+			if got := containsArg(run, "--strict-mcp-config"); got != tt.want {
+				t.Fatalf("runArgs() strict MCP flag = %t, want %t: %v", got, tt.want, run)
+			}
+			if got := containsArg(resume, "--strict-mcp-config"); got != tt.want {
+				t.Fatalf("resumeArgs() strict MCP flag = %t, want %t: %v", got, tt.want, resume)
+			}
+		})
+	}
+}
+
+func containsArg(args []string, want string) bool {
+	for _, arg := range args {
+		if arg == want {
+			return true
+		}
+	}
+	return false
+}
+
 func containsFlagValue(args []string, flag, value string) bool {
 	for i := 0; i+1 < len(args); i++ {
 		if args[i] == flag && args[i+1] == value {

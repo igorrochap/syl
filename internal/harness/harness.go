@@ -31,6 +31,7 @@ type Request struct {
 	Model  string
 	Effort config.Effort
 	Prompt string
+	MCP    bool
 }
 
 type Stream interface {
@@ -40,6 +41,6 @@ type Stream interface {
 
 type Adapter interface {
 	Run(ctx context.Context, request Request) (Stream, error)
-	Resume(ctx context.Context, sessionID, prompt string) (Stream, error)
+	Resume(ctx context.Context, sessionID string, request Request) (Stream, error)
 	Attach(ctx context.Context, request Request) error
 }

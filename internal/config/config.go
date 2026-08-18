@@ -32,6 +32,12 @@ const (
 	EffortXHigh  Effort = "xhigh"
 )
 
+const (
+	defaultPlanMCP      = true
+	defaultImplementMCP = true
+	defaultReviewMCP    = false
+)
+
 var ErrNotFound = errors.New("syl config not found")
 
 type Tracker string
@@ -69,6 +75,7 @@ type RoleConfig struct {
 	Harness Harness
 	Model   string
 	Effort  Effort
+	MCP     bool
 }
 
 type LoopConfig struct {
@@ -101,6 +108,7 @@ type rawRole struct {
 	Harness string `toml:"harness"`
 	Model   string `toml:"model"`
 	Effort  string `toml:"effort"`
+	MCP     any    `toml:"mcp"`
 }
 
 type rawLoop struct {
@@ -185,16 +193,26 @@ reviews = %q
 harness = %q
 model = %q
 effort = %q
+# mcp = true inherits user/project MCP configuration; false strips it for Claude.
+# Codex ignores this field. Omitted defaults are true for plan and implement, and false for review.
+mcp = %t
 
 [roles.implement]
 harness = %q
 model = %q
 effort = %q
+# mcp = true inherits user/project MCP configuration; false strips it for Claude.
+# Codex ignores this field. Omitted defaults are true for plan and implement, and false for review.
+mcp = %t
 
 [roles.review]
 harness = %q
 model = %q
 effort = %q
+# mcp = true inherits user/project MCP configuration; false strips it for Claude.
+# Codex ignores this field. Omitted defaults are true for plan and implement, and false for review.
+# Hooks that require MCP may cause one blocked-then-retried tool call in lean sessions.
+mcp = %t
 
 [loop]
 max_iterations = %d
@@ -203,8 +221,11 @@ max_iterations = %d
 enabled = %t
 `, cfg.Tracker.Issues, cfg.Tracker.Reviews,
 		cfg.Roles.Plan.Harness, cfg.Roles.Plan.Model, cfg.Roles.Plan.Effort,
+		cfg.Roles.Plan.MCP,
 		cfg.Roles.Implement.Harness, cfg.Roles.Implement.Model, cfg.Roles.Implement.Effort,
+		cfg.Roles.Implement.MCP,
 		cfg.Roles.Review.Harness, cfg.Roles.Review.Model, cfg.Roles.Review.Effort,
+		cfg.Roles.Review.MCP,
 		cfg.Loop.MaxIterations, cfg.Notifications.Enabled)
 }
 
@@ -212,8 +233,8 @@ func defaultConfigValue() Config {
 	return Config{
 		Tracker: TrackerConfig{Issues: TrackerGitHub, Reviews: TrackerLocal},
 		Roles: RolesConfig{
-			Plan:      RoleConfig{Harness: HarnessClaude, Model: "claude-opus-5", Effort: EffortHigh},
-			Implement: RoleConfig{Harness: HarnessCodex, Model: "gpt-5.6-luna", Effort: EffortXHigh},
+			Plan:      RoleConfig{Harness: HarnessClaude, Model: "claude-opus-5", Effort: EffortHigh, MCP: true},
+			Implement: RoleConfig{Harness: HarnessCodex, Model: "gpt-5.6-luna", Effort: EffortXHigh, MCP: true},
 			Review:    RoleConfig{Harness: HarnessClaude, Model: "claude-sonnet-5", Effort: EffortMedium},
 		},
 		Loop:          LoopConfig{MaxIterations: 3},
@@ -233,15 +254,15 @@ func validate(raw rawConfig, metadata toml.MetaData) (Config, error) {
 	if issues == TrackerLocal && reviews == TrackerGitHub {
 		return Config{}, errors.New(`tracker.reviews = "github" requires tracker.issues = "github" so review comments have a remote issue`)
 	}
-	plan, err := parseRole("roles.plan", raw.Roles.Plan)
+	plan, err := parseRole("roles.plan", raw.Roles.Plan, defaultPlanMCP)
 	if err != nil {
 		return Config{}, err
 	}
-	implement, err := parseRole("roles.implement", raw.Roles.Implement)
+	implement, err := parseRole("roles.implement", raw.Roles.Implement, defaultImplementMCP)
 	if err != nil {
 		return Config{}, err
 	}
-	review, err := parseRole("roles.review", raw.Roles.Review)
+	review, err := parseRole("roles.review", raw.Roles.Review, defaultReviewMCP)
 	if err != nil {
 		return Config{}, err
 	}
@@ -273,7 +294,7 @@ func parseTracker(key, value string) (Tracker, error) {
 	return parseEnum(key, value, []Tracker{TrackerGitHub, TrackerLocal}, "github or local")
 }
 
-func parseRole(prefix string, raw rawRole) (RoleConfig, error) {
+func parseRole(prefix string, raw rawRole, defaultMCP bool) (RoleConfig, error) {
 	harness, err := parseEnum(prefix+".harness", raw.Harness,
 		[]Harness{HarnessClaude, HarnessCodex, HarnessOpenCode}, "claude, codex, or opencode")
 	if err != nil {
@@ -292,7 +313,23 @@ func parseRole(prefix string, raw rawRole) (RoleConfig, error) {
 		return RoleConfig{}, err
 	}
 
-	return RoleConfig{Harness: harness, Model: raw.Model, Effort: effort}, nil
+	mcp, err := parseOptionalBool(prefix+".mcp", raw.MCP, defaultMCP)
+	if err != nil {
+		return RoleConfig{}, err
+	}
+
+	return RoleConfig{Harness: harness, Model: raw.Model, Effort: effort, MCP: mcp}, nil
+}
+
+func parseOptionalBool(key string, value any, defaultValue bool) (bool, error) {
+	if value == nil {
+		return defaultValue, nil
+	}
+	enabled, ok := value.(bool)
+	if !ok {
+		return false, fmt.Errorf("%s: invalid value %q; want true or false", key, fmt.Sprint(value))
+	}
+	return enabled, nil
 }
 
 func parseEnum[T ~string](key, value string, valid []T, want string) (T, error) {

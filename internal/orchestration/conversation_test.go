@@ -102,6 +102,7 @@ func TestConsumeHarnessStreamPreservesResultErrorsWithAndWithoutDeltas(t *testin
 
 func TestRunHarnessConversationPausesOnceForQuestionWithDuplicatedResult(t *testing.T) {
 	question := "Before the decision.\nQUESTION:\nWhich database should this use?\nEND QUESTION"
+	request := harness.Request{MCP: true}
 	adapter := &scriptedConversationAdapter{
 		runs: [][]harness.Event{{
 			{Type: harness.EventSession, SessionID: "review-session"},
@@ -116,8 +117,9 @@ func TestRunHarnessConversationPausesOnceForQuestionWithDuplicatedResult(t *test
 	questions := NewQuestionHandler(strings.NewReader("Use SQLite.\n"), io.Discard, "review", nil)
 
 	result, err := runHarnessConversation(context.Background(), adapter, func(ctx context.Context) (harness.Stream, error) {
-		return adapter.Run(ctx, harness.Request{})
+		return adapter.Run(ctx, request)
 	}, conversationOptions{
+		request:   request,
 		output:    io.Discard,
 		mode:      ParsedHarnessOutput,
 		questions: questions,
@@ -127,6 +129,9 @@ func TestRunHarnessConversationPausesOnceForQuestionWithDuplicatedResult(t *test
 	}
 	if len(adapter.resumeCalls) != 1 {
 		t.Fatalf("resume calls = %d, want exactly one pause/resume cycle", len(adapter.resumeCalls))
+	}
+	if !adapter.resumeCalls[0].mcp {
+		t.Fatal("resume request MCP = false, want original request setting true")
 	}
 	if result.Transcript != "Before the decision.\n"+conversationTestVerdict {
 		t.Fatalf("transcript = %q, want one question prefix and resumed assistant message", result.Transcript)
@@ -312,6 +317,7 @@ type scriptedConversationAdapter struct {
 type conversationResumeCall struct {
 	sessionID string
 	prompt    string
+	mcp       bool
 }
 
 func (a *scriptedConversationAdapter) Run(context.Context, harness.Request) (harness.Stream, error) {
@@ -323,8 +329,8 @@ func (a *scriptedConversationAdapter) Run(context.Context, harness.Request) (har
 	return scriptedConversationStream{events: events}, nil
 }
 
-func (a *scriptedConversationAdapter) Resume(_ context.Context, sessionID, prompt string) (harness.Stream, error) {
-	a.resumeCalls = append(a.resumeCalls, conversationResumeCall{sessionID: sessionID, prompt: prompt})
+func (a *scriptedConversationAdapter) Resume(_ context.Context, sessionID string, request harness.Request) (harness.Stream, error) {
+	a.resumeCalls = append(a.resumeCalls, conversationResumeCall{sessionID: sessionID, prompt: request.Prompt, mcp: request.MCP})
 	index := len(a.resumeCalls) - 1
 	if index >= len(a.resumes) {
 		return nil, &scriptedConversationError{message: "no scripted resume remains"}
