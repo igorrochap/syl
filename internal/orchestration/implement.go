@@ -284,6 +284,7 @@ func runImplementRole(ctx context.Context, adapter harness.Adapter, request harn
 		artifact:  &feed,
 		mode:      mode,
 		questions: questions,
+		role:      "implement",
 	})
 	if err != nil {
 		return harnessTranscript{}, fmt.Errorf("run implement harness: %w", err)

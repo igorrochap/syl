@@ -46,7 +46,7 @@ func TestQuestionAnswerInputProtocolIsDocumentedInHelp(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("review help code = %d, stderr = %q", code, fixture.stderr.String())
 	}
-	if !strings.Contains(fixture.stdout.String(), "multi-line answer from stdin until an empty line or EOF") {
+	if !strings.Contains(fixture.stdout.String(), "single-line answer from stdin") || !strings.Contains(fixture.stdout.String(), "trailing backslash") {
 		t.Fatalf("review help = %q, want QUESTION input protocol", fixture.stdout.String())
 	}
 }
