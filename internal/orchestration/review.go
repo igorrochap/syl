@@ -17,12 +17,6 @@ import (
 	"github.com/igorrochap/syl/internal/verdict"
 )
 
-const reviewPrompt = `/code-review
-
-Review the pre-computed diff at %s against the recorded branch point %s. This file is the authoritative diff for this review. Do not run Git to re-derive the diff. You may still open individual files for surrounding context. Do not modify files. Do not read or write review documents; the invoking tool records the verdict. The verdict block you print is the only record. End the review with the mandatory verdict block from the code-review skill.
-
-` + questionProtocolInstruction
-
 var ErrReviewNeedsRevision = errors.New("review verdict is revise")
 
 type UnparseableVerdictError struct {
@@ -142,14 +136,6 @@ func RunReview(ctx context.Context, options ReviewOptions) error {
 		return ErrReviewNeedsRevision
 	}
 	return nil
-}
-
-func composeReviewPrompt(ticketRef string, ticket *tracker.Ticket, branchPoint, diffPath string) string {
-	prompt := fmt.Sprintf(reviewPrompt, diffPath, branchPoint)
-	if ticket == nil {
-		return prompt
-	}
-	return fmt.Sprintf("%s\n\nReview the current diff against this ticket (%s).\n\nTicket title: %s\n\nTicket body:\n%s", prompt, ticketRef, ticket.Title, ticket.Body)
 }
 
 func prepareReview(ctx context.Context, projectRoot, ticketRef string, git GitRunner) (reviewPreparation, error) {

@@ -17,34 +17,6 @@ import (
 	"github.com/igorrochap/syl/internal/verdict"
 )
 
-const implementPrompt = `/implement
-
-Implement the ticket below in the current project. Use the vendored implement skill and leave the working tree with the requested changes for review. Do not commit or push changes.
-
-` + questionProtocolInstruction + `
-
-Ticket: %s
-Title: %s
-
-Ticket body (including acceptance criteria):
-%s`
-
-const reviseImplementPrompt = `/fix-review
-
-Address ONLY the reviewer's [blocking] findings listed below. Use the vendored fix-review skill. Leave the working tree with the changes for review and do not commit or push changes.
-
-` + questionProtocolInstruction + `
-
-Ticket: %s
-
-Blocking findings:
-%s`
-
-const reviewResumePrompt = `This is an incremental re-review in the existing reviewer session. Do not spawn fresh Standards/Spec sub-agents. The implementer has addressed your blocking findings, listed below. The updated diff for this iteration is at %s. Re-examine the changes, verify each blocking finding is resolved, check that the fixes introduced no new problems, and end with the mandatory verdict block from the code-review skill.
-
-Blocking findings:
-%s`
-
 var branchTypePattern = regexp.MustCompile(`^(feat|fix|refactor|chore|docs|test|perf|build|ci)$`)
 
 type implementSetup struct {
@@ -294,17 +266,6 @@ func runImplementIterations(ctx context.Context, params implementIterationsParam
 	return iterations, final, nits, nil
 }
 
-func composeReviewResumePrompt(diffPath string, blocking []verdict.Finding) string {
-	return fmt.Sprintf(reviewResumePrompt, diffPath, formatBlockingFindings(blocking))
-}
-
-func composeImplementPrompt(ticket tracker.Ticket, blocking []verdict.Finding, iteration int) string {
-	if iteration == 1 {
-		return fmt.Sprintf(implementPrompt, "#"+strconv.Itoa(ticket.Number), ticket.Title, ticket.Body)
-	}
-	return fmt.Sprintf(reviseImplementPrompt, "#"+strconv.Itoa(ticket.Number), formatBlockingFindings(blocking))
-}
-
 type implementExecution struct {
 	Feed       string
 	Transcript string
@@ -417,17 +378,6 @@ func nitFindings(review verdict.Verdict) []verdict.Finding {
 		}
 	}
 	return findings
-}
-
-func formatBlockingFindings(findings []verdict.Finding) string {
-	if len(findings) == 0 {
-		return "(none)"
-	}
-	var builder strings.Builder
-	for _, finding := range findings {
-		fmt.Fprintf(&builder, "- [%s] %s — %s\n", finding.Kind, finding.Location, finding.Issue)
-	}
-	return strings.TrimSuffix(builder.String(), "\n")
 }
 
 func formatImplementSummary(iterations int, final verdict.Verdict, nits []verdict.Finding, diffStat string) string {

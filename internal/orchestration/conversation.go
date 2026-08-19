@@ -11,15 +11,6 @@ import (
 	"github.com/igorrochap/syl/internal/harness"
 )
 
-const questionProtocolInstruction = `If you are genuinely blocked on a decision that cannot be resolved from the ticket or the code, stop working and emit exactly this block:
-
-QUESTION:
-<the question, one or more lines>
-END QUESTION
-
-The QUESTION: marker must begin at the start of its own line; the block format is otherwise unchanged.
-Ambiguity should have been resolved during planning, and trivial choices should be decided without asking. After emitting the block, stop working.`
-
 const QuestionInputHelp = "When a harness asks a QUESTION, syl prints it as a block and reads a single-line answer from stdin. A trailing backslash continues onto the next line; an empty answer re-prompts; EOF without an answer is an error."
 
 type harnessStreamStarter func(context.Context) (harness.Stream, error)
