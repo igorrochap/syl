@@ -2,6 +2,28 @@
 
 <!-- version list -->
 
+## v1.11.0 (2026-08-19)
+
+### Chores
+
+- **config**: Update harness model and effort settings
+  ([#55](https://github.com/igorrochap/syl/pull/55),
+  [`2acd8fe`](https://github.com/igorrochap/syl/commit/2acd8fed993ca75c3128b8cbdfc53e7a35a22d47))
+
+- **deps**: Changes implementer model and effort ([#55](https://github.com/igorrochap/syl/pull/55),
+  [`2acd8fe`](https://github.com/igorrochap/syl/commit/2acd8fed993ca75c3128b8cbdfc53e7a35a22d47))
+
+### Documentation
+
+- **review**: Clarify coordinator contract and workflow
+  ([`bab9c26`](https://github.com/igorrochap/syl/commit/bab9c2606bcb27ab6da36e5830da2686d77cb24a))
+
+### Features
+
+- **cli**: Implement skill synchronization ([#55](https://github.com/igorrochap/syl/pull/55),
+  [`2acd8fe`](https://github.com/igorrochap/syl/commit/2acd8fed993ca75c3128b8cbdfc53e7a35a22d47))
+
+
 ## v1.10.0 (2026-08-19)
 
 ### Chores
