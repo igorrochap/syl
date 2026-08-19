@@ -136,6 +136,13 @@ syl init
 writes anything. Run `syl init` again to review or add optional skills; it
 never overwrites a file that already holds your changes.
 
+`syl init` also writes `skills-lock.json`, recording the vendored content hash
+for each installed skill. Run `syl sync` to review drift against the current
+vendored Skill set. `syl sync --dry-run` only prints the report; `syl sync --all`
+applies safe updates automatically while still requiring explicit
+confirmation for locally modified skills. Optional skills are never installed
+by `sync`.
+
 ### 2. Configure the workflow
 
 `syl` reads `.syl/config.toml`. A generated file looks like this:
@@ -288,8 +295,6 @@ you need to audit a run; delete it when you do not.
 
 ## Caveats and troubleshooting
 
-- **`sync` is not implemented yet.** `syl` accepts the command, validates the
-  project configuration, then reports `not implemented yet`.
 - **`syl implement` needs a clean starting point.** It checks that `HEAD`
   does not move underneath it during a run; do not run another command that
   changes `HEAD` in the same working tree while `syl implement` runs.

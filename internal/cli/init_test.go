@@ -52,6 +52,13 @@ func TestInitBlankDirectoryScaffoldsProject(t *testing.T) {
 	}
 	assertFileExists(t, filepath.Join(root, ".agents", "skills", "tdd", "tests.md"))
 	assertFileExists(t, filepath.Join(root, ".agents", "skills", "go-style", "SKILL.md"))
+	lock := readTestSkillsLock(t, root)
+	if lock.Version != 1 || lock.Skills["close-issue"] == "" || lock.Skills["go-style"] == "" {
+		t.Fatalf("skills lock = %#v, want hashes for installed core and optional skills", lock)
+	}
+	if _, ok := lock.Skills["prototype"]; ok {
+		t.Fatal("skills lock contains an uninstalled optional skill")
+	}
 
 	assertSymlink(t, filepath.Join(root, ".claude"), ".agents")
 	assertSymlink(t, filepath.Join(root, "CLAUDE.md"), "AGENTS.md")

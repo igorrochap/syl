@@ -73,12 +73,30 @@ func (a *App) Command() *cobra.Command {
 	}
 	root.AddCommand(
 		a.initCommand(),
-		a.stubCommand("sync", "synchronize tracker data"),
+		a.syncCommand(),
 		a.planCommand(),
 		a.implementCommand(),
 		a.reviewCommand(),
 	)
 	return root
+}
+
+func (a *App) syncCommand() *cobra.Command {
+	var dryRun bool
+	var all bool
+	command := &cobra.Command{
+		Use:   "sync",
+		Short: "synchronize installed skills",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return initializer.Sync(a.projectRoot, initializer.SyncOptions{
+				Input: cmd.InOrStdin(), Output: cmd.OutOrStdout(), DryRun: dryRun, All: all,
+			})
+		},
+	}
+	command.Flags().BoolVar(&dryRun, "dry-run", false, "show the skill drift report without changing files")
+	command.Flags().BoolVar(&all, "all", false, "update every safe differing skill without prompting")
+	return command
 }
 
 func (a *App) implementCommand() *cobra.Command {
