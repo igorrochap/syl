@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/igorrochap/syl/internal/config"
 	"github.com/igorrochap/syl/internal/tracker"
 	"github.com/igorrochap/syl/internal/verdict"
 )
@@ -71,6 +72,41 @@ func composeReviewPrompt(ticketRef string, ticket *tracker.Ticket, branchPoint, 
 
 func composeReviewResumePrompt(diffPath string, blocking []verdict.Finding) string {
 	return fmt.Sprintf(reviewResumePrompt, diffPath, formatBlockingFindings(blocking))
+}
+
+func composePlanPrompt(options PlanOptions) string {
+	trackerName := "local"
+	if options.TrackerName == config.TrackerGitHub {
+		trackerName = "GitHub"
+	}
+	topic := strings.TrimSpace(options.Topic)
+
+	if !options.Grill && !options.Spec {
+		return fmt.Sprintf("/to-tickets\n\nTopic: %s\n\nUse the to-tickets skill to produce tickets on the configured %s tracker.", topic, trackerName)
+	}
+
+	firstSkill := "to-spec"
+	steps := make([]string, 0, 3)
+	if options.Grill {
+		firstSkill = "grill-me"
+		if options.WithDocs {
+			firstSkill = "grill-with-docs"
+		}
+		steps = append(steps, fmt.Sprintf("First use the %s skill to grill the user on this topic.", firstSkill))
+	}
+	if options.Spec {
+		prefix := "First"
+		if len(steps) > 0 {
+			prefix = "After the grilling is complete,"
+		}
+		steps = append(steps, fmt.Sprintf("%s use the to-spec skill to publish a spec on the configured %s tracker.", prefix, trackerName))
+	}
+	previous := "spec"
+	if !options.Spec {
+		previous = "grilling"
+	}
+	steps = append(steps, fmt.Sprintf("After the %s is complete, use the to-tickets skill to produce tickets on the configured %s tracker.", previous, trackerName))
+	return fmt.Sprintf("/%s\n\nTopic: %s\n\n%s", firstSkill, topic, strings.Join(steps, " "))
 }
 
 func formatBlockingFindings(findings []verdict.Finding) string {

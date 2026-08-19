@@ -17,8 +17,9 @@ coding agents.
 - [Usage guide](#usage-guide)
   - [1. Initialize a project](#1-initialize-a-project)
   - [2. Configure the workflow](#2-configure-the-workflow)
-  - [3. Implement an issue](#3-implement-an-issue)
-  - [4. Review working-tree changes](#4-review-working-tree-changes)
+  - [3. Plan work](#3-plan-work)
+  - [4. Implement an issue](#4-implement-an-issue)
+  - [5. Review working-tree changes](#5-review-working-tree-changes)
   - [Answer a QUESTION from a harness](#answer-a-question-from-a-harness)
 - [Configuration reference](#configuration-reference)
 - [Run artifacts](#run-artifacts)
@@ -181,7 +182,24 @@ Edit this file directly to change Trackers, Roles, the iteration limit, or
 notifications. `syl` rejects a config file that has an unknown key, so remove
 a setting instead of leaving a stale one behind.
 
-### 3. Implement an issue
+### 3. Plan work
+
+```sh
+syl plan "add offline mode"
+```
+
+`syl plan` opens the configured planner Role in an interactive Harness session.
+The planner produces tickets on the configured Issues Tracker, and `syl` reports
+which tickets were created when the session exits. Use the flags to change the
+planning sequence:
+
+- `--spec` publishes a spec before producing tickets.
+- `--grill` grills the topic before producing tickets.
+- `--grill --with-docs` uses the docs-grounded grilling variant.
+
+`--with-docs` requires `--grill`. Planning has no headless mode.
+
+### 4. Implement an issue
 
 ```sh
 syl implement 42
@@ -199,7 +217,7 @@ syl implement 42
 
 The legacy `syl implement '#42'` form remains supported.
 
-### 4. Review working-tree changes
+### 5. Review working-tree changes
 
 ```sh
 syl review
@@ -270,9 +288,8 @@ you need to audit a run; delete it when you do not.
 
 ## Caveats and troubleshooting
 
-- **`sync` and `plan` are not implemented yet.** `syl` accepts these
-  commands and validates the project configuration, then reports
-  `not implemented yet`.
+- **`sync` is not implemented yet.** `syl` accepts the command, validates the
+  project configuration, then reports `not implemented yet`.
 - **`syl implement` needs a clean starting point.** It checks that `HEAD`
   does not move underneath it during a run; do not run another command that
   changes `HEAD` in the same working tree while `syl implement` runs.
