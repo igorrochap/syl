@@ -2,6 +2,31 @@
 
 <!-- version list -->
 
+## v1.9.1 (2026-08-19)
+
+### Bug Fixes
+
+- **orchestration**: Include untracked files in review diff
+  ([#52](https://github.com/igorrochap/syl/pull/52),
+  [`ee821be`](https://github.com/igorrochap/syl/commit/ee821bee6283cd7e5cfcee54c1cb86ca4ff1f1d5))
+
+### Refactoring
+
+- **orchestration**: Abstract run artifacts into recorder
+  ([#47](https://github.com/igorrochap/syl/pull/47),
+  [`3436efa`](https://github.com/igorrochap/syl/commit/3436efac24a49d1b33f2df2804192f41b67e907f))
+
+- **orchestration**: Centralize prompt templates ([#48](https://github.com/igorrochap/syl/pull/48),
+  [`b7c65f0`](https://github.com/igorrochap/syl/commit/b7c65f0266535369e65f0724ed0fb0e99e1e21a0))
+
+- **orchestration**: Extract presentation logic ([#46](https://github.com/igorrochap/syl/pull/46),
+  [`3d04f4f`](https://github.com/igorrochap/syl/commit/3d04f4f54febf027cad50afb56c2518c773f7f73))
+
+- **orchestration**: Move branch naming logic to dedicated file
+  ([#49](https://github.com/igorrochap/syl/pull/49),
+  [`7cd9cc8`](https://github.com/igorrochap/syl/commit/7cd9cc80d3b9ef22e42ced91c8b3734e1b233853))
+
+
 ## v1.9.0 (2026-08-19)
 
 ### Features
