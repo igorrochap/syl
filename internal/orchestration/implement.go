@@ -128,7 +128,7 @@ func prepareImplement(ctx context.Context, git GitRunner, issueTracker tracker.T
 	if branchPoint == "" {
 		return implementSetup{}, errors.New("record branch point: git returned an empty ref")
 	}
-	branch := branchName(ticket)
+	branch := resolveBranchName(ticket)
 	if _, err := git.Run(ctx, "switch", "-c", branch); err != nil {
 		return implementSetup{}, fmt.Errorf("create implementation branch %q: %w", branch, err)
 	}

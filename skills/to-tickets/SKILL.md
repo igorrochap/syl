@@ -66,9 +66,18 @@ Work the **frontier**: any ticket whose blockers are all done. For a purely line
 
 Do NOT close or modify any parent issue.
 
+Every ticket body carries exactly one branch suggestion using `Branch: <type>/<slug>`.
+Use one of `feat`, `fix`, `refactor`, `chore`, `docs`, `test`, `perf`, `build`, or
+`ci` for the type. Write a lowercase slug from letters, digits, and single
+hyphens, with at most 60 characters in the full branch name. The harness falls
+back to the ticket title when a suggestion is missing or invalid. When a body
+contains multiple `Branch:` lines, the harness considers only the first.
+
 <local-ticket-template>
 
 # <NN> — <Ticket title>
+
+Branch: <type>/<concise-slug>
 
 **What to build:** the end-to-end behaviour this ticket makes work, from the user's perspective — not a layer-by-layer implementation list.
 
@@ -86,6 +95,8 @@ Do NOT close or modify any parent issue.
 ## Parent
 
 A reference to the parent issue on the tracker (if the source was an existing issue, otherwise omit this section).
+
+Branch: <type>/<concise-slug>
 
 ## What to build
 

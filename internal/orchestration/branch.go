@@ -9,7 +9,38 @@ import (
 	"github.com/igorrochap/syl/internal/tracker"
 )
 
-var branchTypePattern = regexp.MustCompile(`^(feat|fix|refactor|chore|docs|test|perf|build|ci)$`)
+const (
+	branchSuggestionPrefix = "Branch:"
+	maxBranchNameLength    = 60
+)
+
+var (
+	branchTypePattern = regexp.MustCompile(`^(feat|fix|refactor|chore|docs|test|perf|build|ci)$`)
+	branchSlugPattern = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
+)
+
+func resolveBranchName(ticket tracker.Ticket) string {
+	suggestion, ok := branchSuggestion(ticket.Body)
+	if ok && validBranchName(suggestion) {
+		return suggestion
+	}
+	return branchName(ticket)
+}
+
+func branchSuggestion(body string) (string, bool) {
+	for _, line := range strings.Split(body, "\n") {
+		if suggestion, ok := strings.CutPrefix(strings.TrimSpace(line), branchSuggestionPrefix); ok {
+			return strings.TrimSpace(suggestion), true
+		}
+	}
+	return "", false
+}
+
+func validBranchName(name string) bool {
+	branchType, slug, ok := strings.Cut(name, "/")
+	return ok && len(name) <= maxBranchNameLength &&
+		branchTypePattern.MatchString(branchType) && branchSlugPattern.MatchString(slug)
+}
 
 func branchName(ticket tracker.Ticket) string {
 	title := strings.TrimSpace(ticket.Title)
