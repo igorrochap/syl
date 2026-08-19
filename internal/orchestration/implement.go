@@ -6,18 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"regexp"
 	"strconv"
 	"strings"
-	"unicode"
 
 	"github.com/igorrochap/syl/internal/config"
 	"github.com/igorrochap/syl/internal/harness"
 	"github.com/igorrochap/syl/internal/tracker"
 	"github.com/igorrochap/syl/internal/verdict"
 )
-
-var branchTypePattern = regexp.MustCompile(`^(feat|fix|refactor|chore|docs|test|perf|build|ci)$`)
 
 type implementSetup struct {
 	git         GitRunner
@@ -310,54 +306,6 @@ func ensureHeadUnchanged(ctx context.Context, git GitRunner, branchPoint string)
 		return fmt.Errorf("implementation changed HEAD; agents must leave changes uncommitted")
 	}
 	return nil
-}
-
-func branchName(ticket tracker.Ticket) string {
-	title := strings.TrimSpace(ticket.Title)
-	branchType := ""
-	contextTitle := title
-	for _, label := range ticket.Labels {
-		label = strings.ToLower(strings.TrimSpace(label))
-		if branchTypePattern.MatchString(label) {
-			branchType = label
-			break
-		}
-	}
-	if before, after, ok := strings.Cut(title, ":"); ok {
-		candidate := strings.ToLower(strings.TrimSpace(before))
-		if branchType == "" && branchTypePattern.MatchString(candidate) {
-			branchType = candidate
-		}
-		if branchType != "" || strings.Contains(candidate, "implement") || strings.Contains(candidate, "syl") {
-			contextTitle = strings.TrimSpace(after)
-		}
-	}
-	if branchType == "" {
-		branchType = "feat"
-	}
-	context := slugContext(contextTitle)
-	if context == "" {
-		context = "ticket-" + strconv.Itoa(ticket.Number)
-	}
-	return branchType + "/" + context
-}
-
-func slugContext(value string) string {
-	words := strings.FieldsFunc(strings.ToLower(value), func(r rune) bool {
-		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
-	})
-	stopWords := map[string]bool{"a": true, "an": true, "and": true, "for": true, "in": true, "of": true, "on": true, "the": true, "to": true, "with": true}
-	selected := make([]string, 0, 5)
-	for _, word := range words {
-		if stopWords[word] {
-			continue
-		}
-		selected = append(selected, word)
-		if len(selected) == 5 {
-			break
-		}
-	}
-	return strings.Join(selected, "-")
 }
 
 func blockingFindings(review verdict.Verdict) []verdict.Finding {
