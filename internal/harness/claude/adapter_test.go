@@ -1,11 +1,54 @@
 package claude
 
 import (
+	"context"
+	"os"
+	"path/filepath"
+	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/igorrochap/syl/internal/config"
 	"github.com/igorrochap/syl/internal/harness"
 )
+
+func TestClaudeAttachInvokesInteractivePrompt(t *testing.T) {
+	root := t.TempDir()
+	argsPath := filepath.Join(root, "args")
+	command := filepath.Join(t.TempDir(), "claude")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"" + argsPath + "\"\n"
+	if err := os.WriteFile(command, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	adapter := &Adapter{command: command, projectRoot: root}
+
+	err := adapter.Attach(context.Background(), harness.Request{
+		Model:  "claude-opus-5",
+		Effort: config.EffortHigh,
+		Prompt: "/to-tickets\n\nTopic: offline mode",
+		MCP:    false,
+	})
+	if err != nil {
+		t.Fatalf("Attach() error = %v", err)
+	}
+
+	contents, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotArgs := strings.Split(strings.TrimSpace(string(contents)), "\n")
+	wantArgs := []string{
+		"--strict-mcp-config",
+		"--model", "claude-opus-5",
+		"--effort", "high",
+		"/to-tickets",
+		"",
+		"Topic: offline mode",
+	}
+	if !reflect.DeepEqual(gotArgs, wantArgs) {
+		t.Fatalf("Claude attach args = %#v, want %#v", gotArgs, wantArgs)
+	}
+}
 
 func TestClaudeEffortMapping(t *testing.T) {
 	tests := []struct {

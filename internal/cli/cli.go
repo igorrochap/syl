@@ -188,28 +188,46 @@ func canonicalIssueReference(reference string) string {
 }
 
 func (a *App) planCommand() *cobra.Command {
-	return &cobra.Command{
+	var spec bool
+	var grill bool
+	var withDocs bool
+	command := &cobra.Command{
 		Use:   "plan [target]",
-		Short: "plan the next role",
+		Short: "plan work in an interactive planner session",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			projectConfig, err := config.Load(a.projectRoot)
 			if err != nil {
 				return err
 			}
-			if _, err := a.harness("plan", projectConfig.Roles.Plan.Harness); err != nil {
+			adapter, err := a.harness("plan", projectConfig.Roles.Plan.Harness)
+			if err != nil {
 				return err
 			}
-			target := ""
-			if len(args) == 1 {
-				target = args[0]
+			if len(args) == 0 {
+				return errors.New("plan requires a topic")
 			}
-			if err := writePlanBanner(cmd.OutOrStdout(), projectConfig, target); err != nil {
+			if withDocs && !grill {
+				return errors.New("--with-docs requires --grill")
+			}
+			issueTracker, err := a.newIssueTracker(projectConfig)
+			if err != nil {
 				return err
 			}
-			return errors.New("plan: not implemented yet")
+			if err := writePlanBanner(cmd.OutOrStdout(), projectConfig, args[0]); err != nil {
+				return err
+			}
+			return orchestration.RunPlan(cmd.Context(), orchestration.PlanOptions{
+				ProjectRoot: a.projectRoot, Topic: args[0], TrackerName: projectConfig.Tracker.Issues,
+				Role: projectConfig.Roles.Plan, IssueTracker: issueTracker, Adapter: adapter,
+				Output: cmd.OutOrStdout(), Spec: spec, Grill: grill, WithDocs: withDocs,
+			})
 		},
 	}
+	command.Flags().BoolVar(&spec, "spec", false, "produce a spec before tickets")
+	command.Flags().BoolVar(&grill, "grill", false, "grill the topic before producing output")
+	command.Flags().BoolVar(&withDocs, "with-docs", false, "create supporting docs while grilling")
+	return command
 }
 
 func (a *App) initCommand() *cobra.Command {

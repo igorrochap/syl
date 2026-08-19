@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"strings"
 
@@ -62,8 +63,26 @@ func baseFlags(enabled mcpEnabled) []string {
 	return args
 }
 
-func (*Adapter) Attach(context.Context, harness.Request) error {
-	return errors.New("interactive harness attach is not supported yet")
+func (a *Adapter) Attach(ctx context.Context, request harness.Request) error {
+	args, err := attachArgs(request)
+	if err != nil {
+		return err
+	}
+	command := a.command
+	if command == "" {
+		command = "claude"
+	}
+	process := exec.CommandContext(ctx, command, args...)
+	if a.projectRoot != "" {
+		process.Dir = a.projectRoot
+	}
+	process.Stdin = os.Stdin
+	process.Stdout = os.Stdout
+	process.Stderr = os.Stderr
+	if err := process.Run(); err != nil {
+		return fmt.Errorf("Claude Code exited unsuccessfully: %w", err)
+	}
+	return nil
 }
 
 func (a *Adapter) start(ctx context.Context, args []string) (harness.Stream, error) {

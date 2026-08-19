@@ -76,11 +76,11 @@ func TestReviewPrintsTicketIdentificationBannerBeforeVerdict(t *testing.T) {
 }
 
 func TestPlanPrintsIdentificationBannerForInvokedTarget(t *testing.T) {
-	fixture := newTopSeamFixture(t)
+	fixture := newPlanFixture(t)
 
 	code := fixture.app.Run(context.Background(), []string{"plan", "#42"}, &fixture.stdout, &fixture.stderr)
-	if code == 0 {
-		t.Fatal("plan code = 0, want the existing not-implemented failure")
+	if code != 0 {
+		t.Fatalf("plan code = %d, stderr = %q", code, fixture.stderr.String())
 	}
 	wantPrefix := "syl plan #42\n" +
 		"  planner:    claude · claude-opus-5 · effort high\n"
