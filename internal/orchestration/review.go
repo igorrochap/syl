@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -435,14 +436,68 @@ func writeLocalReviewLog(projectRoot, ticketRef, branchPoint string, timestamp t
 }
 
 func computeReviewDiff(ctx context.Context, git GitRunner, branchPoint string) (string, error) {
-	diff, err := git.Run(ctx, "diff", branchPoint)
+	trackedDiff, err := git.Run(ctx, "diff", branchPoint)
 	if err != nil {
 		return "", fmt.Errorf("compute review diff against %s: %w", branchPoint, err)
 	}
-	if strings.TrimSpace(diff) == "" {
+	untrackedFiles, err := listUntrackedFiles(ctx, git)
+	if err != nil {
+		return "", err
+	}
+	untrackedDiff, err := renderUntrackedDiffs(ctx, git, untrackedFiles)
+	if err != nil {
+		return "", err
+	}
+	var diff strings.Builder
+	diff.WriteString(trackedDiff)
+	if trackedDiff != "" && untrackedDiff != "" && trackedDiff[len(trackedDiff)-1] != '\n' {
+		diff.WriteByte('\n')
+	}
+	diff.WriteString(untrackedDiff)
+	completeDiff := diff.String()
+	if strings.TrimSpace(completeDiff) == "" {
 		return "", fmt.Errorf("pre-computed diff against %s is empty", branchPoint)
 	}
-	return diff, nil
+	return completeDiff, nil
+}
+
+func listUntrackedFiles(ctx context.Context, git GitRunner) ([]string, error) {
+	output, err := git.Run(ctx, "ls-files", "--others", "--exclude-standard", "-z")
+	if err != nil {
+		return nil, fmt.Errorf("list untracked files: %w", err)
+	}
+	files := strings.Split(strings.TrimSuffix(output, "\x00"), "\x00")
+	if len(files) == 1 && files[0] == "" {
+		return nil, nil
+	}
+	sort.Strings(files)
+	return files, nil
+}
+
+func renderUntrackedDiffs(ctx context.Context, git GitRunner, files []string) (string, error) {
+	var rendered strings.Builder
+	endsWithNewline := true
+	for _, path := range files {
+		diff, err := git.Run(ctx, "diff", "--no-index", "--", "/dev/null", path)
+		if err != nil && !isDiffFoundExit(err) {
+			return "", fmt.Errorf("render untracked file %q: %w", path, err)
+		}
+		if rendered.Len() > 0 && !endsWithNewline {
+			rendered.WriteByte('\n')
+		}
+		rendered.WriteString(diff)
+		if diff != "" {
+			endsWithNewline = diff[len(diff)-1] == '\n'
+		}
+	}
+	return rendered.String(), nil
+}
+
+func isDiffFoundExit(err error) bool {
+	const gitDiffFoundExitCode = 1
+
+	var exitError interface{ ExitCode() int }
+	return errors.As(err, &exitError) && exitError.ExitCode() == gitDiffFoundExitCode
 }
 
 func reviewTranscriptSavedError(err error, dir string) error {
