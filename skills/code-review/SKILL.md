@@ -12,22 +12,42 @@ Both axes run as **parallel sub-agents** so they don't pollute each other's cont
 
 The project's issue tracker should have been provided to you, including how it tracks reviews specifically (GitHub PR/issue comments, or a local `.scratch/` log) — this determines how you document findings in the Documenting section below. If these details are missing, ask the user before proceeding.
 
+## Coordinator contract
+
+The coordinator is a dispatcher, not a third reviewer. This contract applies at every phase: before spawning, between the two spawn calls, while waiting, and during aggregation.
+
+The coordinator's complete allowlist is:
+
+- Minimal setup calls: resolve the fixed point, record the diff source and commit subjects, verify the diff or supplied artifact is non-empty with metadata-only output (`--stat`, `stat`, or `wc`), and list candidate spec and standards paths or references without opening their contents.
+- One message containing the two axis sub-agent spawns.
+- Collection of those two reports as completion notifications arrive.
+- The Documenting section, when it applies.
+- The aggregate report and verdict block.
+
+At every phase, the coordinator must not:
+
+- Read diff content, source files, standards or rules files, or the smells catalog. Give sub-agents paths; they read the content themselves.
+- Verify a sub-agent finding by reading code or running a grep or search. Trust each report as written. Present disagreements side by side without coordinator research or adjudication.
+- Spawn an exploration agent or any agent other than the two axis sub-agents. The Spec prompt tells that sub-agent to locate any related code itself.
+- Use `ScheduleWakeup`, `ToolSearch`, polling, or any other idle/waiting machinery. Sub-agent completion arrives as a notification.
+- Run builds, tests, or any tool call outside the allowlist.
+
 ## Process
 
 ### 1. Pin the fixed point
 
 Whatever the user said is the fixed point — a commit SHA, branch name, tag, `main`, `HEAD~5`, etc. If they didn't specify one, ask for it.
 
-Capture the inputs once, using the minimum metadata calls needed to hand accurate inputs to the sub-agents:
+Capture the inputs once, using only the metadata calls allowed by the coordinator contract:
 
 - Resolve the ref with `git rev-parse <fixed-point>`.
 - Record the full diff command, `git diff <fixed-point>...HEAD` (three-dot, so the comparison is against the merge-base), for the sub-agents to run.
 - Record the commit subjects with `git log <fixed-point>..HEAD --oneline`.
 - Verify that the diff is non-empty with `git diff <fixed-point>...HEAD --stat`.
 
-The coordinator needs the resolved ref, command, commit list, and diff stat. A bad ref or empty diff should fail here — not inside two parallel sub-agents. Keep the full diff for the sub-agents to inspect.
+The coordinator needs the resolved ref, command, commit list, and diff stat. A bad ref or empty diff should fail here — not inside two parallel sub-agents. The sub-agents inspect the full diff.
 
-When the invoking prompt supplies a pre-computed diff file, use that file as the diff source instead of running the diff command. Verify that the file exists and is non-empty before proceeding. The supplied file is authoritative for this review; do not invoke Git to re-derive it. Keep the supplied branch-point ref as review context, and allow individual file reads for surrounding context.
+When the invoking prompt supplies a pre-computed diff file, use that file as the diff source instead of running the diff command. Verify that the file exists and is non-empty with `stat` or `wc`. The supplied file is authoritative for this review; do not invoke Git to re-derive it. Keep the supplied branch-point ref as review context. The coordinator never opens the artifact or surrounding source files.
 
 ### 2. Identify the spec source
 
@@ -36,22 +56,22 @@ Look for the originating spec, in this order:
 1. Issue references in the commit messages (`#123`, `Closes #45`, GitLab `!67`, etc.) — fetch via the workflow in `docs/agents/issue-tracker.md`.
 2. A path the user passed as an argument.
 3. A PRD/spec file under `docs/`, `specs/`, or `.scratch/` matching the branch name or feature.
-4. If nothing is found, ask the user where the spec is. If they say there isn't one, the **Spec** sub-agent will skip and report "no spec available".
+4. If nothing is found, ask the user where the spec is. If they say there isn't one, pass that fact to the **Spec** sub-agent.
 
-Identify the source with commit subjects, user-provided references, and file paths. Pass the issue/PR reference or spec path directly to the Spec sub-agent; if no stable reference exists, forward the retrieved spec body as unexamined prompt input. Keep the spec as sub-agent input rather than performing the requirements analysis in the coordinator.
+Identify the source with commit subjects, user-provided references, and path listings. Pass the issue/PR reference or spec path directly to the Spec sub-agent without opening it. The Spec sub-agent retrieves and reads the source. If no stable reference exists, ask the user for one; if they confirm there is no spec, pass that fact to the Spec sub-agent so it reports "no spec available".
 
 ### 3. Identify the standards sources
 
 Use the minimum listing/search calls needed to collect paths to anything in the repo that documents how code should be written, such as `CODING_STANDARDS.md` or `CONTRIBUTING.md`. Pass those paths to the Standards sub-agent; the coordinator needs the path list, not the file contents.
 
-On top of whatever the repo documents, the Standards axis always carries the **smell baseline** — Fowler's code smells (_Refactoring_, ch.3), cataloged in [`skills/refactoring/references/smells.md`](../refactoring/references/smells.md), applying even when a repo documents nothing. Two rules bind it:
+On top of whatever the repo documents, the Standards axis always carries the **smell baseline** — Fowler's code smells (_Refactoring_, ch.3), cataloged in [`skills/refactoring/references/smells.md`](../refactoring/references/smells.md), applying even when a repo documents nothing. The coordinator passes this path without opening it. Two rules bind it:
 
 - **The repo overrides.** A documented repo standard always wins; where it endorses something the baseline would flag, suppress the smell.
 - **Always a judgement call.** Each smell is a labelled heuristic ("possible Feature Envy"), never a hard violation — and, like any standard here, skip anything tooling already enforces.
 
 ### 4. Spawn both sub-agents in parallel
 
-The coordinator's analysis ends at this handoff. Send a single message with two `Agent` tool calls. Use the `general-purpose` subagent for both. Put the fixed-point command, commit list, spec reference or input, and standards-source paths into the prompts so the sub-agents can do the substantive review with their own context.
+The coordinator's setup ends at this handoff. Send a single message containing both `Agent` tool calls; there is no phase between separate spawn messages. Use the `general-purpose` subagent for both. Make both prompts self-sufficient by including the exact diff-file path (or, when no artifact was supplied, the full diff command), the branch-point ref, the commit list, the candidate standards-source paths, and the spec path or reference. The sub-agents do every content read and all substantive analysis in their own contexts.
 
 **Standards sub-agent prompt** — include:
 
@@ -62,14 +82,15 @@ The coordinator's analysis ends at this handoff. Send a single message with two 
 **Spec sub-agent prompt** — include:
 
 - In normal mode, the diff command and commit list. In pre-computed-diff mode, the same exact diff-file path and branch-point ref used for the Standards sub-agent; tell the sub-agent to read that authoritative, non-empty file directly and not invoke Git to re-derive the diff.
-- The issue/PR reference or spec path from step 2; if step 2 retrieved an external body, pass it through as prompt input without analyzing it.
+- The issue/PR reference or spec path from step 2, or the user's confirmation that no spec exists. The sub-agent retrieves and reads referenced content itself.
+- The instruction to locate and read any related code it needs itself; the coordinator will not locate context or verify the report.
 - The brief: "Report: (a) requirements the spec asked for that are missing or partial; (b) behaviour in the diff that wasn't asked for (scope creep); (c) requirements that look implemented but where the implementation looks wrong. Quote the spec line for each finding. Under 400 words."
 
-If the spec is missing, skip the Spec sub-agent and note this in the final report.
+If the user confirmed there is no spec, still spawn the Spec sub-agent and instruct it to report "no spec available".
 
 #### Coordinator boundary after the handoff
 
-Once the sub-agents are spawned, the coordinator's work is limited to collecting their reports, aggregating them, and — when applicable — documenting the review. The coordinator must not read the diff, standards sources, smell catalog, or any source files, and must not run builds or tests. Its only tool use after spawning is what is required to collect sub-agent results and produce or post the review output. When a pre-computed diff file was supplied, pass its exact path and the branch-point ref to both sub-agents; both must use that file as their diff source.
+The Coordinator contract remains in force after the handoff: collect only the two completion notifications, then aggregate and document their reports. When a pre-computed diff file was supplied, both sub-agents use its exact path and branch-point ref as their diff source.
 
 ### 5. Aggregate
 
