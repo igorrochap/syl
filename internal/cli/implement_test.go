@@ -353,6 +353,48 @@ func TestImplementLoopFeedsBlockingFindingsIntoSecondImplementerPrompt(t *testin
 	}
 }
 
+func TestImplementLoopReviewDiffIncludesUntrackedFiles(t *testing.T) {
+	fixture := newImplementLoopFixture(t)
+	loop := &loopHarness{
+		root:                  fixture.root,
+		leaveChangesUntracked: true,
+		streams: [][]harness.Event{
+			{{Type: harness.EventSession, SessionID: "implement-1"}},
+			{{Type: harness.EventSession, SessionID: "review-1"}, {Type: harness.EventAssistantText, Text: approveVerdictText}},
+		},
+	}
+	fixture.app.deps.Harnesses["codex"] = loop
+	fixture.app.deps.Harnesses["claude"] = loop
+	fixture.app.deps.GH = &loopGHRunner{}
+
+	code := fixture.app.Run(context.Background(), []string{"implement", "#42"}, &fixture.stdout, &fixture.stderr)
+	if code != 0 {
+		t.Fatalf("implement code = %d, want 0; stderr = %q", code, fixture.stderr.String())
+	}
+	runDirs, err := filepath.Glob(filepath.Join(fixture.root, ".syl", "runs", "*-42"))
+	if err != nil || len(runDirs) != 1 {
+		t.Fatalf("run directories = %v, err = %v; want one issue artifact directory", runDirs, err)
+	}
+	diff, err := os.ReadFile(filepath.Join(runDirs[0], "iteration-01-review.diff"))
+	if err != nil {
+		t.Fatalf("read review diff: %v", err)
+	}
+	for _, want := range []string{
+		"diff --git a/change.txt b/change.txt",
+		"new file mode",
+		"--- /dev/null",
+		"+++ b/change.txt",
+		"+implemented-1",
+	} {
+		if !strings.Contains(string(diff), want) {
+			t.Errorf("review diff does not contain %q:\n%s", want, diff)
+		}
+	}
+	if staged := gitOutput(t, fixture.root, "diff", "--cached"); staged != "" {
+		t.Fatalf("staged diff = %q, want untracked implementation file", staged)
+	}
+}
+
 func TestImplementLoopResumesPreviousReviewerSession(t *testing.T) {
 	fixture := newImplementLoopFixture(t)
 	loop := &resumingLoopHarness{
@@ -733,6 +775,9 @@ type implementLoopFixture struct {
 func newImplementLoopFixture(t *testing.T) *implementLoopFixture {
 	t.Helper()
 	base := newTopSeamFixtureWithGit(t, true)
+	if err := os.WriteFile(filepath.Join(base.root, ".gitignore"), []byte(".syl/runs/\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(filepath.Join(base.root, "tracked.txt"), []byte("initial\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -759,9 +804,10 @@ func commitWorkingTree(t *testing.T, root, message string) {
 }
 
 type loopHarness struct {
-	root     string
-	streams  [][]harness.Event
-	requests []harness.Request
+	root                  string
+	streams               [][]harness.Event
+	requests              []harness.Request
+	leaveChangesUntracked bool
 }
 
 type resumingLoopHarness struct {
@@ -877,8 +923,10 @@ func (h *loopHarness) Run(_ context.Context, request harness.Request) (harness.S
 		if err := os.WriteFile(filepath.Join(h.root, "change.txt"), []byte(fmt.Sprintf("implemented-%d\n", index/2+1)), 0o644); err != nil {
 			return nil, err
 		}
-		if output, err := exec.Command("git", "-C", h.root, "add", "change.txt").CombinedOutput(); err != nil {
-			return nil, fmt.Errorf("stage fixture change: %v\n%s", err, output)
+		if !h.leaveChangesUntracked {
+			if output, err := exec.Command("git", "-C", h.root, "add", "change.txt").CombinedOutput(); err != nil {
+				return nil, fmt.Errorf("stage fixture change: %v\n%s", err, output)
+			}
 		}
 	}
 	if index >= len(h.streams) {

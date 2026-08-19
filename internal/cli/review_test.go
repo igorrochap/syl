@@ -93,8 +93,8 @@ func TestReviewPrecomputesAuthoritativeDiffOnceAndPassesArtifactPath(t *testing.
 			t.Fatalf("review prompt = %q, want %q", harness.runRequest.Prompt, expected)
 		}
 	}
-	if got := strings.Join(git.calls, "\n"); got != "rev-parse HEAD\ndiff branch-point" {
-		t.Fatalf("git calls = %q, want one ref lookup and one diff", got)
+	if got := strings.Join(git.calls, "\n"); got != "rev-parse HEAD\ndiff branch-point\nls-files --others --exclude-standard -z" {
+		t.Fatalf("git calls = %q, want one ref lookup and one complete diff", got)
 	}
 }
 
@@ -547,6 +547,8 @@ func (r *reviewGitRunner) Run(_ context.Context, args ...string) (string, error)
 		return "branch-point\n", nil
 	case "diff branch-point":
 		return r.diff, r.diffErr
+	case "ls-files --others --exclude-standard -z":
+		return "", nil
 	default:
 		return "", fmt.Errorf("unexpected git command %q", call)
 	}

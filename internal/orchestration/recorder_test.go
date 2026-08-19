@@ -173,6 +173,8 @@ func (g staticImplementGit) Run(_ context.Context, args ...string) (string, erro
 		return g.branchPoint, nil
 	case "diff " + g.branchPoint:
 		return g.diff, nil
+	case "ls-files --others --exclude-standard -z":
+		return "", nil
 	default:
 		return "", fmt.Errorf("unexpected git command %q", strings.Join(args, " "))
 	}
