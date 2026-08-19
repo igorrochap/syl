@@ -124,7 +124,7 @@ func RunReview(ctx context.Context, options ReviewOptions) error {
 	}
 	if options.ProjectConfig.Tracker.Reviews == config.TrackerGitHub {
 		if options.IssueTracker == nil || options.Ticket == nil {
-			return errors.New("github review logging requires an issue reference (#N)")
+			return errors.New("github review logging requires an issue reference (N or #N)")
 		}
 		if err := options.IssueTracker.AddComment(ctx, options.Ticket.Number, formatGitHubReviewComment(reviewVerdict)); err != nil {
 			return fmt.Errorf("post review to GitHub issue #%d: %w", options.Ticket.Number, err)

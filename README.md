@@ -98,7 +98,7 @@ This example sets up a project and implements one issue.
 syl init
 
 # Implement issue #42. syl runs implement, then review, in a loop.
-syl implement '#42'
+syl implement 42
 ```
 
 `syl implement` stops when the reviewer Role returns an `approve` Verdict, or
@@ -184,7 +184,7 @@ a setting instead of leaving a stale one behind.
 ### 3. Implement an issue
 
 ```sh
-syl implement '#42'
+syl implement 42
 ```
 
 `syl implement`:
@@ -197,7 +197,7 @@ syl implement '#42'
 5. Prints a summary: iteration count, final Verdict, remaining nits, and a
    diff stat.
 
-Quote the issue reference so your shell does not treat `#42` as a comment.
+The legacy `syl implement '#42'` form remains supported.
 
 ### 4. Review working-tree changes
 
@@ -210,7 +210,7 @@ changes, and prints the Verdict. Pass an issue reference to log the review
 against that issue:
 
 ```sh
-syl review '#42'
+syl review 42
 ```
 
 When the Review log is `github`, an issue reference is required; `syl`
@@ -220,7 +220,7 @@ Add `--raw` to pass the Harness output through untouched, instead of the
 parsed Verdict view:
 
 ```sh
-syl review '#42' --raw
+syl review 42 --raw
 ```
 
 ### Answer a QUESTION from a harness
@@ -276,8 +276,8 @@ you need to audit a run; delete it when you do not.
 - **`syl implement` needs a clean starting point.** It checks that `HEAD`
   does not move underneath it during a run; do not run another command that
   changes `HEAD` in the same working tree while `syl implement` runs.
-- **Quote issue references.** `#42` is a shell comment marker in most
-  shells. Write `'#42'` or `"#42"`.
+- **Hash-prefixed issue references need quotes.** Prefer `42`. The legacy
+  `#42` form remains supported as `'#42'` or `"#42"`.
 - **`syl init` refuses to replace unmanaged files.** It links a Claude Code
   integration only when the existing path is absent or is already a symlink
   `syl` manages; a real directory or file at that path stops `syl init` with

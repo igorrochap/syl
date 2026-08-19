@@ -27,7 +27,7 @@ func TestImplementLoopApprovesOnFirstIteration(t *testing.T) {
 	fixture.app.deps.GH = &loopGHRunner{}
 
 	branchPoint := gitOutput(t, fixture.root, "rev-parse", "HEAD")
-	code := fixture.app.Run(context.Background(), []string{"implement", "#42"}, &fixture.stdout, &fixture.stderr)
+	code := fixture.app.Run(context.Background(), []string{"implement", "42"}, &fixture.stdout, &fixture.stderr)
 	if code != 0 {
 		t.Fatalf("implement code = %d, want 0; stderr = %q", code, fixture.stderr.String())
 	}

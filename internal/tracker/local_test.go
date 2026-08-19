@@ -19,7 +19,7 @@ func TestLocalResolveFindsTicketAcrossFeatureDirectories(t *testing.T) {
 		t.Fatalf("NewLocal() error = %v", err)
 	}
 
-	ticket, err := local.Resolve(context.Background(), "#07")
+	ticket, err := local.Resolve(context.Background(), "07")
 	if err != nil {
 		t.Fatalf("Resolve() error = %v", err)
 	}
@@ -28,6 +28,29 @@ func TestLocalResolveFindsTicketAcrossFeatureDirectories(t *testing.T) {
 	}
 	if ticket.Body == "" {
 		t.Fatal("Resolve() returned an empty body")
+	}
+}
+
+func TestParseReferenceAcceptsBareAndHashPrefixedNumbers(t *testing.T) {
+	tests := []struct {
+		name      string
+		reference string
+		want      int
+	}{
+		{name: "bare number", reference: "321", want: 321},
+		{name: "hash-prefixed number", reference: "#30", want: 30},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseReference(tt.reference)
+			if err != nil {
+				t.Fatalf("parseReference(%q) error = %v", tt.reference, err)
+			}
+			if got != tt.want {
+				t.Fatalf("parseReference(%q) = %d, want %d", tt.reference, got, tt.want)
+			}
+		})
 	}
 }
 

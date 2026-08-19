@@ -330,12 +330,10 @@ func ticketStatus(lines []string) (string, int) {
 
 func parseReference(reference string) (int, error) {
 	value := strings.TrimSpace(reference)
-	if !strings.HasPrefix(value, "#") {
-		return 0, fmt.Errorf("invalid ticket reference %q; want #N", reference)
-	}
-	number, err := strconv.Atoi(strings.TrimSpace(strings.TrimPrefix(value, "#")))
+	value = strings.TrimSpace(strings.TrimPrefix(value, "#"))
+	number, err := strconv.Atoi(value)
 	if err != nil || number < 1 {
-		return 0, fmt.Errorf("invalid ticket reference %q; want #N", reference)
+		return 0, fmt.Errorf("invalid ticket reference %q; want N or #N", reference)
 	}
 	return number, nil
 }

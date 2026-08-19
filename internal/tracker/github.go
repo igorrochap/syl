@@ -78,7 +78,7 @@ func NewGitHub(runner GHRunner) (*GitHub, error) {
 	return &GitHub{runner: runner}, nil
 }
 
-// Resolve returns the GitHub issue referenced by #N.
+// Resolve returns the GitHub issue referenced by N or #N.
 func (g *GitHub) Resolve(ctx context.Context, reference string) (Ticket, error) {
 	number, err := parseReference(reference)
 	if err != nil {

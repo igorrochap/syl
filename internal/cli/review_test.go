@@ -167,7 +167,7 @@ func TestReviewWithTicketIncludesTicketInPromptAndReviewLog(t *testing.T) {
 	configureLocalIssues(t, fixture.root)
 	writeReviewTicket(t, fixture.root, "feature-a", "07", "Improve the tracker", "Implement the requested tracker behavior.")
 
-	code := fixture.app.Run(context.Background(), []string{"review", "#07"}, &fixture.stdout, &fixture.stderr)
+	code := fixture.app.Run(context.Background(), []string{"review", "07"}, &fixture.stdout, &fixture.stderr)
 	if code != 0 {
 		t.Fatalf("review code = %d, want 0; stderr = %q", code, fixture.stderr.String())
 	}

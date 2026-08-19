@@ -84,7 +84,7 @@ func (a *App) Command() *cobra.Command {
 func (a *App) implementCommand() *cobra.Command {
 	var verbose bool
 	command := &cobra.Command{
-		Use:   "implement #N",
+		Use:   "implement N",
 		Short: "implement the current issue",
 		Long:  "implement the current issue\n\n" + orchestration.QuestionInputHelp,
 		Args:  cobra.MaximumNArgs(1),
@@ -94,7 +94,7 @@ func (a *App) implementCommand() *cobra.Command {
 				return err
 			}
 			if len(args) == 0 {
-				return errors.New("implement requires an issue reference (#N)")
+				return errors.New("implement requires an issue reference (N or #N)")
 			}
 			issueTracker, err := a.newIssueTracker(projectConfig)
 			if err != nil {
@@ -131,7 +131,7 @@ func (a *App) reviewCommand() *cobra.Command {
 	var raw bool
 	var verbose bool
 	command := &cobra.Command{
-		Use:   "review [#N]",
+		Use:   "review [N]",
 		Short: "review the current working-tree changes",
 		Long:  "review the current working-tree changes\n\n" + orchestration.QuestionInputHelp,
 		Args:  cobra.MaximumNArgs(1),
@@ -141,7 +141,7 @@ func (a *App) reviewCommand() *cobra.Command {
 				return err
 			}
 			if projectConfig.Tracker.Reviews == config.TrackerGitHub && len(args) == 0 {
-				return errors.New("github review logging requires an issue reference (#N)")
+				return errors.New("github review logging requires an issue reference (N or #N)")
 			}
 
 			var ticket *tracker.Ticket
@@ -157,7 +157,7 @@ func (a *App) reviewCommand() *cobra.Command {
 					return err
 				}
 				ticket = &resolved
-				ticketRef = strings.TrimSpace(args[0])
+				ticketRef = canonicalIssueReference(args[0])
 			}
 			adapter, err := a.harness("review", projectConfig.Roles.Review.Harness)
 			if err != nil {
@@ -177,6 +177,14 @@ func (a *App) reviewCommand() *cobra.Command {
 	command.Flags().BoolVar(&verbose, "verbose", false, "stream assistant prose in addition to progress output")
 	command.MarkFlagsMutuallyExclusive("raw", "verbose")
 	return command
+}
+
+func canonicalIssueReference(reference string) string {
+	reference = strings.TrimSpace(reference)
+	if strings.HasPrefix(reference, "#") {
+		return reference
+	}
+	return "#" + reference
 }
 
 func (a *App) planCommand() *cobra.Command {
