@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v1.9.0 (2026-08-19)
+
+### Features
+
+- **cli**: Support bare numbers for issue references
+  ([`a795092`](https://github.com/igorrochap/syl/commit/a79509261cb5ae43bbfc561a21b6220d1e530e7c))
+
+
 ## v1.8.0 (2026-08-18)
 
 ### Features
