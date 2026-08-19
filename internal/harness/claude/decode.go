@@ -44,6 +44,28 @@ func runArgs(request harness.Request) ([]string, error) {
 	return args, nil
 }
 
+func attachArgs(request harness.Request) ([]string, error) {
+	effort, err := claudeEffortFlag(request.Effort)
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(request.Model) == "" {
+		return nil, errors.New("Claude Code model is required")
+	}
+	if strings.TrimSpace(request.Prompt) == "" {
+		return nil, errors.New("Claude Code prompt is required")
+	}
+	var args []string
+	if !request.MCP {
+		args = append(args, "--strict-mcp-config")
+	}
+	return append(args,
+		"--model", request.Model,
+		"--effort", effort,
+		request.Prompt,
+	), nil
+}
+
 func resumeArgs(sessionID string, request harness.Request) ([]string, error) {
 	if strings.TrimSpace(sessionID) == "" {
 		return nil, errors.New("cannot resume Claude Code session without a session id")
