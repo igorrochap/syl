@@ -14,23 +14,19 @@ The project's issue tracker should have been provided to you, including how it t
 
 ## Coordinator contract
 
-The coordinator is a dispatcher, not a third reviewer. This contract applies at every phase: before spawning, between the two spawn calls, while waiting, and during aggregation.
+The coordinator is a **dispatcher**: it collects references, hands them to the two axis sub-agents, and relays their reports. All content — diff hunks, source files, standards documents, the smells catalog — is read inside a sub-agent's context, and every judgement about the code comes from a sub-agent report. The coordinator's own context holds metadata only, from its first call to the verdict block.
 
-The coordinator's complete allowlist is:
+Dispatcher discipline, phase by phase:
 
-- Minimal setup calls: resolve the fixed point, record the diff source and commit subjects, verify the diff or supplied artifact is non-empty with metadata-only output (`--stat`, `stat`, or `wc`), and list candidate spec and standards paths or references without opening their contents.
-- One message containing the two axis sub-agent spawns.
-- Collection of those two reports as completion notifications arrive.
-- The Documenting section, when it applies.
-- The aggregate report and verdict block.
+- **Setup** (steps 1–3): metadata-only calls — resolve refs, verify non-emptiness via `--stat`/`stat`/`wc`, list candidate spec and standards paths. Everything a sub-agent will need travels as a path or reference in its spawn prompt.
+- **Handoff** (step 4): one message, both spawns. The two axis sub-agents are the only agents in a review; the Spec prompt tells that sub-agent to locate any related code itself.
+- **Waiting**: each sub-agent's completion re-invokes the coordinator automatically — **ending the turn is the wait**, and it needs no scheduling, polling, or checking. After the spawn message, end the turn: no tool calls, no status narration. When the first report arrives while the second is pending, end the turn again the same way. Each extra turn replays the coordinator's entire context; a silent wait is free.
+- **Aggregation** (step 5): built from the two reports alone. The quality bar for the verdict is **faithful relay**: every sentence of the aggregate and every finding in the verdict block traces to a sub-agent report, entering exactly as reported. The reports are final — including when the axes disagree; a disagreement is presented side by side, as itself.
 
-At every phase, the coordinator must not:
+Two hard guardrails, kept as prohibitions because no positive phrasing covers them:
 
-- Read diff content, source files, standards or rules files, or the smells catalog. Give sub-agents paths; they read the content themselves.
-- Verify a sub-agent finding by reading code or running a grep or search. Trust each report as written. Present disagreements side by side without coordinator research or adjudication.
-- Spawn an exploration agent or any agent other than the two axis sub-agents. The Spec prompt tells that sub-agent to locate any related code itself.
-- Use `ScheduleWakeup`, `ToolSearch`, polling, or any other idle/waiting machinery. Sub-agent completion arrives as a notification.
-- Run builds, tests, or any tool call outside the allowlist.
+- Never open the diff artifact, a source file, a standards file, or the smells catalog in the coordinator context — not to prepare a spawn prompt, and not to check a finding before signing the verdict.
+- Never run builds or tests; correctness evidence, like all evidence, comes from the sub-agent reports.
 
 ## Process
 
@@ -47,7 +43,7 @@ Capture the inputs once, using only the metadata calls allowed by the coordinato
 
 The coordinator needs the resolved ref, command, commit list, and diff stat. A bad ref or empty diff should fail here — not inside two parallel sub-agents. The sub-agents inspect the full diff.
 
-When the invoking prompt supplies a pre-computed diff file, use that file as the diff source instead of running the diff command. Verify that the file exists and is non-empty with `stat` or `wc`. The supplied file is authoritative for this review; do not invoke Git to re-derive it. Keep the supplied branch-point ref as review context. The coordinator never opens the artifact or surrounding source files.
+When the invoking prompt supplies a pre-computed diff file, that file is the authoritative diff source instead of the diff command. Verify that it exists and is non-empty with `stat` or `wc`, and keep the supplied branch-point ref as review context. Both sub-agents receive its exact path and read it directly.
 
 ### 2. Identify the spec source
 
@@ -71,7 +67,7 @@ On top of whatever the repo documents, the Standards axis always carries the **s
 
 ### 4. Spawn both sub-agents in parallel
 
-The coordinator's setup ends at this handoff. Send a single message containing both `Agent` tool calls; there is no phase between separate spawn messages. Use the `general-purpose` subagent for both. Make both prompts self-sufficient by including the exact diff-file path (or, when no artifact was supplied, the full diff command), the branch-point ref, the commit list, the candidate standards-source paths, and the spec path or reference. The sub-agents do every content read and all substantive analysis in their own contexts.
+The coordinator's setup ends at this handoff. Send a single message containing both `Agent` tool calls. Use the `general-purpose` subagent for both. Make both prompts self-sufficient by including the exact diff-file path (or, when no artifact was supplied, the full diff command), the branch-point ref, the commit list, the candidate standards-source paths, and the spec path or reference. End the turn as soon as the spawn message is sent — the Waiting phase of the coordinator contract governs everything until the reports arrive.
 
 **Standards sub-agent prompt** — include:
 
@@ -88,13 +84,9 @@ The coordinator's setup ends at this handoff. Send a single message containing b
 
 If the user confirmed there is no spec, still spawn the Spec sub-agent and instruct it to report "no spec available".
 
-#### Coordinator boundary after the handoff
-
-The Coordinator contract remains in force after the handoff: collect only the two completion notifications, then aggregate and document their reports. When a pre-computed diff file was supplied, both sub-agents use its exact path and branch-point ref as their diff source.
-
 ### 5. Aggregate
 
-Present the two reports under `## Standards` and `## Spec` headings, verbatim or lightly cleaned. Do **not** merge or rerank findings — the two axes are deliberately separate (see _Why two axes_).
+Aggregation is faithful relay of the two reports (see the coordinator contract). Present them under `## Standards` and `## Spec` headings, verbatim or lightly cleaned. Do **not** merge or rerank findings — the two axes are deliberately separate (see _Why two axes_).
 
 End with a one-line summary: total findings per axis, and the worst issue _within each axis_ (if any). Don't pick a single winner across axes — that's the reranking the separation exists to prevent.
 
