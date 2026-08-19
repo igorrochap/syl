@@ -6,13 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
-	"path/filepath"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
-	"time"
 	"unicode"
 
 	"github.com/igorrochap/syl/internal/config"
@@ -57,30 +53,6 @@ type implementSetup struct {
 	branchPoint string
 }
 
-type runArtifacts struct {
-	dir         string
-	sessions    []string
-	sessionKeys map[sessionKey]struct{}
-}
-
-type sessionKey struct {
-	iteration int
-	role      string
-	sessionID string
-}
-
-func newRunArtifacts(projectRoot string, issueNumber int, branch, branchPoint string) (runArtifacts, error) {
-	dir := filepath.Join(projectRoot, ".syl", "runs", time.Now().UTC().Format("20060102T150405.000000000Z")+"-"+strconv.Itoa(issueNumber))
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return runArtifacts{}, fmt.Errorf("create implement run artifacts: %w", err)
-	}
-	metadata := fmt.Sprintf("Branch: %s\nBranch point: %s\n", branch, branchPoint)
-	if err := writeArtifact(filepath.Join(dir, "metadata.txt"), metadata); err != nil {
-		return runArtifacts{}, err
-	}
-	return runArtifacts{dir: dir, sessionKeys: make(map[sessionKey]struct{})}, nil
-}
-
 type ImplementOptions struct {
 	ProjectRoot          string
 	ProjectConfig        config.Config
@@ -118,12 +90,17 @@ func RunImplement(ctx context.Context, options ImplementOptions) error {
 		notifier = nil
 	}
 	questions := NewQuestionHandler(options.Input, options.Output, "#"+strconv.Itoa(ticket.Number), notifier)
-	artifacts, err := newRunArtifacts(options.ProjectRoot, ticket.Number, setup.branch, setup.branchPoint)
+	recorder, err := newImplementRunRecorder(
+		options.ProjectRoot,
+		ticket.Number,
+		setup.branch,
+		setup.branchPoint,
+	)
 	if err != nil {
 		return err
 	}
 	if options.IdentificationBanner != nil {
-		if err := options.IdentificationBanner(artifacts.dir); err != nil {
+		if err := options.IdentificationBanner(recorder.Dir()); err != nil {
 			return err
 		}
 	}
@@ -134,7 +111,7 @@ func RunImplement(ctx context.Context, options ImplementOptions) error {
 		projectConfig: projectConfig,
 		ticket:        ticket,
 		branchPoint:   setup.branchPoint,
-		artifacts:     &artifacts,
+		recorder:      recorder,
 		questions:     questions,
 		output:        options.Output,
 		verbose:       options.Verbose,
@@ -147,14 +124,14 @@ func RunImplement(ctx context.Context, options ImplementOptions) error {
 	if err != nil {
 		diffStat = fmt.Sprintf("unavailable: %v", err)
 	}
-	if err := artifacts.writeSummary(iterations, final, nits, diffStat); err != nil {
+	if err := recorder.WriteSummary(iterations, final, nits, diffStat); err != nil {
 		return err
 	}
 	summary := formatImplementSummary(iterations, final, nits, diffStat)
 	if _, err := io.WriteString(options.Output, summary); err != nil {
 		return fmt.Errorf("write implement summary: %w", err)
 	}
-	if err := artifacts.writeSessions(); err != nil {
+	if err := recorder.WriteSessions(); err != nil {
 		return err
 	}
 	if notifier != nil {
@@ -200,7 +177,7 @@ type implementIterationsParams struct {
 	projectConfig config.Config
 	ticket        tracker.Ticket
 	branchPoint   string
-	artifacts     *runArtifacts
+	recorder      RunRecorder
 	questions     *QuestionHandler
 	output        io.Writer
 	verbose       bool
@@ -232,16 +209,34 @@ func runImplementIterations(ctx context.Context, params implementIterationsParam
 			Prompt: composeImplementPrompt(params.ticket, blocking, iteration),
 			MCP:    params.projectConfig.Roles.Implement.MCP,
 		}
-		implementResult, err := runImplementRole(ctx, params.implementer, implementRequest, newRoleLabelWriter(params.output, "implement", ansiColorImplement), mode, params.artifacts.dir, iteration, params.questions)
+		implementResult, err := runImplementRole(
+			ctx,
+			params.implementer,
+			implementRequest,
+			newRoleLabelWriter(params.output, "implement", ansiColorImplement),
+			mode,
+			params.questions,
+		)
 		if err != nil {
 			return 0, verdict.Verdict{}, nil, err
 		}
-		params.artifacts.recordSessions(iteration, "implement", implementResult.SessionIDs)
+		if err := params.recorder.RecordImplementTurn(
+			iteration,
+			implementResult.Feed,
+			implementResult.Transcript,
+		); err != nil {
+			return 0, verdict.Verdict{}, nil, err
+		}
+		params.recorder.RecordSessions(iteration, "implement", implementResult.SessionIDs)
 		if err := ensureHeadUnchanged(ctx, params.git, params.branchPoint); err != nil {
 			return 0, verdict.Verdict{}, nil, err
 		}
-		diffPath := filepath.Join(params.artifacts.dir, fmt.Sprintf("iteration-%02d-review.diff", iteration))
-		if err := precomputeReviewDiff(ctx, params.git, params.branchPoint, diffPath); err != nil {
+		diff, err := computeReviewDiff(ctx, params.git, params.branchPoint)
+		if err != nil {
+			return 0, verdict.Verdict{}, nil, err
+		}
+		diffPath, err := params.recorder.RecordReviewDiff(iteration, diff)
+		if err != nil {
 			return 0, verdict.Verdict{}, nil, err
 		}
 
@@ -268,20 +263,23 @@ func runImplementIterations(ctx context.Context, params implementIterationsParam
 		if err != nil {
 			var unparseable *UnparseableVerdictError
 			if errors.As(err, &unparseable) {
-				if artifactErr := params.artifacts.recordReviewOutput(iteration, unparseable.Execution); artifactErr != nil {
+				if artifactErr := params.recorder.RecordReviewOutput(iteration, unparseable.Execution); artifactErr != nil {
 					return 0, verdict.Verdict{}, nil, artifactErr
 				}
-				return 0, verdict.Verdict{}, nil, reviewTranscriptSavedError(err, params.artifacts.dir)
+				return 0, verdict.Verdict{}, nil, reviewTranscriptSavedError(err, params.recorder.Dir())
 			}
 			return 0, verdict.Verdict{}, nil, err
 		}
-		if err := params.artifacts.recordReview(iteration, reviewResult); err != nil {
+		if err := params.recorder.RecordReviewOutput(iteration, reviewResult); err != nil {
+			return 0, verdict.Verdict{}, nil, err
+		}
+		if err := params.recorder.RecordVerdict(iteration, reviewResult.Verdict); err != nil {
 			return 0, verdict.Verdict{}, nil, err
 		}
 		if err := ensureHeadUnchanged(ctx, params.git, params.branchPoint); err != nil {
 			return 0, verdict.Verdict{}, nil, err
 		}
-		params.artifacts.recordSessions(iteration, "review", reviewResult.SessionIDs)
+		params.recorder.RecordSessions(iteration, "review", reviewResult.SessionIDs)
 		final = reviewResult.Verdict
 		if _, err := io.WriteString(params.output, formatVerdict(final)); err != nil {
 			return 0, verdict.Verdict{}, nil, fmt.Errorf("write review verdict: %w", err)
@@ -300,14 +298,6 @@ func composeReviewResumePrompt(diffPath string, blocking []verdict.Finding) stri
 	return fmt.Sprintf(reviewResumePrompt, diffPath, formatBlockingFindings(blocking))
 }
 
-func precomputeReviewDiff(ctx context.Context, git GitRunner, branchPoint, diffPath string) error {
-	diff, err := computeReviewDiff(ctx, git, branchPoint)
-	if err != nil {
-		return err
-	}
-	return writeReviewDiffArtifact(diffPath, diff)
-}
-
 func composeImplementPrompt(ticket tracker.Ticket, blocking []verdict.Finding, iteration int) string {
 	if iteration == 1 {
 		return fmt.Sprintf(implementPrompt, "#"+strconv.Itoa(ticket.Number), ticket.Title, ticket.Body)
@@ -315,7 +305,20 @@ func composeImplementPrompt(ticket tracker.Ticket, blocking []verdict.Finding, i
 	return fmt.Sprintf(reviseImplementPrompt, "#"+strconv.Itoa(ticket.Number), formatBlockingFindings(blocking))
 }
 
-func runImplementRole(ctx context.Context, adapter harness.Adapter, request harness.Request, output io.Writer, mode HarnessOutputMode, artifactDir string, iteration int, questions *QuestionHandler) (harnessTranscript, error) {
+type implementExecution struct {
+	Feed       string
+	Transcript string
+	SessionIDs []string
+}
+
+func runImplementRole(
+	ctx context.Context,
+	adapter harness.Adapter,
+	request harness.Request,
+	output io.Writer,
+	mode HarnessOutputMode,
+	questions *QuestionHandler,
+) (implementExecution, error) {
 	var feed bytes.Buffer
 	result, err := runHarnessConversation(ctx, adapter, func(runContext context.Context) (harness.Stream, error) {
 		return adapter.Run(runContext, request)
@@ -328,15 +331,13 @@ func runImplementRole(ctx context.Context, adapter harness.Adapter, request harn
 		role:      "implement",
 	})
 	if err != nil {
-		return harnessTranscript{}, fmt.Errorf("run implement harness: %w", err)
+		return implementExecution{}, fmt.Errorf("run implement harness: %w", err)
 	}
-	if err := writeArtifact(filepath.Join(artifactDir, fmt.Sprintf("iteration-%02d-implement.feed", iteration)), feed.String()); err != nil {
-		return harnessTranscript{}, err
-	}
-	if err := writeArtifact(filepath.Join(artifactDir, fmt.Sprintf("iteration-%02d-implement.transcript", iteration)), result.Transcript); err != nil {
-		return harnessTranscript{}, err
-	}
-	return result, nil
+	return implementExecution{
+		Feed:       feed.String(),
+		Transcript: result.Transcript,
+		SessionIDs: result.SessionIDs,
+	}, nil
 }
 
 func ensureHeadUnchanged(ctx context.Context, git GitRunner, branchPoint string) error {
@@ -441,56 +442,4 @@ func formatImplementSummary(iterations int, final verdict.Verdict, nits []verdic
 	}
 	fmt.Fprintf(&builder, "Diff stat:\n%s\n", strings.TrimSpace(diffStat))
 	return builder.String()
-}
-
-func (r *runArtifacts) recordSessions(iteration int, role string, sessionIDs []string) {
-	if r.sessionKeys == nil {
-		r.sessionKeys = make(map[sessionKey]struct{})
-	}
-	for _, recordedSessionID := range sessionIDs {
-		sessionID, ok := normalizeSessionID(recordedSessionID)
-		if !ok {
-			continue
-		}
-		key := sessionKey{iteration: iteration, role: role, sessionID: sessionID}
-		if _, exists := r.sessionKeys[key]; exists {
-			continue
-		}
-		r.sessionKeys[key] = struct{}{}
-		r.sessions = append(r.sessions, fmt.Sprintf("iteration %d %s: %s", iteration, role, sessionID))
-	}
-}
-
-func (r *runArtifacts) recordReview(iteration int, review ReviewExecution) error {
-	if err := r.recordReviewOutput(iteration, review); err != nil {
-		return err
-	}
-	return writeArtifact(filepath.Join(r.dir, fmt.Sprintf("iteration-%02d-verdict.txt", iteration)), formatVerdict(review.Verdict))
-}
-
-func (r *runArtifacts) recordReviewOutput(iteration int, review ReviewExecution) error {
-	if err := writeArtifact(filepath.Join(r.dir, fmt.Sprintf("iteration-%02d-review.feed", iteration)), review.Feed); err != nil {
-		return err
-	}
-	if err := writeArtifact(filepath.Join(r.dir, fmt.Sprintf("iteration-%02d-review.transcript", iteration)), review.Transcript); err != nil {
-		return err
-	}
-	return nil
-}
-
-func (r *runArtifacts) writeSessions() error {
-	sessions := append([]string(nil), r.sessions...)
-	sort.Strings(sessions)
-	return writeArtifact(filepath.Join(r.dir, "sessions.txt"), strings.Join(sessions, "\n")+"\n")
-}
-
-func (r *runArtifacts) writeSummary(iterations int, final verdict.Verdict, nits []verdict.Finding, diffStat string) error {
-	return writeArtifact(filepath.Join(r.dir, "summary.txt"), formatImplementSummary(iterations, final, nits, diffStat))
-}
-
-func writeArtifact(path, contents string) error {
-	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
-		return fmt.Errorf("write run artifact %s: %w", path, err)
-	}
-	return nil
 }

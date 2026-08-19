@@ -8,7 +8,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
@@ -76,7 +75,7 @@ type ReviewOptions struct {
 type reviewPreparation struct {
 	branchPoint string
 	diffPath    string
-	artifactDir string
+	recorder    RunRecorder
 }
 
 func RunReview(ctx context.Context, options ReviewOptions) error {
@@ -115,10 +114,10 @@ func RunReview(ctx context.Context, options ReviewOptions) error {
 	if err != nil {
 		var unparseable *UnparseableVerdictError
 		if errors.As(err, &unparseable) {
-			if artifactErr := recordReviewFailureArtifacts(preparation.artifactDir, unparseable.Execution); artifactErr != nil {
+			if artifactErr := preparation.recorder.RecordReviewOutput(0, unparseable.Execution); artifactErr != nil {
 				return fmt.Errorf("%w; save review run artifacts: %v", err, artifactErr)
 			}
-			return reviewTranscriptSavedError(err, preparation.artifactDir)
+			return reviewTranscriptSavedError(err, preparation.recorder.Dir())
 		}
 		return err
 	}
@@ -169,15 +168,15 @@ func prepareReview(ctx context.Context, projectRoot, ticketRef string, git GitRu
 	if err != nil {
 		return reviewPreparation{}, fmt.Errorf("review: %w", err)
 	}
-	artifactDir, err := newReviewRunArtifacts(projectRoot, ticketRef, branchPoint)
+	recorder, err := newReviewRunRecorder(projectRoot, ticketRef, branchPoint)
 	if err != nil {
 		return reviewPreparation{}, err
 	}
-	diffPath := filepath.Join(artifactDir, "review.diff")
-	if err := writeReviewDiffArtifact(diffPath, diff); err != nil {
+	diffPath, err := recorder.RecordReviewDiff(0, diff)
+	if err != nil {
 		return reviewPreparation{}, fmt.Errorf("review: %w", err)
 	}
-	return reviewPreparation{branchPoint: branchPoint, diffPath: diffPath, artifactDir: artifactDir}, nil
+	return reviewPreparation{branchPoint: branchPoint, diffPath: diffPath, recorder: recorder}, nil
 }
 
 func runReview(ctx context.Context, adapter harness.Adapter, request harness.Request, output io.Writer, mode HarnessOutputMode, questions *QuestionHandler) (verdict.Verdict, error) {
@@ -449,32 +448,6 @@ func writeLocalReviewLog(projectRoot, ticketRef, branchPoint string, timestamp t
 	return path, nil
 }
 
-func newReviewRunArtifacts(projectRoot, ticketRef, branchPoint string) (string, error) {
-	suffix := "review"
-	if number, err := strconv.Atoi(strings.TrimPrefix(strings.TrimSpace(ticketRef), "#")); err == nil && number > 0 {
-		suffix = strconv.Itoa(number)
-	}
-	dir := filepath.Join(projectRoot, ".syl", "runs", time.Now().UTC().Format("20060102T150405.000000000Z")+"-"+suffix)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return "", fmt.Errorf("create review run artifacts: %w", err)
-	}
-	metadata := fmt.Sprintf("Ticket: %s\nBranch point: %s\n", strings.TrimSpace(ticketRef), branchPoint)
-	if err := writeArtifact(filepath.Join(dir, "metadata.txt"), metadata); err != nil {
-		return "", err
-	}
-	return dir, nil
-}
-
-func recordReviewFailureArtifacts(dir string, review ReviewExecution) error {
-	if err := writeArtifact(filepath.Join(dir, "review.feed"), review.Feed); err != nil {
-		return err
-	}
-	if err := writeArtifact(filepath.Join(dir, "review.transcript"), review.Transcript); err != nil {
-		return err
-	}
-	return nil
-}
-
 func computeReviewDiff(ctx context.Context, git GitRunner, branchPoint string) (string, error) {
 	diff, err := git.Run(ctx, "diff", branchPoint)
 	if err != nil {
@@ -484,13 +457,6 @@ func computeReviewDiff(ctx context.Context, git GitRunner, branchPoint string) (
 		return "", fmt.Errorf("pre-computed diff against %s is empty", branchPoint)
 	}
 	return diff, nil
-}
-
-func writeReviewDiffArtifact(path, diff string) error {
-	if err := writeArtifact(path, diff); err != nil {
-		return fmt.Errorf("write pre-computed diff: %w", err)
-	}
-	return nil
 }
 
 func reviewTranscriptSavedError(err error, dir string) error {

@@ -336,9 +336,10 @@ func TestImplementLoopFeedsBlockingFindingsIntoSecondImplementerPrompt(t *testin
 	if string(firstDiff) == string(secondDiff) {
 		t.Fatalf("review diffs = %q and %q, want recomputation after the second implementation", firstDiff, secondDiff)
 	}
+	diffNames := []string{"iteration-01-review.diff", "iteration-02-review.diff"}
 	for iteration, reviewRequest := range []harness.Request{implementer.requests[1], implementer.requests[3]} {
 		for _, expected := range []string{
-			fmt.Sprintf("iteration-%02d-review.diff", iteration+1),
+			diffNames[iteration],
 			"authoritative diff",
 			"Do not run Git to re-derive the diff",
 		} {
