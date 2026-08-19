@@ -1,6 +1,6 @@
 [project]
 name = "syl"
-version = "1.9.1"
+version = "1.10.0"
 
 [tool.setuptools]
 packages = []

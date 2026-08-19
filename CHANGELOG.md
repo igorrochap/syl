@@ -2,6 +2,27 @@
 
 <!-- version list -->
 
+## v1.10.0 (2026-08-19)
+
+### Chores
+
+- **config**: Update harness model and effort settings
+  ([#54](https://github.com/igorrochap/syl/pull/54),
+  [`6437a4f`](https://github.com/igorrochap/syl/commit/6437a4f78d9e86babe3f186a71a2d6bf7eea6d28))
+
+### Documentation
+
+- **review**: Clarify coordinator contract in skill guide
+  ([#53](https://github.com/igorrochap/syl/pull/53),
+  [`ec3ae0f`](https://github.com/igorrochap/syl/commit/ec3ae0fb00342bcba6deccf4602873e352c1c3b7))
+
+### Features
+
+- **cli**: Implement interactive planning workflow
+  ([#54](https://github.com/igorrochap/syl/pull/54),
+  [`6437a4f`](https://github.com/igorrochap/syl/commit/6437a4f78d9e86babe3f186a71a2d6bf7eea6d28))
+
+
 ## v1.9.1 (2026-08-19)
 
 ### Bug Fixes
