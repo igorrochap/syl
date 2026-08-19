@@ -34,7 +34,7 @@ func TestRunSubcommandHelpIsAvailableWithoutConfig(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("Run() code = %d, want 0; stderr = %q", code, stderr.String())
 	}
-	if !strings.Contains(stdout.String(), "synchronize tracker data") {
+	if !strings.Contains(stdout.String(), "synchronize installed skills") {
 		t.Fatalf("stdout = %q, want sync help", stdout.String())
 	}
 }
@@ -52,7 +52,7 @@ func TestQuestionAnswerInputProtocolIsDocumentedInHelp(t *testing.T) {
 }
 
 func TestRunRefusesCommandsWithoutConfig(t *testing.T) {
-	for _, command := range []string{"sync", "plan", "implement", "review"} {
+	for _, command := range []string{"plan", "implement", "review"} {
 		t.Run(command, func(t *testing.T) {
 			root := t.TempDir()
 			app := New(root, Dependencies{})
@@ -66,18 +66,6 @@ func TestRunRefusesCommandsWithoutConfig(t *testing.T) {
 				t.Fatalf("stderr = %q, want init guidance", stderr.String())
 			}
 		})
-	}
-}
-
-func TestRunStubCommandThroughTopSeam(t *testing.T) {
-	fixture := newTopSeamFixture(t)
-
-	code := fixture.app.Run(context.Background(), []string{"sync"}, &fixture.stdout, &fixture.stderr)
-	if code == 0 {
-		t.Fatal("Run() code = 0, want not-implemented failure")
-	}
-	if !strings.Contains(fixture.stderr.String(), "sync: not implemented yet") {
-		t.Fatalf("stderr = %q, want stub message", fixture.stderr.String())
 	}
 }
 
@@ -104,18 +92,6 @@ func TestImplementResolvesAndMarksGitHubTicketDoing(t *testing.T) {
 	}
 	if github.hasCall("issue close 42") || github.hasCall("issue edit 42 --state closed") {
 		t.Fatalf("GitHub calls = %#v, want no close operation", github.calls)
-	}
-}
-
-func TestRunStubCommandThroughGitBackedTopSeam(t *testing.T) {
-	fixture := newTopSeamFixtureWithGit(t, true)
-
-	code := fixture.app.Run(context.Background(), []string{"sync"}, &fixture.stdout, &fixture.stderr)
-	if code == 0 {
-		t.Fatal("Run() code = 0, want not-implemented failure")
-	}
-	if !strings.Contains(fixture.stderr.String(), "sync: not implemented yet") {
-		t.Fatalf("stderr = %q, want stub message", fixture.stderr.String())
 	}
 }
 

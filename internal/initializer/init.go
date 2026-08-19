@@ -36,11 +36,13 @@ type manifestSkill struct {
 type initPlan struct {
 	root                 string
 	config               config.Config
+	manifest             skillManifest
 	installedSkills      []string
 	createAgents         bool
 	claudeLink           linkPlan
 	claudeFileLink       linkPlan
 	writeConfig          bool
+	writeSkillsLock      bool
 	updateGitignore      bool
 	changes              []string
 	initialized          bool
@@ -202,7 +204,7 @@ func readSkillManifest() (skillManifest, error) {
 }
 
 func makeInitPlan(projectRoot string, projectConfig config.Config, manifest skillManifest, optional []string) (initPlan, error) {
-	plan := initPlan{root: projectRoot, config: projectConfig}
+	plan := initPlan{root: projectRoot, config: projectConfig, manifest: manifest}
 	plan.initialized = hasInitMarker(projectRoot)
 	installedSkills, skillChanges, err := planSkills(projectRoot, manifest, optional)
 	if err != nil {
@@ -210,6 +212,19 @@ func makeInitPlan(projectRoot string, projectConfig config.Config, manifest skil
 	}
 	plan.installedSkills = installedSkills
 	plan.changes = append(plan.changes, skillChanges...)
+	plan.writeSkillsLock, err = needsSkillsLockUpdate(projectRoot, manifest, installedSkills)
+	if err != nil {
+		return initPlan{}, err
+	}
+	if plan.writeSkillsLock {
+		if _, exists, err := readSkillsLock(projectRoot); err != nil {
+			return initPlan{}, err
+		} else if exists {
+			plan.changes = append(plan.changes, "update "+skillsLockRelativePath)
+		} else {
+			plan.changes = append(plan.changes, "write "+skillsLockRelativePath)
+		}
+	}
 
 	plan.createAgents, err = needsAgentsFile(projectRoot)
 	if err != nil {
@@ -363,7 +378,80 @@ func applyInitPlan(plan initPlan) error {
 			return err
 		}
 	}
+	if plan.writeSkillsLock {
+		if err := writeInitSkillsLock(plan); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+func needsSkillsLockUpdate(projectRoot string, manifest skillManifest, installedSkills []string) (bool, error) {
+	_, exists, err := readSkillsLock(projectRoot)
+	if err != nil {
+		return false, err
+	}
+	if !exists || len(installedSkills) > 0 {
+		return true, nil
+	}
+
+	lock, _, err := readSkillsLock(projectRoot)
+	if err != nil {
+		return false, err
+	}
+	for _, skill := range manifest.Skills {
+		installed, err := installedSkillSnapshot(projectRoot, skill.Name)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return false, err
+		}
+		vendored, err := vendoredSkillSnapshot(skill.Name)
+		if err != nil {
+			return false, err
+		}
+		if snapshotsEqual(installed, vendored) && lock.Skills[skill.Name] != vendored.Hash {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func writeInitSkillsLock(plan initPlan) error {
+	lock, _, err := readSkillsLock(plan.root)
+	if err != nil {
+		return err
+	}
+	lock.Version = 1
+	if lock.Skills == nil {
+		lock.Skills = make(map[string]string)
+	}
+	known := make(map[string]bool, len(plan.manifest.Skills))
+	for _, skill := range plan.manifest.Skills {
+		known[skill.Name] = true
+		installed, err := installedSkillSnapshot(plan.root, skill.Name)
+		if errors.Is(err, os.ErrNotExist) {
+			delete(lock.Skills, skill.Name)
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		vendored, err := vendoredSkillSnapshot(skill.Name)
+		if err != nil {
+			return err
+		}
+		if snapshotsEqual(installed, vendored) {
+			lock.Skills[skill.Name] = vendored.Hash
+		}
+	}
+	for name := range lock.Skills {
+		if !known[name] {
+			delete(lock.Skills, name)
+		}
+	}
+	return writeSkillsLock(plan.root, lock)
 }
 
 func copySkill(projectRoot, name string) error {
