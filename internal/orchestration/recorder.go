@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/igorrochap/syl/internal/usage"
 	"github.com/igorrochap/syl/internal/verdict"
 )
 
@@ -24,6 +25,13 @@ type RunRecorder interface {
 	WriteSessions() error
 }
 
+// UsageRecorder is implemented by disk-backed run recorders. Keeping this
+// optional preserves the small in-memory recorder seam used by orchestration
+// tests and by callers that do not persist usage artifacts.
+type UsageRecorder interface {
+	RecordUsage(entry usage.Entry) error
+}
+
 type artifactKind uint8
 
 const (
@@ -36,12 +44,14 @@ const (
 	verdictArtifact
 	summaryArtifact
 	sessionsArtifact
+	usageArtifact
 )
 
 type diskRunRecorder struct {
 	dir         string
 	sessions    []string
 	sessionKeys map[sessionKey]struct{}
+	usage       usage.Artifact
 }
 
 type sessionKey struct {
@@ -99,10 +109,15 @@ func newDiskRunRecorder(
 	if err := writeArtifact(filepath.Join(dir, artifactFilename(metadataArtifact, 0)), metadata); err != nil {
 		return nil, err
 	}
-	return &diskRunRecorder{
+	recorder := &diskRunRecorder{
 		dir:         dir,
 		sessionKeys: make(map[sessionKey]struct{}),
-	}, nil
+		usage:       usage.NewArtifact(),
+	}
+	if err := recorder.writeUsage(); err != nil {
+		return nil, err
+	}
+	return recorder, nil
 }
 
 func (r *diskRunRecorder) Dir() string {
@@ -160,6 +175,18 @@ func (r *diskRunRecorder) WriteSessions() error {
 	return r.write(sessionsArtifact, 0, strings.Join(sessions, "\n")+"\n")
 }
 
+func (r *diskRunRecorder) RecordUsage(entry usage.Entry) error {
+	if r.usage.SchemaVersion == 0 {
+		r.usage = usage.NewArtifact()
+	}
+	r.usage.Upsert(entry)
+	return r.writeUsage()
+}
+
+func (r *diskRunRecorder) writeUsage() error {
+	return usage.WriteArtifact(filepath.Join(r.dir, artifactFilename(usageArtifact, 0)), r.usage)
+}
+
 func (r *diskRunRecorder) write(kind artifactKind, iteration int, contents string) error {
 	return writeArtifact(filepath.Join(r.dir, artifactFilename(kind, iteration)), contents)
 }
@@ -203,6 +230,8 @@ func artifactFilename(kind artifactKind, iteration int) string {
 			return "summary.txt"
 		case sessionsArtifact:
 			return "sessions.txt"
+		case usageArtifact:
+			return "usage.json"
 		}
 	}
 

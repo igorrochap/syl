@@ -2,6 +2,7 @@ package orchestration
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"github.com/igorrochap/syl/internal/config"
 	"github.com/igorrochap/syl/internal/harness"
 	"github.com/igorrochap/syl/internal/tracker"
+	"github.com/igorrochap/syl/internal/usage"
 	"github.com/igorrochap/syl/internal/verdict"
 )
 
@@ -76,6 +78,16 @@ func (r *memoryRunRecorder) WriteSessions() error {
 	return nil
 }
 
+type failingUsageRecorder struct {
+	*memoryRunRecorder
+	usageCalls int
+}
+
+func (r *failingUsageRecorder) RecordUsage(usage.Entry) error {
+	r.usageCalls++
+	return errors.New("usage artifact is unavailable")
+}
+
 func TestRunImplementIterationsRecordsReviseThenApproveInMemory(t *testing.T) {
 	recorder := newMemoryRunRecorder()
 	implementer := &scriptedConversationAdapter{runs: [][]harness.Event{
@@ -129,6 +141,38 @@ func TestRunImplementIterationsRecordsReviseThenApproveInMemory(t *testing.T) {
 	}
 	if len(reviewer.resumeCalls) != 1 {
 		t.Fatalf("review resume calls = %d, want 1", len(reviewer.resumeCalls))
+	}
+}
+
+func TestRunImplementIterationsContinuesWhenUsageRecordingFails(t *testing.T) {
+	recorder := &failingUsageRecorder{memoryRunRecorder: newMemoryRunRecorder()}
+	implementer := &scriptedConversationAdapter{runs: [][]harness.Event{{
+		{Type: harness.EventSession, SessionID: "implement-1"},
+		{Type: harness.EventAssistantText, Text: "implementation"},
+	}}}
+	reviewer := &scriptedConversationAdapter{runs: [][]harness.Event{{
+		{Type: harness.EventSession, SessionID: "review-1"},
+		{Type: harness.EventAssistantText, Text: "VERDICT: approve\nSUMMARY: Ready\nFINDINGS:\n"},
+	}}}
+
+	iterations, final, _, err := runImplementIterations(context.Background(), implementIterationsParams{
+		git:           staticImplementGit{branchPoint: "branch-point", diff: "diff --git a/a b/a\n"},
+		implementer:   implementer,
+		reviewer:      reviewer,
+		projectConfig: config.Config{Loop: config.LoopConfig{MaxIterations: 1}},
+		ticket:        tracker.Ticket{Number: 42, Title: "Record usage", Body: "Keep the run alive."},
+		branchPoint:   "branch-point",
+		recorder:      recorder,
+		output:        io.Discard,
+	})
+	if err != nil {
+		t.Fatalf("runImplementIterations() error = %v", err)
+	}
+	if iterations != 1 || final.Status != verdict.Approve {
+		t.Fatalf("result = (%d, %q), want (1, approve)", iterations, final.Status)
+	}
+	if recorder.usageCalls != 2 {
+		t.Fatalf("usage recording calls = %d, want implement and review", recorder.usageCalls)
 	}
 }
 

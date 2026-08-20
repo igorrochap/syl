@@ -11,6 +11,7 @@ import (
 	"github.com/igorrochap/syl/internal/config"
 	"github.com/igorrochap/syl/internal/harness"
 	"github.com/igorrochap/syl/internal/updater"
+	"github.com/igorrochap/syl/internal/usage"
 	"github.com/igorrochap/syl/internal/version"
 )
 
@@ -21,7 +22,7 @@ func TestRunHelpListsAllCommands(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("Run() code = %d, want 0; stderr = %q", code, fixture.stderr.String())
 	}
-	for _, command := range []string{"init", "sync", "plan", "implement", "review", "version", "update"} {
+	for _, command := range []string{"init", "sync", "plan", "implement", "review", "usage", "version", "update"} {
 		if !strings.Contains(fixture.stdout.String(), command) {
 			t.Errorf("help output %q does not list %q", fixture.stdout.String(), command)
 		}
@@ -31,6 +32,90 @@ func TestRunHelpListsAllCommands(t *testing.T) {
 	}
 	if !strings.Contains(fixture.stdout.String(), "update syl to the latest release") {
 		t.Fatalf("help output %q, want update description", fixture.stdout.String())
+	}
+}
+
+func TestUsageRendersLatestAndNamedRunWithoutCrossHarnessTotal(t *testing.T) {
+	root := t.TempDir()
+	runsDir := filepath.Join(root, ".syl", "runs")
+	if err := os.MkdirAll(runsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	oldRun := filepath.Join(runsDir, "20260820T120000.000000000Z-41")
+	latestRun := filepath.Join(runsDir, "20260820T130000.000000000Z-42")
+	for _, runDir := range []string{oldRun, latestRun} {
+		if err := os.MkdirAll(runDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := usage.WriteArtifact(filepath.Join(oldRun, "usage.json"), usage.Artifact{
+		SchemaVersion: usage.SchemaVersion,
+		Disclaimer:    usage.Disclaimer,
+		Entries: []usage.Entry{{Iteration: 1, Role: "review", Harness: "claude", Model: "claude-sonnet-5", Tracked: true, Metrics: &usage.Metrics{
+			InputTokens: 2, OutputTokens: 3, WeightedEstimate: 5,
+		}}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := usage.WriteArtifact(filepath.Join(latestRun, "usage.json"), usage.Artifact{
+		SchemaVersion: usage.SchemaVersion,
+		Disclaimer:    usage.Disclaimer,
+		Entries: []usage.Entry{
+			{Iteration: 1, Role: "implement", Harness: "codex", Model: "gpt-5.6-luna", Tracked: false, Reason: "Codex usage is not tracked"},
+			{Iteration: 1, Role: "review", Harness: "claude", Model: "claude-sonnet-5", Tracked: true, Metrics: &usage.Metrics{
+				InputTokens: 20, OutputTokens: 3, CacheWriteTokens: 8, CacheReadTokens: 10, WeightedEstimate: 34,
+			}},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	app := New(root, Dependencies{})
+	var stdout, stderr strings.Builder
+	if code := app.Run(context.Background(), []string{"usage"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("latest usage code = %d, stderr = %q", code, stderr.String())
+	}
+	output := stdout.String()
+	for _, expected := range []string{
+		"iteration 1",
+		"implement (codex, gpt-5.6-luna): not tracked: Codex usage is not tracked",
+		"review (claude, claude-sonnet-5): weighted_estimate=34.00",
+		"input_tokens=20",
+		"cache_write_tokens=8",
+		"cache_read_tokens=10",
+		usage.Disclaimer,
+	} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("latest usage output = %q, want %q", output, expected)
+		}
+	}
+	if strings.Contains(output, "input_tokens=2 output_tokens=3") || strings.Contains(output, "total") {
+		t.Fatalf("latest usage output = %q, want latest run only and no total", output)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := app.Run(context.Background(), []string{"usage", filepath.Base(oldRun)}, &stdout, &stderr); code != 0 {
+		t.Fatalf("named usage code = %d, stderr = %q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "review (claude, claude-sonnet-5): weighted_estimate=5.00") {
+		t.Fatalf("named usage output = %q, want named run", stdout.String())
+	}
+}
+
+func TestUsageReportsRunDirectoryWhenArtifactIsMissing(t *testing.T) {
+	root := t.TempDir()
+	runDir := filepath.Join(root, ".syl", "runs", "20260820T120000.000000000Z-41")
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	app := New(root, Dependencies{})
+	var stdout, stderr strings.Builder
+	if code := app.Run(context.Background(), []string{"usage", filepath.Base(runDir)}, &stdout, &stderr); code != 0 {
+		t.Fatalf("missing usage code = %d, stderr = %q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "no usage.json found") || !strings.Contains(stdout.String(), runDir) {
+		t.Fatalf("missing usage output = %q, want clear run directory guidance", stdout.String())
 	}
 }
 

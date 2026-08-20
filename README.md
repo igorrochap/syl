@@ -258,6 +258,18 @@ parsed Verdict view:
 syl review 42 --raw
 ```
 
+### 6. Inspect run usage
+
+```sh
+syl usage
+syl usage 20260817T101500.000000000Z-42
+```
+
+With no argument, `syl usage` reads the latest run. The named form reads a
+specific directory under `.syl/runs/`. Claude usage is recorded per role and
+iteration; Codex roles appear as untracked until their usage reader is added.
+The raw `usage.json` artifact is available for direct querying as well.
+
 ### Answer a QUESTION from a harness
 
 A Harness can pause mid-run and print a `QUESTION`. When it does, `syl`
@@ -297,6 +309,7 @@ Each `syl implement` run writes its artifacts under
   iteration-01-review.feed         # review role, parsed event feed
   iteration-01-review.transcript
   iteration-01-verdict.txt         # review role, formatted verdict
+  usage.json                       # per-role token usage and tracking status
   summary.txt                      # iteration count, final verdict, nits, diff stat
 ```
 
