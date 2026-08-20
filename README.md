@@ -77,6 +77,16 @@ curl -fsSL https://raw.githubusercontent.com/igorrochap/syl/main/scripts/install
 
 Add the selected directory to `PATH`.
 
+To update an installed binary in place, run:
+
+```sh
+syl update
+```
+
+The command checks GitHub for a newer release, verifies the platform archive
+against its checksums, and leaves the existing binary untouched if the
+download or verification fails.
+
 To build from source, install Go 1.23 or later. Run this command from the
 repository root:
 
