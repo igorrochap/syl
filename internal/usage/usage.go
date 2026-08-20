@@ -355,6 +355,20 @@ func CollectClaude(projectRoot, homeDir string, sessionIDs []string, start, end 
 	if start.After(end) {
 		return Metrics{}, errors.New("Claude invocation has an invalid usage time window")
 	}
+	return collectClaude(projectRoot, homeDir, sessionIDs, start, end)
+}
+
+// CollectClaudeAll reads all usage records from the supplied Claude sessions.
+// It is used by the read-only usage fallback for runs that predate recorded
+// invocation windows.
+func CollectClaudeAll(projectRoot, homeDir string, sessionIDs []string) (Metrics, error) {
+	if len(sessionIDs) == 0 {
+		return Metrics{}, errors.New("Claude invocation did not produce a session id")
+	}
+	return collectClaude(projectRoot, homeDir, sessionIDs, time.Time{}, time.Time{})
+}
+
+func collectClaude(projectRoot, homeDir string, sessionIDs []string, start, end time.Time) (Metrics, error) {
 	if strings.TrimSpace(homeDir) == "" {
 		var err error
 		homeDir, err = os.UserHomeDir()
@@ -485,7 +499,7 @@ func collectTranscriptFile(path string, start, end time.Time, snapshots map[stri
 		if err != nil {
 			return transcriptParseError(path, lineNumber, err)
 		}
-		if timestamp.Before(start) || timestamp.After(end) {
+		if (!start.IsZero() && timestamp.Before(start)) || (!end.IsZero() && timestamp.After(end)) {
 			continue
 		}
 		parsedUsage, err := parseUsage(usageRaw)

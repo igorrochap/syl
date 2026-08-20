@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/igorrochap/syl/internal/config"
 	"github.com/igorrochap/syl/internal/harness"
@@ -110,7 +111,56 @@ func TestUsageRendersLatestAndNamedRunWithoutCrossHarnessTotal(t *testing.T) {
 	}
 }
 
-func TestUsageReportsRunDirectoryWhenArtifactIsMissing(t *testing.T) {
+func TestUsageRecomputesClaudeTranscriptWhenArtifactIsMissing(t *testing.T) {
+	fixture := newTopSeamFixture(t)
+	runDir := filepath.Join(fixture.root, ".syl", "runs", "20260820T120000.000000000Z-41")
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(runDir, "metadata.txt"), []byte("Branch: feat/usage\nBranch point: abc123\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(runDir, "sessions.txt"), []byte("iteration 1 review: review-session\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(runDir, "iteration-01-review.feed"), []byte("review\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	projectDir := filepath.Join(home, ".claude", "projects", strings.ReplaceAll(fixture.root, string(filepath.Separator), "-"))
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	transcript := `{"type":"assistant","timestamp":"2026-08-20T12:00:05Z","message":{"id":"message-1","role":"assistant","usage":{"input_tokens":10,"output_tokens":2,"cache_creation_input_tokens":4,"cache_read_input_tokens":5}}}` + "\n"
+	if err := os.WriteFile(filepath.Join(projectDir, "review-session.jsonl"), []byte(transcript), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(filepath.Join(runDir, "iteration-01-review.feed"), mustUsageTime(t, "2026-08-20T12:00:10Z"), mustUsageTime(t, "2026-08-20T12:00:10Z")); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr strings.Builder
+	if code := fixture.app.Run(context.Background(), []string{"usage", filepath.Base(runDir)}, &stdout, &stderr); code != 0 {
+		t.Fatalf("recomputed usage code = %d, stderr = %q", code, stderr.String())
+	}
+	output := stdout.String()
+	for _, expected := range []string{
+		"recomputed from transcripts — usage.json not found",
+		"iteration 1",
+		"review (claude, claude-sonnet-5): weighted_estimate=17.50 input_tokens=10 output_tokens=2 cache_write_tokens=4 cache_read_tokens=5",
+		usage.Disclaimer,
+	} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("recomputed usage output = %q, want %q", output, expected)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(runDir, "usage.json")); !os.IsNotExist(err) {
+		t.Fatalf("usage.json stat error = %v, want artifact to remain absent", err)
+	}
+}
+
+func TestUsageReportsRunDirectoryWhenArtifactIsMissingAndNoTranscriptsExist(t *testing.T) {
 	root := t.TempDir()
 	runDir := filepath.Join(root, ".syl", "runs", "20260820T120000.000000000Z-41")
 	if err := os.MkdirAll(runDir, 0o755); err != nil {
@@ -121,9 +171,175 @@ func TestUsageReportsRunDirectoryWhenArtifactIsMissing(t *testing.T) {
 	if code := app.Run(context.Background(), []string{"usage", filepath.Base(runDir)}, &stdout, &stderr); code != 0 {
 		t.Fatalf("missing usage code = %d, stderr = %q", code, stderr.String())
 	}
-	if !strings.Contains(stdout.String(), "no usage.json found") || !strings.Contains(stdout.String(), runDir) {
-		t.Fatalf("missing usage output = %q, want clear run directory guidance", stdout.String())
+	if !strings.Contains(stdout.String(), "recomputed from transcripts — usage.json not found") {
+		t.Fatalf("missing usage output = %q, want recomputed marker", stdout.String())
 	}
+}
+
+func TestUsageRecomputesResumedClaudeSessionUsingArtifactWindows(t *testing.T) {
+	fixture := newTopSeamFixture(t)
+	runDir := createFallbackRun(t, fixture.root, "iteration 1 review: review-session\niteration 2 review: review-session\n")
+	t.Setenv("HOME", t.TempDir())
+	writeFallbackClaudeTranscript(t, fixture.root, "review-session", []string{
+		`{"type":"assistant","timestamp":"2026-08-20T12:00:05Z","message":{"id":"message-1","role":"assistant","usage":{"input_tokens":10,"output_tokens":1}}}`,
+		`{"type":"assistant","timestamp":"2026-08-20T12:00:15Z","message":{"id":"message-2","role":"assistant","usage":{"input_tokens":20,"output_tokens":2}}}`,
+	})
+	for _, artifact := range []string{"iteration-01-review.feed", "iteration-01-review.transcript"} {
+		writeFallbackArtifactAt(t, runDir, artifact, "first\n", "2026-08-20T12:00:10Z")
+	}
+	for _, artifact := range []string{"iteration-02-review.feed", "iteration-02-review.transcript"} {
+		writeFallbackArtifactAt(t, runDir, artifact, "second\n", "2026-08-20T12:00:20Z")
+	}
+
+	var stdout, stderr strings.Builder
+	if code := fixture.app.Run(context.Background(), []string{"usage", filepath.Base(runDir)}, &stdout, &stderr); code != 0 {
+		t.Fatalf("resumed usage code = %d, stderr = %q", code, stderr.String())
+	}
+	output := stdout.String()
+	for _, expected := range []string{
+		"recomputed from transcripts — usage.json not found",
+		"iteration 1\nreview (claude, claude-sonnet-5): weighted_estimate=11.00 input_tokens=10 output_tokens=1",
+		"iteration 2\nreview (claude, claude-sonnet-5): weighted_estimate=22.00 input_tokens=20 output_tokens=2",
+	} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("resumed usage output = %q, want %q", output, expected)
+		}
+	}
+	if strings.Contains(output, "iterations 1–2 combined") {
+		t.Fatalf("resumed usage output = %q, want artifact-mtime-derived split", output)
+	}
+}
+
+func TestUsageLabelsResumedClaudeSessionCombinedWhenArtifactWindowsAreUnavailable(t *testing.T) {
+	fixture := newTopSeamFixture(t)
+	runDir := createFallbackRun(t, fixture.root, "iteration 1 review: review-session\niteration 2 review: review-session\n")
+	t.Setenv("HOME", t.TempDir())
+	writeFallbackClaudeTranscript(t, fixture.root, "review-session", []string{
+		`{"type":"assistant","timestamp":"2026-08-20T12:00:05Z","message":{"id":"message-1","role":"assistant","usage":{"input_tokens":10,"output_tokens":1}}}`,
+		`{"type":"assistant","timestamp":"2026-08-20T12:00:15Z","message":{"id":"message-2","role":"assistant","usage":{"input_tokens":20,"output_tokens":2}}}`,
+	})
+
+	var stdout, stderr strings.Builder
+	if code := fixture.app.Run(context.Background(), []string{"usage", filepath.Base(runDir)}, &stdout, &stderr); code != 0 {
+		t.Fatalf("combined usage code = %d, stderr = %q", code, stderr.String())
+	}
+	output := stdout.String()
+	if !strings.Contains(output, "review, iterations 1–2 combined (claude, claude-sonnet-5): weighted_estimate=33.00 input_tokens=30 output_tokens=3") {
+		t.Fatalf("combined usage output = %q, want one labeled combined row", output)
+	}
+	if strings.Contains(output, "iteration 2\nreview (") {
+		t.Fatalf("combined usage output = %q, want no guessed iteration split", output)
+	}
+}
+
+func TestUsageReportsUnavailableFallbackRolesWithoutFailing(t *testing.T) {
+	fixture := newTopSeamFixture(t)
+	runDir := createFallbackRun(t, fixture.root, "iteration 1 implement: missing-codex\niteration 1 review: malformed-claude\n")
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	projectDir := filepath.Join(home, ".claude", "projects", strings.ReplaceAll(fixture.root, string(filepath.Separator), "-"))
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, "malformed-claude.jsonl"), []byte("not json\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr strings.Builder
+	if code := fixture.app.Run(context.Background(), []string{"usage", filepath.Base(runDir)}, &stdout, &stderr); code != 0 {
+		t.Fatalf("unavailable usage code = %d, stderr = %q", code, stderr.String())
+	}
+	output := stdout.String()
+	for _, expected := range []string{
+		"implement (codex, gpt-5.6-luna): usage unavailable",
+		"review (claude, claude-sonnet-5): usage unavailable",
+	} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("unavailable usage output = %q, want %q", output, expected)
+		}
+	}
+}
+
+func TestUsageRecomputesCodexRolloutWhenArtifactIsMissing(t *testing.T) {
+	fixture := newTopSeamFixture(t)
+	runDir := createFallbackRun(t, fixture.root, "iteration 1 implement: codex-session\n")
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	rolloutDir := filepath.Join(home, ".codex", "sessions", "2026", "08", "20")
+	if err := os.MkdirAll(rolloutDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rollout := `{"payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1000,"cached_input_tokens":900,"cache_write_input_tokens":25,"output_tokens":80,"reasoning_output_tokens":40,"total_tokens":1080}}}}` + "\n"
+	if err := os.WriteFile(filepath.Join(rolloutDir, "rollout-20260820T010203-codex-session.jsonl"), []byte(rollout), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr strings.Builder
+	if code := fixture.app.Run(context.Background(), []string{"usage", filepath.Base(runDir)}, &stdout, &stderr); code != 0 {
+		t.Fatalf("Codex fallback code = %d, stderr = %q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "implement (codex, gpt-5.6-luna): input 1.0k (90% cached) · output 80 (40 reasoning)") {
+		t.Fatalf("Codex fallback output = %q, want rollout usage", stdout.String())
+	}
+}
+
+func TestUsageReportsNonexistentRunDirectoryAsAnError(t *testing.T) {
+	fixture := newTopSeamFixture(t)
+	var stdout, stderr strings.Builder
+	if code := fixture.app.Run(context.Background(), []string{"usage", "does-not-exist"}, &stdout, &stderr); code == 0 {
+		t.Fatal("nonexistent usage code = 0, want error")
+	}
+	if !strings.Contains(stderr.String(), "run directory") || !strings.Contains(stderr.String(), "not found") {
+		t.Fatalf("nonexistent usage stderr = %q, want clear run-directory error", stderr.String())
+	}
+}
+
+func createFallbackRun(t *testing.T, root, sessions string) string {
+	t.Helper()
+	runDir := filepath.Join(root, ".syl", "runs", "20260820T120000.000000000Z-41")
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(runDir, "metadata.txt"), []byte("Branch: feat/usage\nBranch point: abc123\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(runDir, "sessions.txt"), []byte(sessions), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return runDir
+}
+
+func writeFallbackClaudeTranscript(t *testing.T, root, sessionID string, lines []string) {
+	t.Helper()
+	home := os.Getenv("HOME")
+	projectDir := filepath.Join(home, ".claude", "projects", strings.ReplaceAll(root, string(filepath.Separator), "-"))
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, sessionID+".jsonl"), []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeFallbackArtifactAt(t *testing.T, runDir, name, contents, modifiedAt string) {
+	t.Helper()
+	path := filepath.Join(runDir, name)
+	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	modified := mustUsageTime(t, modifiedAt)
+	if err := os.Chtimes(path, modified, modified); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func mustUsageTime(t *testing.T, value string) time.Time {
+	t.Helper()
+	parsed, err := time.Parse(time.RFC3339, value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return parsed
 }
 
 func TestRunUpdateReportsVersionChange(t *testing.T) {
