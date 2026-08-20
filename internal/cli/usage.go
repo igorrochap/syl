@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/igorrochap/syl/internal/config"
 	"github.com/igorrochap/syl/internal/usage"
 	"github.com/spf13/cobra"
 )
@@ -28,8 +29,14 @@ func (a *App) usageCommand() *cobra.Command {
 			artifact, err := usage.ReadArtifact(artifactPath)
 			if err != nil {
 				if errors.Is(err, os.ErrNotExist) {
-					_, writeErr := fmt.Fprintf(cmd.OutOrStdout(), "no usage.json found in run directory %s\n", runDir)
-					return writeErr
+					artifact, recomputeErr := recomputeUsage(a.projectRoot, runDir)
+					if recomputeErr != nil {
+						return recomputeErr
+					}
+					if _, writeErr := fmt.Fprintln(cmd.OutOrStdout(), "recomputed from transcripts — usage.json not found"); writeErr != nil {
+						return writeErr
+					}
+					return renderUsage(cmd.OutOrStdout(), artifact)
 				}
 				return err
 			}
@@ -37,6 +44,21 @@ func (a *App) usageCommand() *cobra.Command {
 		},
 	}
 	return command
+}
+
+func recomputeUsage(projectRoot, runDir string) (usage.Artifact, error) {
+	roles := make(map[string]usage.RoleMetadata)
+	if projectConfig, err := config.Load(projectRoot); err == nil {
+		roles["implement"] = usage.RoleMetadata{
+			Harness: string(projectConfig.Roles.Implement.Harness),
+			Model:   projectConfig.Roles.Implement.Model,
+		}
+		roles["review"] = usage.RoleMetadata{
+			Harness: string(projectConfig.Roles.Review.Harness),
+			Model:   projectConfig.Roles.Review.Model,
+		}
+	}
+	return usage.RecomputeArtifact(runDir, projectRoot, "", roles)
 }
 
 func resolveUsageRun(projectRoot string, args []string) (string, error) {
@@ -105,6 +127,12 @@ func renderUsage(output io.Writer, artifact usage.Artifact) error {
 			reason := entry.Reason
 			if reason == "" {
 				reason = "usage was not tracked"
+			}
+			if reason == "usage unavailable" {
+				if _, err := io.WriteString(output, "usage unavailable\n"); err != nil {
+					return err
+				}
+				continue
 			}
 			if _, err := fmt.Fprintf(output, "not tracked: %s\n", reason); err != nil {
 				return err

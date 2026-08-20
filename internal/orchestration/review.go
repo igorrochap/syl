@@ -102,20 +102,24 @@ func RunReview(ctx context.Context, options ReviewOptions) error {
 	if options.Raw {
 		mode = RawHarnessOutput
 	}
-	reviewVerdict, err := runReview(ctx, options.Adapter, harness.Request{
+	review, err := runReview(ctx, options.Adapter, harness.Request{
 		Model: options.ProjectConfig.Roles.Review.Model, Effort: options.ProjectConfig.Roles.Review.Effort,
 		Prompt: prompt, MCP: options.ProjectConfig.Roles.Review.MCP,
 	}, options.Output, mode, questions)
 	if err != nil {
 		var unparseable *UnparseableVerdictError
 		if errors.As(err, &unparseable) {
-			if artifactErr := preparation.recorder.RecordReviewOutput(0, unparseable.Execution); artifactErr != nil {
+			if artifactErr := recordStandaloneReviewArtifacts(preparation.recorder, unparseable.Execution); artifactErr != nil {
 				return fmt.Errorf("%w; save review run artifacts: %v", err, artifactErr)
 			}
 			return reviewTranscriptSavedError(err, preparation.recorder.Dir())
 		}
 		return err
 	}
+	if artifactErr := recordStandaloneReviewArtifacts(preparation.recorder, review); artifactErr != nil {
+		return fmt.Errorf("review: save review run artifacts: %w", artifactErr)
+	}
+	reviewVerdict := review.Verdict
 	if options.ProjectConfig.Tracker.Reviews == config.TrackerGitHub {
 		if options.IssueTracker == nil || options.Ticket == nil {
 			return errors.New("github review logging requires an issue reference (N or #N)")
@@ -166,12 +170,16 @@ func prepareReview(ctx context.Context, projectRoot, ticketRef string, git GitRu
 	return reviewPreparation{branchPoint: branchPoint, diffPath: diffPath, recorder: recorder}, nil
 }
 
-func runReview(ctx context.Context, adapter harness.Adapter, request harness.Request, output io.Writer, mode HarnessOutputMode, questions *QuestionHandler) (verdict.Verdict, error) {
-	review, err := RunReviewExecution(ctx, adapter, request, output, mode, questions)
-	if err != nil {
-		return verdict.Verdict{}, err
+func runReview(ctx context.Context, adapter harness.Adapter, request harness.Request, output io.Writer, mode HarnessOutputMode, questions *QuestionHandler) (ReviewExecution, error) {
+	return RunReviewExecution(ctx, adapter, request, output, mode, questions)
+}
+
+func recordStandaloneReviewArtifacts(recorder RunRecorder, review ReviewExecution) error {
+	if err := recorder.RecordReviewOutput(0, review); err != nil {
+		return err
 	}
-	return review.Verdict, nil
+	recorder.RecordSessions(0, "review", review.SessionIDs)
+	return recorder.WriteSessions()
 }
 
 func RunReviewExecution(ctx context.Context, adapter harness.Adapter, request harness.Request, output io.Writer, mode HarnessOutputMode, questions *QuestionHandler) (ReviewExecution, error) {

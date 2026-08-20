@@ -83,6 +83,13 @@ func TestReviewPrecomputesAuthoritativeDiffOnceAndPassesArtifactPath(t *testing.
 	if string(diff) != git.diff {
 		t.Fatalf("review diff = %q, want %q", diff, git.diff)
 	}
+	sessions, err := os.ReadFile(filepath.Join(runDirs[0], "sessions.txt"))
+	if err != nil {
+		t.Fatalf("read standalone review sessions: %v", err)
+	}
+	if string(sessions) != "iteration 0 review: session-diff\n" {
+		t.Fatalf("standalone review sessions = %q, want recorded reviewer session", sessions)
+	}
 	for _, expected := range []string{
 		diffPath,
 		"branch-point",
@@ -95,6 +102,43 @@ func TestReviewPrecomputesAuthoritativeDiffOnceAndPassesArtifactPath(t *testing.
 	}
 	if got := strings.Join(git.calls, "\n"); got != "rev-parse HEAD\ndiff branch-point\nls-files --others --exclude-standard -z" {
 		t.Fatalf("git calls = %q, want one ref lookup and one complete diff", got)
+	}
+}
+
+func TestStandaloneReviewUsageRecomputesFromRecordedSession(t *testing.T) {
+	const sessionID = "standalone-review-session"
+	t.Setenv("HOME", t.TempDir())
+	harness := &scriptedHarness{first: []harness.Event{
+		{Type: harness.EventSession, SessionID: sessionID},
+		{Type: harness.EventAssistantText, Text: approveVerdictText},
+	}}
+	fixture := newReviewFixture(t, harness)
+	writeFallbackClaudeTranscript(t, fixture.root, sessionID, []string{
+		`{"type":"assistant","timestamp":"2026-08-20T12:00:05Z","message":{"id":"message-1","role":"assistant","usage":{"input_tokens":10,"output_tokens":2}}}`,
+	})
+
+	if code := fixture.app.Run(context.Background(), []string{"review"}, &fixture.stdout, &fixture.stderr); code != 0 {
+		t.Fatalf("standalone review code = %d, stderr = %q", code, fixture.stderr.String())
+	}
+	runDirs := reviewRunArtifactPaths(t, fixture.root)
+	if len(runDirs) != 1 {
+		t.Fatalf("run artifact directories = %v, want one", runDirs)
+	}
+	if err := os.Remove(filepath.Join(runDirs[0], "usage.json")); err != nil {
+		t.Fatalf("remove usage artifact: %v", err)
+	}
+
+	var stdout, stderr strings.Builder
+	if code := fixture.app.Run(context.Background(), []string{"usage", filepath.Base(runDirs[0])}, &stdout, &stderr); code != 0 {
+		t.Fatalf("recomputed standalone usage code = %d, stderr = %q", code, stderr.String())
+	}
+	for _, expected := range []string{
+		"recomputed from transcripts — usage.json not found",
+		"review (claude, claude-sonnet-5): weighted_estimate=12.00 input_tokens=10 output_tokens=2",
+	} {
+		if !strings.Contains(stdout.String(), expected) {
+			t.Fatalf("recomputed standalone usage = %q, want %q", stdout.String(), expected)
+		}
 	}
 }
 
