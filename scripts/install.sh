@@ -7,8 +7,10 @@ install_dir="${INSTALL_DIR:-${HOME}/.local/bin}"
 version="latest"
 
 usage() {
-  echo "Usage: $0 [-d|--dir INSTALL_DIR] [-v|--version VERSION]" >&2
+  echo "Usage: $0 [-d|--dir INSTALL_DIR] [-p|--path INSTALL_PATH] [-v|--version VERSION]" >&2
 }
+
+install_path=""
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -26,6 +28,14 @@ while [ "$#" -gt 0 ]; do
         exit 1
       fi
       version="$2"
+      shift 2
+      ;;
+    -p|--path)
+      if [ "$#" -lt 2 ]; then
+        usage
+        exit 1
+      fi
+      install_path="$2"
       shift 2
       ;;
     -h|--help)
@@ -107,16 +117,25 @@ if [ "$actual_checksum" != "$expected_checksum" ]; then
   exit 1
 fi
 
-mkdir -p "$temp_dir/extracted" "$install_dir"
+mkdir -p "$temp_dir/extracted"
 tar -xzf "$temp_dir/$asset" -C "$temp_dir/extracted"
 
 if [ ! -f "$temp_dir/extracted/syl" ]; then
   echo "Error: release archive does not contain syl." >&2
   exit 1
 fi
-install -m 0755 "$temp_dir/extracted/syl" "$install_dir/syl"
+if [ -n "$install_path" ]; then
+  install_dir="$(dirname "$install_path")"
+  destination="$install_path"
+  installed_location="$destination"
+else
+  destination="$install_dir/syl"
+  installed_location="$install_dir"
+fi
+mkdir -p "$install_dir"
+install -m 0755 "$temp_dir/extracted/syl" "$destination"
 
-echo "Installed syl to $install_dir."
+echo "Installed syl to $installed_location."
 case ":${PATH}:" in
   *":$install_dir:"*) ;;
   *) echo "Add $install_dir to PATH to run syl from any directory." ;;

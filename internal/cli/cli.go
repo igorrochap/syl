@@ -15,6 +15,7 @@ import (
 	"github.com/igorrochap/syl/internal/initializer"
 	"github.com/igorrochap/syl/internal/orchestration"
 	"github.com/igorrochap/syl/internal/tracker"
+	"github.com/igorrochap/syl/internal/updater"
 	"github.com/igorrochap/syl/internal/version"
 	"github.com/spf13/cobra"
 )
@@ -25,6 +26,7 @@ type Dependencies struct {
 	Notifier  orchestration.Notifier
 	GH        tracker.GHRunner
 	Git       orchestration.GitRunner
+	Updater   updater.Runner
 }
 
 type App struct {
@@ -35,6 +37,9 @@ type App struct {
 func New(projectRoot string, deps Dependencies) *App {
 	if projectRoot == "" {
 		projectRoot = "."
+	}
+	if deps.Updater == nil {
+		deps.Updater = updater.Default()
 	}
 	return &App{projectRoot: projectRoot, deps: deps}
 }
@@ -79,6 +84,7 @@ func (a *App) Command() *cobra.Command {
 		a.implementCommand(),
 		a.reviewCommand(),
 		a.versionCommand(),
+		a.updateCommand(),
 	)
 	return root
 }
@@ -268,6 +274,26 @@ func (a *App) versionCommand() *cobra.Command {
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			_, err := fmt.Fprintln(cmd.OutOrStdout(), version.String())
+			return err
+		},
+	}
+}
+
+func (a *App) updateCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "update",
+		Short: "update syl to the latest release",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			result, err := a.deps.Updater.Update(cmd.Context(), version.Version)
+			if err != nil {
+				return fmt.Errorf("update syl: %w", err)
+			}
+			if result.Updated {
+				_, err = fmt.Fprintf(cmd.OutOrStdout(), "updated %s -> %s\n", result.CurrentVersion, result.LatestVersion)
+				return err
+			}
+			_, err = fmt.Fprintf(cmd.OutOrStdout(), "syl is already up to date (%s)\n", result.LatestVersion)
 			return err
 		},
 	}

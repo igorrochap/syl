@@ -10,6 +10,7 @@ import (
 
 	"github.com/igorrochap/syl/internal/config"
 	"github.com/igorrochap/syl/internal/harness"
+	"github.com/igorrochap/syl/internal/updater"
 	"github.com/igorrochap/syl/internal/version"
 )
 
@@ -20,7 +21,7 @@ func TestRunHelpListsAllCommands(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("Run() code = %d, want 0; stderr = %q", code, fixture.stderr.String())
 	}
-	for _, command := range []string{"init", "sync", "plan", "implement", "review", "version"} {
+	for _, command := range []string{"init", "sync", "plan", "implement", "review", "version", "update"} {
 		if !strings.Contains(fixture.stdout.String(), command) {
 			t.Errorf("help output %q does not list %q", fixture.stdout.String(), command)
 		}
@@ -28,6 +29,84 @@ func TestRunHelpListsAllCommands(t *testing.T) {
 	if !strings.Contains(fixture.stdout.String(), "print the running binary's version") {
 		t.Fatalf("help output %q, want version description", fixture.stdout.String())
 	}
+	if !strings.Contains(fixture.stdout.String(), "update syl to the latest release") {
+		t.Fatalf("help output %q, want update description", fixture.stdout.String())
+	}
+}
+
+func TestRunUpdateReportsVersionChange(t *testing.T) {
+	originalVersion := version.Version
+	version.Version = "v1.10.0"
+	t.Cleanup(func() { version.Version = originalVersion })
+
+	update := &fakeUpdater{result: updater.Result{
+		CurrentVersion: "v1.10.0",
+		LatestVersion:  "v1.11.0",
+		Updated:        true,
+	}}
+	app := New(t.TempDir(), Dependencies{Updater: update})
+	var stdout, stderr strings.Builder
+
+	code := app.Run(context.Background(), []string{"update"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("Run() code = %d, want 0; stderr = %q", code, stderr.String())
+	}
+	if got, want := stdout.String(), "updated v1.10.0 -> v1.11.0\n"; got != want {
+		t.Fatalf("stdout = %q, want %q", got, want)
+	}
+	if update.currentVersion != "v1.10.0" {
+		t.Fatalf("updater current version = %q, want v1.10.0", update.currentVersion)
+	}
+}
+
+func TestRunUpdateReportsAlreadyUpToDate(t *testing.T) {
+	originalVersion := version.Version
+	version.Version = "v1.11.0"
+	t.Cleanup(func() { version.Version = originalVersion })
+
+	update := &fakeUpdater{result: updater.Result{
+		CurrentVersion: "v1.11.0",
+		LatestVersion:  "v1.11.0",
+	}}
+	app := New(t.TempDir(), Dependencies{Updater: update})
+	var stdout, stderr strings.Builder
+
+	code := app.Run(context.Background(), []string{"update"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("Run() code = %d, want 0; stderr = %q", code, stderr.String())
+	}
+	if got, want := stdout.String(), "syl is already up to date (v1.11.0)\n"; got != want {
+		t.Fatalf("stdout = %q, want %q", got, want)
+	}
+}
+
+func TestRunUpdateReportsInstallerFailure(t *testing.T) {
+	originalVersion := version.Version
+	version.Version = "v1.10.0"
+	t.Cleanup(func() { version.Version = originalVersion })
+
+	update := &fakeUpdater{err: fmt.Errorf("checksum verification failed for syl_Linux_amd64.tar.gz")}
+	app := New(t.TempDir(), Dependencies{Updater: update})
+	var stdout, stderr strings.Builder
+
+	code := app.Run(context.Background(), []string{"update"}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatal("Run() code = 0, want failure")
+	}
+	if !strings.Contains(stderr.String(), "checksum verification failed") {
+		t.Fatalf("stderr = %q, want checksum error", stderr.String())
+	}
+}
+
+type fakeUpdater struct {
+	result         updater.Result
+	err            error
+	currentVersion string
+}
+
+func (u *fakeUpdater) Update(_ context.Context, currentVersion string) (updater.Result, error) {
+	u.currentVersion = currentVersion
+	return u.result, u.err
 }
 
 func TestRunVersionPrintsBuildMetadata(t *testing.T) {
