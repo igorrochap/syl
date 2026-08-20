@@ -15,6 +15,7 @@ import (
 	"github.com/igorrochap/syl/internal/initializer"
 	"github.com/igorrochap/syl/internal/orchestration"
 	"github.com/igorrochap/syl/internal/tracker"
+	"github.com/igorrochap/syl/internal/version"
 	"github.com/spf13/cobra"
 )
 
@@ -77,6 +78,7 @@ func (a *App) Command() *cobra.Command {
 		a.planCommand(),
 		a.implementCommand(),
 		a.reviewCommand(),
+		a.versionCommand(),
 	)
 	return root
 }
@@ -255,6 +257,18 @@ func (a *App) initCommand() *cobra.Command {
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return initializer.Run(a.projectRoot, cmd.InOrStdin(), cmd.OutOrStdout())
+		},
+	}
+}
+
+func (a *App) versionCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "version",
+		Short: "print the running binary's version",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			_, err := fmt.Fprintln(cmd.OutOrStdout(), version.String())
+			return err
 		},
 	}
 }
