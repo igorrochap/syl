@@ -76,6 +76,152 @@ func TestCollectClaudeMarksMalformedTranscript(t *testing.T) {
 	}
 }
 
+func TestCollectCodexReadsLastCumulativeTokenCountFromAnyDateDirectory(t *testing.T) {
+	home := t.TempDir()
+	sessionID := "codex-session"
+	rolloutDir := filepath.Join(home, ".codex", "sessions", "2026", "08", "19")
+	if err := os.MkdirAll(rolloutDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rollout := "" +
+		`{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":90,"cache_write_input_tokens":5,"output_tokens":10,"reasoning_output_tokens":2,"total_tokens":110}}}}` + "\n" +
+		`{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":2000000,"cached_input_tokens":1920000,"cache_write_input_tokens":10,"output_tokens":24200,"reasoning_output_tokens":13700,"total_tokens":2024200}}}}` + "\n" +
+		`{"type":"turn.completed"}` + "\n"
+	if err := os.WriteFile(filepath.Join(rolloutDir, "rollout-20260820T010203-"+sessionID+".jsonl"), []byte(rollout), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := CollectCodex(home, []string{sessionID})
+	if err != nil {
+		t.Fatalf("CollectCodex() error = %v", err)
+	}
+	if got.InputTokens != 2_000_000 || got.CachedInputTokens != 1_920_000 || got.CacheWriteInputTokens != 10 ||
+		got.OutputTokens != 24_200 || got.ReasoningOutputTokens != 13_700 || got.TotalTokens != 2_024_200 {
+		t.Fatalf("Codex metrics = %#v, want last cumulative token_count event", got)
+	}
+}
+
+func TestCollectCodexUsesOneRolloutPerInvocation(t *testing.T) {
+	home := t.TempDir()
+	firstSessionID := "first-session"
+	secondSessionID := "second-session"
+	firstRolloutDir := filepath.Join(home, ".codex", "sessions", "2026", "08", "19")
+	secondRolloutDir := filepath.Join(home, ".codex", "sessions", "2026", "08", "20")
+	for _, dir := range []string{firstRolloutDir, secondRolloutDir} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	firstRollout := `{"payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":80,"cache_write_input_tokens":5,"output_tokens":10,"reasoning_output_tokens":4,"total_tokens":110}}}}` + "\n"
+	secondRollout := `{"payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":200,"cached_input_tokens":160,"cache_write_input_tokens":7,"output_tokens":20,"reasoning_output_tokens":8,"total_tokens":220}}}}` + "\n"
+	if err := os.WriteFile(filepath.Join(firstRolloutDir, "rollout-20260820T010203-"+firstSessionID+".jsonl"), []byte(firstRollout), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(secondRolloutDir, "rollout-20260820T010204-"+secondSessionID+".jsonl"), []byte(secondRollout), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := CollectCodex(home, []string{firstSessionID, secondSessionID})
+	if err != nil {
+		t.Fatalf("CollectCodex() error = %v", err)
+	}
+	if got.InputTokens != 100 || got.CachedInputTokens != 80 || got.CacheWriteInputTokens != 5 ||
+		got.OutputTokens != 10 || got.ReasoningOutputTokens != 4 || got.TotalTokens != 110 {
+		t.Fatalf("Codex metrics = %#v, want only the first session rollout", got)
+	}
+}
+
+func TestCollectInvocationTracksCodexUsageWithoutClaudeWindowRules(t *testing.T) {
+	home := t.TempDir()
+	sessionID := "codex-session"
+	rolloutDir := filepath.Join(home, ".codex", "sessions", "2026", "08", "19")
+	if err := os.MkdirAll(rolloutDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rollout := `{"payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1000,"cached_input_tokens":900,"cache_write_input_tokens":25,"output_tokens":80,"reasoning_output_tokens":40,"total_tokens":1080}}}}` + "\n"
+	if err := os.WriteFile(filepath.Join(rolloutDir, "rollout-20260820T010203-"+sessionID+".jsonl"), []byte(rollout), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	entry := CollectInvocation(Invocation{
+		Iteration:  2,
+		Role:       "implement",
+		Harness:    "codex",
+		Model:      "gpt-5.6-luna",
+		SessionIDs: []string{sessionID},
+		StartedAt:  time.Now().Add(24 * time.Hour),
+		EndedAt:    time.Now().Add(48 * time.Hour),
+	}, t.TempDir(), home)
+	if !entry.Tracked || entry.Metrics == nil || entry.Reason != "" {
+		t.Fatalf("Codex entry = %#v, want tracked metrics", entry)
+	}
+	if entry.Metrics.WeightedEstimate != 0 || entry.Metrics.InputTokens != 1000 || entry.Metrics.CachedInputTokens != 900 ||
+		entry.Metrics.ReasoningOutputTokens != 40 {
+		t.Fatalf("Codex entry metrics = %#v, want raw usage without weighted estimate", *entry.Metrics)
+	}
+}
+
+func TestCollectInvocationDegradesCodexUsageFailures(t *testing.T) {
+	tests := []struct {
+		name       string
+		rollout    string
+		wantReason string
+	}{
+		{name: "missing rollout", wantReason: "Codex rollout is missing"},
+		{name: "malformed rollout", rollout: "not json\n", wantReason: "Codex rollout could not be parsed"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			home := t.TempDir()
+			if tt.rollout != "" {
+				rolloutDir := filepath.Join(home, ".codex", "sessions", "2026", "08", "19")
+				if err := os.MkdirAll(rolloutDir, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(rolloutDir, "rollout-20260820T010203-codex-session.jsonl"), []byte(tt.rollout), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			entry := CollectInvocation(Invocation{
+				Iteration:  1,
+				Role:       "implement",
+				Harness:    "codex",
+				SessionIDs: []string{"codex-session"},
+			}, t.TempDir(), home)
+			if entry.Tracked || entry.Metrics != nil || entry.Reason != tt.wantReason {
+				t.Fatalf("Codex entry = %#v, want untracked reason %q", entry, tt.wantReason)
+			}
+		})
+	}
+}
+
+func TestCollectInvocationDegradesCodexUsageWhenRolloutMatchesMultipleFiles(t *testing.T) {
+	home := t.TempDir()
+	sessionID := "codex-session"
+	for _, day := range []string{"19", "20"} {
+		rolloutDir := filepath.Join(home, ".codex", "sessions", "2026", "08", day)
+		if err := os.MkdirAll(rolloutDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		rollout := `{"payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":80,"cache_write_input_tokens":5,"output_tokens":10,"reasoning_output_tokens":4,"total_tokens":110}}}}` + "\n"
+		path := filepath.Join(rolloutDir, "rollout-20260820T010203-"+sessionID+".jsonl")
+		if err := os.WriteFile(path, []byte(rollout), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	entry := CollectInvocation(Invocation{
+		Iteration:  1,
+		Role:       "implement",
+		Harness:    "codex",
+		SessionIDs: []string{sessionID},
+	}, t.TempDir(), home)
+	if entry.Tracked || entry.Metrics != nil || entry.Reason != "Codex rollout has multiple matching files" {
+		t.Fatalf("Codex entry = %#v, want untracked multiple-rollout reason", entry)
+	}
+}
+
 func TestShortReasonUsesTranscriptParseSentinel(t *testing.T) {
 	err := errors.Join(errTranscriptParse, errors.New("transcript format wording changed"))
 	if got := shortReason(err); got != "Claude transcript could not be parsed" {

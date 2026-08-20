@@ -346,6 +346,10 @@ func TestImplementLoopQuietlyShowsProgressWithoutToolCalls(t *testing.T) {
 func TestImplementLoopUsesCodexAdapterAtProcessBoundary(t *testing.T) {
 	fixture := newImplementLoopFixture(t)
 	argsPath := filepath.Join(fixture.root, "codex-args")
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	rolloutDir := filepath.Join(home, ".codex", "sessions", "2026", "08", "19")
+	rolloutPath := filepath.Join(rolloutDir, "rollout-20260820T010203-codex-implement.jsonl")
 	commandDir := t.TempDir()
 	command := filepath.Join(commandDir, "codex")
 	var script strings.Builder
@@ -356,6 +360,14 @@ func TestImplementLoopUsesCodexAdapterAtProcessBoundary(t *testing.T) {
 	script.WriteString(shellQuote(argsPath))
 	script.WriteString("\nprintf '%s\\n' 'implemented' > change.txt\n")
 	script.WriteString("git add change.txt\n")
+	script.WriteString("mkdir -p ")
+	script.WriteString(shellQuote(rolloutDir))
+	script.WriteByte('\n')
+	script.WriteString("printf '%s\\n' ")
+	script.WriteString(shellQuote(`{"payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":80,"cache_write_input_tokens":5,"output_tokens":10,"reasoning_output_tokens":4,"total_tokens":110}}}}`))
+	script.WriteString(" > ")
+	script.WriteString(shellQuote(rolloutPath))
+	script.WriteByte('\n')
 	for _, line := range []string{
 		`{"type":"thread.started","thread_id":"codex-implement"}`,
 		`{"type":"item.completed","item":{"id":"item-1","type":"agent_message","text":"Implemented the ticket."}}`,
@@ -398,6 +410,24 @@ func TestImplementLoopUsesCodexAdapterAtProcessBoundary(t *testing.T) {
 	prompt := args[len(args)-1]
 	if !strings.Contains(prompt, "$implement") || !strings.Contains(prompt, "Add resilient workflow") || !strings.Contains(prompt, "Acceptance criteria: leave a working implementation.") {
 		t.Fatalf("Codex prompt = %q, want composed implement skill and ticket", prompt)
+	}
+
+	runDirs, err := filepath.Glob(filepath.Join(fixture.root, ".syl", "runs", "*-42"))
+	if err != nil || len(runDirs) != 1 {
+		t.Fatalf("run directories = %v, err = %v; want one issue artifact directory", runDirs, err)
+	}
+	artifact, err := usage.ReadArtifact(filepath.Join(runDirs[0], "usage.json"))
+	if err != nil {
+		t.Fatalf("read usage artifact: %v", err)
+	}
+	implementEntry := findUsageEntry(t, artifact, 1, "implement")
+	if !implementEntry.Tracked || implementEntry.Metrics == nil {
+		t.Fatalf("Codex usage = %#v, want tracked metrics", implementEntry)
+	}
+	if implementEntry.Metrics.InputTokens != 100 || implementEntry.Metrics.CachedInputTokens != 80 ||
+		implementEntry.Metrics.OutputTokens != 10 || implementEntry.Metrics.ReasoningOutputTokens != 4 ||
+		implementEntry.Metrics.TotalTokens != 110 || implementEntry.Metrics.WeightedEstimate != 0 {
+		t.Fatalf("Codex metrics = %#v, want raw rollout totals without weighted estimate", *implementEntry.Metrics)
 	}
 }
 
