@@ -1,0 +1,385 @@
+// Package usage records and reads per-role token usage for syl runs.
+package usage
+
+import (
+	"bufio"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"time"
+)
+
+const (
+	// SchemaVersion identifies the usage.json schema written by syl.
+	SchemaVersion = 1
+	// Disclaimer explains why weighted_estimate must not be treated as a bill.
+	Disclaimer = "weighted_estimate is an estimate of plan-quota pressure, not a billing statement."
+)
+
+var errTranscriptParse = errors.New("Claude transcript parse failure")
+
+// Metrics is the Claude usage shape recorded in usage.json.
+type Metrics struct {
+	InputTokens      int64   `json:"input_tokens"`
+	OutputTokens     int64   `json:"output_tokens"`
+	CacheWriteTokens int64   `json:"cache_write_tokens"`
+	CacheReadTokens  int64   `json:"cache_read_tokens"`
+	WeightedEstimate float64 `json:"weighted_estimate"`
+}
+
+// Entry is one role invocation in one implement iteration.
+type Entry struct {
+	Iteration int      `json:"iteration"`
+	Role      string   `json:"role"`
+	Harness   string   `json:"harness"`
+	Model     string   `json:"model"`
+	Tracked   bool     `json:"tracked"`
+	Metrics   *Metrics `json:"metrics"`
+	Reason    string   `json:"reason,omitempty"`
+}
+
+// Artifact is the on-disk usage.json document.
+type Artifact struct {
+	SchemaVersion int     `json:"schema_version"`
+	Entries       []Entry `json:"entries"`
+	Disclaimer    string  `json:"disclaimer"`
+}
+
+// NewArtifact returns an empty artifact with the current schema metadata.
+func NewArtifact() Artifact {
+	return Artifact{
+		SchemaVersion: SchemaVersion,
+		Entries:       []Entry{},
+		Disclaimer:    Disclaimer,
+	}
+}
+
+// Upsert replaces the entry for a role in an iteration and keeps output stable.
+func (a *Artifact) Upsert(entry Entry) {
+	for index := range a.Entries {
+		if a.Entries[index].Iteration == entry.Iteration && a.Entries[index].Role == entry.Role {
+			a.Entries[index] = entry
+			sortEntries(a.Entries)
+			return
+		}
+	}
+	a.Entries = append(a.Entries, entry)
+	sortEntries(a.Entries)
+}
+
+func sortEntries(entries []Entry) {
+	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].Iteration != entries[j].Iteration {
+			return entries[i].Iteration < entries[j].Iteration
+		}
+		return entries[i].Role < entries[j].Role
+	})
+}
+
+// WriteArtifact serializes an artifact to path.
+func WriteArtifact(path string, artifact Artifact) error {
+	if artifact.SchemaVersion == 0 {
+		artifact.SchemaVersion = SchemaVersion
+	}
+	if artifact.Disclaimer == "" {
+		artifact.Disclaimer = Disclaimer
+	}
+	if artifact.Entries == nil {
+		artifact.Entries = []Entry{}
+	}
+	sortEntries(artifact.Entries)
+	contents, err := json.MarshalIndent(artifact, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode usage artifact: %w", err)
+	}
+	contents = append(contents, '\n')
+	if err := os.WriteFile(path, contents, 0o644); err != nil {
+		return fmt.Errorf("write usage artifact %s: %w", path, err)
+	}
+	return nil
+}
+
+// ReadArtifact parses and validates an artifact from path.
+func ReadArtifact(path string) (Artifact, error) {
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		return Artifact{}, err
+	}
+	var artifact Artifact
+	if err := json.Unmarshal(contents, &artifact); err != nil {
+		return Artifact{}, fmt.Errorf("decode usage artifact %s: %w", path, err)
+	}
+	if artifact.SchemaVersion == 0 {
+		return Artifact{}, fmt.Errorf("decode usage artifact %s: missing schema_version", path)
+	}
+	if artifact.Disclaimer == "" {
+		return Artifact{}, fmt.Errorf("decode usage artifact %s: missing disclaimer", path)
+	}
+	sortEntries(artifact.Entries)
+	return artifact, nil
+}
+
+// Invocation describes the live window in which a role was run. The window
+// is recorded at run time so resumed Claude sessions can be split correctly.
+type Invocation struct {
+	Iteration  int
+	Role       string
+	Harness    string
+	Model      string
+	SessionIDs []string
+	StartedAt  time.Time
+	EndedAt    time.Time
+}
+
+// CollectInvocation makes a non-failing usage result for one role invocation.
+// Claude transcript failures become an untracked entry; they are never
+// returned as an error to the implement loop.
+func CollectInvocation(invocation Invocation, projectRoot, homeDir string) Entry {
+	entry := Entry{
+		Iteration: invocation.Iteration,
+		Role:      invocation.Role,
+		Harness:   invocation.Harness,
+		Model:     invocation.Model,
+		Tracked:   false,
+	}
+	if invocation.Harness != "claude" {
+		entry.Reason = fmt.Sprintf("usage tracking is not implemented for the %s harness", invocation.Harness)
+		return entry
+	}
+	metrics, err := CollectClaude(projectRoot, homeDir, invocation.SessionIDs, invocation.StartedAt, invocation.EndedAt)
+	if err != nil {
+		entry.Reason = shortReason(err)
+		return entry
+	}
+	entry.Tracked = true
+	entry.Metrics = &metrics
+	return entry
+}
+
+func shortReason(err error) string {
+	if errors.Is(err, os.ErrNotExist) {
+		return "Claude transcript is missing"
+	}
+	if errors.Is(err, errTranscriptParse) {
+		return "Claude transcript could not be parsed"
+	}
+	return strings.TrimSpace(err.Error())
+}
+
+// CollectClaude reads the parent session transcripts and all direct sub-agent
+// transcripts for the supplied sessions, selecting records in the invocation
+// window and retaining only the last usage snapshot for each message ID.
+func CollectClaude(projectRoot, homeDir string, sessionIDs []string, start, end time.Time) (Metrics, error) {
+	if len(sessionIDs) == 0 {
+		return Metrics{}, errors.New("Claude invocation did not produce a session id")
+	}
+	if start.IsZero() || end.IsZero() {
+		return Metrics{}, errors.New("Claude invocation has no usage time window")
+	}
+	if start.After(end) {
+		return Metrics{}, errors.New("Claude invocation has an invalid usage time window")
+	}
+	if strings.TrimSpace(homeDir) == "" {
+		var err error
+		homeDir, err = os.UserHomeDir()
+		if err != nil {
+			return Metrics{}, fmt.Errorf("determine Claude home directory: %w", err)
+		}
+	}
+	projectDir := filepath.Join(homeDir, ".claude", "projects", projectSlug(projectRoot))
+	snapshots := make(map[string]transcriptUsage)
+	seenSessions := make(map[string]struct{})
+	for _, rawSessionID := range sessionIDs {
+		sessionID := strings.TrimSpace(rawSessionID)
+		if sessionID == "" {
+			continue
+		}
+		if _, seen := seenSessions[sessionID]; seen {
+			continue
+		}
+		seenSessions[sessionID] = struct{}{}
+
+		transcriptPath := filepath.Join(projectDir, sessionID+".jsonl")
+		if err := collectTranscriptFile(transcriptPath, start, end, snapshots); err != nil {
+			return Metrics{}, err
+		}
+		subagentPaths, err := filepath.Glob(filepath.Join(projectDir, sessionID, "subagents", "*.jsonl"))
+		if err != nil {
+			return Metrics{}, fmt.Errorf("find Claude sub-agent transcripts for %s: %w", sessionID, err)
+		}
+		sort.Strings(subagentPaths)
+		for _, subagentPath := range subagentPaths {
+			if err := collectTranscriptFile(subagentPath, start, end, snapshots); err != nil {
+				return Metrics{}, err
+			}
+		}
+	}
+	if len(snapshots) == 0 {
+		return Metrics{}, errors.New("no Claude usage records found in the invocation window")
+	}
+
+	var metrics Metrics
+	for _, snapshot := range snapshots {
+		metrics.InputTokens += snapshot.InputTokens
+		metrics.OutputTokens += snapshot.OutputTokens
+		metrics.CacheWriteTokens += snapshot.CacheWriteTokens
+		metrics.CacheReadTokens += snapshot.CacheReadTokens
+	}
+	metrics.WeightedEstimate = float64(metrics.InputTokens) +
+		1.25*float64(metrics.CacheWriteTokens) +
+		0.1*float64(metrics.CacheReadTokens) +
+		float64(metrics.OutputTokens)
+	return metrics, nil
+}
+
+func projectSlug(projectRoot string) string {
+	if absolute, err := filepath.Abs(projectRoot); err == nil {
+		projectRoot = absolute
+	}
+	return strings.ReplaceAll(projectRoot, string(filepath.Separator), "-")
+}
+
+type transcriptUsage struct {
+	InputTokens      int64
+	OutputTokens     int64
+	CacheWriteTokens int64
+	CacheReadTokens  int64
+}
+
+type transcriptLine struct {
+	Type      string          `json:"type"`
+	ID        string          `json:"id"`
+	Timestamp string          `json:"timestamp"`
+	Role      string          `json:"role"`
+	Usage     json.RawMessage `json:"usage"`
+	Message   struct {
+		ID        string          `json:"id"`
+		Timestamp string          `json:"timestamp"`
+		Role      string          `json:"role"`
+		Usage     json.RawMessage `json:"usage"`
+	} `json:"message"`
+}
+
+func collectTranscriptFile(path string, start, end time.Time, snapshots map[string]transcriptUsage) error {
+	file, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("read Claude transcript %s: %w", path, err)
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 64*1024), 16*1024*1024)
+	lineNumber := 0
+	for scanner.Scan() {
+		lineNumber++
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		var record transcriptLine
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			return transcriptParseError(path, lineNumber, err)
+		}
+		usageRaw := record.Message.Usage
+		if len(usageRaw) == 0 || string(usageRaw) == "null" {
+			usageRaw = record.Usage
+		}
+		if len(usageRaw) == 0 || string(usageRaw) == "null" {
+			continue
+		}
+		role := record.Message.Role
+		if role == "" {
+			role = record.Role
+		}
+		if role != "assistant" && record.Type != "assistant" {
+			continue
+		}
+		messageID := record.Message.ID
+		if messageID == "" {
+			messageID = record.ID
+		}
+		if strings.TrimSpace(messageID) == "" {
+			return transcriptParseError(path, lineNumber, errors.New("usage record has no message id"))
+		}
+		timestampValue := record.Timestamp
+		if timestampValue == "" {
+			timestampValue = record.Message.Timestamp
+		}
+		timestamp, err := parseTimestamp(timestampValue)
+		if err != nil {
+			return transcriptParseError(path, lineNumber, err)
+		}
+		if timestamp.Before(start) || timestamp.After(end) {
+			continue
+		}
+		parsedUsage, err := parseUsage(usageRaw)
+		if err != nil {
+			return transcriptParseError(path, lineNumber, err)
+		}
+		// Assigning in transcript order intentionally keeps the final streaming
+		// snapshot for a message ID and avoids multiplying content-block snapshots.
+		snapshots[messageID] = parsedUsage
+	}
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("read Claude transcript %s: %w", path, err)
+	}
+	return nil
+}
+
+func transcriptParseError(path string, lineNumber int, cause error) error {
+	return fmt.Errorf("%w: %s line %d: %v", errTranscriptParse, path, lineNumber, cause)
+}
+
+func parseTimestamp(value string) (time.Time, error) {
+	if strings.TrimSpace(value) == "" {
+		return time.Time{}, errors.New("usage record has no timestamp")
+	}
+	parsed, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("invalid timestamp %q", value)
+	}
+	return parsed, nil
+}
+
+func parseUsage(raw json.RawMessage) (transcriptUsage, error) {
+	var fields struct {
+		InputTokens              *int64 `json:"input_tokens"`
+		OutputTokens             *int64 `json:"output_tokens"`
+		CacheWriteTokens         *int64 `json:"cache_write_tokens"`
+		CacheCreationInputTokens *int64 `json:"cache_creation_input_tokens"`
+		CacheReadTokens          *int64 `json:"cache_read_tokens"`
+		CacheReadInputTokens     *int64 `json:"cache_read_input_tokens"`
+	}
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return transcriptUsage{}, err
+	}
+	if fields.InputTokens == nil || fields.OutputTokens == nil {
+		return transcriptUsage{}, errors.New("usage record is missing input_tokens or output_tokens")
+	}
+	cacheWrite := fields.CacheWriteTokens
+	if cacheWrite == nil {
+		cacheWrite = fields.CacheCreationInputTokens
+	}
+	cacheRead := fields.CacheReadTokens
+	if cacheRead == nil {
+		cacheRead = fields.CacheReadInputTokens
+	}
+	if *fields.InputTokens < 0 ||
+		*fields.OutputTokens < 0 ||
+		(cacheWrite != nil && *cacheWrite < 0) ||
+		(cacheRead != nil && *cacheRead < 0) {
+		return transcriptUsage{}, errors.New("usage record contains negative token counts")
+	}
+	result := transcriptUsage{InputTokens: *fields.InputTokens, OutputTokens: *fields.OutputTokens}
+	if cacheWrite != nil {
+		result.CacheWriteTokens = *cacheWrite
+	}
+	if cacheRead != nil {
+		result.CacheReadTokens = *cacheRead
+	}
+	return result, nil
+}

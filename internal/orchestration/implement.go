@@ -8,10 +8,12 @@ import (
 	"io"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/igorrochap/syl/internal/config"
 	"github.com/igorrochap/syl/internal/harness"
 	"github.com/igorrochap/syl/internal/tracker"
+	"github.com/igorrochap/syl/internal/usage"
 	"github.com/igorrochap/syl/internal/verdict"
 )
 
@@ -74,6 +76,7 @@ func RunImplement(ctx context.Context, options ImplementOptions) error {
 	}
 	iterations, final, nits, err := runImplementIterations(ctx, implementIterationsParams{
 		git:           setup.git,
+		projectRoot:   options.ProjectRoot,
 		implementer:   options.Implementer,
 		reviewer:      options.Reviewer,
 		projectConfig: projectConfig,
@@ -140,6 +143,7 @@ func prepareImplement(ctx context.Context, git GitRunner, issueTracker tracker.T
 
 type implementIterationsParams struct {
 	git           GitRunner
+	projectRoot   string
 	implementer   harness.Adapter
 	reviewer      harness.Adapter
 	projectConfig config.Config
@@ -177,6 +181,7 @@ func runImplementIterations(ctx context.Context, params implementIterationsParam
 			Prompt: composeImplementPrompt(params.ticket, blocking, iteration),
 			MCP:    params.projectConfig.Roles.Implement.MCP,
 		}
+		implementStartedAt := time.Now().UTC()
 		implementResult, err := runImplementRole(
 			ctx,
 			params.implementer,
@@ -185,9 +190,19 @@ func runImplementIterations(ctx context.Context, params implementIterationsParam
 			mode,
 			params.questions,
 		)
+		implementEndedAt := time.Now().UTC()
 		if err != nil {
 			return 0, verdict.Verdict{}, nil, err
 		}
+		recordRoleUsage(params.recorder, usage.CollectInvocation(usage.Invocation{
+			Iteration:  iteration,
+			Role:       "implement",
+			Harness:    string(params.projectConfig.Roles.Implement.Harness),
+			Model:      params.projectConfig.Roles.Implement.Model,
+			SessionIDs: implementResult.SessionIDs,
+			StartedAt:  implementStartedAt,
+			EndedAt:    implementEndedAt,
+		}, params.projectRoot, ""))
 		if err := params.recorder.RecordImplementTurn(
 			iteration,
 			implementResult.Feed,
@@ -227,10 +242,21 @@ func runImplementIterations(ctx context.Context, params implementIterationsParam
 		if previousReviewerSession != "" {
 			reviewOptions.resumePrompt = composeReviewResumePrompt(diffPath, blocking)
 		}
+		reviewStartedAt := time.Now().UTC()
 		reviewResult, err := runReviewExecutionWithResumeFallback(ctx, params.reviewer, reviewOptions)
+		reviewEndedAt := time.Now().UTC()
 		if err != nil {
 			var unparseable *UnparseableVerdictError
 			if errors.As(err, &unparseable) {
+				recordRoleUsage(params.recorder, usage.CollectInvocation(usage.Invocation{
+					Iteration:  iteration,
+					Role:       "review",
+					Harness:    string(params.projectConfig.Roles.Review.Harness),
+					Model:      params.projectConfig.Roles.Review.Model,
+					SessionIDs: unparseable.Execution.SessionIDs,
+					StartedAt:  reviewStartedAt,
+					EndedAt:    reviewEndedAt,
+				}, params.projectRoot, ""))
 				if artifactErr := params.recorder.RecordReviewOutput(iteration, unparseable.Execution); artifactErr != nil {
 					return 0, verdict.Verdict{}, nil, artifactErr
 				}
@@ -238,6 +264,15 @@ func runImplementIterations(ctx context.Context, params implementIterationsParam
 			}
 			return 0, verdict.Verdict{}, nil, err
 		}
+		recordRoleUsage(params.recorder, usage.CollectInvocation(usage.Invocation{
+			Iteration:  iteration,
+			Role:       "review",
+			Harness:    string(params.projectConfig.Roles.Review.Harness),
+			Model:      params.projectConfig.Roles.Review.Model,
+			SessionIDs: reviewResult.SessionIDs,
+			StartedAt:  reviewStartedAt,
+			EndedAt:    reviewEndedAt,
+		}, params.projectRoot, ""))
 		if err := params.recorder.RecordReviewOutput(iteration, reviewResult); err != nil {
 			return 0, verdict.Verdict{}, nil, err
 		}
@@ -260,6 +295,16 @@ func runImplementIterations(ctx context.Context, params implementIterationsParam
 		previousReviewerSession = lastUsableSessionID(reviewResult.SessionIDs)
 	}
 	return iterations, final, nits, nil
+}
+
+// recordRoleUsage persists usage as best-effort metadata. Usage collection or
+// persistence failures must not fail the implement loop.
+func recordRoleUsage(recorder RunRecorder, entry usage.Entry) {
+	usageRecorder, ok := recorder.(UsageRecorder)
+	if !ok {
+		return
+	}
+	_ = usageRecorder.RecordUsage(entry)
 }
 
 type implementExecution struct {

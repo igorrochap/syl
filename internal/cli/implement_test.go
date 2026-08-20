@@ -8,9 +8,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/igorrochap/syl/internal/harness"
 	"github.com/igorrochap/syl/internal/harness/codex"
+	"github.com/igorrochap/syl/internal/usage"
 )
 
 func TestImplementLoopApprovesOnFirstIteration(t *testing.T) {
@@ -74,6 +76,129 @@ func TestImplementLoopApprovesOnFirstIteration(t *testing.T) {
 			t.Fatalf("run artifacts = %q, want %q", artifactText, expected)
 		}
 	}
+}
+
+func TestImplementWritesClaudeUsagePerIterationIncludingSubagents(t *testing.T) {
+	fixture := newImplementLoopFixture(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	implementer := &loopHarness{
+		root: fixture.root,
+		streams: [][]harness.Event{
+			{{Type: harness.EventSession, SessionID: "implement-1"}},
+			{{Type: harness.EventSession, SessionID: "implement-2"}},
+		},
+	}
+	reviewer := &usageTranscriptHarness{projectRoot: fixture.root, home: home}
+	fixture.app.deps.Harnesses["codex"] = implementer
+	fixture.app.deps.Harnesses["claude"] = reviewer
+	fixture.app.deps.GH = &loopGHRunner{}
+
+	code := fixture.app.Run(context.Background(), []string{"implement", "#42"}, &fixture.stdout, &fixture.stderr)
+	if code != 0 {
+		t.Fatalf("implement code = %d, stderr = %q", code, fixture.stderr.String())
+	}
+	runDirs, err := filepath.Glob(filepath.Join(fixture.root, ".syl", "runs", "*-42"))
+	if err != nil || len(runDirs) != 1 {
+		t.Fatalf("run directories = %v, err = %v; want one issue artifact directory", runDirs, err)
+	}
+	artifact, err := usage.ReadArtifact(filepath.Join(runDirs[0], "usage.json"))
+	if err != nil {
+		t.Fatalf("read usage artifact: %v", err)
+	}
+	if len(artifact.Entries) != 4 {
+		t.Fatalf("usage entries = %#v, want implement and review for two iterations", artifact.Entries)
+	}
+	firstReview := findUsageEntry(t, artifact, 1, "review")
+	if !firstReview.Tracked || firstReview.Metrics == nil {
+		t.Fatalf("first review usage = %#v, want tracked metrics", firstReview)
+	}
+	if firstReview.Metrics.InputTokens != 15 || firstReview.Metrics.OutputTokens != 4 || firstReview.Metrics.CacheWriteTokens != 6 || firstReview.Metrics.CacheReadTokens != 3 {
+		t.Fatalf("first review metrics = %#v, want parent plus sub-agent usage", *firstReview.Metrics)
+	}
+	secondReview := findUsageEntry(t, artifact, 2, "review")
+	if !secondReview.Tracked || secondReview.Metrics == nil {
+		t.Fatalf("second review usage = %#v, want tracked metrics", secondReview)
+	}
+	if secondReview.Metrics.InputTokens != 20 || secondReview.Metrics.OutputTokens != 3 || secondReview.Metrics.CacheWriteTokens != 8 || secondReview.Metrics.CacheReadTokens != 10 {
+		t.Fatalf("second review metrics = %#v, want only resumed invocation usage", *secondReview.Metrics)
+	}
+	if implementEntry := findUsageEntry(t, artifact, 1, "implement"); implementEntry.Tracked || implementEntry.Reason == "" {
+		t.Fatalf("Codex usage = %#v, want untracked reason", implementEntry)
+	}
+}
+
+func findUsageEntry(t *testing.T, artifact usage.Artifact, iteration int, role string) usage.Entry {
+	t.Helper()
+	for _, entry := range artifact.Entries {
+		if entry.Iteration == iteration && entry.Role == role {
+			return entry
+		}
+	}
+	t.Fatalf("usage artifact has no iteration %d %s entry: %#v", iteration, role, artifact.Entries)
+	return usage.Entry{}
+}
+
+type usageTranscriptHarness struct {
+	projectRoot string
+	home        string
+	resumeCount int
+}
+
+func (h *usageTranscriptHarness) Run(_ context.Context, _ harness.Request) (harness.Stream, error) {
+	if err := h.appendTranscript("review-session", "review-message-1", 10, 2, 4, 1); err != nil {
+		return nil, err
+	}
+	if err := h.writeSubagentTranscript("review-session", "sub-message-1", 5, 2, 2, 2); err != nil {
+		return nil, err
+	}
+	return scriptedHarnessStream{events: []harness.Event{
+		{Type: harness.EventSession, SessionID: "review-session"},
+		{Type: harness.EventAssistantText, Text: reviseVerdictText},
+	}}, nil
+}
+
+func (h *usageTranscriptHarness) Resume(_ context.Context, _ string, _ harness.Request) (harness.Stream, error) {
+	h.resumeCount++
+	if err := h.appendTranscript("review-session", "review-message-2", 20, 3, 8, 10); err != nil {
+		return nil, err
+	}
+	return scriptedHarnessStream{events: []harness.Event{
+		{Type: harness.EventSession, SessionID: "review-session"},
+		{Type: harness.EventAssistantText, Text: approveVerdictText},
+	}}, nil
+}
+
+func (*usageTranscriptHarness) Attach(context.Context, harness.Request) error {
+	return fmt.Errorf("unexpected harness attach")
+}
+
+func (h *usageTranscriptHarness) appendTranscript(sessionID, messageID string, input, output, cacheWrite, cacheRead int) error {
+	return h.writeTranscript(sessionID, messageID, input, output, cacheWrite, cacheRead, false)
+}
+
+func (h *usageTranscriptHarness) writeSubagentTranscript(sessionID, messageID string, input, output, cacheWrite, cacheRead int) error {
+	return h.writeTranscript(sessionID, messageID, input, output, cacheWrite, cacheRead, true)
+}
+
+func (h *usageTranscriptHarness) writeTranscript(sessionID, messageID string, input, output, cacheWrite, cacheRead int, subagent bool) error {
+	slug := strings.ReplaceAll(h.projectRoot, string(filepath.Separator), "-")
+	projectDir := filepath.Join(h.home, ".claude", "projects", slug)
+	path := filepath.Join(projectDir, sessionID+".jsonl")
+	if subagent {
+		path = filepath.Join(projectDir, sessionID, "subagents", messageID+".jsonl")
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	line := fmt.Sprintf(`{"type":"assistant","timestamp":%q,"message":{"id":%q,"role":"assistant","usage":{"input_tokens":%d,"output_tokens":%d,"cache_creation_input_tokens":%d,"cache_read_input_tokens":%d}}}`+"\n", time.Now().UTC().Format(time.RFC3339Nano), messageID, input, output, cacheWrite, cacheRead)
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	_, err = file.WriteString(line)
+	return err
 }
 
 func TestImplementFailsAfterOneUnparseableReviewReaskAndSavesTranscript(t *testing.T) {
