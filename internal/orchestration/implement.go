@@ -248,15 +248,15 @@ func runImplementIterations(ctx context.Context, params implementIterationsParam
 		if err != nil {
 			var unparseable *UnparseableVerdictError
 			if errors.As(err, &unparseable) {
-				recordRoleUsage(params.recorder, usage.CollectInvocation(usage.Invocation{
-					Iteration:  iteration,
-					Role:       "review",
-					Harness:    string(params.projectConfig.Roles.Review.Harness),
-					Model:      params.projectConfig.Roles.Review.Model,
-					SessionIDs: unparseable.Execution.SessionIDs,
-					StartedAt:  reviewStartedAt,
-					EndedAt:    reviewEndedAt,
-				}, params.projectRoot, ""))
+				recordReviewUsage(reviewUsageParams{
+					recorder:    params.recorder,
+					iteration:   iteration,
+					role:        params.projectConfig.Roles.Review,
+					execution:   unparseable.Execution,
+					projectRoot: params.projectRoot,
+					startedAt:   reviewStartedAt,
+					endedAt:     reviewEndedAt,
+				})
 				if artifactErr := params.recorder.RecordReviewOutput(iteration, unparseable.Execution); artifactErr != nil {
 					return 0, verdict.Verdict{}, nil, artifactErr
 				}
@@ -264,15 +264,15 @@ func runImplementIterations(ctx context.Context, params implementIterationsParam
 			}
 			return 0, verdict.Verdict{}, nil, err
 		}
-		recordRoleUsage(params.recorder, usage.CollectInvocation(usage.Invocation{
-			Iteration:  iteration,
-			Role:       "review",
-			Harness:    string(params.projectConfig.Roles.Review.Harness),
-			Model:      params.projectConfig.Roles.Review.Model,
-			SessionIDs: reviewResult.SessionIDs,
-			StartedAt:  reviewStartedAt,
-			EndedAt:    reviewEndedAt,
-		}, params.projectRoot, ""))
+		recordReviewUsage(reviewUsageParams{
+			recorder:    params.recorder,
+			iteration:   iteration,
+			role:        params.projectConfig.Roles.Review,
+			execution:   reviewResult,
+			projectRoot: params.projectRoot,
+			startedAt:   reviewStartedAt,
+			endedAt:     reviewEndedAt,
+		})
 		if err := params.recorder.RecordReviewOutput(iteration, reviewResult); err != nil {
 			return 0, verdict.Verdict{}, nil, err
 		}
@@ -298,7 +298,7 @@ func runImplementIterations(ctx context.Context, params implementIterationsParam
 }
 
 // recordRoleUsage persists usage as best-effort metadata. Usage collection or
-// persistence failures must not fail the implement loop.
+// persistence failures must not fail the run.
 func recordRoleUsage(recorder RunRecorder, entry usage.Entry) {
 	usageRecorder, ok := recorder.(UsageRecorder)
 	if !ok {

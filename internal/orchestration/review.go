@@ -15,6 +15,7 @@ import (
 	"github.com/igorrochap/syl/internal/config"
 	"github.com/igorrochap/syl/internal/harness"
 	"github.com/igorrochap/syl/internal/tracker"
+	"github.com/igorrochap/syl/internal/usage"
 	"github.com/igorrochap/syl/internal/verdict"
 )
 
@@ -102,13 +103,24 @@ func RunReview(ctx context.Context, options ReviewOptions) error {
 	if options.Raw {
 		mode = RawHarnessOutput
 	}
+	reviewStartedAt := time.Now().UTC()
 	review, err := runReview(ctx, options.Adapter, harness.Request{
 		Model: options.ProjectConfig.Roles.Review.Model, Effort: options.ProjectConfig.Roles.Review.Effort,
 		Prompt: prompt, MCP: options.ProjectConfig.Roles.Review.MCP,
 	}, options.Output, mode, questions)
+	reviewEndedAt := time.Now().UTC()
 	if err != nil {
 		var unparseable *UnparseableVerdictError
 		if errors.As(err, &unparseable) {
+			recordReviewUsage(reviewUsageParams{
+				recorder:    preparation.recorder,
+				iteration:   0,
+				role:        options.ProjectConfig.Roles.Review,
+				execution:   unparseable.Execution,
+				projectRoot: options.ProjectRoot,
+				startedAt:   reviewStartedAt,
+				endedAt:     reviewEndedAt,
+			})
 			if artifactErr := recordStandaloneReviewArtifacts(preparation.recorder, unparseable.Execution); artifactErr != nil {
 				return fmt.Errorf("%w; save review run artifacts: %v", err, artifactErr)
 			}
@@ -116,6 +128,15 @@ func RunReview(ctx context.Context, options ReviewOptions) error {
 		}
 		return err
 	}
+	recordReviewUsage(reviewUsageParams{
+		recorder:    preparation.recorder,
+		iteration:   0,
+		role:        options.ProjectConfig.Roles.Review,
+		execution:   review,
+		projectRoot: options.ProjectRoot,
+		startedAt:   reviewStartedAt,
+		endedAt:     reviewEndedAt,
+	})
 	if artifactErr := recordStandaloneReviewArtifacts(preparation.recorder, review); artifactErr != nil {
 		return fmt.Errorf("review: save review run artifacts: %w", artifactErr)
 	}
@@ -141,6 +162,28 @@ func RunReview(ctx context.Context, options ReviewOptions) error {
 		return ErrReviewNeedsRevision
 	}
 	return nil
+}
+
+type reviewUsageParams struct {
+	recorder    RunRecorder
+	iteration   int
+	role        config.RoleConfig
+	execution   ReviewExecution
+	projectRoot string
+	startedAt   time.Time
+	endedAt     time.Time
+}
+
+func recordReviewUsage(params reviewUsageParams) {
+	recordRoleUsage(params.recorder, usage.CollectInvocation(usage.Invocation{
+		Iteration:  params.iteration,
+		Role:       "review",
+		Harness:    string(params.role.Harness),
+		Model:      params.role.Model,
+		SessionIDs: params.execution.SessionIDs,
+		StartedAt:  params.startedAt,
+		EndedAt:    params.endedAt,
+	}, params.projectRoot, ""))
 }
 
 func prepareReview(ctx context.Context, projectRoot, ticketRef string, git GitRunner) (reviewPreparation, error) {

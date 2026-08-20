@@ -8,8 +8,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/igorrochap/syl/internal/harness"
+	"github.com/igorrochap/syl/internal/usage"
 )
 
 func TestReviewTopSeamApprovePrintsFeedAndWritesLog(t *testing.T) {
@@ -139,6 +141,65 @@ func TestStandaloneReviewUsageRecomputesFromRecordedSession(t *testing.T) {
 		if !strings.Contains(stdout.String(), expected) {
 			t.Fatalf("recomputed standalone usage = %q, want %q", stdout.String(), expected)
 		}
+	}
+}
+
+func TestStandaloneReviewRecordsUsageDuringRun(t *testing.T) {
+	const sessionID = "standalone-review-session"
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	harness := &scriptedHarness{first: []harness.Event{
+		{Type: harness.EventSession, SessionID: sessionID},
+		{Type: harness.EventAssistantText, Text: approveVerdictText},
+	}}
+	fixture := newReviewFixture(t, harness)
+	harness.beforeRun = func() error {
+		projectDir := filepath.Join(
+			home,
+			".claude",
+			"projects",
+			strings.ReplaceAll(fixture.root, string(filepath.Separator), "-"),
+		)
+		if err := os.MkdirAll(projectDir, 0o755); err != nil {
+			return err
+		}
+		transcript := fmt.Sprintf(
+			`{"type":"assistant","timestamp":%q,"message":{"id":"message-1","role":"assistant","usage":{"input_tokens":10,"output_tokens":2,"cache_creation_input_tokens":4,"cache_read_input_tokens":5}}}`+"\n",
+			time.Now().UTC().Format(time.RFC3339Nano),
+		)
+		return os.WriteFile(filepath.Join(projectDir, sessionID+".jsonl"), []byte(transcript), 0o644)
+	}
+
+	if code := fixture.app.Run(context.Background(), []string{"review"}, &fixture.stdout, &fixture.stderr); code != 0 {
+		t.Fatalf("standalone review code = %d, stderr = %q", code, fixture.stderr.String())
+	}
+	runDirs := reviewRunArtifactPaths(t, fixture.root)
+	if len(runDirs) != 1 {
+		t.Fatalf("run artifact directories = %v, want one", runDirs)
+	}
+	artifact, err := usage.ReadArtifact(filepath.Join(runDirs[0], "usage.json"))
+	if err != nil {
+		t.Fatalf("read standalone review usage: %v", err)
+	}
+	entry := findUsageEntry(t, artifact, 0, "review")
+	if entry.Harness != "claude" || entry.Model != "claude-sonnet-5" || !entry.Tracked || entry.Metrics == nil {
+		t.Fatalf("standalone review usage = %#v, want tracked Claude review entry", entry)
+	}
+	if entry.Metrics.InputTokens != 10 || entry.Metrics.OutputTokens != 2 ||
+		entry.Metrics.CacheWriteTokens != 4 || entry.Metrics.CacheReadTokens != 5 ||
+		entry.Metrics.WeightedEstimate != 17.5 {
+		t.Fatalf("standalone review metrics = %#v, want transcript token metrics", *entry.Metrics)
+	}
+
+	var stdout, stderr strings.Builder
+	if code := fixture.app.Run(context.Background(), []string{"usage"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("standalone usage code = %d, stderr = %q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "review (claude, claude-sonnet-5): weighted_estimate=17.50") {
+		t.Fatalf("standalone usage output = %q, want recorded review usage", stdout.String())
+	}
+	if strings.Contains(stdout.String(), "recomputed from transcripts") {
+		t.Fatalf("standalone usage output = %q, want live capture without recompute", stdout.String())
 	}
 }
 
@@ -537,6 +598,7 @@ func writeReviewTicket(t *testing.T, root, feature, number, title, body string) 
 type scriptedHarness struct {
 	first          []harness.Event
 	retry          []harness.Event
+	beforeRun      func() error
 	runRequest     harness.Request
 	resumeCount    int
 	resumedSession string
@@ -545,6 +607,11 @@ type scriptedHarness struct {
 
 func (h *scriptedHarness) Run(_ context.Context, request harness.Request) (harness.Stream, error) {
 	h.runRequest = request
+	if h.beforeRun != nil {
+		if err := h.beforeRun(); err != nil {
+			return nil, err
+		}
+	}
 	return scriptedHarnessStream{events: h.first}, nil
 }
 
