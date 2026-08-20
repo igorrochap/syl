@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v1.12.0 (2026-08-20)
+
+### Features
+
+- **cli**: Add version command and build metadata ([#58](https://github.com/igorrochap/syl/pull/58),
+  [`1d7b4c4`](https://github.com/igorrochap/syl/commit/1d7b4c411f984f712f5807d28c7b91c59fe61ac6))
+
+
 ## v1.11.0 (2026-08-19)
 
 ### Chores
