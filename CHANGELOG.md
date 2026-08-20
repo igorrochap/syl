@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v1.17.0 (2026-08-20)
+
+### Features
+
+- **cli**: Implement usage recomputation from transcripts
+  ([#66](https://github.com/igorrochap/syl/pull/66),
+  [`0cec706`](https://github.com/igorrochap/syl/commit/0cec706bc2277dc27b0cc22d89a047f33443c51b))
+
+
 ## v1.16.0 (2026-08-20)
 
 ### Features
