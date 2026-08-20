@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v1.17.1 (2026-08-20)
+
+### Bug Fixes
+
+- **usage**: Record review usage during standalone execution
+  ([#68](https://github.com/igorrochap/syl/pull/68),
+  [`107f036`](https://github.com/igorrochap/syl/commit/107f03696bf6aca1aff85db1aa0dbb28eaec6239))
+
+
 ## v1.17.0 (2026-08-20)
 
 ### Features
