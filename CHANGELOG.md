@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v1.15.0 (2026-08-20)
+
+### Features
+
+- **cli**: Add command to inspect token usage ([#64](https://github.com/igorrochap/syl/pull/64),
+  [`24de42f`](https://github.com/igorrochap/syl/commit/24de42fd248f85f1563b8a6448616defd3b7d56e))
+
+
 ## v1.14.0 (2026-08-20)
 
 ### Features
