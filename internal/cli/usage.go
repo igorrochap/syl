@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -111,6 +112,20 @@ func renderUsage(output io.Writer, artifact usage.Artifact) error {
 			continue
 		}
 		metrics := entry.Metrics
+		if entry.Harness == "codex" {
+			cachedPercent := 0.0
+			if metrics.InputTokens > 0 {
+				cachedPercent = 100 * float64(metrics.CachedInputTokens) / float64(metrics.InputTokens)
+			}
+			if _, err := fmt.Fprintf(output,
+				"input %s (%.0f%% cached) · output %s (%s reasoning)\n",
+				formatTokenCount(metrics.InputTokens), math.Round(cachedPercent),
+				formatTokenCount(metrics.OutputTokens), formatTokenCount(metrics.ReasoningOutputTokens),
+			); err != nil {
+				return err
+			}
+			continue
+		}
 		if _, err := fmt.Fprintf(output,
 			"weighted_estimate=%.2f input_tokens=%d output_tokens=%d cache_write_tokens=%d cache_read_tokens=%d\n",
 			metrics.WeightedEstimate, metrics.InputTokens, metrics.OutputTokens,
@@ -123,4 +138,15 @@ func renderUsage(output io.Writer, artifact usage.Artifact) error {
 		return err
 	}
 	return nil
+}
+
+func formatTokenCount(tokens int64) string {
+	switch {
+	case tokens >= 1_000_000:
+		return fmt.Sprintf("%.1fM", float64(tokens)/1_000_000)
+	case tokens >= 1_000:
+		return fmt.Sprintf("%.1fk", float64(tokens)/1_000)
+	default:
+		return fmt.Sprintf("%d", tokens)
+	}
 }

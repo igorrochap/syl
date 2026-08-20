@@ -266,9 +266,10 @@ syl usage 20260817T101500.000000000Z-42
 ```
 
 With no argument, `syl usage` reads the latest run. The named form reads a
-specific directory under `.syl/runs/`. Claude usage is recorded per role and
-iteration; Codex roles appear as untracked until their usage reader is added.
-The raw `usage.json` artifact is available for direct querying as well.
+specific directory under `.syl/runs/`. Claude and Codex usage is recorded per
+role and iteration; Codex lines show raw input/output totals with cached-input
+and reasoning-output shares. The raw `usage.json` artifact is available for
+direct querying as well.
 
 ### Answer a QUESTION from a harness
 

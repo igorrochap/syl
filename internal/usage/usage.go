@@ -20,15 +20,26 @@ const (
 	Disclaimer = "weighted_estimate is an estimate of plan-quota pressure, not a billing statement."
 )
 
-var errTranscriptParse = errors.New("Claude transcript parse failure")
+var (
+	errTranscriptParse      = errors.New("Claude transcript parse failure")
+	errCodexRolloutParse    = errors.New("Codex rollout parse failure")
+	errCodexRolloutMissing  = errors.New("Codex rollout is missing")
+	errCodexRolloutMultiple = errors.New("Codex rollout has multiple matching files")
+)
 
-// Metrics is the Claude usage shape recorded in usage.json.
+// Metrics contains the raw usage fields recorded in usage.json. Claude uses
+// the cache and weighted-estimate fields; Codex uses the cached-input,
+// cache-write, reasoning-output, and total-token fields.
 type Metrics struct {
-	InputTokens      int64   `json:"input_tokens"`
-	OutputTokens     int64   `json:"output_tokens"`
-	CacheWriteTokens int64   `json:"cache_write_tokens"`
-	CacheReadTokens  int64   `json:"cache_read_tokens"`
-	WeightedEstimate float64 `json:"weighted_estimate"`
+	InputTokens           int64   `json:"input_tokens"`
+	OutputTokens          int64   `json:"output_tokens"`
+	CacheWriteTokens      int64   `json:"cache_write_tokens"`
+	CacheReadTokens       int64   `json:"cache_read_tokens"`
+	WeightedEstimate      float64 `json:"weighted_estimate"`
+	CachedInputTokens     int64   `json:"cached_input_tokens"`
+	CacheWriteInputTokens int64   `json:"cache_write_input_tokens"`
+	ReasoningOutputTokens int64   `json:"reasoning_output_tokens"`
+	TotalTokens           int64   `json:"total_tokens"`
 }
 
 // Entry is one role invocation in one implement iteration.
@@ -124,7 +135,8 @@ func ReadArtifact(path string) (Artifact, error) {
 }
 
 // Invocation describes the live window in which a role was run. The window
-// is recorded at run time so resumed Claude sessions can be split correctly.
+// is recorded at run time so resumed Claude sessions can be split correctly;
+// Codex sessions use their rollout's cumulative total instead.
 type Invocation struct {
 	Iteration  int
 	Role       string
@@ -136,8 +148,8 @@ type Invocation struct {
 }
 
 // CollectInvocation makes a non-failing usage result for one role invocation.
-// Claude transcript failures become an untracked entry; they are never
-// returned as an error to the implement loop.
+// Claude transcript and Codex rollout failures become untracked entries; they
+// are never returned as errors to the implement loop.
 func CollectInvocation(invocation Invocation, projectRoot, homeDir string) Entry {
 	entry := Entry{
 		Iteration: invocation.Iteration,
@@ -146,21 +158,41 @@ func CollectInvocation(invocation Invocation, projectRoot, homeDir string) Entry
 		Model:     invocation.Model,
 		Tracked:   false,
 	}
-	if invocation.Harness != "claude" {
+	switch invocation.Harness {
+	case "claude":
+		metrics, err := CollectClaude(projectRoot, homeDir, invocation.SessionIDs, invocation.StartedAt, invocation.EndedAt)
+		if err != nil {
+			entry.Reason = shortReason(err)
+			return entry
+		}
+		entry.Tracked = true
+		entry.Metrics = &metrics
+		return entry
+	case "codex":
+		metrics, err := CollectCodex(homeDir, invocation.SessionIDs)
+		if err != nil {
+			entry.Reason = shortReason(err)
+			return entry
+		}
+		entry.Tracked = true
+		entry.Metrics = &metrics
+		return entry
+	default:
 		entry.Reason = fmt.Sprintf("usage tracking is not implemented for the %s harness", invocation.Harness)
 		return entry
 	}
-	metrics, err := CollectClaude(projectRoot, homeDir, invocation.SessionIDs, invocation.StartedAt, invocation.EndedAt)
-	if err != nil {
-		entry.Reason = shortReason(err)
-		return entry
-	}
-	entry.Tracked = true
-	entry.Metrics = &metrics
-	return entry
 }
 
 func shortReason(err error) string {
+	if errors.Is(err, errCodexRolloutMissing) {
+		return "Codex rollout is missing"
+	}
+	if errors.Is(err, errCodexRolloutParse) {
+		return "Codex rollout could not be parsed"
+	}
+	if errors.Is(err, errCodexRolloutMultiple) {
+		return "Codex rollout has multiple matching files"
+	}
 	if errors.Is(err, os.ErrNotExist) {
 		return "Claude transcript is missing"
 	}
@@ -168,6 +200,146 @@ func shortReason(err error) string {
 		return "Claude transcript could not be parsed"
 	}
 	return strings.TrimSpace(err.Error())
+}
+
+// CollectCodex reads the last cumulative token-count event from the Codex
+// rollout for the invocation's session. Unlike Claude, Codex does not need a
+// time window: a role invocation corresponds to one rollout file.
+func CollectCodex(homeDir string, sessionIDs []string) (Metrics, error) {
+	sessionID := ""
+	for _, rawSessionID := range sessionIDs {
+		if sessionID = strings.TrimSpace(rawSessionID); sessionID != "" {
+			break
+		}
+	}
+	if sessionID == "" {
+		return Metrics{}, errors.New("Codex invocation did not produce a session id")
+	}
+	if strings.TrimSpace(homeDir) == "" {
+		var err error
+		homeDir, err = os.UserHomeDir()
+		if err != nil {
+			return Metrics{}, fmt.Errorf("determine Codex home directory: %w", err)
+		}
+	}
+
+	rolloutPath, err := findCodexRollout(homeDir, sessionID)
+	if err != nil {
+		return Metrics{}, err
+	}
+	return collectCodexRollout(rolloutPath)
+}
+
+func findCodexRollout(homeDir, sessionID string) (string, error) {
+	pattern := filepath.Join(homeDir, ".codex", "sessions", "*", "*", "*", "rollout-*-"+sessionID+".jsonl")
+	paths, err := filepath.Glob(pattern)
+	if err != nil {
+		return "", fmt.Errorf("find Codex rollout for %s: %w", sessionID, err)
+	}
+	if len(paths) == 0 {
+		return "", fmt.Errorf("find Codex rollout for %s: %w", sessionID, errCodexRolloutMissing)
+	}
+	sort.Strings(paths)
+	if len(paths) > 1 {
+		return "", fmt.Errorf("find Codex rollout for %s: %w", sessionID, errCodexRolloutMultiple)
+	}
+	return paths[0], nil
+}
+
+type codexRolloutLine struct {
+	Payload struct {
+		Type string `json:"type"`
+		Info struct {
+			TotalTokenUsage *codexTokenUsage `json:"total_token_usage"`
+		} `json:"info"`
+	} `json:"payload"`
+}
+
+type codexTokenUsage struct {
+	InputTokens           *int64 `json:"input_tokens"`
+	CachedInputTokens     *int64 `json:"cached_input_tokens"`
+	CacheWriteInputTokens *int64 `json:"cache_write_input_tokens"`
+	OutputTokens          *int64 `json:"output_tokens"`
+	ReasoningOutputTokens *int64 `json:"reasoning_output_tokens"`
+	TotalTokens           *int64 `json:"total_tokens"`
+}
+
+func collectCodexRollout(path string) (Metrics, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return Metrics{}, fmt.Errorf("read Codex rollout %s: %w", path, errCodexRolloutMissing)
+		}
+		return Metrics{}, fmt.Errorf("read Codex rollout %s: %w", path, err)
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 64*1024), 16*1024*1024)
+	var metrics Metrics
+	found := false
+	lineNumber := 0
+	for scanner.Scan() {
+		lineNumber++
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		var record codexRolloutLine
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			return Metrics{}, codexRolloutParseError(path, lineNumber, err)
+		}
+		if record.Payload.Type != "token_count" {
+			continue
+		}
+		parsed, err := parseCodexTokenUsage(record.Payload.Info.TotalTokenUsage)
+		if err != nil {
+			return Metrics{}, codexRolloutParseError(path, lineNumber, err)
+		}
+		metrics = parsed
+		found = true
+	}
+	if err := scanner.Err(); err != nil {
+		return Metrics{}, fmt.Errorf("read Codex rollout %s: %w", path, err)
+	}
+	if !found {
+		return Metrics{}, codexRolloutParseError(path, 0, errors.New("rollout has no token_count event"))
+	}
+	return metrics, nil
+}
+
+func codexRolloutParseError(path string, lineNumber int, cause error) error {
+	if lineNumber == 0 {
+		return fmt.Errorf("%w: %s: %v", errCodexRolloutParse, path, cause)
+	}
+	return fmt.Errorf("%w: %s line %d: %v", errCodexRolloutParse, path, lineNumber, cause)
+}
+
+func parseCodexTokenUsage(fields *codexTokenUsage) (Metrics, error) {
+	if fields == nil {
+		return Metrics{}, errors.New("token_count event has no total_token_usage")
+	}
+	if fields.InputTokens == nil || fields.CachedInputTokens == nil || fields.CacheWriteInputTokens == nil ||
+		fields.OutputTokens == nil || fields.ReasoningOutputTokens == nil || fields.TotalTokens == nil {
+		return Metrics{}, errors.New("total_token_usage is missing a token field")
+	}
+	values := []*int64{
+		fields.InputTokens, fields.CachedInputTokens, fields.CacheWriteInputTokens,
+		fields.OutputTokens, fields.ReasoningOutputTokens, fields.TotalTokens,
+	}
+	for _, value := range values {
+		if *value < 0 {
+			return Metrics{}, errors.New("total_token_usage contains negative token counts")
+		}
+	}
+	return Metrics{
+		InputTokens:           *fields.InputTokens,
+		CachedInputTokens:     *fields.CachedInputTokens,
+		CacheWriteInputTokens: *fields.CacheWriteInputTokens,
+		OutputTokens:          *fields.OutputTokens,
+		ReasoningOutputTokens: *fields.ReasoningOutputTokens,
+		TotalTokens:           *fields.TotalTokens,
+	}, nil
 }
 
 // CollectClaude reads the parent session transcripts and all direct sub-agent

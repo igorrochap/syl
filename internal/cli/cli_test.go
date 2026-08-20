@@ -61,7 +61,11 @@ func TestUsageRendersLatestAndNamedRunWithoutCrossHarnessTotal(t *testing.T) {
 		SchemaVersion: usage.SchemaVersion,
 		Disclaimer:    usage.Disclaimer,
 		Entries: []usage.Entry{
-			{Iteration: 1, Role: "implement", Harness: "codex", Model: "gpt-5.6-luna", Tracked: false, Reason: "Codex usage is not tracked"},
+			{Iteration: 1, Role: "implement", Harness: "codex", Model: "gpt-5.6-luna", Tracked: true, Metrics: &usage.Metrics{
+				InputTokens: 2_000_000, CachedInputTokens: 1_920_000,
+				CacheWriteInputTokens: 10, OutputTokens: 24_200, ReasoningOutputTokens: 13_700,
+				TotalTokens: 2_024_200, WeightedEstimate: 999,
+			}},
 			{Iteration: 1, Role: "review", Harness: "claude", Model: "claude-sonnet-5", Tracked: true, Metrics: &usage.Metrics{
 				InputTokens: 20, OutputTokens: 3, CacheWriteTokens: 8, CacheReadTokens: 10, WeightedEstimate: 34,
 			}},
@@ -78,7 +82,7 @@ func TestUsageRendersLatestAndNamedRunWithoutCrossHarnessTotal(t *testing.T) {
 	output := stdout.String()
 	for _, expected := range []string{
 		"iteration 1",
-		"implement (codex, gpt-5.6-luna): not tracked: Codex usage is not tracked",
+		"implement (codex, gpt-5.6-luna): input 2.0M (96% cached) · output 24.2k (13.7k reasoning)",
 		"review (claude, claude-sonnet-5): weighted_estimate=34.00",
 		"input_tokens=20",
 		"cache_write_tokens=8",
@@ -88,6 +92,9 @@ func TestUsageRendersLatestAndNamedRunWithoutCrossHarnessTotal(t *testing.T) {
 		if !strings.Contains(output, expected) {
 			t.Fatalf("latest usage output = %q, want %q", output, expected)
 		}
+	}
+	if strings.Contains(output, "implement (codex, gpt-5.6-luna): weighted_estimate") {
+		t.Fatalf("latest usage output = %q, want raw Codex totals without weighted estimate", output)
 	}
 	if strings.Contains(output, "input_tokens=2 output_tokens=3") || strings.Contains(output, "total") {
 		t.Fatalf("latest usage output = %q, want latest run only and no total", output)
