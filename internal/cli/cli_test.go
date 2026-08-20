@@ -10,6 +10,7 @@ import (
 
 	"github.com/igorrochap/syl/internal/config"
 	"github.com/igorrochap/syl/internal/harness"
+	"github.com/igorrochap/syl/internal/version"
 )
 
 func TestRunHelpListsAllCommands(t *testing.T) {
@@ -19,10 +20,34 @@ func TestRunHelpListsAllCommands(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("Run() code = %d, want 0; stderr = %q", code, fixture.stderr.String())
 	}
-	for _, command := range []string{"init", "sync", "plan", "implement", "review"} {
+	for _, command := range []string{"init", "sync", "plan", "implement", "review", "version"} {
 		if !strings.Contains(fixture.stdout.String(), command) {
 			t.Errorf("help output %q does not list %q", fixture.stdout.String(), command)
 		}
+	}
+	if !strings.Contains(fixture.stdout.String(), "print the running binary's version") {
+		t.Fatalf("help output %q, want version description", fixture.stdout.String())
+	}
+}
+
+func TestRunVersionPrintsBuildMetadata(t *testing.T) {
+	originalVersion, originalCommit := version.Version, version.Commit
+	version.Version = "v1.2.3"
+	version.Commit = "abc1234"
+	t.Cleanup(func() {
+		version.Version = originalVersion
+		version.Commit = originalCommit
+	})
+
+	app := New(t.TempDir(), Dependencies{})
+	var stdout, stderr strings.Builder
+
+	code := app.Run(context.Background(), []string{"version"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("Run() code = %d, want 0; stderr = %q", code, stderr.String())
+	}
+	if got, want := stdout.String(), "v1.2.3 (commit abc1234)\n"; got != want {
+		t.Fatalf("stdout = %q, want %q", got, want)
 	}
 }
 
