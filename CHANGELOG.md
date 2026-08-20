@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v1.13.0 (2026-08-20)
+
+### Features
+
+- **orchestration**: Support custom branch name suggestions
+  ([#59](https://github.com/igorrochap/syl/pull/59),
+  [`27eb0a7`](https://github.com/igorrochap/syl/commit/27eb0a789a1dc2b2f3c08316628d95109679eb0e))
+
+
 ## v1.12.0 (2026-08-20)
 
 ### Features
