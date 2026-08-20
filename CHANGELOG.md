@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v1.14.0 (2026-08-20)
+
+### Features
+
+- **cli**: Add self-update command ([#60](https://github.com/igorrochap/syl/pull/60),
+  [`21a2ced`](https://github.com/igorrochap/syl/commit/21a2ced55718835a0b89d1d49ad23a5ced63697a))
+
+
 ## v1.13.0 (2026-08-20)
 
 ### Features
