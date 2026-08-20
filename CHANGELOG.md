@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v1.16.0 (2026-08-20)
+
+### Features
+
+- **cli**: Add token usage tracking for Codex harness
+  ([#65](https://github.com/igorrochap/syl/pull/65),
+  [`2609c3c`](https://github.com/igorrochap/syl/commit/2609c3c80ec78b0c9b63e44874180aa81cdea9ef))
+
+
 ## v1.15.0 (2026-08-20)
 
 ### Features
