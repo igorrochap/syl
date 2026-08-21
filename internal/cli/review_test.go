@@ -60,6 +60,35 @@ func TestReviewTopSeamApprovePrintsFeedAndWritesLog(t *testing.T) {
 	}
 }
 
+func TestReviewPTYSelectsPTYHarness(t *testing.T) {
+	headless := &scriptedHarness{first: []harness.Event{
+		{Type: harness.EventSession, SessionID: "headless-session"},
+		{Type: harness.EventAssistantText, Text: approveVerdictText},
+	}}
+	ptyHarness := &scriptedHarness{first: []harness.Event{
+		{Type: harness.EventSession, SessionID: "pty-session"},
+		{Type: harness.EventAssistantText, Text: approveVerdictText},
+	}}
+	fixture := newReviewFixture(t, headless)
+	fixture.app.deps.PTYHarnesses = map[string]harness.Adapter{"claude": ptyHarness}
+
+	code := fixture.app.Run(
+		context.Background(),
+		[]string{"review", "--pty"},
+		&fixture.stdout,
+		&fixture.stderr,
+	)
+	if code != 0 {
+		t.Fatalf("review --pty code = %d, want 0; stderr = %q", code, fixture.stderr.String())
+	}
+	if ptyHarness.runRequest.Prompt == "" {
+		t.Fatal("review --pty did not run the PTY harness")
+	}
+	if headless.runRequest.Prompt != "" {
+		t.Fatal("review --pty ran the headless harness")
+	}
+}
+
 func TestReviewPrecomputesAuthoritativeDiffOnceAndPassesArtifactPath(t *testing.T) {
 	harness := &scriptedHarness{first: []harness.Event{
 		{Type: harness.EventSession, SessionID: "session-diff"},

@@ -251,6 +251,14 @@ syl review 42
 When the Review log is `github`, an issue reference is required; `syl`
 cannot log a review with no place to log it.
 
+Claude reviewers use the headless transport by default. Pass `--pty` to opt
+into the pseudo-terminal transport, which reads the review from Claude's
+session transcript:
+
+```sh
+syl review 42 --pty
+```
+
 Add `--raw` to pass the Harness output through untouched, instead of the
 parsed Verdict view:
 
