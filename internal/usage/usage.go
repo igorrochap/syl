@@ -11,6 +11,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	claudetranscript "github.com/igorrochap/syl/internal/harness/claude/transcript"
 )
 
 const (
@@ -21,7 +23,7 @@ const (
 )
 
 var (
-	errTranscriptParse      = errors.New("Claude transcript parse failure")
+	errTranscriptParse      = claudetranscript.ErrParse
 	errCodexRolloutParse    = errors.New("Codex rollout parse failure")
 	errCodexRolloutMissing  = errors.New("Codex rollout is missing")
 	errCodexRolloutMultiple = errors.New("Codex rollout has multiple matching files")
@@ -369,14 +371,7 @@ func CollectClaudeAll(projectRoot, homeDir string, sessionIDs []string) (Metrics
 }
 
 func collectClaude(projectRoot, homeDir string, sessionIDs []string, start, end time.Time) (Metrics, error) {
-	if strings.TrimSpace(homeDir) == "" {
-		var err error
-		homeDir, err = os.UserHomeDir()
-		if err != nil {
-			return Metrics{}, fmt.Errorf("determine Claude home directory: %w", err)
-		}
-	}
-	projectDir := filepath.Join(homeDir, ".claude", "projects", projectSlug(projectRoot))
+	reader := claudetranscript.New(homeDir)
 	snapshots := make(map[string]transcriptUsage)
 	seenSessions := make(map[string]struct{})
 	for _, rawSessionID := range sessionIDs {
@@ -389,17 +384,19 @@ func collectClaude(projectRoot, homeDir string, sessionIDs []string, start, end 
 		}
 		seenSessions[sessionID] = struct{}{}
 
-		transcriptPath := filepath.Join(projectDir, sessionID+".jsonl")
-		if err := collectTranscriptFile(transcriptPath, start, end, snapshots); err != nil {
+		transcriptPath, err := reader.Find(projectRoot, sessionID)
+		if err != nil {
 			return Metrics{}, err
 		}
-		subagentPaths, err := filepath.Glob(filepath.Join(projectDir, sessionID, "subagents", "*.jsonl"))
-		if err != nil {
-			return Metrics{}, fmt.Errorf("find Claude sub-agent transcripts for %s: %w", sessionID, err)
+		if err := collectTranscriptFile(reader, transcriptPath, start, end, snapshots); err != nil {
+			return Metrics{}, err
 		}
-		sort.Strings(subagentPaths)
+		subagentPaths, err := reader.FindSubagents(projectRoot, sessionID)
+		if err != nil {
+			return Metrics{}, err
+		}
 		for _, subagentPath := range subagentPaths {
-			if err := collectTranscriptFile(subagentPath, start, end, snapshots); err != nil {
+			if err := collectTranscriptFile(reader, subagentPath, start, end, snapshots); err != nil {
 				return Metrics{}, err
 			}
 		}
@@ -420,13 +417,6 @@ func collectClaude(projectRoot, homeDir string, sessionIDs []string, start, end 
 		0.1*float64(metrics.CacheReadTokens) +
 		float64(metrics.OutputTokens)
 	return metrics, nil
-}
-
-func projectSlug(projectRoot string) string {
-	if absolute, err := filepath.Abs(projectRoot); err == nil {
-		projectRoot = absolute
-	}
-	return strings.ReplaceAll(projectRoot, string(filepath.Separator), "-")
 }
 
 type transcriptUsage struct {
@@ -450,25 +440,20 @@ type transcriptLine struct {
 	} `json:"message"`
 }
 
-func collectTranscriptFile(path string, start, end time.Time, snapshots map[string]transcriptUsage) error {
-	file, err := os.Open(path)
+func collectTranscriptFile(
+	reader claudetranscript.Reader,
+	path string,
+	start, end time.Time,
+	snapshots map[string]transcriptUsage,
+) error {
+	entries, err := reader.Read(path)
 	if err != nil {
-		return fmt.Errorf("read Claude transcript %s: %w", path, err)
+		return err
 	}
-	defer file.Close()
-
-	scanner := bufio.NewScanner(file)
-	scanner.Buffer(make([]byte, 64*1024), 16*1024*1024)
-	lineNumber := 0
-	for scanner.Scan() {
-		lineNumber++
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" {
-			continue
-		}
+	for _, entry := range entries {
 		var record transcriptLine
-		if err := json.Unmarshal([]byte(line), &record); err != nil {
-			return transcriptParseError(path, lineNumber, err)
+		if err := json.Unmarshal(entry.Raw, &record); err != nil {
+			return transcriptParseError(path, entry.Line, err)
 		}
 		usageRaw := record.Message.Usage
 		if len(usageRaw) == 0 || string(usageRaw) == "null" {
@@ -489,7 +474,7 @@ func collectTranscriptFile(path string, start, end time.Time, snapshots map[stri
 			messageID = record.ID
 		}
 		if strings.TrimSpace(messageID) == "" {
-			return transcriptParseError(path, lineNumber, errors.New("usage record has no message id"))
+			return transcriptParseError(path, entry.Line, errors.New("usage record has no message id"))
 		}
 		timestampValue := record.Timestamp
 		if timestampValue == "" {
@@ -497,21 +482,18 @@ func collectTranscriptFile(path string, start, end time.Time, snapshots map[stri
 		}
 		timestamp, err := parseTimestamp(timestampValue)
 		if err != nil {
-			return transcriptParseError(path, lineNumber, err)
+			return transcriptParseError(path, entry.Line, err)
 		}
 		if (!start.IsZero() && timestamp.Before(start)) || (!end.IsZero() && timestamp.After(end)) {
 			continue
 		}
 		parsedUsage, err := parseUsage(usageRaw)
 		if err != nil {
-			return transcriptParseError(path, lineNumber, err)
+			return transcriptParseError(path, entry.Line, err)
 		}
 		// Assigning in transcript order intentionally keeps the final streaming
 		// snapshot for a message ID and avoids multiplying content-block snapshots.
 		snapshots[messageID] = parsedUsage
-	}
-	if err := scanner.Err(); err != nil {
-		return fmt.Errorf("read Claude transcript %s: %w", path, err)
 	}
 	return nil
 }
