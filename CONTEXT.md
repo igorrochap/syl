@@ -27,3 +27,7 @@ _Avoid_: review history, review docs
 **Verdict**:
 The reviewer's structured, machine-readable outcome for a loop iteration: approve (issue can be closed) or revise (with findings).
 _Avoid_: review result, approval
+
+**Session transcript**:
+The durable record a harness writes for one session, and the source of truth for what a role did — what it said, which tools it used, and what it consumed.
+_Avoid_: log, session file, history
