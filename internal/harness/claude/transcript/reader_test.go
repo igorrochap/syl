@@ -9,7 +9,7 @@ import (
 )
 
 func TestReaderFindsSessionAndReadsEntriesInSequence(t *testing.T) {
-	reader := New(filepath.Join("testdata", "home"))
+	reader := newFixtureReader(t)
 
 	path, err := reader.Find("/workspace/project", "parent-session")
 	if err != nil {
@@ -29,7 +29,7 @@ func TestReaderFindsSessionAndReadsEntriesInSequence(t *testing.T) {
 }
 
 func TestReaderFindsSubagentTranscriptsInStableOrder(t *testing.T) {
-	reader := New(filepath.Join("testdata", "home"))
+	reader := newFixtureReader(t)
 
 	paths, err := reader.FindSubagents("/workspace/project", "parent-session")
 	if err != nil {
@@ -53,7 +53,7 @@ func TestReaderFindsSubagentTranscriptsInStableOrder(t *testing.T) {
 }
 
 func TestReaderReportsMalformedTranscriptEntry(t *testing.T) {
-	reader := New(filepath.Join("testdata", "home"))
+	reader := newFixtureReader(t)
 
 	path, err := reader.Find("/workspace/project", "malformed-session")
 	if err != nil {
@@ -66,7 +66,7 @@ func TestReaderReportsMalformedTranscriptEntry(t *testing.T) {
 }
 
 func TestReaderReportsMissingTranscriptWhenRead(t *testing.T) {
-	reader := New(filepath.Join("testdata", "home"))
+	reader := newFixtureReader(t)
 
 	path, err := reader.Find("/workspace/project", "missing-session")
 	if err != nil {
@@ -75,6 +75,48 @@ func TestReaderReportsMissingTranscriptWhenRead(t *testing.T) {
 	_, err = reader.Read(path)
 	if !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("Read() error = %v, want os.ErrNotExist", err)
+	}
+}
+
+func newFixtureReader(t *testing.T) Reader {
+	t.Helper()
+	reader := New(t.TempDir())
+	parentPath, err := reader.Find("/workspace/project", "parent-session")
+	if err != nil {
+		t.Fatalf("find parent transcript path: %v", err)
+	}
+	malformedPath, err := reader.Find("/workspace/project", "malformed-session")
+	if err != nil {
+		t.Fatalf("find malformed transcript path: %v", err)
+	}
+
+	writeFixture(t, filepath.Join("testdata", "parent-session.jsonl"), parentPath)
+	writeFixture(t, filepath.Join("testdata", "malformed-session.jsonl"), malformedPath)
+	subagentsDir := filepath.Join(filepath.Dir(parentPath), "parent-session", "subagents")
+	writeFixture(
+		t,
+		filepath.Join("testdata", "subagents", "agent-a.jsonl"),
+		filepath.Join(subagentsDir, "agent-a.jsonl"),
+	)
+	writeFixture(
+		t,
+		filepath.Join("testdata", "subagents", "agent-b.jsonl"),
+		filepath.Join(subagentsDir, "agent-b.jsonl"),
+	)
+	return reader
+}
+
+func writeFixture(t *testing.T, source, destination string) {
+	t.Helper()
+	contents, err := os.ReadFile(source)
+	if err != nil {
+		t.Fatalf("read fixture %q: %v", source, err)
+	}
+	if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
+		t.Fatalf("create fixture directory: %v", err)
+	}
+	if err := os.WriteFile(destination, contents, 0o644); err != nil {
+		t.Fatalf("write fixture %q: %v", destination, err)
 	}
 }
 
