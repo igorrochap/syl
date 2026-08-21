@@ -5,6 +5,7 @@ go 1.23.0
 require (
 	github.com/BurntSushi/toml v1.4.0
 	github.com/charmbracelet/bubbletea v1.3.6
+	github.com/creack/pty v1.1.24
 	github.com/mattn/go-isatty v0.0.20
 	github.com/spf13/cobra v1.9.1
 )

@@ -28,6 +28,9 @@ func main() {
 			"claude": claude.New(projectRoot),
 			"codex":  codex.New(projectRoot),
 		},
+		PTYHarnesses: map[string]harness.Adapter{
+			"claude": claude.NewPTY(projectRoot),
+		},
 	})
 	os.Exit(app.Run(context.Background(), os.Args[1:], os.Stdout, os.Stderr))
 }
