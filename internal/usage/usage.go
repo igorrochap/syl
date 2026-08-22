@@ -153,13 +153,7 @@ type Invocation struct {
 // Claude transcript and Codex rollout failures become untracked entries; they
 // are never returned as errors to the implement loop.
 func CollectInvocation(invocation Invocation, projectRoot, homeDir string) Entry {
-	entry := Entry{
-		Iteration: invocation.Iteration,
-		Role:      invocation.Role,
-		Harness:   invocation.Harness,
-		Model:     invocation.Model,
-		Tracked:   false,
-	}
+	entry := newInvocationEntry(invocation)
 	switch invocation.Harness {
 	case "claude":
 		metrics, err := CollectClaude(projectRoot, homeDir, invocation.SessionIDs, invocation.StartedAt, invocation.EndedAt)
@@ -182,6 +176,38 @@ func CollectInvocation(invocation Invocation, projectRoot, homeDir string) Entry
 	default:
 		entry.Reason = fmt.Sprintf("usage tracking is not implemented for the %s harness", invocation.Harness)
 		return entry
+	}
+}
+
+// CollectTranscriptInvocation records a Claude invocation from the complete
+// session transcript. PTY runs use this path because syl chooses the session ID
+// before starting Claude and the transcript is the transport's source of truth.
+func CollectTranscriptInvocation(invocation Invocation, projectRoot, homeDir string) Entry {
+	entry := newInvocationEntry(invocation)
+	if invocation.Harness != "claude" {
+		entry.Reason = fmt.Sprintf(
+			"transcript usage tracking is not implemented for the %s harness",
+			invocation.Harness,
+		)
+		return entry
+	}
+	metrics, err := CollectClaudeAll(projectRoot, homeDir, invocation.SessionIDs)
+	if err != nil {
+		entry.Reason = shortReason(err)
+		return entry
+	}
+	entry.Tracked = true
+	entry.Metrics = &metrics
+	return entry
+}
+
+func newInvocationEntry(invocation Invocation) Entry {
+	return Entry{
+		Iteration: invocation.Iteration,
+		Role:      invocation.Role,
+		Harness:   invocation.Harness,
+		Model:     invocation.Model,
+		Tracked:   false,
 	}
 }
 

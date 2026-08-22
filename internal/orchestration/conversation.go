@@ -216,8 +216,25 @@ func runHarnessConversation(ctx context.Context, adapter harness.Adapter, start 
 		if err != nil {
 			return harnessTranscript{}, err
 		}
+		captureSessionEvents := true
+		if knownSession, ok := stream.(harness.SessionStream); ok {
+			knownSessionID, known := normalizeSessionID(knownSession.SessionID())
+			if known {
+				captureSessionEvents = false
+				sessionIDs = appendSessionID(sessionIDs, knownSessionID)
+				if sessionID == "" {
+					sessionID = knownSessionID
+				}
+			}
+		}
 
-		result, err := consumeHarnessStreamWithArtifact(stream, options.output, options.artifact, options.mode)
+		result, err := consumeHarnessStreamWithArtifact(
+			stream,
+			options.output,
+			options.artifact,
+			options.mode,
+			captureSessionEvents,
+		)
 		if err != nil {
 			return harnessTranscript{}, err
 		}
@@ -254,10 +271,16 @@ func runHarnessConversation(ctx context.Context, adapter harness.Adapter, start 
 }
 
 func consumeHarnessStream(stream harness.Stream, output io.Writer, mode HarnessOutputMode) (harnessStreamResult, error) {
-	return consumeHarnessStreamWithArtifact(stream, output, nil, mode)
+	return consumeHarnessStreamWithArtifact(stream, output, nil, mode, true)
 }
 
-func consumeHarnessStreamWithArtifact(stream harness.Stream, output, artifact io.Writer, mode HarnessOutputMode) (harnessStreamResult, error) {
+func consumeHarnessStreamWithArtifact(
+	stream harness.Stream,
+	output io.Writer,
+	artifact io.Writer,
+	mode HarnessOutputMode,
+	captureSessionEvents bool,
+) (harnessStreamResult, error) {
 	var transcript strings.Builder
 	var sessionIDs []string
 	parser := newQuestionParser()
@@ -283,7 +306,7 @@ func consumeHarnessStreamWithArtifact(stream harness.Stream, output, artifact io
 	assistantTextSeen := false
 	events := stream.Events()
 	for event := range events {
-		if event.SessionID != "" {
+		if captureSessionEvents && event.SessionID != "" {
 			sessionIDs = append(sessionIDs, event.SessionID)
 		}
 

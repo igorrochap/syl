@@ -202,6 +202,7 @@ func (a *App) reviewCommand() *cobra.Command {
 				ProjectRoot: a.projectRoot, ProjectConfig: projectConfig, IssueTracker: issueTracker,
 				Ticket: ticket, TicketRef: ticketRef, Adapter: adapter, Input: cmd.InOrStdin(), Output: cmd.OutOrStdout(),
 				Raw: raw, Verbose: verbose, Notifier: a.notifier(projectConfig.Notifications.Enabled), Git: a.gitRunner(),
+				TranscriptUsage: usePTY,
 				IdentificationBanner: func() error {
 					return writeReviewBanner(cmd.OutOrStdout(), projectConfig, ticketRef, ticket)
 				},

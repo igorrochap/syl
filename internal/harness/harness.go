@@ -39,6 +39,13 @@ type Stream interface {
 	Wait() error
 }
 
+// SessionStream exposes a session ID chosen before the harness starts. A
+// caller can record the session without recovering its ID from output events.
+type SessionStream interface {
+	Stream
+	SessionID() string
+}
+
 type Adapter interface {
 	Run(ctx context.Context, request Request) (Stream, error)
 	Resume(ctx context.Context, sessionID string, request Request) (Stream, error)
