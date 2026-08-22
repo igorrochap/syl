@@ -45,12 +45,18 @@ type sessionParams struct {
 	seenEntries    int
 }
 
+type ptyStream struct {
+	stream    processStream
+	sessionID string
+}
+
 const (
 	transcriptStartFresh transcriptStartMode = iota
 	transcriptStartResume
 )
 
 var _ harness.Adapter = (*PTYAdapter)(nil)
+var _ harness.SessionStream = ptyStream{}
 
 // NewPTY returns a Claude Code adapter that reads events from session transcripts.
 func NewPTY(projectRoot string) *PTYAdapter {
@@ -146,8 +152,17 @@ func (a *PTYAdapter) start(
 		events,
 		done,
 	)
-	return processStream{events: events, done: done}, nil
+	return ptyStream{
+		stream:    processStream{events: events, done: done},
+		sessionID: sessionID,
+	}, nil
 }
+
+func (s ptyStream) Events() <-chan harness.Event { return s.stream.Events() }
+
+func (s ptyStream) Wait() error { return s.stream.Wait() }
+
+func (s ptyStream) SessionID() string { return s.sessionID }
 
 func (a *PTYAdapter) runSession(
 	ctx context.Context,

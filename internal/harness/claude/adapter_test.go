@@ -203,6 +203,10 @@ while :; do sleep 0.05; done
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
+	knownSession, ok := stream.(harness.SessionStream)
+	if !ok || knownSession.SessionID() == "" {
+		t.Fatalf("PTY stream = %#v, want preselected session ID", stream)
+	}
 	var events []harness.Event
 	for event := range stream.Events() {
 		events = append(events, event)
@@ -223,6 +227,9 @@ while :; do sleep 0.05; done
 	}
 	if sessionID == "" {
 		t.Fatal("PTY stream emitted no generated session id")
+	}
+	if knownSession.SessionID() != sessionID {
+		t.Fatalf("PTY stream session ID = %q, event session ID = %q", knownSession.SessionID(), sessionID)
 	}
 	if !strings.Contains(assistantText.String(), "SUMMARY: final verdict") {
 		t.Fatalf("assistant text = %q, want latest completed turn", assistantText.String())
@@ -386,8 +393,8 @@ while :; do sleep 0.05; done
 	if review.Verdict.Status != verdict.Approve || review.Verdict.Summary != "answer received" {
 		t.Fatalf("review verdict = %#v, want approval after the answer", review.Verdict)
 	}
-	if len(review.SessionIDs) < 2 || review.SessionIDs[0] != review.SessionIDs[1] {
-		t.Fatalf("session ids = %#v, want the same session across the question relay", review.SessionIDs)
+	if len(review.SessionIDs) != 1 || review.SessionIDs[0] == "" {
+		t.Fatalf("session ids = %#v, want one preselected session across the question relay", review.SessionIDs)
 	}
 	if !strings.Contains(questionOutput.String(), "Which database?") ||
 		!strings.Contains(questionOutput.String(), "answer sent — resuming reviewer") {

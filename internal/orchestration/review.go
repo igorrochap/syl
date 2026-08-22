@@ -63,6 +63,7 @@ type ReviewOptions struct {
 	Output               io.Writer
 	Raw                  bool
 	Verbose              bool
+	TranscriptUsage      bool
 	Notifier             Notifier
 	Git                  GitRunner
 	IdentificationBanner func() error
@@ -112,15 +113,13 @@ func RunReview(ctx context.Context, options ReviewOptions) error {
 	if err != nil {
 		var unparseable *UnparseableVerdictError
 		if errors.As(err, &unparseable) {
-			recordReviewUsage(reviewUsageParams{
-				recorder:    preparation.recorder,
-				iteration:   0,
-				role:        options.ProjectConfig.Roles.Review,
-				execution:   unparseable.Execution,
-				projectRoot: options.ProjectRoot,
-				startedAt:   reviewStartedAt,
-				endedAt:     reviewEndedAt,
-			})
+			recordStandaloneReviewUsage(
+				options,
+				preparation.recorder,
+				unparseable.Execution,
+				reviewStartedAt,
+				reviewEndedAt,
+			)
 			if artifactErr := recordStandaloneReviewArtifacts(preparation.recorder, unparseable.Execution); artifactErr != nil {
 				return fmt.Errorf("%w; save review run artifacts: %v", err, artifactErr)
 			}
@@ -128,15 +127,13 @@ func RunReview(ctx context.Context, options ReviewOptions) error {
 		}
 		return err
 	}
-	recordReviewUsage(reviewUsageParams{
-		recorder:    preparation.recorder,
-		iteration:   0,
-		role:        options.ProjectConfig.Roles.Review,
-		execution:   review,
-		projectRoot: options.ProjectRoot,
-		startedAt:   reviewStartedAt,
-		endedAt:     reviewEndedAt,
-	})
+	recordStandaloneReviewUsage(
+		options,
+		preparation.recorder,
+		review,
+		reviewStartedAt,
+		reviewEndedAt,
+	)
 	if artifactErr := recordStandaloneReviewArtifacts(preparation.recorder, review); artifactErr != nil {
 		return fmt.Errorf("review: save review run artifacts: %w", artifactErr)
 	}
@@ -172,10 +169,30 @@ type reviewUsageParams struct {
 	projectRoot string
 	startedAt   time.Time
 	endedAt     time.Time
+	transcript  bool
+}
+
+func recordStandaloneReviewUsage(
+	options ReviewOptions,
+	recorder RunRecorder,
+	execution ReviewExecution,
+	startedAt time.Time,
+	endedAt time.Time,
+) {
+	recordReviewUsage(reviewUsageParams{
+		recorder:    recorder,
+		iteration:   0,
+		role:        options.ProjectConfig.Roles.Review,
+		execution:   execution,
+		projectRoot: options.ProjectRoot,
+		startedAt:   startedAt,
+		endedAt:     endedAt,
+		transcript:  options.TranscriptUsage,
+	})
 }
 
 func recordReviewUsage(params reviewUsageParams) {
-	recordRoleUsage(params.recorder, usage.CollectInvocation(usage.Invocation{
+	invocation := usage.Invocation{
 		Iteration:  params.iteration,
 		Role:       "review",
 		Harness:    string(params.role.Harness),
@@ -183,7 +200,15 @@ func recordReviewUsage(params reviewUsageParams) {
 		SessionIDs: params.execution.SessionIDs,
 		StartedAt:  params.startedAt,
 		EndedAt:    params.endedAt,
-	}, params.projectRoot, ""))
+	}
+	if params.transcript {
+		recordRoleUsage(
+			params.recorder,
+			usage.CollectTranscriptInvocation(invocation, params.projectRoot, ""),
+		)
+		return
+	}
+	recordRoleUsage(params.recorder, usage.CollectInvocation(invocation, params.projectRoot, ""))
 }
 
 func prepareReview(ctx context.Context, projectRoot, ticketRef string, git GitRunner) (reviewPreparation, error) {
