@@ -29,7 +29,8 @@ func TestClaudeAttachInvokesInteractivePrompt(t *testing.T) {
 	if err := os.WriteFile(command, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	adapter := &Adapter{command: command, projectRoot: root}
+	adapter := New(root)
+	adapter.command = command
 
 	err := adapter.Attach(context.Background(), harness.Request{
 		Model:  "claude-opus-5",
@@ -82,16 +83,15 @@ func TestClaudeEffortMapping(t *testing.T) {
 	}
 }
 
-// TestRunArgsGrantAutonomousPermissions guards against the headless-permission
-// regression: without bypassPermissions Claude Code denies every tool call, so
-// the implementer cannot write files and the reviewer cannot run git.
-func TestRunArgsGrantAutonomousPermissions(t *testing.T) {
-	args, err := runArgs(harness.Request{Model: "claude-sonnet-5", Effort: config.EffortMedium, Prompt: "do it"})
+func TestPTYRunArgsGrantAutonomousPermissions(t *testing.T) {
+	args, err := ptyRunArgs("session-1", harness.Request{
+		Model: "claude-sonnet-5", Effort: config.EffortMedium, Prompt: "do it",
+	})
 	if err != nil {
-		t.Fatalf("runArgs() error = %v", err)
+		t.Fatalf("ptyRunArgs() error = %v", err)
 	}
 	if !containsFlagValue(args, "--permission-mode", "bypassPermissions") {
-		t.Fatalf("runArgs() = %v, want --permission-mode bypassPermissions", args)
+		t.Fatalf("ptyRunArgs() = %v, want --permission-mode bypassPermissions", args)
 	}
 }
 
@@ -111,20 +111,20 @@ func TestClaudeMCPConfigurationIsAppliedToRunAndResume(t *testing.T) {
 				Prompt: "do it",
 				MCP:    tt.mcp,
 			}
-			run, err := runArgs(request)
+			run, err := ptyRunArgs("session-1", request)
 			if err != nil {
-				t.Fatalf("runArgs() error = %v", err)
+				t.Fatalf("ptyRunArgs() error = %v", err)
 			}
-			resume, err := resumeArgs("session-1", request)
+			resume, err := ptyResumeArgs("session-1", request)
 			if err != nil {
-				t.Fatalf("resumeArgs() error = %v", err)
+				t.Fatalf("ptyResumeArgs() error = %v", err)
 			}
 
 			if got := containsArg(run, "--strict-mcp-config"); got != tt.want {
-				t.Fatalf("runArgs() strict MCP flag = %t, want %t: %v", got, tt.want, run)
+				t.Fatalf("ptyRunArgs() strict MCP flag = %t, want %t: %v", got, tt.want, run)
 			}
 			if got := containsArg(resume, "--strict-mcp-config"); got != tt.want {
-				t.Fatalf("resumeArgs() strict MCP flag = %t, want %t: %v", got, tt.want, resume)
+				t.Fatalf("ptyResumeArgs() strict MCP flag = %t, want %t: %v", got, tt.want, resume)
 			}
 		})
 	}
@@ -146,23 +146,6 @@ func containsFlagValue(args []string, flag, value string) bool {
 		}
 	}
 	return false
-}
-
-func TestDecodeClaudeStreamMapsStructuredEvents(t *testing.T) {
-	line := `{"type":"assistant","session_id":"session-1","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"git diff --stat"}}]}}`
-	events := decodeLine(line + "\n")
-	if len(events) != 2 {
-		t.Fatalf("decodeLine() returned %d events, want session and tool event: %#v", len(events), events)
-	}
-	if events[0].Type != harness.EventSession || events[0].SessionID != "session-1" {
-		t.Fatalf("session event = %#v", events[0])
-	}
-	if events[1].Type != harness.EventToolUse || events[1].ToolName != "Bash" || events[1].ArgumentGist != `{"command":"git diff --stat"}` {
-		t.Fatalf("tool event = %#v", events[1])
-	}
-	if events[0].Raw == "" || events[1].Raw != "" {
-		t.Fatalf("raw output should be attached once, got first=%q second=%q", events[0].Raw, events[1].Raw)
-	}
 }
 
 func TestPTYRunReadsLatestCompletedTurnAndStopsClaude(t *testing.T) {
@@ -192,9 +175,13 @@ printf '%%s\n' '{"type":"assistant","message":{"role":"assistant","stop_reason":
 printf '\033]9;Claude is waiting for your input\007'
 while :; do sleep 0.05; done
 `, argsPath, transcriptDir, transcriptDir, stoppedPath))
-	adapter := newPTYTestAdapter(command, root, home)
+	t.Setenv("HOME", home)
+	t.Setenv("PATH", filepath.Dir(command)+string(os.PathListSeparator)+os.Getenv("PATH"))
+	adapter := New(root)
 
-	stream, err := adapter.Run(context.Background(), harness.Request{
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	stream, err := adapter.Run(ctx, harness.Request{
 		Model:  "claude-sonnet-5",
 		Effort: config.EffortMedium,
 		Prompt: "review it",
@@ -245,7 +232,7 @@ while :; do sleep 0.05; done
 	args := strings.Split(strings.TrimSpace(string(contents)), "\n")
 	if containsArg(args, "--print") || containsArg(args, "--output-format") ||
 		containsArg(args, "--include-partial-messages") {
-		t.Fatalf("PTY Claude args contain headless flags: %v", args)
+		t.Fatalf("terminal Claude args contain batch-output flags: %v", args)
 	}
 	if !containsFlagValue(args, "--session-id", sessionID) ||
 		!containsFlagValue(args, "--permission-mode", "bypassPermissions") ||
@@ -556,7 +543,7 @@ while :; do :; done
 
 func TestPTYRunRefusesClaudeChildSession(t *testing.T) {
 	t.Setenv("CLAUDE_CODE_CHILD_SESSION", "child")
-	adapter := NewPTY(t.TempDir())
+	adapter := New(t.TempDir())
 
 	_, err := adapter.Run(context.Background(), harness.Request{
 		Model: "claude-sonnet-5", Effort: config.EffortMedium, Prompt: "review it",

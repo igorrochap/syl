@@ -21,13 +21,12 @@ import (
 )
 
 type Dependencies struct {
-	Input        io.Reader
-	Harnesses    map[string]harness.Adapter
-	PTYHarnesses map[string]harness.Adapter
-	Notifier     orchestration.Notifier
-	GH           tracker.GHRunner
-	Git          orchestration.GitRunner
-	Updater      updater.Runner
+	Input     io.Reader
+	Harnesses map[string]harness.Adapter
+	Notifier  orchestration.Notifier
+	GH        tracker.GHRunner
+	Git       orchestration.GitRunner
+	Updater   updater.Runner
 }
 
 type App struct {
@@ -158,7 +157,6 @@ func (a *App) implementCommand() *cobra.Command {
 func (a *App) reviewCommand() *cobra.Command {
 	var raw bool
 	var verbose bool
-	var usePTY bool
 	command := &cobra.Command{
 		Use:   "review [N]",
 		Short: "review the current working-tree changes",
@@ -192,17 +190,11 @@ func (a *App) reviewCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if usePTY {
-				adapter, err = a.ptyHarness("review", projectConfig.Roles.Review.Harness)
-				if err != nil {
-					return err
-				}
-			}
 			return orchestration.RunReview(cmd.Context(), orchestration.ReviewOptions{
 				ProjectRoot: a.projectRoot, ProjectConfig: projectConfig, IssueTracker: issueTracker,
 				Ticket: ticket, TicketRef: ticketRef, Adapter: adapter, Input: cmd.InOrStdin(), Output: cmd.OutOrStdout(),
 				Raw: raw, Verbose: verbose, Notifier: a.notifier(projectConfig.Notifications.Enabled), Git: a.gitRunner(),
-				TranscriptUsage: usePTY,
+				TranscriptUsage: projectConfig.Roles.Review.Harness == config.HarnessClaude,
 				IdentificationBanner: func() error {
 					return writeReviewBanner(cmd.OutOrStdout(), projectConfig, ticketRef, ticket)
 				},
@@ -211,17 +203,8 @@ func (a *App) reviewCommand() *cobra.Command {
 	}
 	command.Flags().BoolVar(&raw, "raw", false, "pass the harness output through untouched")
 	command.Flags().BoolVar(&verbose, "verbose", false, "stream assistant prose in addition to progress output")
-	command.Flags().BoolVar(&usePTY, "pty", false, "run the reviewer in a pseudo-terminal")
 	command.MarkFlagsMutuallyExclusive("raw", "verbose")
 	return command
-}
-
-func (a *App) ptyHarness(role string, name config.Harness) (harness.Adapter, error) {
-	adapter, ok := a.deps.PTYHarnesses[string(name)]
-	if !ok || adapter == nil {
-		return nil, fmt.Errorf("%s harness %q does not support --pty", role, name)
-	}
-	return adapter, nil
 }
 
 func canonicalIssueReference(reference string) string {

@@ -60,13 +60,10 @@ func TestReviewTopSeamApprovePrintsFeedAndWritesLog(t *testing.T) {
 	}
 }
 
-func TestReviewPTYWritesTranscriptArtifacts(t *testing.T) {
-	run := runCompletedPTYReview(t)
-	if run.ptyHarness.runRequest.Prompt == "" {
-		t.Fatal("review --pty did not run the PTY harness")
-	}
-	if run.headless.runRequest.Prompt != "" {
-		t.Fatal("review --pty ran the headless harness")
+func TestReviewWritesTranscriptArtifacts(t *testing.T) {
+	run := runCompletedClaudeReview(t)
+	if run.claude.runRequest.Prompt == "" {
+		t.Fatal("review did not run the Claude harness")
 	}
 
 	wantArtifacts := map[string]string{
@@ -85,8 +82,8 @@ func TestReviewPTYWritesTranscriptArtifacts(t *testing.T) {
 	}
 }
 
-func TestReviewPTYWritesReviewLogFromTranscript(t *testing.T) {
-	run := runCompletedPTYReview(t)
+func TestReviewWritesReviewLogFromTranscript(t *testing.T) {
+	run := runCompletedClaudeReview(t)
 	logContents := readSingleReviewLog(t, run.fixture.root)
 	if !strings.Contains(logContents, "VERDICT: approve") ||
 		!strings.Contains(logContents, "SUMMARY: The PTY review is ready") {
@@ -94,8 +91,8 @@ func TestReviewPTYWritesReviewLogFromTranscript(t *testing.T) {
 	}
 }
 
-func TestReviewPTYRecordsCompleteTranscriptUsage(t *testing.T) {
-	run := runCompletedPTYReview(t)
+func TestReviewRecordsCompleteClaudeTranscriptUsage(t *testing.T) {
+	run := runCompletedClaudeReview(t)
 	artifact, err := usage.ReadArtifact(filepath.Join(run.dir, "usage.json"))
 	if err != nil {
 		t.Fatalf("read PTY usage artifact: %v", err)
@@ -106,8 +103,8 @@ func TestReviewPTYRecordsCompleteTranscriptUsage(t *testing.T) {
 	}
 }
 
-func TestReviewPTYRecordedUsageMatchesRecomputation(t *testing.T) {
-	run := runCompletedPTYReview(t)
+func TestReviewClaudeUsageMatchesRecomputation(t *testing.T) {
+	run := runCompletedClaudeReview(t)
 	var recordedOutput, recordedError strings.Builder
 	if code := run.fixture.app.Run(
 		context.Background(),
@@ -137,29 +134,46 @@ func TestReviewPTYRecordedUsageMatchesRecomputation(t *testing.T) {
 
 const ptyReviewSessionID = "pty-session"
 
-type completedPTYReview struct {
-	fixture    *reviewFixture
-	dir        string
-	headless   *scriptedHarness
-	ptyHarness *scriptedHarness
+type completedClaudeReview struct {
+	fixture *reviewFixture
+	dir     string
+	claude  *scriptedHarness
 }
 
-func runCompletedPTYReview(t *testing.T) completedPTYReview {
+func runCompletedClaudeReview(t *testing.T) completedClaudeReview {
 	t.Helper()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	headless := &scriptedHarness{first: []harness.Event{
-		{Type: harness.EventSession, SessionID: "headless-session"},
-		{Type: harness.EventAssistantText, Text: approveVerdictText},
-	}}
-	ptyHarness := &scriptedHarness{first: []harness.Event{
+	claude := &scriptedHarness{first: []harness.Event{
 		{Type: harness.EventAssistantText, Text: "Reviewing the transcript.\n"},
 		{Type: harness.EventToolUse, ToolName: "Read", ArgumentGist: `{"file_path":"review.diff"}`},
 		{Type: harness.EventAssistantText, Text: "VERDICT: approve\nSUMMARY: The PTY review is ready\nFINDINGS:\n"},
 	}, knownSessionID: ptyReviewSessionID}
-	fixture := newReviewFixture(t, headless)
-	fixture.app.deps.PTYHarnesses = map[string]harness.Adapter{"claude": ptyHarness}
+	fixture := newReviewFixture(t, claude)
 	writePTYReviewTranscriptFixture(t, home, fixture.root, ptyReviewSessionID)
+
+	code := fixture.app.Run(
+		context.Background(),
+		[]string{"review"},
+		&fixture.stdout,
+		&fixture.stderr,
+	)
+	if code != 0 {
+		t.Fatalf("review code = %d, want 0; stderr = %q", code, fixture.stderr.String())
+	}
+	runDirs := reviewRunArtifactPaths(t, fixture.root)
+	if len(runDirs) != 1 {
+		t.Fatalf("run artifact directories = %v, want one", runDirs)
+	}
+	return completedClaudeReview{
+		fixture: fixture,
+		dir:     runDirs[0],
+		claude:  claude,
+	}
+}
+
+func TestReviewRejectsRemovedPTYFlag(t *testing.T) {
+	fixture := newReviewFixture(t, &scriptedHarness{})
 
 	code := fixture.app.Run(
 		context.Background(),
@@ -167,18 +181,8 @@ func runCompletedPTYReview(t *testing.T) completedPTYReview {
 		&fixture.stdout,
 		&fixture.stderr,
 	)
-	if code != 0 {
-		t.Fatalf("review --pty code = %d, want 0; stderr = %q", code, fixture.stderr.String())
-	}
-	runDirs := reviewRunArtifactPaths(t, fixture.root)
-	if len(runDirs) != 1 {
-		t.Fatalf("run artifact directories = %v, want one", runDirs)
-	}
-	return completedPTYReview{
-		fixture:    fixture,
-		dir:        runDirs[0],
-		headless:   headless,
-		ptyHarness: ptyHarness,
+	if code == 0 || !strings.Contains(fixture.stderr.String(), "unknown flag: --pty") {
+		t.Fatalf("review code = %d, stderr = %q, want removed flag error", code, fixture.stderr.String())
 	}
 }
 
