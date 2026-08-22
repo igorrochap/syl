@@ -20,11 +20,13 @@ import (
 )
 
 const (
-	claudeIdleEscape = "\x1b]9;Claude is waiting for your input"
-	verdictMarker    = "VERDICT:"
+	claudeIdleEscape    = "\x1b]9;Claude is waiting for your input"
+	verdictMarker       = "VERDICT:"
+	questionStartMarker = "QUESTION:\n"
+	questionEndMarker   = "\nEND QUESTION"
 )
 
-// PTYAdapter drives a fresh Claude Code session through a pseudo-terminal.
+// PTYAdapter drives Claude Code sessions through a pseudo-terminal.
 type PTYAdapter struct {
 	command       string
 	projectRoot   string
@@ -33,6 +35,20 @@ type PTYAdapter struct {
 	idleTimeout   time.Duration
 	terminateWait time.Duration
 }
+
+type transcriptStartMode int
+
+type sessionParams struct {
+	transcript     transcript.Reader
+	transcriptPath string
+	sessionID      string
+	seenEntries    int
+}
+
+const (
+	transcriptStartFresh transcriptStartMode = iota
+	transcriptStartResume
+)
 
 var _ harness.Adapter = (*PTYAdapter)(nil)
 
@@ -48,10 +64,8 @@ func NewPTY(projectRoot string) *PTYAdapter {
 }
 
 func (a *PTYAdapter) Run(ctx context.Context, request harness.Request) (harness.Stream, error) {
-	if _, childSession := os.LookupEnv("CLAUDE_CODE_CHILD_SESSION"); childSession {
-		return nil, errors.New(
-			"cannot run Claude review in a pty from a Claude Code child session; run syl from a terminal",
-		)
+	if err := checkNotChildSession(); err != nil {
+		return nil, err
 	}
 	sessionID, err := newSessionID()
 	if err != nil {
@@ -61,11 +75,22 @@ func (a *PTYAdapter) Run(ctx context.Context, request harness.Request) (harness.
 	if err != nil {
 		return nil, err
 	}
-	return a.start(ctx, sessionID, args)
+	return a.start(ctx, sessionID, args, transcriptStartFresh)
 }
 
-func (*PTYAdapter) Resume(context.Context, string, harness.Request) (harness.Stream, error) {
-	return nil, errors.New("Claude Code pty sessions cannot be resumed yet")
+func (a *PTYAdapter) Resume(
+	ctx context.Context,
+	sessionID string,
+	request harness.Request,
+) (harness.Stream, error) {
+	if err := checkNotChildSession(); err != nil {
+		return nil, err
+	}
+	args, err := ptyResumeArgs(sessionID, request)
+	if err != nil {
+		return nil, err
+	}
+	return a.start(ctx, sessionID, args, transcriptStartResume)
 }
 
 func (a *PTYAdapter) Attach(ctx context.Context, request harness.Request) error {
@@ -77,11 +102,26 @@ func (a *PTYAdapter) start(
 	ctx context.Context,
 	sessionID string,
 	args []string,
+	mode transcriptStartMode,
 ) (harness.Stream, error) {
 	reader := transcript.New(a.homeDir)
 	transcriptPath, err := reader.Find(a.projectRoot, sessionID)
 	if err != nil {
 		return nil, fmt.Errorf("find Claude transcript: %w", err)
+	}
+	seenEntries := 0
+	if mode == transcriptStartResume {
+		entries, readErr := reader.Read(transcriptPath)
+		if readErr != nil {
+			return nil, fmt.Errorf("read Claude transcript before resume: %w", readErr)
+		}
+		seenEntries = len(entries)
+	}
+	session := sessionParams{
+		transcript:     reader,
+		transcriptPath: transcriptPath,
+		sessionID:      sessionID,
+		seenEntries:    seenEntries,
 	}
 	command := a.command
 	if command == "" {
@@ -98,7 +138,14 @@ func (a *PTYAdapter) start(
 
 	events := make(chan harness.Event)
 	done := make(chan error, 1)
-	go a.runSession(ctx, process, terminal, reader, transcriptPath, sessionID, events, done)
+	go a.runSession(
+		ctx,
+		process,
+		terminal,
+		session,
+		events,
+		done,
+	)
 	return processStream{events: events, done: done}, nil
 }
 
@@ -106,9 +153,7 @@ func (a *PTYAdapter) runSession(
 	ctx context.Context,
 	process *exec.Cmd,
 	terminal *os.File,
-	reader transcript.Reader,
-	transcriptPath string,
-	sessionID string,
+	session sessionParams,
 	events chan<- harness.Event,
 	done chan<- error,
 ) {
@@ -122,11 +167,10 @@ func (a *PTYAdapter) runSession(
 	idleSignals := make(chan struct{}, 1)
 	go watchClaudeTerminal(terminal, idleSignals)
 
-	events <- harness.Event{Type: harness.EventSession, SessionID: sessionID}
+	events <- harness.Event{Type: harness.EventSession, SessionID: session.sessionID}
 	processExited, monitorErr := a.monitorSession(
 		ctx,
-		reader,
-		transcriptPath,
+		session,
 		events,
 		idleSignals,
 		processDone,
@@ -141,8 +185,7 @@ func (a *PTYAdapter) runSession(
 
 func (a *PTYAdapter) monitorSession(
 	ctx context.Context,
-	reader transcript.Reader,
-	transcriptPath string,
+	session sessionParams,
 	events chan<- harness.Event,
 	idleSignals <-chan struct{},
 	processDone <-chan error,
@@ -160,11 +203,12 @@ func (a *PTYAdapter) monitorSession(
 	idle := time.NewTimer(idleTimeout)
 	defer idle.Stop()
 	transcripts := transcriptMonitor{
-		reader:      reader,
-		path:        transcriptPath,
+		reader:      session.transcript,
+		path:        session.transcriptPath,
 		events:      events,
 		idle:        idle,
 		idleTimeout: idleTimeout,
+		seenEntries: session.seenEntries,
 	}
 
 	for {
@@ -228,6 +272,8 @@ type transcriptMonitor struct {
 	path        string
 	events      chan<- harness.Event
 	seenEntries int
+	// Completion stays latched across later polls that contain no new entries.
+	complete    bool
 	idle        *time.Timer
 	idleTimeout time.Duration
 }
@@ -242,8 +288,11 @@ func (m *transcriptMonitor) checkProgress() (transcriptProgress, error) {
 	}
 	progress := transcriptProgress{
 		newEntries: entryCount > m.seenEntries,
-		complete:   complete,
 	}
+	if complete {
+		m.complete = true
+	}
+	progress.complete = m.complete
 	if progress.newEntries {
 		m.seenEntries = entryCount
 		resetTimer(m.idle, m.idleTimeout)
@@ -262,18 +311,43 @@ func ptyRunArgs(sessionID string, request harness.Request) ([]string, error) {
 	if strings.TrimSpace(request.Prompt) == "" {
 		return nil, errors.New("Claude Code prompt is required")
 	}
-	args := []string{
-		"--session-id", sessionID,
-		"--permission-mode", "bypassPermissions",
-	}
-	if !request.MCP {
-		args = append(args, "--strict-mcp-config")
-	}
+	args := []string{"--session-id", sessionID}
+	args = append(args, basePTYArgs(request)...)
 	return append(args,
 		"--model", request.Model,
 		"--effort", effort,
 		request.Prompt,
 	), nil
+}
+
+func ptyResumeArgs(sessionID string, request harness.Request) ([]string, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return nil, errors.New("cannot resume Claude Code session without a session id")
+	}
+	if strings.TrimSpace(request.Prompt) == "" {
+		return nil, errors.New("cannot resume Claude Code session without a prompt")
+	}
+	args := []string{"--resume", sessionID}
+	args = append(args, basePTYArgs(request)...)
+	return append(args, request.Prompt), nil
+}
+
+func basePTYArgs(request harness.Request) []string {
+	args := []string{"--permission-mode", "bypassPermissions"}
+	if !request.MCP {
+		args = append(args, "--strict-mcp-config")
+	}
+	return args
+}
+
+func checkNotChildSession() error {
+	if _, childSession := os.LookupEnv("CLAUDE_CODE_CHILD_SESSION"); !childSession {
+		return nil
+	}
+	return errors.New(
+		"cannot run Claude review in a pty from a Claude Code child session; run syl from a terminal",
+	)
 }
 
 func newSessionID() (string, error) {
@@ -341,7 +415,8 @@ func readTranscript(
 	if seenEntries > len(entries) {
 		seenEntries = 0
 	}
-	for _, entry := range entries[seenEntries:] {
+	newEntries := entries[seenEntries:]
+	for _, entry := range newEntries {
 		decoded, decodeErr := decodeTranscriptEntry(entry.Raw)
 		if decodeErr != nil {
 			return seenEntries, false, fmt.Errorf(
@@ -355,7 +430,7 @@ func readTranscript(
 			events <- event
 		}
 	}
-	return len(entries), latestCompletedTurnHasVerdict(entries), nil
+	return len(entries), latestCompletedTurnIsComplete(newEntries), nil
 }
 
 func decodeTranscriptEntry(raw json.RawMessage) ([]harness.Event, error) {
@@ -393,7 +468,7 @@ func decodeTranscriptEntry(raw json.RawMessage) ([]harness.Event, error) {
 	return events, nil
 }
 
-func latestCompletedTurnHasVerdict(entries []transcript.Entry) bool {
+func latestCompletedTurnIsComplete(entries []transcript.Entry) bool {
 	for index := len(entries) - 1; index >= 0; index-- {
 		var message transcriptMessage
 		if err := json.Unmarshal(entries[index].Raw, &message); err != nil {
@@ -406,14 +481,38 @@ func latestCompletedTurnHasVerdict(entries []transcript.Entry) bool {
 		if err != nil {
 			return false
 		}
+		var assistantText strings.Builder
 		for _, block := range blocks {
-			if block.Type == "text" && strings.Contains(block.Text, verdictMarker) {
-				return true
+			if block.Type != "text" {
+				continue
 			}
+			assistantText.WriteString(block.Text)
+		}
+		text := assistantText.String()
+		if strings.Contains(text, verdictMarker) || containsQuestionBlock(text) {
+			return true
 		}
 		return false
 	}
 	return false
+}
+
+func containsQuestionBlock(text string) bool {
+	searchFrom := 0
+	for {
+		start := strings.Index(text[searchFrom:], questionStartMarker)
+		if start == -1 {
+			return false
+		}
+		start += searchFrom
+		if (start == 0 || text[start-1] == '\n') && strings.Contains(
+			text[start+len(questionStartMarker):],
+			questionEndMarker,
+		) {
+			return true
+		}
+		searchFrom = start + len(questionStartMarker)
+	}
 }
 
 func isAssistantTranscriptMessage(message transcriptMessage) bool {

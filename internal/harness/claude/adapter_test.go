@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -16,6 +17,8 @@ import (
 	"github.com/igorrochap/syl/internal/config"
 	"github.com/igorrochap/syl/internal/harness"
 	"github.com/igorrochap/syl/internal/harness/claude/transcript"
+	"github.com/igorrochap/syl/internal/orchestration"
+	"github.com/igorrochap/syl/internal/verdict"
 )
 
 func TestClaudeAttachInvokesInteractivePrompt(t *testing.T) {
@@ -246,6 +249,173 @@ while :; do sleep 0.05; done
 	}
 }
 
+func TestPTYResumeContinuesSameSessionTranscript(t *testing.T) {
+	root := t.TempDir()
+	home := t.TempDir()
+	argsPath := filepath.Join(t.TempDir(), "args")
+	transcriptDir := claudeTranscriptDir(t, home, root)
+	command := writeClaudeTestDouble(t, fmt.Sprintf(`
+printf '%%s\n' '---' "$@" >> %q
+mode=run
+session_id=''
+while [ "$#" -gt 0 ]; do
+	case "$1" in
+		--session-id) session_id="$2"; shift 2 ;;
+		--resume) mode=resume; session_id="$2"; shift 2 ;;
+		*) shift ;;
+	esac
+done
+transcript=%q/"$session_id".jsonl
+mkdir -p %q
+trap 'exit 0' TERM
+if [ "$mode" = resume ]; then
+	sleep 0.5
+	printf '%%s\n' '{"type":"user","message":{"role":"user","content":"review again"}}' >> "$transcript"
+	printf '%%s\n' '{"type":"assistant","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"VERDICT: revise\\nSUMMARY: resumed review\\nFINDINGS:\\n- [blocking] file.go:1 — fix it\\n"}]}}' >> "$transcript"
+else
+	printf '%%s\n' '{"type":"assistant","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"VERDICT: approve\\nSUMMARY: initial review\\nFINDINGS:\\n"}]}}' >> "$transcript"
+fi
+printf '\033]9;Claude is waiting for your input\007'
+while :; do sleep 0.05; done
+`, argsPath, transcriptDir, transcriptDir))
+	adapter := newPTYTestAdapter(command, root, home)
+	request := harness.Request{
+		Model: "claude-sonnet-5", Effort: config.EffortMedium, Prompt: "review it",
+	}
+
+	first, err := adapter.Run(context.Background(), request)
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	firstEvents := collectHarnessEvents(t, first)
+	sessionID := eventSessionID(firstEvents)
+	if sessionID == "" {
+		t.Fatal("Run() emitted no session id")
+	}
+
+	request.Prompt = "review again"
+	resumed, err := adapter.Resume(context.Background(), sessionID, request)
+	if err != nil {
+		t.Fatalf("Resume() error = %v", err)
+	}
+	resumedEvents := collectHarnessEvents(t, resumed)
+	if got := eventSessionID(resumedEvents); got != sessionID {
+		t.Fatalf("resumed session id = %q, want %q", got, sessionID)
+	}
+	resumedText := eventAssistantText(resumedEvents)
+	if !strings.Contains(resumedText, "SUMMARY: resumed review") ||
+		strings.Contains(resumedText, "SUMMARY: initial review") {
+		t.Fatalf("resumed assistant text = %q, want only the resumed turn", resumedText)
+	}
+
+	path, err := transcript.New(home).Find(root, sessionID)
+	if err != nil {
+		t.Fatalf("find transcript: %v", err)
+	}
+	entries, err := transcript.New(home).Read(path)
+	if err != nil {
+		t.Fatalf("read transcript: %v", err)
+	}
+	if len(entries) != 3 {
+		t.Fatalf("same-session transcript entries = %d, want initial and resumed entries", len(entries))
+	}
+	contents, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resumeInvocation := "---\n--resume\n" + sessionID + "\n"
+	if !strings.Contains(string(contents), resumeInvocation) ||
+		!strings.HasSuffix(string(contents), "review again\n") {
+		t.Fatalf("Claude invocations = %q, want same-session resume with new prompt", contents)
+	}
+}
+
+func TestPTYQuestionRelayResumesSameSessionWithAnswer(t *testing.T) {
+	root := t.TempDir()
+	home := t.TempDir()
+	argsPath := filepath.Join(t.TempDir(), "args")
+	transcriptDir := claudeTranscriptDir(t, home, root)
+	command := writeClaudeTestDouble(t, fmt.Sprintf(`
+printf '%%s\n' '---' "$@" >> %q
+mode=run
+prompt=''
+session_id=''
+for argument in "$@"; do prompt="$argument"; done
+while [ "$#" -gt 0 ]; do
+	case "$1" in
+		--session-id) session_id="$2"; shift 2 ;;
+		--resume) mode=resume; session_id="$2"; shift 2 ;;
+		*) shift ;;
+	esac
+done
+transcript=%q/"$session_id".jsonl
+mkdir -p %q
+trap 'exit 0' TERM
+if [ "$mode" = resume ]; then
+	if [ "$prompt" != 'Use SQLite.' ]; then exit 42; fi
+	printf '%%s\n' '{"type":"user","message":{"role":"user","content":"Use SQLite."}}' >> "$transcript"
+	printf '%%s\n' '{"type":"assistant","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"VERDICT: approve\nSUMMARY: answer received\nFINDINGS:\n"}]}}' >> "$transcript"
+else
+	printf '%%s\n' '{"type":"assistant","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"QUESTION:\nWhich data"},{"type":"text","text":"base?\nEND QUESTION"}]}}' >> "$transcript"
+fi
+printf '\033]9;Claude is waiting for your input\007'
+while :; do sleep 0.05; done
+`, argsPath, transcriptDir, transcriptDir))
+	adapter := newPTYTestAdapter(command, root, home)
+	var questionOutput strings.Builder
+	questions := orchestration.NewQuestionHandler(
+		strings.NewReader("Use SQLite.\n"),
+		&questionOutput,
+		"#71",
+		nil,
+	)
+
+	review, err := orchestration.RunReviewExecution(
+		context.Background(),
+		adapter,
+		harness.Request{
+			Model: "claude-sonnet-5", Effort: config.EffortMedium, Prompt: "review it",
+		},
+		io.Discard,
+		orchestration.ParsedHarnessOutput,
+		questions,
+	)
+	if err != nil {
+		t.Fatalf("RunReviewExecution() error = %v", err)
+	}
+	if review.Verdict.Status != verdict.Approve || review.Verdict.Summary != "answer received" {
+		t.Fatalf("review verdict = %#v, want approval after the answer", review.Verdict)
+	}
+	if len(review.SessionIDs) < 2 || review.SessionIDs[0] != review.SessionIDs[1] {
+		t.Fatalf("session ids = %#v, want the same session across the question relay", review.SessionIDs)
+	}
+	if !strings.Contains(questionOutput.String(), "Which database?") ||
+		!strings.Contains(questionOutput.String(), "answer sent — resuming reviewer") {
+		t.Fatalf("question output = %q, want question followed by resume confirmation", questionOutput.String())
+	}
+
+	contents, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resumeInvocation := "---\n--resume\n" + review.SessionIDs[0] + "\n"
+	if !strings.Contains(string(contents), resumeInvocation) ||
+		!strings.HasSuffix(string(contents), "Use SQLite.\n") {
+		t.Fatalf("Claude invocations = %q, want answer on the original session", contents)
+	}
+	path, err := transcript.New(home).Find(root, review.SessionIDs[0])
+	if err != nil {
+		t.Fatalf("find transcript: %v", err)
+	}
+	entries, err := transcript.New(home).Read(path)
+	if err != nil {
+		t.Fatalf("read transcript: %v", err)
+	}
+	if len(entries) != 3 {
+		t.Fatalf("question relay transcript entries = %d, want question and resumed answer turn", len(entries))
+	}
+}
+
 func TestPTYRunTranscriptEntriesWithoutToolCallsResetIdleTimeout(t *testing.T) {
 	root := t.TempDir()
 	home := t.TempDir()
@@ -416,4 +586,35 @@ func writeClaudeTestDouble(t *testing.T, body string) string {
 		t.Fatal(err)
 	}
 	return command
+}
+
+func collectHarnessEvents(t *testing.T, stream harness.Stream) []harness.Event {
+	t.Helper()
+	var events []harness.Event
+	for event := range stream.Events() {
+		events = append(events, event)
+	}
+	if err := stream.Wait(); err != nil {
+		t.Fatalf("Wait() error = %v", err)
+	}
+	return events
+}
+
+func eventSessionID(events []harness.Event) string {
+	for _, event := range events {
+		if event.Type == harness.EventSession {
+			return event.SessionID
+		}
+	}
+	return ""
+}
+
+func eventAssistantText(events []harness.Event) string {
+	var text strings.Builder
+	for _, event := range events {
+		if event.Type == harness.EventAssistantText {
+			text.WriteString(event.Text)
+		}
+	}
+	return text.String()
 }
