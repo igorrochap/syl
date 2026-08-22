@@ -491,6 +491,53 @@ while :; do sleep 0.05; done
 	}
 }
 
+func TestPTYRunCompletesFromPollWithoutTerminalEscape(t *testing.T) {
+	root := t.TempDir()
+	home := t.TempDir()
+	stoppedPath := filepath.Join(t.TempDir(), "stopped")
+	transcriptDir := claudeTranscriptDir(t, home, root)
+	command := writeClaudeTestDouble(t, fmt.Sprintf(`
+session_id=''
+while [ "$#" -gt 0 ]; do
+	if [ "$1" = '--session-id' ]; then
+		session_id="$2"
+		break
+	fi
+	shift
+done
+transcript=%q/"$session_id".jsonl
+mkdir -p %q
+trap 'printf stopped > %q; exit 0' TERM
+printf '%%s\n' '{"type":"assistant","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"VERDICT: approve\\nSUMMARY: the poll finds the verdict\\nFINDINGS:\\n"}]}}' >> "$transcript"
+while :; do sleep 0.05; done
+`, transcriptDir, transcriptDir, stoppedPath))
+	adapter := newPTYTestAdapter(command, root, home)
+	// The idle timeout is long and the test double never writes the terminal
+	// escape, so only the poll can end this run. A run that waits for the idle
+	// timeout is the defect this test guards.
+	adapter.idleTimeout = 30 * time.Second
+	adapter.pollInterval = 25 * time.Millisecond
+
+	started := time.Now()
+	stream, err := adapter.Run(context.Background(), harness.Request{
+		Model: "claude-sonnet-5", Effort: config.EffortMedium, Prompt: "review it",
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	for range stream.Events() {
+	}
+	if err := stream.Wait(); err != nil {
+		t.Fatalf("Wait() error = %v", err)
+	}
+	if elapsed := time.Since(started); elapsed > 10*time.Second {
+		t.Fatalf("run took %s; it waited for the idle timeout instead of the poll", elapsed)
+	}
+	if _, err := os.Stat(stoppedPath); err != nil {
+		t.Fatalf("run did not stop Claude: %v", err)
+	}
+}
+
 func TestPTYRunKillsClaudeWhenSIGTERMDoesNotStopIt(t *testing.T) {
 	root := t.TempDir()
 	home := t.TempDir()
