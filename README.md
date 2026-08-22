@@ -214,7 +214,7 @@ planning sequence:
 - `--grill` grills the topic before producing tickets.
 - `--grill --with-docs` uses the docs-grounded grilling variant.
 
-`--with-docs` requires `--grill`. Planning has no headless mode.
+`--with-docs` requires `--grill`. Planning always uses an attached interactive session.
 
 ### 4. Implement an issue
 
@@ -251,13 +251,10 @@ syl review 42
 When the Review log is `github`, an issue reference is required; `syl`
 cannot log a review with no place to log it.
 
-Claude reviewers use the headless transport by default. Pass `--pty` to opt
-into the pseudo-terminal transport, which reads the review from Claude's
-session transcript:
-
-```sh
-syl review 42 --pty
-```
+For implement and review Roles, `syl` runs Claude Code in a terminal session
+and reads complete assistant messages from the session transcript. `syl`
+refuses to start these Roles from inside another Claude Code session because
+Claude Code does not persist the nested transcript that `syl` needs.
 
 Add `--raw` to pass the Harness output through untouched, instead of the
 parsed Verdict view:

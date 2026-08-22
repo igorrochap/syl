@@ -58,8 +58,8 @@ const (
 var _ harness.Adapter = (*PTYAdapter)(nil)
 var _ harness.SessionStream = ptyStream{}
 
-// NewPTY returns a Claude Code adapter that reads events from session transcripts.
-func NewPTY(projectRoot string) *PTYAdapter {
+// New returns a Claude Code adapter that runs terminal sessions and reads their transcripts.
+func New(projectRoot string) *PTYAdapter {
 	return &PTYAdapter{
 		command:       "claude",
 		projectRoot:   projectRoot,
@@ -100,8 +100,7 @@ func (a *PTYAdapter) Resume(
 }
 
 func (a *PTYAdapter) Attach(ctx context.Context, request harness.Request) error {
-	adapter := &Adapter{command: a.command, projectRoot: a.projectRoot}
-	return adapter.Attach(ctx, request)
+	return a.attach(ctx, request)
 }
 
 func (a *PTYAdapter) start(
@@ -243,9 +242,16 @@ func (a *PTYAdapter) monitorSession(
 			}
 			return true, errors.New("Claude Code exited before producing a review verdict")
 		case <-poll.C:
-			_, readErr := transcripts.checkProgress()
+			progress, readErr := transcripts.checkProgress()
 			if readErr != nil {
 				return false, readErr
+			}
+			// The poll is the only completion signal that always arrives. The
+			// session never exits by itself, and the terminal escape can be
+			// missed: it is emitted once, and a signal consumed before the
+			// transcript reaches disk leaves nothing to wake the run again.
+			if progress.complete {
+				return false, nil
 			}
 		case <-idleSignals:
 			progress, readErr := transcripts.checkProgress()
@@ -360,9 +366,7 @@ func checkNotChildSession() error {
 	if _, childSession := os.LookupEnv("CLAUDE_CODE_CHILD_SESSION"); !childSession {
 		return nil
 	}
-	return errors.New(
-		"cannot run Claude review in a pty from a Claude Code child session; run syl from a terminal",
-	)
+	return errors.New("cannot run Claude Code from another Claude Code session; run syl from a terminal")
 }
 
 func newSessionID() (string, error) {
