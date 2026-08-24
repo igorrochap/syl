@@ -193,11 +193,15 @@ max_iterations = 3
 
 [notifications]
 enabled = true
+
+[worktree]
+root = "~/.syl/worktrees"
 ```
 
-Edit this file directly to change Trackers, Roles, the iteration limit, or
-notifications. `syl` rejects a config file that has an unknown key, so remove
-a setting instead of leaving a stale one behind.
+Edit this file directly to change Trackers, Roles, the iteration limit,
+notifications, or the centralized worktree root. `syl` rejects a config file
+that has an unknown key, so remove a setting instead of leaving a stale one
+behind.
 
 ### 3. Plan work
 
@@ -294,6 +298,7 @@ then submit it with an empty line or end-of-file (Ctrl-D).
 | `roles.<role>.mcp` | `true`, `false` | Whether Claude sessions inherit user/project MCP configuration. Defaults to `true` for plan and implement, `false` for review. Codex ignores it. |
 | `loop.max_iterations` | integer | Cap on implement/review iterations for `syl implement`. |
 | `notifications.enabled` | `true`, `false` | Send a desktop or terminal-bell notification on completion or on a `QUESTION`. |
+| `worktree.root` | path | Central root for implementation worktrees. Defaults to `~/.syl/worktrees`. |
 
 `<role>` is `plan`, `implement`, or `review`.
 
