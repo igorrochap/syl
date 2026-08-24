@@ -1,0 +1,2 @@
+{"type":"user","timestamp":"2026-08-20T12:00:00Z","message":{"role":"user","content":"Review the working tree."}}
+{"type":"assistant","timestamp":"2026-08-20T12:00:05Z","message":{"id":"pty-message-1","role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"Reviewing the transcript.\n"},{"type":"tool_use","name":"Read","input":{"file_path":"review.diff"}},{"type":"text","text":"VERDICT: approve\nSUMMARY: The PTY review is ready\nFINDINGS:\n"}],"usage":{"input_tokens":10,"output_tokens":2,"cache_creation_input_tokens":4,"cache_read_input_tokens":5}}}

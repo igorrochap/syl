@@ -4,15 +4,19 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+
+	claudetranscript "github.com/igorrochap/syl/internal/harness/claude/transcript"
 )
 
 func TestCollectClaudeKeepsLastSnapshotIncludesSubagentsAndSplitsWindows(t *testing.T) {
 	projectRoot := t.TempDir()
 	home := t.TempDir()
 	sessionID := "review-session"
-	projectDir := filepath.Join(home, ".claude", "projects", projectSlug(projectRoot))
+	transcriptPath := claudeTranscriptPath(t, home, projectRoot, sessionID)
+	projectDir := filepath.Dir(transcriptPath)
 	if err := os.MkdirAll(filepath.Join(projectDir, sessionID, "subagents"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -20,7 +24,7 @@ func TestCollectClaudeKeepsLastSnapshotIncludesSubagentsAndSplitsWindows(t *test
 		`{"type":"assistant","timestamp":"2026-08-20T12:00:05Z","message":{"id":"message-1","role":"assistant","usage":{"input_tokens":10,"output_tokens":2,"cache_creation_input_tokens":4,"cache_read_input_tokens":5}}}` + "\n" +
 		`{"type":"assistant","timestamp":"2026-08-20T12:00:06Z","message":{"id":"message-1","role":"assistant","usage":{"input_tokens":20,"output_tokens":3,"cache_creation_input_tokens":8,"cache_read_input_tokens":10}}}` + "\n" +
 		`{"type":"assistant","timestamp":"2026-08-20T12:00:15Z","message":{"id":"message-2","role":"assistant","usage":{"input_tokens":4,"output_tokens":1,"cache_creation_input_tokens":0,"cache_read_input_tokens":2}}}` + "\n"
-	if err := os.WriteFile(filepath.Join(projectDir, sessionID+".jsonl"), []byte(transcript), 0o644); err != nil {
+	if err := os.WriteFile(transcriptPath, []byte(transcript), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(projectDir, sessionID, "subagents", "agent-1.jsonl"), []byte(
@@ -62,11 +66,12 @@ func TestCollectClaudeReportsMissingTranscript(t *testing.T) {
 func TestCollectClaudeMarksMalformedTranscript(t *testing.T) {
 	projectRoot := t.TempDir()
 	home := t.TempDir()
-	projectDir := filepath.Join(home, ".claude", "projects", projectSlug(projectRoot))
+	transcriptPath := claudeTranscriptPath(t, home, projectRoot, "malformed")
+	projectDir := filepath.Dir(transcriptPath)
 	if err := os.MkdirAll(projectDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(projectDir, "malformed.jsonl"), []byte("not json\n"), 0o644); err != nil {
+	if err := os.WriteFile(transcriptPath, []byte("not json\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -74,6 +79,41 @@ func TestCollectClaudeMarksMalformedTranscript(t *testing.T) {
 	if !errors.Is(err, errTranscriptParse) {
 		t.Fatalf("CollectClaude() error = %v, want transcript parse sentinel", err)
 	}
+}
+
+func TestCollectClaudeReportsPhysicalLineNumberAfterBlankEntry(t *testing.T) {
+	projectRoot := t.TempDir()
+	home := t.TempDir()
+	transcriptPath := claudeTranscriptPath(t, home, projectRoot, "bad-timestamp")
+	projectDir := filepath.Dir(transcriptPath)
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	transcript := "\n" +
+		`{"type":"assistant","timestamp":"invalid","message":{"id":"message-1","role":"assistant","usage":{"input_tokens":10,"output_tokens":2}}}` + "\n"
+	if err := os.WriteFile(transcriptPath, []byte(transcript), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := CollectClaude(
+		projectRoot,
+		home,
+		[]string{"bad-timestamp"},
+		time.Now().Add(-time.Minute),
+		time.Now(),
+	)
+	if err == nil || !strings.Contains(err.Error(), "line 2") {
+		t.Fatalf("CollectClaude() error = %v, want physical transcript line 2", err)
+	}
+}
+
+func claudeTranscriptPath(t *testing.T, home, projectRoot, sessionID string) string {
+	t.Helper()
+	path, err := claudetranscript.New(home).Find(projectRoot, sessionID)
+	if err != nil {
+		t.Fatalf("find Claude transcript path: %v", err)
+	}
+	return path
 }
 
 func TestCollectCodexReadsLastCumulativeTokenCountFromAnyDateDirectory(t *testing.T) {

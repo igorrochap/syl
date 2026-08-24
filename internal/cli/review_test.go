@@ -60,6 +60,152 @@ func TestReviewTopSeamApprovePrintsFeedAndWritesLog(t *testing.T) {
 	}
 }
 
+func TestReviewWritesTranscriptArtifacts(t *testing.T) {
+	run := runCompletedClaudeReview(t)
+	if run.claude.runRequest.Prompt == "" {
+		t.Fatal("review did not run the Claude harness")
+	}
+
+	wantArtifacts := map[string]string{
+		"review.feed":       "Reviewing the transcript.\ntool: Read — {\"file_path\":\"review.diff\"}\nVERDICT: approve\nSUMMARY: The PTY review is ready\nFINDINGS:\n",
+		"review.transcript": "Reviewing the transcript.\nVERDICT: approve\nSUMMARY: The PTY review is ready\nFINDINGS:\n",
+		"sessions.txt":      "iteration 0 review: " + ptyReviewSessionID + "\n",
+	}
+	for name, want := range wantArtifacts {
+		contents, err := os.ReadFile(filepath.Join(run.dir, name))
+		if err != nil {
+			t.Fatalf("read PTY artifact %s: %v", name, err)
+		}
+		if string(contents) != want {
+			t.Fatalf("PTY artifact %s = %q, want %q", name, contents, want)
+		}
+	}
+}
+
+func TestReviewWritesReviewLogFromTranscript(t *testing.T) {
+	run := runCompletedClaudeReview(t)
+	logContents := readSingleReviewLog(t, run.fixture.root)
+	if !strings.Contains(logContents, "VERDICT: approve") ||
+		!strings.Contains(logContents, "SUMMARY: The PTY review is ready") {
+		t.Fatalf("PTY review log = %q, want transcript verdict", logContents)
+	}
+}
+
+func TestReviewRecordsCompleteClaudeTranscriptUsage(t *testing.T) {
+	run := runCompletedClaudeReview(t)
+	artifact, err := usage.ReadArtifact(filepath.Join(run.dir, "usage.json"))
+	if err != nil {
+		t.Fatalf("read PTY usage artifact: %v", err)
+	}
+	entry := findUsageEntry(t, artifact, 0, "review")
+	if !entry.Tracked || entry.Metrics == nil || entry.Metrics.WeightedEstimate != 17.5 {
+		t.Fatalf("PTY review usage = %#v, want complete transcript metrics", entry)
+	}
+}
+
+func TestReviewClaudeUsageMatchesRecomputation(t *testing.T) {
+	run := runCompletedClaudeReview(t)
+	var recordedOutput, recordedError strings.Builder
+	if code := run.fixture.app.Run(
+		context.Background(),
+		[]string{"usage", filepath.Base(run.dir)},
+		&recordedOutput,
+		&recordedError,
+	); code != 0 {
+		t.Fatalf("PTY usage code = %d, stderr = %q", code, recordedError.String())
+	}
+	if err := os.Remove(filepath.Join(run.dir, "usage.json")); err != nil {
+		t.Fatalf("remove PTY usage artifact: %v", err)
+	}
+	var recomputedOutput, recomputedError strings.Builder
+	if code := run.fixture.app.Run(
+		context.Background(),
+		[]string{"usage", filepath.Base(run.dir)},
+		&recomputedOutput,
+		&recomputedError,
+	); code != 0 {
+		t.Fatalf("recomputed PTY usage code = %d, stderr = %q", code, recomputedError.String())
+	}
+	wantRecomputed := "recomputed from transcripts — usage.json not found\n" + recordedOutput.String()
+	if recomputedOutput.String() != wantRecomputed {
+		t.Fatalf("recomputed PTY usage = %q, want recorded value %q", recomputedOutput.String(), wantRecomputed)
+	}
+}
+
+const ptyReviewSessionID = "pty-session"
+
+type completedClaudeReview struct {
+	fixture *reviewFixture
+	dir     string
+	claude  *scriptedHarness
+}
+
+func runCompletedClaudeReview(t *testing.T) completedClaudeReview {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	claude := &scriptedHarness{first: []harness.Event{
+		{Type: harness.EventAssistantText, Text: "Reviewing the transcript.\n"},
+		{Type: harness.EventToolUse, ToolName: "Read", ArgumentGist: `{"file_path":"review.diff"}`},
+		{Type: harness.EventAssistantText, Text: "VERDICT: approve\nSUMMARY: The PTY review is ready\nFINDINGS:\n"},
+	}, knownSessionID: ptyReviewSessionID}
+	fixture := newReviewFixture(t, claude)
+	writePTYReviewTranscriptFixture(t, home, fixture.root, ptyReviewSessionID)
+
+	code := fixture.app.Run(
+		context.Background(),
+		[]string{"review"},
+		&fixture.stdout,
+		&fixture.stderr,
+	)
+	if code != 0 {
+		t.Fatalf("review code = %d, want 0; stderr = %q", code, fixture.stderr.String())
+	}
+	runDirs := reviewRunArtifactPaths(t, fixture.root)
+	if len(runDirs) != 1 {
+		t.Fatalf("run artifact directories = %v, want one", runDirs)
+	}
+	return completedClaudeReview{
+		fixture: fixture,
+		dir:     runDirs[0],
+		claude:  claude,
+	}
+}
+
+func TestReviewRejectsRemovedPTYFlag(t *testing.T) {
+	fixture := newReviewFixture(t, &scriptedHarness{})
+
+	code := fixture.app.Run(
+		context.Background(),
+		[]string{"review", "--pty"},
+		&fixture.stdout,
+		&fixture.stderr,
+	)
+	if code == 0 || !strings.Contains(fixture.stderr.String(), "unknown flag: --pty") {
+		t.Fatalf("review code = %d, stderr = %q, want removed flag error", code, fixture.stderr.String())
+	}
+}
+
+func writePTYReviewTranscriptFixture(t *testing.T, home, projectRoot, sessionID string) {
+	t.Helper()
+	contents, err := os.ReadFile(filepath.Join("testdata", "pty-review-session.jsonl"))
+	if err != nil {
+		t.Fatalf("read PTY transcript fixture: %v", err)
+	}
+	projectDir := filepath.Join(
+		home,
+		".claude",
+		"projects",
+		strings.ReplaceAll(projectRoot, string(filepath.Separator), "-"),
+	)
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatalf("create Claude transcript fixture directory: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, sessionID+".jsonl"), contents, 0o644); err != nil {
+		t.Fatalf("write PTY transcript fixture: %v", err)
+	}
+}
+
 func TestReviewPrecomputesAuthoritativeDiffOnceAndPassesArtifactPath(t *testing.T) {
 	harness := &scriptedHarness{first: []harness.Event{
 		{Type: harness.EventSession, SessionID: "session-diff"},
@@ -598,6 +744,7 @@ func writeReviewTicket(t *testing.T, root, feature, number, title, body string) 
 type scriptedHarness struct {
 	first          []harness.Event
 	retry          []harness.Event
+	knownSessionID string
 	beforeRun      func() error
 	runRequest     harness.Request
 	resumeCount    int
@@ -612,20 +759,21 @@ func (h *scriptedHarness) Run(_ context.Context, request harness.Request) (harne
 			return nil, err
 		}
 	}
-	return scriptedHarnessStream{events: h.first}, nil
+	return scriptedHarnessStream{events: h.first, sessionID: h.knownSessionID}, nil
 }
 
 func (h *scriptedHarness) Resume(_ context.Context, sessionID string, request harness.Request) (harness.Stream, error) {
 	h.resumeCount++
 	h.resumedSession = sessionID
 	h.resumePrompt = request.Prompt
-	return scriptedHarnessStream{events: h.retry}, nil
+	return scriptedHarnessStream{events: h.retry, sessionID: h.knownSessionID}, nil
 }
 
 func (*scriptedHarness) Attach(context.Context, harness.Request) error { return nil }
 
 type scriptedHarnessStream struct {
-	events []harness.Event
+	events    []harness.Event
+	sessionID string
 }
 
 func (s scriptedHarnessStream) Events() <-chan harness.Event {
@@ -638,6 +786,8 @@ func (s scriptedHarnessStream) Events() <-chan harness.Event {
 }
 
 func (scriptedHarnessStream) Wait() error { return nil }
+
+func (s scriptedHarnessStream) SessionID() string { return s.sessionID }
 
 type reviewGitHubRunner struct {
 	calls       []string

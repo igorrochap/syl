@@ -201,7 +201,7 @@ type planHarness struct {
 }
 
 func (*planHarness) Run(context.Context, harness.Request) (harness.Stream, error) {
-	return nil, fmt.Errorf("unexpected headless run")
+	return nil, fmt.Errorf("unexpected harness run")
 }
 
 func (*planHarness) Resume(context.Context, string, harness.Request) (harness.Stream, error) {
