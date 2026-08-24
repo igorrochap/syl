@@ -2,6 +2,51 @@
 
 <!-- version list -->
 
+## v1.18.0 (2026-08-24)
+
+### Bug Fixes
+
+- **harness**: Ensure PTY exits upon detecting verdict
+  ([#79](https://github.com/igorrochap/syl/pull/79),
+  [`9cee446`](https://github.com/igorrochap/syl/commit/9cee446185d2c2867261bb136c871e0f2c52fb2b))
+
+- **test**: Resolve CI flakes by localizing test file access
+  ([#79](https://github.com/igorrochap/syl/pull/79),
+  [`9cee446`](https://github.com/igorrochap/syl/commit/9cee446185d2c2867261bb136c871e0f2c52fb2b))
+
+### Documentation
+
+- **architecture**: Add ADR for pty-based Claude transport
+  ([#79](https://github.com/igorrochap/syl/pull/79),
+  [`9cee446`](https://github.com/igorrochap/syl/commit/9cee446185d2c2867261bb136c871e0f2c52fb2b))
+
+### Features
+
+- **cli**: Add --pty flag for terminal-based reviews
+  ([#79](https://github.com/igorrochap/syl/pull/79),
+  [`9cee446`](https://github.com/igorrochap/syl/commit/9cee446185d2c2867261bb136c871e0f2c52fb2b))
+
+- **cli**: Implement PTY-based terminal session transport
+  ([#79](https://github.com/igorrochap/syl/pull/79),
+  [`9cee446`](https://github.com/igorrochap/syl/commit/9cee446185d2c2867261bb136c871e0f2c52fb2b))
+
+- **cli**: Support PTY transcript usage tracking ([#79](https://github.com/igorrochap/syl/pull/79),
+  [`9cee446`](https://github.com/igorrochap/syl/commit/9cee446185d2c2867261bb136c871e0f2c52fb2b))
+
+- **harness**: Implement PTY session resumption ([#79](https://github.com/igorrochap/syl/pull/79),
+  [`9cee446`](https://github.com/igorrochap/syl/commit/9cee446185d2c2867261bb136c871e0f2c52fb2b))
+
+### Refactoring
+
+- **cli**: Remove headless Claude harness and --pty flag
+  ([#79](https://github.com/igorrochap/syl/pull/79),
+  [`9cee446`](https://github.com/igorrochap/syl/commit/9cee446185d2c2867261bb136c871e0f2c52fb2b))
+
+- **transcript**: Extract Claude transcript reading logic
+  ([#79](https://github.com/igorrochap/syl/pull/79),
+  [`9cee446`](https://github.com/igorrochap/syl/commit/9cee446185d2c2867261bb136c871e0f2c52fb2b))
+
+
 ## v1.17.1 (2026-08-20)
 
 ### Bug Fixes
