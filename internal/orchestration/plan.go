@@ -18,7 +18,7 @@ import (
 
 // PlanOptions contains the boundaries and user choices for an interactive plan session.
 type PlanOptions struct {
-	ProjectRoot  string
+	WorkRoot     string
 	Topic        string
 	TrackerName  config.Tracker
 	Role         config.RoleConfig
@@ -49,7 +49,7 @@ func RunPlan(ctx context.Context, options PlanOptions) error {
 	}
 
 	for _, name := range planSkills(options) {
-		path := filepath.Join(options.ProjectRoot, ".agents", "skills", name, "SKILL.md")
+		path := filepath.Join(options.WorkRoot, ".agents", "skills", name, "SKILL.md")
 		info, err := os.Stat(path)
 		if errors.Is(err, os.ErrNotExist) || err == nil && info.IsDir() {
 			return fmt.Errorf("required plan skill %q is not installed in .agents/skills", name)

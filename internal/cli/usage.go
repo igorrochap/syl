@@ -21,7 +21,7 @@ func (a *App) usageCommand() *cobra.Command {
 		Short: "show per-role token usage for a run",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			runDir, err := resolveUsageRun(a.projectRoot, args)
+			runDir, err := resolveUsageRun(a.originRoot, args)
 			if err != nil {
 				return err
 			}
@@ -29,7 +29,7 @@ func (a *App) usageCommand() *cobra.Command {
 			artifact, err := usage.ReadArtifact(artifactPath)
 			if err != nil {
 				if errors.Is(err, os.ErrNotExist) {
-					artifact, recomputeErr := recomputeUsage(a.projectRoot, runDir)
+					artifact, recomputeErr := recomputeUsage(a.originRoot, a.workRoot, runDir)
 					if recomputeErr != nil {
 						return recomputeErr
 					}
@@ -46,9 +46,9 @@ func (a *App) usageCommand() *cobra.Command {
 	return command
 }
 
-func recomputeUsage(projectRoot, runDir string) (usage.Artifact, error) {
+func recomputeUsage(originRoot, workRoot, runDir string) (usage.Artifact, error) {
 	roles := make(map[string]usage.RoleMetadata)
-	if projectConfig, err := config.Load(projectRoot); err == nil {
+	if projectConfig, err := config.Load(originRoot); err == nil {
 		roles["implement"] = usage.RoleMetadata{
 			Harness: string(projectConfig.Roles.Implement.Harness),
 			Model:   projectConfig.Roles.Implement.Model,
@@ -58,11 +58,11 @@ func recomputeUsage(projectRoot, runDir string) (usage.Artifact, error) {
 			Model:   projectConfig.Roles.Review.Model,
 		}
 	}
-	return usage.RecomputeArtifact(runDir, projectRoot, "", roles)
+	return usage.RecomputeArtifact(runDir, workRoot, "", roles)
 }
 
-func resolveUsageRun(projectRoot string, args []string) (string, error) {
-	runsDir := filepath.Join(projectRoot, ".syl", "runs")
+func resolveUsageRun(originRoot string, args []string) (string, error) {
+	runsDir := filepath.Join(originRoot, ".syl", "runs")
 	if len(args) == 1 {
 		name := strings.TrimSpace(args[0])
 		if name == "" {
@@ -71,7 +71,7 @@ func resolveUsageRun(projectRoot string, args []string) (string, error) {
 		candidate := name
 		if !filepath.IsAbs(candidate) {
 			if strings.ContainsRune(candidate, os.PathSeparator) || strings.HasPrefix(candidate, ".") {
-				candidate = filepath.Join(projectRoot, candidate)
+				candidate = filepath.Join(originRoot, candidate)
 			} else {
 				candidate = filepath.Join(runsDir, candidate)
 			}

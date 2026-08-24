@@ -28,9 +28,9 @@ func TestImplementQuestionPausesAndResumesTheSameSession(t *testing.T) {
 			{{Type: harness.EventSession, SessionID: "implement-session"}, {Type: harness.EventAssistantText, Text: "Continuing after the answer."}},
 		},
 	}
-	fixture.app.deps.Harnesses["codex"] = loop
-	fixture.app.deps.Harnesses["claude"] = loop
-	fixture.app.deps.GH = &loopGHRunner{}
+	fixture.harnesses["codex"] = loop
+	fixture.harnesses["claude"] = loop
+	fixture.app.deps.GH = fixedGH(&loopGHRunner{})
 	fixture.app.deps.Input = strings.NewReader("Use SQLite.\\\nwith WAL.\n")
 	fixture.app.deps.Notifier = notifier
 
@@ -62,9 +62,9 @@ func TestReviewerQuestionPausesAndResumesTheSameSession(t *testing.T) {
 			{{Type: harness.EventSession, SessionID: "review-session"}, {Type: harness.EventAssistantText, Text: approveVerdictText}},
 		},
 	}
-	fixture.app.deps.Harnesses["codex"] = loop
-	fixture.app.deps.Harnesses["claude"] = loop
-	fixture.app.deps.GH = &loopGHRunner{}
+	fixture.harnesses["codex"] = loop
+	fixture.harnesses["claude"] = loop
+	fixture.app.deps.GH = fixedGH(&loopGHRunner{})
 	fixture.app.deps.Input = strings.NewReader("Yes, it is a blocker.\n")
 	fixture.app.deps.Notifier = notifier
 
@@ -93,9 +93,9 @@ func TestTwoQuestionsPauseTwiceWithoutRestartingTheIteration(t *testing.T) {
 			{{Type: harness.EventSession, SessionID: "implement-session"}, {Type: harness.EventAssistantText, Text: "Done implementing."}},
 		},
 	}
-	fixture.app.deps.Harnesses["codex"] = loop
-	fixture.app.deps.Harnesses["claude"] = loop
-	fixture.app.deps.GH = &loopGHRunner{}
+	fixture.harnesses["codex"] = loop
+	fixture.harnesses["claude"] = loop
+	fixture.app.deps.GH = fixedGH(&loopGHRunner{})
 	fixture.app.deps.Input = strings.NewReader("First answer\nSecond answer\n")
 
 	code := fixture.app.Run(context.Background(), []string{"implement", "#42"}, &fixture.stdout, &fixture.stderr)

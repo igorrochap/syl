@@ -55,7 +55,7 @@ func TestSyncReportsEveryDriftClassAtTheTopSeam(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	app := New(root, Dependencies{Input: strings.NewReader("k\nk\n")})
+	app := New(root, root, Dependencies{Input: strings.NewReader("k\nk\n")})
 	var stdout, stderr strings.Builder
 	if code := app.Run(context.Background(), []string{"sync", "--dry-run"}, &stdout, &stderr); code != 0 {
 		t.Fatalf("sync --dry-run code = %d, stderr = %q", code, stderr.String())
@@ -84,7 +84,7 @@ func TestSyncDryRunChangesZeroBytes(t *testing.T) {
 	}
 	before := snapshotProject(t, root)
 
-	app := New(root, Dependencies{Input: strings.NewReader("k\n")})
+	app := New(root, root, Dependencies{Input: strings.NewReader("k\n")})
 	var stdout, stderr strings.Builder
 	if code := app.Run(context.Background(), []string{"sync", "--dry-run"}, &stdout, &stderr); code != 0 {
 		t.Fatalf("sync --dry-run code = %d, stderr = %q", code, stderr.String())
@@ -97,7 +97,7 @@ func TestSyncDryRunChangesZeroBytes(t *testing.T) {
 
 func TestSyncOnUpToDateProjectSaysSo(t *testing.T) {
 	root := initProjectForSync(t)
-	app := New(root, Dependencies{})
+	app := New(root, root, Dependencies{})
 	var stdout, stderr strings.Builder
 	if code := app.Run(context.Background(), []string{"sync"}, &stdout, &stderr); code != 0 {
 		t.Fatalf("sync code = %d, stderr = %q", code, stderr.String())
@@ -137,7 +137,7 @@ func TestSyncUpdatesApprovedSkillAndLockfileButKeepsRejectedSkill(t *testing.T) 
 	beforeKeptLock := lock.Skills["implement"]
 	writeTestSkillsLock(t, root, lock)
 
-	app := New(root, Dependencies{Input: strings.NewReader("k\nu\n")})
+	app := New(root, root, Dependencies{Input: strings.NewReader("k\nu\n")})
 	var stdout, stderr strings.Builder
 	if code := app.Run(context.Background(), []string{"sync"}, &stdout, &stderr); code != 0 {
 		t.Fatalf("sync code = %d, stderr = %q", code, stderr.String())
@@ -179,7 +179,7 @@ func TestSyncAllStillConfirmsLocallyModifiedCoreSkill(t *testing.T) {
 	}
 	beforeLock := readTestSkillsLock(t, root)
 
-	app := New(root, Dependencies{Input: strings.NewReader("d\nk\n")})
+	app := New(root, root, Dependencies{Input: strings.NewReader("d\nk\n")})
 	var stdout, stderr strings.Builder
 	if code := app.Run(context.Background(), []string{"sync", "--all"}, &stdout, &stderr); code != 0 {
 		t.Fatalf("sync --all code = %d, stderr = %q", code, stderr.String())
@@ -205,7 +205,7 @@ func TestSyncAllStillConfirmsLocallyModifiedCoreSkill(t *testing.T) {
 func initProjectForSync(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
-	app := New(root, Dependencies{Input: defaultInitInput()})
+	app := New(root, root, Dependencies{Input: defaultInitInput()})
 	var stdout, stderr strings.Builder
 	if code := app.Run(context.Background(), []string{"init"}, &stdout, &stderr); code != 0 {
 		t.Fatalf("init code = %d, stderr = %q, stdout = %q", code, stderr.String(), stdout.String())

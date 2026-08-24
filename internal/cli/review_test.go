@@ -212,7 +212,7 @@ func TestReviewPrecomputesAuthoritativeDiffOnceAndPassesArtifactPath(t *testing.
 		{Type: harness.EventAssistantText, Text: approveVerdictText},
 	}}
 	fixture := newReviewFixture(t, harness)
-	git := fixture.app.deps.Git.(*reviewGitRunner)
+	git := fixture.app.deps.Git(fixture.app.workRoot).(*reviewGitRunner)
 
 	code := fixture.app.Run(context.Background(), []string{"review"}, &fixture.stdout, &fixture.stderr)
 	if code != 0 {
@@ -351,26 +351,26 @@ func TestStandaloneReviewRecordsUsageDuringRun(t *testing.T) {
 
 func TestReviewRejectsEmptyPrecomputedDiffBeforeRunningHarness(t *testing.T) {
 	fixture := newReviewFixture(t, &scriptedHarness{})
-	fixture.app.deps.Git.(*reviewGitRunner).diff = "  \n"
+	fixture.app.deps.Git(fixture.app.workRoot).(*reviewGitRunner).diff = "  \n"
 
 	code := fixture.app.Run(context.Background(), []string{"review"}, &fixture.stdout, &fixture.stderr)
 	if code == 0 || !strings.Contains(fixture.stderr.String(), "pre-computed diff") || !strings.Contains(fixture.stderr.String(), "empty") {
 		t.Fatalf("review code = %d, stderr = %q, want empty-diff failure", code, fixture.stderr.String())
 	}
-	if fixture.app.deps.Harnesses["claude"].(*scriptedHarness).runRequest.Prompt != "" {
+	if fixture.harnesses["claude"].(*scriptedHarness).runRequest.Prompt != "" {
 		t.Fatal("harness ran despite an empty pre-computed diff")
 	}
 }
 
 func TestReviewReportsDiffComputationFailureBeforeRunningHarness(t *testing.T) {
 	fixture := newReviewFixture(t, &scriptedHarness{})
-	fixture.app.deps.Git.(*reviewGitRunner).diffErr = errors.New("git unavailable")
+	fixture.app.deps.Git(fixture.app.workRoot).(*reviewGitRunner).diffErr = errors.New("git unavailable")
 
 	code := fixture.app.Run(context.Background(), []string{"review"}, &fixture.stdout, &fixture.stderr)
 	if code == 0 || !strings.Contains(fixture.stderr.String(), "compute review diff") || !strings.Contains(fixture.stderr.String(), "git unavailable") {
 		t.Fatalf("review code = %d, stderr = %q, want diff-computation failure", code, fixture.stderr.String())
 	}
-	if fixture.app.deps.Harnesses["claude"].(*scriptedHarness).runRequest.Prompt != "" {
+	if fixture.harnesses["claude"].(*scriptedHarness).runRequest.Prompt != "" {
 		t.Fatal("harness ran despite a diff-computation failure")
 	}
 }
@@ -458,7 +458,7 @@ func TestReviewWithGitHubReviewLogPostsFencedVerdictWithoutClosingIssue(t *testi
 	fixture := newReviewFixture(t, harness)
 	configureGitHubReviewLog(t, fixture.root)
 	github := &reviewGitHubRunner{}
-	fixture.app.deps.GH = github
+	fixture.app.deps.GH = fixedGH(github)
 
 	code := fixture.app.Run(context.Background(), []string{"review", "#42"}, &fixture.stdout, &fixture.stderr)
 	if code != 0 {
@@ -493,7 +493,7 @@ func TestReviewWithGitHubIssueWritesLocalReviewLog(t *testing.T) {
 	}}
 	fixture := newReviewFixture(t, harness)
 	github := &reviewGitHubRunner{}
-	fixture.app.deps.GH = github
+	fixture.app.deps.GH = fixedGH(github)
 
 	code := fixture.app.Run(context.Background(), []string{"review", "#42"}, &fixture.stdout, &fixture.stderr)
 	if code != 0 {
@@ -596,7 +596,7 @@ func TestGitHubReviewUnparseableVerdictDoesNotPostComment(t *testing.T) {
 	fixture := newReviewFixture(t, harness)
 	configureGitHubReviewLog(t, fixture.root)
 	github := &reviewGitHubRunner{}
-	fixture.app.deps.GH = github
+	fixture.app.deps.GH = fixedGH(github)
 
 	code := fixture.app.Run(context.Background(), []string{"review", "#42"}, &fixture.stdout, &fixture.stderr)
 	if code == 0 || !strings.Contains(fixture.stderr.String(), "reviewer produced no parseable verdict") {
@@ -653,20 +653,22 @@ const approveVerdictText = "VERDICT: approve\nSUMMARY: The working tree is ready
 const reviseVerdictText = "VERDICT: revise\nSUMMARY: Fix the remaining issue\nFINDINGS:\n- [blocking] internal/orchestration/review.go:42 — handle a missing session\n"
 
 type reviewFixture struct {
-	root   string
-	app    *App
-	stdout strings.Builder
-	stderr strings.Builder
+	root      string
+	app       *App
+	harnesses map[string]harness.Adapter
+	stdout    strings.Builder
+	stderr    strings.Builder
 }
 
 func newReviewFixture(t *testing.T, adapter harness.Adapter) *reviewFixture {
 	t.Helper()
 	base := newTopSeamFixture(t)
-	base.app = New(base.root, Dependencies{
-		Harnesses: map[string]harness.Adapter{"claude": adapter},
-		Git:       &reviewGitRunner{diff: "diff --git a/tracked.txt b/tracked.txt\n+reviewed\n"},
+	base.harnesses = map[string]harness.Adapter{"claude": adapter}
+	base.app = New(base.root, base.root, Dependencies{
+		Harnesses: harnessFactories(base.harnesses),
+		Git:       fixedGit(&reviewGitRunner{diff: "diff --git a/tracked.txt b/tracked.txt\n+reviewed\n"}),
 	})
-	return &reviewFixture{root: base.root, app: base.app}
+	return &reviewFixture{root: base.root, app: base.app, harnesses: base.harnesses}
 }
 
 func readSingleReviewLog(t *testing.T, root string) string {

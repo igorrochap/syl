@@ -53,7 +53,8 @@ const (
 )
 
 type ReviewOptions struct {
-	ProjectRoot          string
+	OriginRoot           string
+	WorkRoot             string
 	ProjectConfig        config.Config
 	IssueTracker         tracker.Tracker
 	Ticket               *tracker.Ticket
@@ -82,7 +83,7 @@ func RunReview(ctx context.Context, options ReviewOptions) error {
 	if options.Adapter == nil {
 		return fmt.Errorf("review harness %q is not configured", options.ProjectConfig.Roles.Review.Harness)
 	}
-	preparation, err := prepareReview(ctx, options.ProjectRoot, options.TicketRef, options.Git)
+	preparation, err := prepareReview(ctx, options.OriginRoot, options.TicketRef, options.Git)
 	if err != nil {
 		return err
 	}
@@ -146,7 +147,7 @@ func RunReview(ctx context.Context, options ReviewOptions) error {
 			return fmt.Errorf("post review to GitHub issue #%d: %w", options.Ticket.Number, err)
 		}
 	} else {
-		if _, err := writeLocalReviewLog(options.ProjectRoot, options.TicketRef, preparation.branchPoint, time.Now().UTC(), reviewVerdict); err != nil {
+		if _, err := writeLocalReviewLog(options.OriginRoot, options.TicketRef, preparation.branchPoint, time.Now().UTC(), reviewVerdict); err != nil {
 			return err
 		}
 	}
@@ -162,14 +163,14 @@ func RunReview(ctx context.Context, options ReviewOptions) error {
 }
 
 type reviewUsageParams struct {
-	recorder    RunRecorder
-	iteration   int
-	role        config.RoleConfig
-	execution   ReviewExecution
-	projectRoot string
-	startedAt   time.Time
-	endedAt     time.Time
-	transcript  bool
+	recorder   RunRecorder
+	iteration  int
+	role       config.RoleConfig
+	execution  ReviewExecution
+	workRoot   string
+	startedAt  time.Time
+	endedAt    time.Time
+	transcript bool
 }
 
 func recordStandaloneReviewUsage(
@@ -180,14 +181,14 @@ func recordStandaloneReviewUsage(
 	endedAt time.Time,
 ) {
 	recordReviewUsage(reviewUsageParams{
-		recorder:    recorder,
-		iteration:   0,
-		role:        options.ProjectConfig.Roles.Review,
-		execution:   execution,
-		projectRoot: options.ProjectRoot,
-		startedAt:   startedAt,
-		endedAt:     endedAt,
-		transcript:  options.TranscriptUsage,
+		recorder:   recorder,
+		iteration:  0,
+		role:       options.ProjectConfig.Roles.Review,
+		execution:  execution,
+		workRoot:   options.WorkRoot,
+		startedAt:  startedAt,
+		endedAt:    endedAt,
+		transcript: options.TranscriptUsage,
 	})
 }
 
@@ -204,14 +205,14 @@ func recordReviewUsage(params reviewUsageParams) {
 	if params.transcript {
 		recordRoleUsage(
 			params.recorder,
-			usage.CollectTranscriptInvocation(invocation, params.projectRoot, ""),
+			usage.CollectTranscriptInvocation(invocation, params.workRoot, ""),
 		)
 		return
 	}
-	recordRoleUsage(params.recorder, usage.CollectInvocation(invocation, params.projectRoot, ""))
+	recordRoleUsage(params.recorder, usage.CollectInvocation(invocation, params.workRoot, ""))
 }
 
-func prepareReview(ctx context.Context, projectRoot, ticketRef string, git GitRunner) (reviewPreparation, error) {
+func prepareReview(ctx context.Context, originRoot, ticketRef string, git GitRunner) (reviewPreparation, error) {
 	if git == nil {
 		return reviewPreparation{}, errors.New("review: git runner is not configured")
 	}
@@ -227,7 +228,7 @@ func prepareReview(ctx context.Context, projectRoot, ticketRef string, git GitRu
 	if err != nil {
 		return reviewPreparation{}, fmt.Errorf("review: %w", err)
 	}
-	recorder, err := newReviewRunRecorder(projectRoot, ticketRef, branchPoint)
+	recorder, err := newReviewRunRecorder(originRoot, ticketRef, branchPoint)
 	if err != nil {
 		return reviewPreparation{}, err
 	}
@@ -487,12 +488,12 @@ func formatGitHubReviewComment(reviewVerdict verdict.Verdict) string {
 	return fmt.Sprintf("## Review verdict\n\n```text\n%s```\n", formatVerdict(reviewVerdict))
 }
 
-func writeLocalReviewLog(projectRoot, ticketRef, branchPoint string, timestamp time.Time, reviewVerdict verdict.Verdict) (string, error) {
-	projectName := filepath.Base(filepath.Clean(projectRoot))
+func writeLocalReviewLog(originRoot, ticketRef, branchPoint string, timestamp time.Time, reviewVerdict verdict.Verdict) (string, error) {
+	projectName := filepath.Base(filepath.Clean(originRoot))
 	if projectName == "." || projectName == string(filepath.Separator) || projectName == "" {
 		projectName = "project"
 	}
-	reviewsDir := filepath.Join(projectRoot, ".scratch", projectName, "reviews")
+	reviewsDir := filepath.Join(originRoot, ".scratch", projectName, "reviews")
 	if err := os.MkdirAll(reviewsDir, 0o755); err != nil {
 		return "", fmt.Errorf("create local review log directory: %w", err)
 	}

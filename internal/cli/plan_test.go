@@ -52,7 +52,7 @@ func TestPlanComposesInteractivePromptForFlags(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			fixture := newPlanFixture(t)
 			adapter := &planHarness{}
-			fixture.app.deps.Harnesses["claude"] = adapter
+			fixture.harnesses["claude"] = adapter
 
 			code := fixture.app.Run(context.Background(), tt.args, &fixture.stdout, &fixture.stderr)
 			if code != 0 {
@@ -80,7 +80,7 @@ func TestPlanComposesInteractivePromptForFlags(t *testing.T) {
 func TestPlanRejectsWithDocsWithoutStartingSession(t *testing.T) {
 	fixture := newPlanFixture(t)
 	adapter := &planHarness{}
-	fixture.app.deps.Harnesses["claude"] = adapter
+	fixture.harnesses["claude"] = adapter
 
 	code := fixture.app.Run(context.Background(), []string{"plan", "--with-docs", "add offline mode"}, &fixture.stdout, &fixture.stderr)
 	if code == 0 || !strings.Contains(fixture.stderr.String(), "--with-docs requires --grill") {
@@ -94,7 +94,7 @@ func TestPlanRejectsWithDocsWithoutStartingSession(t *testing.T) {
 func TestPlanFailsBeforeAttachWhenReferencedSkillIsMissing(t *testing.T) {
 	fixture := newPlanFixture(t)
 	adapter := &planHarness{}
-	fixture.app.deps.Harnesses["claude"] = adapter
+	fixture.harnesses["claude"] = adapter
 	if err := os.RemoveAll(filepath.Join(fixture.root, ".agents", "skills", "to-spec")); err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +117,7 @@ func TestPlanReportsTicketsCreatedOnLocalTracker(t *testing.T) {
 		writePlanTicket(t, fixture.root, "offline", 15, "Cache writes", "None — can start immediately")
 		return nil
 	}}
-	fixture.app.deps.Harnesses["claude"] = adapter
+	fixture.harnesses["claude"] = adapter
 
 	code := fixture.app.Run(context.Background(), []string{"plan", "add offline mode"}, &fixture.stdout, &fixture.stderr)
 	if code != 0 {
@@ -132,7 +132,7 @@ func TestPlanReportsTicketsCreatedOnLocalTracker(t *testing.T) {
 
 func TestPlanReportsTicketsCreatedOnGitHubTracker(t *testing.T) {
 	fixture := newPlanFixture(t)
-	github := fixture.app.deps.GH.(*planGHRunner)
+	github := fixture.app.deps.GH(fixture.app.originRoot).(*planGHRunner)
 	github.after = `[` +
 		`{"number":23,"title":"Blocked","body":"## Blocked by\n\n- #22","state":"OPEN","labels":[]},` +
 		`{"number":22,"title":"Ready","body":"## Blocked by\n\n- None","state":"OPEN","labels":[]}` +
@@ -161,7 +161,7 @@ func newPlanFixture(t *testing.T) *topSeamFixture {
 			t.Fatal(err)
 		}
 	}
-	fixture.app.deps.GH = &planGHRunner{}
+	fixture.app.deps.GH = fixedGH(&planGHRunner{})
 	return fixture
 }
 

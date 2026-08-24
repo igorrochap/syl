@@ -24,13 +24,15 @@ type implementSetup struct {
 }
 
 type ImplementOptions struct {
-	ProjectRoot          string
+	OriginRoot           string
+	WorkRoot             string
 	ProjectConfig        config.Config
 	IssueTracker         tracker.Tracker
 	Ticket               tracker.Ticket
 	Implementer          harness.Adapter
 	Reviewer             harness.Adapter
 	Git                  GitRunner
+	OriginGit            GitRunner
 	Notifier             Notifier
 	Input                io.Reader
 	Output               io.Writer
@@ -51,7 +53,11 @@ func RunImplement(ctx context.Context, options ImplementOptions) error {
 	if options.Reviewer == nil {
 		return fmt.Errorf("review harness %q is not configured", projectConfig.Roles.Review.Harness)
 	}
-	setup, err := prepareImplement(ctx, options.Git, issueTracker, ticket)
+	originGit := options.OriginGit
+	if originGit == nil {
+		originGit = options.Git
+	}
+	setup, err := prepareImplementWithGit(ctx, options.Git, originGit, issueTracker, ticket)
 	if err != nil {
 		return err
 	}
@@ -61,7 +67,7 @@ func RunImplement(ctx context.Context, options ImplementOptions) error {
 	}
 	questions := NewQuestionHandler(options.Input, options.Output, "#"+strconv.Itoa(ticket.Number), notifier)
 	recorder, err := newImplementRunRecorder(
-		options.ProjectRoot,
+		options.OriginRoot,
 		ticket.Number,
 		setup.branch,
 		setup.branchPoint,
@@ -76,7 +82,7 @@ func RunImplement(ctx context.Context, options ImplementOptions) error {
 	}
 	iterations, final, nits, err := runImplementIterations(ctx, implementIterationsParams{
 		git:           setup.git,
-		projectRoot:   options.ProjectRoot,
+		workRoot:      options.WorkRoot,
 		implementer:   options.Implementer,
 		reviewer:      options.Reviewer,
 		projectConfig: projectConfig,
@@ -115,7 +121,17 @@ func RunImplement(ctx context.Context, options ImplementOptions) error {
 }
 
 func prepareImplement(ctx context.Context, git GitRunner, issueTracker tracker.Tracker, ticket tracker.Ticket) (implementSetup, error) {
-	status, err := git.Run(ctx, "status", "--porcelain", "--untracked-files=all")
+	return prepareImplementWithGit(ctx, git, git, issueTracker, ticket)
+}
+
+func prepareImplementWithGit(
+	ctx context.Context,
+	workGit GitRunner,
+	originGit GitRunner,
+	issueTracker tracker.Tracker,
+	ticket tracker.Ticket,
+) (implementSetup, error) {
+	status, err := workGit.Run(ctx, "status", "--porcelain", "--untracked-files=all")
 	if err != nil {
 		return implementSetup{}, fmt.Errorf("check working tree: %w", err)
 	}
@@ -123,7 +139,7 @@ func prepareImplement(ctx context.Context, git GitRunner, issueTracker tracker.T
 		return implementSetup{}, errors.New("working tree is dirty; commit or stash changes first")
 	}
 
-	branchPoint, err := git.Run(ctx, "rev-parse", "HEAD")
+	branchPoint, err := workGit.Run(ctx, "rev-parse", "HEAD")
 	if err != nil {
 		return implementSetup{}, fmt.Errorf("record branch point: %w", err)
 	}
@@ -132,18 +148,18 @@ func prepareImplement(ctx context.Context, git GitRunner, issueTracker tracker.T
 		return implementSetup{}, errors.New("record branch point: git returned an empty ref")
 	}
 	branch := resolveBranchName(ticket)
-	if _, err := git.Run(ctx, "switch", "-c", branch); err != nil {
+	if _, err := originGit.Run(ctx, "switch", "-c", branch); err != nil {
 		return implementSetup{}, fmt.Errorf("create implementation branch %q: %w", branch, err)
 	}
 	if err := issueTracker.UpdateStatus(ctx, ticket.Number, "doing"); err != nil {
 		return implementSetup{}, fmt.Errorf("mark ticket #%d as doing: %w", ticket.Number, err)
 	}
-	return implementSetup{git: git, branch: branch, branchPoint: branchPoint}, nil
+	return implementSetup{git: workGit, branch: branch, branchPoint: branchPoint}, nil
 }
 
 type implementIterationsParams struct {
 	git           GitRunner
-	projectRoot   string
+	workRoot      string
 	implementer   harness.Adapter
 	reviewer      harness.Adapter
 	projectConfig config.Config
@@ -202,7 +218,7 @@ func runImplementIterations(ctx context.Context, params implementIterationsParam
 			SessionIDs: implementResult.SessionIDs,
 			StartedAt:  implementStartedAt,
 			EndedAt:    implementEndedAt,
-		}, params.projectRoot, ""))
+		}, params.workRoot, ""))
 		if err := params.recorder.RecordImplementTurn(
 			iteration,
 			implementResult.Feed,
@@ -249,13 +265,13 @@ func runImplementIterations(ctx context.Context, params implementIterationsParam
 			var unparseable *UnparseableVerdictError
 			if errors.As(err, &unparseable) {
 				recordReviewUsage(reviewUsageParams{
-					recorder:    params.recorder,
-					iteration:   iteration,
-					role:        params.projectConfig.Roles.Review,
-					execution:   unparseable.Execution,
-					projectRoot: params.projectRoot,
-					startedAt:   reviewStartedAt,
-					endedAt:     reviewEndedAt,
+					recorder:  params.recorder,
+					iteration: iteration,
+					role:      params.projectConfig.Roles.Review,
+					execution: unparseable.Execution,
+					workRoot:  params.workRoot,
+					startedAt: reviewStartedAt,
+					endedAt:   reviewEndedAt,
 				})
 				if artifactErr := params.recorder.RecordReviewOutput(iteration, unparseable.Execution); artifactErr != nil {
 					return 0, verdict.Verdict{}, nil, artifactErr
@@ -265,13 +281,13 @@ func runImplementIterations(ctx context.Context, params implementIterationsParam
 			return 0, verdict.Verdict{}, nil, err
 		}
 		recordReviewUsage(reviewUsageParams{
-			recorder:    params.recorder,
-			iteration:   iteration,
-			role:        params.projectConfig.Roles.Review,
-			execution:   reviewResult,
-			projectRoot: params.projectRoot,
-			startedAt:   reviewStartedAt,
-			endedAt:     reviewEndedAt,
+			recorder:  params.recorder,
+			iteration: iteration,
+			role:      params.projectConfig.Roles.Review,
+			execution: reviewResult,
+			workRoot:  params.workRoot,
+			startedAt: reviewStartedAt,
+			endedAt:   reviewEndedAt,
 		})
 		if err := params.recorder.RecordReviewOutput(iteration, reviewResult); err != nil {
 			return 0, verdict.Verdict{}, nil, err

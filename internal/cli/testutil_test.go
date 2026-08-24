@@ -9,13 +9,16 @@ import (
 	"testing"
 
 	"github.com/igorrochap/syl/internal/harness"
+	"github.com/igorrochap/syl/internal/orchestration"
+	"github.com/igorrochap/syl/internal/tracker"
 )
 
 type topSeamFixture struct {
-	root   string
-	app    *App
-	stdout bytes.Buffer
-	stderr bytes.Buffer
+	root      string
+	app       *App
+	harnesses map[string]harness.Adapter
+	stdout    bytes.Buffer
+	stderr    bytes.Buffer
 }
 
 func newTopSeamFixture(t *testing.T) *topSeamFixture {
@@ -58,18 +61,32 @@ effort = "medium"
 		t.Fatal(err)
 	}
 
+	harnesses := map[string]harness.Adapter{
+		"claude":   fakeHarness{},
+		"codex":    fakeHarness{},
+		"opencode": fakeHarness{},
+	}
 	return &topSeamFixture{
-		root: root,
-		app: New(root, Dependencies{
-			Harnesses: map[string]harness.Adapter{
-				"claude":   fakeHarness{},
-				"codex":    fakeHarness{},
-				"opencode": fakeHarness{},
-			},
-			Notifier: fakeNotifier{},
-			GH:       fakeGHRunner{},
+		root:      root,
+		harnesses: harnesses,
+		app: New(root, root, Dependencies{
+			Harnesses: harnessFactories(harnesses),
+			Notifier:  fakeNotifier{},
+			GH:        fixedGH(fakeGHRunner{}),
 		}),
 	}
+}
+
+func harnessFactories(adapters map[string]harness.Adapter) func(string) map[string]harness.Adapter {
+	return func(string) map[string]harness.Adapter { return adapters }
+}
+
+func fixedGH(runner tracker.GHRunner) func(string) tracker.GHRunner {
+	return func(string) tracker.GHRunner { return runner }
+}
+
+func fixedGit(runner orchestration.GitRunner) func(string) orchestration.GitRunner {
+	return func(string) orchestration.GitRunner { return runner }
 }
 
 type fakeHarness struct{}
