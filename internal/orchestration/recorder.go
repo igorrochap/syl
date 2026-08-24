@@ -63,14 +63,14 @@ type sessionKey struct {
 var _ RunRecorder = (*diskRunRecorder)(nil)
 
 func newImplementRunRecorder(
-	projectRoot string,
+	originRoot string,
 	issueNumber int,
 	branch string,
 	branchPoint string,
 ) (*diskRunRecorder, error) {
 	metadata := fmt.Sprintf("Branch: %s\nBranch point: %s\n", branch, branchPoint)
 	return newDiskRunRecorder(
-		projectRoot,
+		originRoot,
 		strconv.Itoa(issueNumber),
 		metadata,
 		"implement",
@@ -78,7 +78,7 @@ func newImplementRunRecorder(
 }
 
 func newReviewRunRecorder(
-	projectRoot string,
+	originRoot string,
 	ticketRef string,
 	branchPoint string,
 ) (*diskRunRecorder, error) {
@@ -88,17 +88,17 @@ func newReviewRunRecorder(
 		suffix = strconv.Itoa(number)
 	}
 	metadata := fmt.Sprintf("Ticket: %s\nBranch point: %s\n", trimmedTicketRef, branchPoint)
-	return newDiskRunRecorder(projectRoot, suffix, metadata, "review")
+	return newDiskRunRecorder(originRoot, suffix, metadata, "review")
 }
 
 func newDiskRunRecorder(
-	projectRoot string,
+	originRoot string,
 	suffix string,
 	metadata string,
 	runType string,
 ) (*diskRunRecorder, error) {
 	dir := filepath.Join(
-		projectRoot,
+		originRoot,
 		".syl",
 		"runs",
 		time.Now().UTC().Format("20060102T150405.000000000Z")+"-"+suffix,

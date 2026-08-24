@@ -25,9 +25,9 @@ func TestImplementPrintsIdentificationBannerWithResolvedConfigAndArtifacts(t *te
 			{{Type: harness.EventSession, SessionID: "review-session"}, {Type: harness.EventAssistantText, Text: approveVerdictText}},
 		},
 	}
-	fixture.app.deps.Harnesses["codex"] = loop
-	fixture.app.deps.Harnesses["claude"] = loop
-	fixture.app.deps.GH = &loopGHRunner{}
+	fixture.harnesses["codex"] = loop
+	fixture.harnesses["claude"] = loop
+	fixture.app.deps.GH = fixedGH(&loopGHRunner{})
 
 	code := fixture.app.Run(context.Background(), []string{"implement", "#42"}, &fixture.stdout, &fixture.stderr)
 	if code != 0 {

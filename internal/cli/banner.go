@@ -10,8 +10,8 @@ import (
 	"github.com/igorrochap/syl/internal/tracker"
 )
 
-func writeImplementBanner(output io.Writer, projectRoot string, projectConfig config.Config, ticket tracker.Ticket, artifactDir string) error {
-	relativeArtifactDir, err := filepath.Rel(projectRoot, artifactDir)
+func writeImplementBanner(output io.Writer, originRoot string, projectConfig config.Config, ticket tracker.Ticket, artifactDir string) error {
+	relativeArtifactDir, err := filepath.Rel(originRoot, artifactDir)
 	if err != nil {
 		return fmt.Errorf("make run artifacts path relative to project root: %w", err)
 	}

@@ -39,7 +39,7 @@ func TestInitBlankDirectoryScaffoldsProject(t *testing.T) {
 		"reviewer",
 		"medium",
 	}, "\n") + "\n")
-	app := New(root, Dependencies{Input: input})
+	app := New(root, root, Dependencies{Input: input})
 	var stdout, stderr strings.Builder
 
 	code := app.Run(context.Background(), []string{"init"}, &stdout, &stderr)
@@ -109,7 +109,7 @@ func TestInitBlankDirectoryScaffoldsProject(t *testing.T) {
 func TestInitKeyboardTUIAcceptsDefaultsAndTogglesSelections(t *testing.T) {
 	root := t.TempDir()
 	input := strings.NewReader(" \n\n\x1b[B\n" + strings.Repeat("\n", 9))
-	app := New(root, Dependencies{Input: input})
+	app := New(root, root, Dependencies{Input: input})
 	var stdout, stderr strings.Builder
 
 	code := app.Run(context.Background(), []string{"init"}, &stdout, &stderr)
@@ -133,7 +133,7 @@ func TestInitAbortsWithoutChangesWhenClaudeDirectoryExists(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(root, ".claude"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	app := New(root, Dependencies{Input: strings.NewReader("")})
+	app := New(root, root, Dependencies{Input: strings.NewReader("")})
 	var stdout, stderr strings.Builder
 
 	code := app.Run(context.Background(), []string{"init"}, &stdout, &stderr)
@@ -152,7 +152,7 @@ func TestInitAbortsWithoutChangesWhenClaudeDirectoryExists(t *testing.T) {
 
 func TestInitCompletesInNonGitDirectoryWithoutGitignore(t *testing.T) {
 	root := t.TempDir()
-	app := New(root, Dependencies{Input: defaultInitInput()})
+	app := New(root, root, Dependencies{Input: defaultInitInput()})
 	var stdout, stderr strings.Builder
 
 	code := app.Run(context.Background(), []string{"init"}, &stdout, &stderr)
@@ -166,7 +166,7 @@ func TestInitCompletesInNonGitDirectoryWithoutGitignore(t *testing.T) {
 
 func TestInitRerunShowsChangesAndDoesNotModifyWithoutConfirmation(t *testing.T) {
 	root := t.TempDir()
-	first := New(root, Dependencies{Input: defaultInitInput()})
+	first := New(root, root, Dependencies{Input: defaultInitInput()})
 	var firstOut, firstErr strings.Builder
 	if code := first.Run(context.Background(), []string{"init"}, &firstOut, &firstErr); code != 0 {
 		t.Fatalf("initial init code = %d; stderr = %q", code, firstErr.String())
@@ -180,7 +180,7 @@ func TestInitRerunShowsChangesAndDoesNotModifyWithoutConfirmation(t *testing.T) 
 		"", "local", "github", "codex", "new-model", "low",
 		"", "", "", "", "", "", "no",
 	}, "\n") + "\n")
-	again := New(root, Dependencies{Input: runAgainInput})
+	again := New(root, root, Dependencies{Input: runAgainInput})
 	var stdout, stderr strings.Builder
 	code := again.Run(context.Background(), []string{"init"}, &stdout, &stderr)
 	if code != 0 {
@@ -200,7 +200,7 @@ func TestInitRerunShowsChangesAndDoesNotModifyWithoutConfirmation(t *testing.T) 
 
 func TestInitRerunConfirmsSkillOverwriteBeforeChangingIt(t *testing.T) {
 	root := t.TempDir()
-	first := New(root, Dependencies{Input: defaultInitInput()})
+	first := New(root, root, Dependencies{Input: defaultInitInput()})
 	var firstOut, firstErr strings.Builder
 	if code := first.Run(context.Background(), []string{"init"}, &firstOut, &firstErr); code != 0 {
 		t.Fatalf("initial init code = %d; stderr = %q", code, firstErr.String())
@@ -210,7 +210,7 @@ func TestInitRerunConfirmsSkillOverwriteBeforeChangingIt(t *testing.T) {
 	if err := os.WriteFile(skillPath, []byte("user changes"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	again := New(root, Dependencies{Input: initInputWithConfirmation("no")})
+	again := New(root, root, Dependencies{Input: initInputWithConfirmation("no")})
 	var stdout, stderr strings.Builder
 	code := again.Run(context.Background(), []string{"init"}, &stdout, &stderr)
 	if code != 0 {
@@ -236,7 +236,7 @@ func TestInitEnsuresRunsAreGitignoredExactlyOnce(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte("dist/\n.syl/runs/\n.syl/runs/\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	app := New(root, Dependencies{Input: defaultInitInput()})
+	app := New(root, root, Dependencies{Input: defaultInitInput()})
 	var stdout, stderr strings.Builder
 
 	code := app.Run(context.Background(), []string{"init"}, &stdout, &stderr)

@@ -24,9 +24,9 @@ func TestImplementLoopApprovesOnFirstIteration(t *testing.T) {
 			{{Type: harness.EventSession, SessionID: "review-session"}, {Type: harness.EventAssistantText, Text: approveVerdictText}},
 		},
 	}
-	fixture.app.deps.Harnesses["codex"] = implementer
-	fixture.app.deps.Harnesses["claude"] = implementer
-	fixture.app.deps.GH = &loopGHRunner{}
+	fixture.harnesses["codex"] = implementer
+	fixture.harnesses["claude"] = implementer
+	fixture.app.deps.GH = fixedGH(&loopGHRunner{})
 
 	branchPoint := gitOutput(t, fixture.root, "rev-parse", "HEAD")
 	code := fixture.app.Run(context.Background(), []string{"implement", "42"}, &fixture.stdout, &fixture.stderr)
@@ -90,9 +90,9 @@ func TestImplementWritesClaudeUsagePerIterationIncludingSubagents(t *testing.T) 
 		},
 	}
 	reviewer := &usageTranscriptHarness{projectRoot: fixture.root, home: home}
-	fixture.app.deps.Harnesses["codex"] = implementer
-	fixture.app.deps.Harnesses["claude"] = reviewer
-	fixture.app.deps.GH = &loopGHRunner{}
+	fixture.harnesses["codex"] = implementer
+	fixture.harnesses["claude"] = reviewer
+	fixture.app.deps.GH = fixedGH(&loopGHRunner{})
 
 	code := fixture.app.Run(context.Background(), []string{"implement", "#42"}, &fixture.stdout, &fixture.stderr)
 	if code != 0 {
@@ -204,9 +204,9 @@ func (h *usageTranscriptHarness) writeTranscript(sessionID, messageID string, in
 func TestImplementFailsAfterOneUnparseableReviewReaskAndSavesTranscript(t *testing.T) {
 	fixture := newImplementLoopFixture(t)
 	harness := &unparseableReviewImplementHarness{root: fixture.root}
-	fixture.app.deps.Harnesses["codex"] = harness
-	fixture.app.deps.Harnesses["claude"] = harness
-	fixture.app.deps.GH = &loopGHRunner{}
+	fixture.harnesses["codex"] = harness
+	fixture.harnesses["claude"] = harness
+	fixture.app.deps.GH = fixedGH(&loopGHRunner{})
 
 	code := fixture.app.Run(context.Background(), []string{"implement", "#42"}, &fixture.stdout, &fixture.stderr)
 	if code == 0 || !strings.Contains(fixture.stderr.String(), "reviewer produced no parseable verdict") {
@@ -254,9 +254,9 @@ func TestImplementLoopStreamsImplementerAndReviewerProgress(t *testing.T) {
 			},
 		},
 	}
-	fixture.app.deps.Harnesses["codex"] = loop
-	fixture.app.deps.Harnesses["claude"] = loop
-	fixture.app.deps.GH = &loopGHRunner{}
+	fixture.harnesses["codex"] = loop
+	fixture.harnesses["claude"] = loop
+	fixture.app.deps.GH = fixedGH(&loopGHRunner{})
 
 	code := fixture.app.Run(context.Background(), []string{"implement", "--verbose", "#42"}, &fixture.stdout, &fixture.stderr)
 	if code != 0 {
@@ -314,9 +314,9 @@ func TestImplementLoopQuietlyShowsProgressWithoutToolCalls(t *testing.T) {
 			},
 		},
 	}
-	fixture.app.deps.Harnesses["codex"] = loop
-	fixture.app.deps.Harnesses["claude"] = loop
-	fixture.app.deps.GH = &loopGHRunner{}
+	fixture.harnesses["codex"] = loop
+	fixture.harnesses["claude"] = loop
+	fixture.app.deps.GH = fixedGH(&loopGHRunner{})
 
 	code := fixture.app.Run(context.Background(), []string{"implement", "#42"}, &fixture.stdout, &fixture.stderr)
 	if code != 0 {
@@ -382,12 +382,12 @@ func TestImplementLoopUsesCodexAdapterAtProcessBoundary(t *testing.T) {
 	}
 	t.Setenv("PATH", commandDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
-	fixture.app.deps.Harnesses["codex"] = codex.New(fixture.root)
-	fixture.app.deps.Harnesses["claude"] = &scriptedHarness{first: []harness.Event{
+	fixture.harnesses["codex"] = codex.New(fixture.root)
+	fixture.harnesses["claude"] = &scriptedHarness{first: []harness.Event{
 		{Type: harness.EventSession, SessionID: "review-session"},
 		{Type: harness.EventAssistantText, Text: approveVerdictText},
 	}}
-	fixture.app.deps.GH = &loopGHRunner{}
+	fixture.app.deps.GH = fixedGH(&loopGHRunner{})
 
 	code := fixture.app.Run(context.Background(), []string{"implement", "#42"}, &fixture.stdout, &fixture.stderr)
 	if code != 0 {
@@ -442,9 +442,9 @@ func TestImplementLoopFeedsBlockingFindingsIntoSecondImplementerPrompt(t *testin
 			{{Type: harness.EventSession, SessionID: "review-2"}, {Type: harness.EventAssistantText, Text: approveVerdictText}},
 		},
 	}
-	fixture.app.deps.Harnesses["codex"] = implementer
-	fixture.app.deps.Harnesses["claude"] = implementer
-	fixture.app.deps.GH = &loopGHRunner{}
+	fixture.harnesses["codex"] = implementer
+	fixture.harnesses["claude"] = implementer
+	fixture.app.deps.GH = fixedGH(&loopGHRunner{})
 
 	code := fixture.app.Run(context.Background(), []string{"implement", "#42"}, &fixture.stdout, &fixture.stderr)
 	if code != 0 {
@@ -518,9 +518,9 @@ func TestImplementLoopReviewDiffIncludesUntrackedFiles(t *testing.T) {
 			{{Type: harness.EventSession, SessionID: "review-1"}, {Type: harness.EventAssistantText, Text: approveVerdictText}},
 		},
 	}
-	fixture.app.deps.Harnesses["codex"] = loop
-	fixture.app.deps.Harnesses["claude"] = loop
-	fixture.app.deps.GH = &loopGHRunner{}
+	fixture.harnesses["codex"] = loop
+	fixture.harnesses["claude"] = loop
+	fixture.app.deps.GH = fixedGH(&loopGHRunner{})
 
 	code := fixture.app.Run(context.Background(), []string{"implement", "#42"}, &fixture.stdout, &fixture.stderr)
 	if code != 0 {
@@ -564,9 +564,9 @@ func TestImplementLoopResumesPreviousReviewerSession(t *testing.T) {
 			{{Type: harness.EventAssistantText, Text: approveVerdictText}},
 		},
 	}
-	fixture.app.deps.Harnesses["codex"] = loop
-	fixture.app.deps.Harnesses["claude"] = loop
-	fixture.app.deps.GH = &loopGHRunner{}
+	fixture.harnesses["codex"] = loop
+	fixture.harnesses["claude"] = loop
+	fixture.app.deps.GH = fixedGH(&loopGHRunner{})
 
 	code := fixture.app.Run(context.Background(), []string{"implement", "#42"}, &fixture.stdout, &fixture.stderr)
 	if code != 0 {
@@ -637,9 +637,9 @@ func TestImplementLoopFallsBackToFreshReviewWhenResumeCannotStart(t *testing.T) 
 		},
 		resumeErr: fmt.Errorf("review session is unavailable"),
 	}
-	fixture.app.deps.Harnesses["codex"] = loop
-	fixture.app.deps.Harnesses["claude"] = loop
-	fixture.app.deps.GH = &loopGHRunner{}
+	fixture.harnesses["codex"] = loop
+	fixture.harnesses["claude"] = loop
+	fixture.app.deps.GH = fixedGH(&loopGHRunner{})
 
 	code := fixture.app.Run(context.Background(), []string{"implement", "#42"}, &fixture.stdout, &fixture.stderr)
 	if code != 0 {
@@ -674,9 +674,9 @@ func TestImplementLoopFallsBackWhenResumedReviewStreamFails(t *testing.T) {
 		},
 		resumeWaitErr: fmt.Errorf("review process exited during streaming"),
 	}
-	fixture.app.deps.Harnesses["codex"] = loop
-	fixture.app.deps.Harnesses["claude"] = loop
-	fixture.app.deps.GH = &loopGHRunner{}
+	fixture.harnesses["codex"] = loop
+	fixture.harnesses["claude"] = loop
+	fixture.app.deps.GH = fixedGH(&loopGHRunner{})
 
 	code := fixture.app.Run(context.Background(), []string{"implement", "#42"}, &fixture.stdout, &fixture.stderr)
 	if code != 0 {
@@ -704,9 +704,9 @@ func TestImplementLoopStartsFreshReviewWithoutUsableSessionID(t *testing.T) {
 			{{Type: harness.EventSession, SessionID: "review-2"}, {Type: harness.EventAssistantText, Text: approveVerdictText}},
 		},
 	}
-	fixture.app.deps.Harnesses["codex"] = loop
-	fixture.app.deps.Harnesses["claude"] = loop
-	fixture.app.deps.GH = &loopGHRunner{}
+	fixture.harnesses["codex"] = loop
+	fixture.harnesses["claude"] = loop
+	fixture.app.deps.GH = fixedGH(&loopGHRunner{})
 
 	code := fixture.app.Run(context.Background(), []string{"implement", "#42"}, &fixture.stdout, &fixture.stderr)
 	if code != 0 {
@@ -735,9 +735,9 @@ func TestImplementLoopStillIteratesForNitOnlyRevisionAndSummarizesNits(t *testin
 			{{Type: harness.EventSession, SessionID: "review-2"}, {Type: harness.EventAssistantText, Text: approveVerdictText}},
 		},
 	}
-	fixture.app.deps.Harnesses["codex"] = implementer
-	fixture.app.deps.Harnesses["claude"] = implementer
-	fixture.app.deps.GH = &loopGHRunner{}
+	fixture.harnesses["codex"] = implementer
+	fixture.harnesses["claude"] = implementer
+	fixture.app.deps.GH = fixedGH(&loopGHRunner{})
 
 	code := fixture.app.Run(context.Background(), []string{"implement", "#42"}, &fixture.stdout, &fixture.stderr)
 	if code != 0 {
@@ -781,9 +781,9 @@ func TestImplementQuietAndVerboseRunsPreserveRunArtifacts(t *testing.T) {
 				},
 			},
 		}
-		fixture.app.deps.Harnesses["codex"] = loop
-		fixture.app.deps.Harnesses["claude"] = loop
-		fixture.app.deps.GH = &loopGHRunner{}
+		fixture.harnesses["codex"] = loop
+		fixture.harnesses["claude"] = loop
+		fixture.app.deps.GH = fixedGH(&loopGHRunner{})
 		args := []string{"implement", "#42"}
 		if verbose {
 			args = []string{"implement", "--verbose", "#42"}
@@ -832,8 +832,8 @@ func TestImplementLoopRunsAgainstLocalTracker(t *testing.T) {
 			{{Type: harness.EventSession, SessionID: "local-review"}, {Type: harness.EventAssistantText, Text: approveVerdictText}},
 		},
 	}
-	fixture.app.deps.Harnesses["codex"] = loop
-	fixture.app.deps.Harnesses["claude"] = loop
+	fixture.harnesses["codex"] = loop
+	fixture.harnesses["claude"] = loop
 
 	code := fixture.app.Run(context.Background(), []string{"implement", "#42"}, &fixture.stdout, &fixture.stderr)
 	if code != 0 {
@@ -864,9 +864,9 @@ func TestImplementLoopCapReturnsNonZeroAfterThreeRevisions(t *testing.T) {
 			{{Type: harness.EventSession, SessionID: "review-3"}, {Type: harness.EventAssistantText, Text: reviseVerdictText}},
 		},
 	}
-	fixture.app.deps.Harnesses["codex"] = implementer
-	fixture.app.deps.Harnesses["claude"] = implementer
-	fixture.app.deps.GH = &loopGHRunner{}
+	fixture.harnesses["codex"] = implementer
+	fixture.harnesses["claude"] = implementer
+	fixture.app.deps.GH = fixedGH(&loopGHRunner{})
 
 	code := fixture.app.Run(context.Background(), []string{"implement", "#42"}, &fixture.stdout, &fixture.stderr)
 	if code == 0 {
@@ -897,10 +897,10 @@ func TestImplementRefusesDirtyTreeBeforeBranchOrStatusChange(t *testing.T) {
 		t.Fatal(err)
 	}
 	implementer := &loopHarness{root: fixture.root}
-	fixture.app.deps.Harnesses["codex"] = implementer
-	fixture.app.deps.Harnesses["claude"] = implementer
+	fixture.harnesses["codex"] = implementer
+	fixture.harnesses["claude"] = implementer
 	github := &loopGHRunner{}
-	fixture.app.deps.GH = github
+	fixture.app.deps.GH = fixedGH(github)
 	initialBranch := gitOutput(t, fixture.root, "branch", "--show-current")
 
 	code := fixture.app.Run(context.Background(), []string{"implement", "#42"}, &fixture.stdout, &fixture.stderr)
@@ -921,10 +921,11 @@ func TestImplementRefusesDirtyTreeBeforeBranchOrStatusChange(t *testing.T) {
 }
 
 type implementLoopFixture struct {
-	root   string
-	app    *App
-	stdout strings.Builder
-	stderr strings.Builder
+	root      string
+	app       *App
+	harnesses map[string]harness.Adapter
+	stdout    strings.Builder
+	stderr    strings.Builder
 }
 
 func newImplementLoopFixture(t *testing.T) *implementLoopFixture {
@@ -937,10 +938,16 @@ func newImplementLoopFixture(t *testing.T) *implementLoopFixture {
 		t.Fatal(err)
 	}
 	commitWorkingTree(t, base.root, "fixture")
+	harnesses := map[string]harness.Adapter{
+		"claude":   nil,
+		"codex":    nil,
+		"opencode": nil,
+	}
 	return &implementLoopFixture{
-		root: base.root,
-		app: New(base.root, Dependencies{
-			Harnesses: map[string]harness.Adapter{},
+		root:      base.root,
+		harnesses: harnesses,
+		app: New(base.root, base.root, Dependencies{
+			Harnesses: harnessFactories(harnesses),
 			Notifier:  fakeNotifier{},
 		}),
 	}

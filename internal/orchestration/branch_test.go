@@ -148,6 +148,30 @@ func TestPrepareImplementUsesResolvedBranchName(t *testing.T) {
 	}
 }
 
+func TestPrepareImplementUsesOriginGitForBranchMutation(t *testing.T) {
+	workGit := &branchSetupGit{}
+	originGit := &branchSetupGit{}
+	ticket := tracker.Ticket{
+		Number: 42,
+		Title:  "Repair broken cache",
+		Body:   "Branch: fix/cache-race\n",
+	}
+
+	setup, err := prepareImplementWithGit(context.Background(), workGit, originGit, branchSetupTracker{}, ticket)
+	if err != nil {
+		t.Fatalf("prepareImplementWithGit() error = %v", err)
+	}
+	if setup.git != workGit {
+		t.Fatal("implement setup git = origin git, want work git")
+	}
+	if got := workGit.branchCommand; got != "" {
+		t.Fatalf("work git branch command = %q, want no mutation", got)
+	}
+	if got := originGit.branchCommand; got != "switch -c fix/cache-race" {
+		t.Fatalf("origin git branch command = %q, want branch creation", got)
+	}
+}
+
 type branchSetupGit struct {
 	branchCommand string
 }

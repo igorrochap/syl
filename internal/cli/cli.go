@@ -22,26 +22,31 @@ import (
 
 type Dependencies struct {
 	Input     io.Reader
-	Harnesses map[string]harness.Adapter
+	Harnesses func(root string) map[string]harness.Adapter
 	Notifier  orchestration.Notifier
-	GH        tracker.GHRunner
-	Git       orchestration.GitRunner
+	GH        func(root string) tracker.GHRunner
+	Git       func(root string) orchestration.GitRunner
 	Updater   updater.Runner
 }
 
 type App struct {
-	projectRoot string
-	deps        Dependencies
+	originRoot      string
+	workRoot        string
+	deps            Dependencies
+	harnessAdapters map[string]harness.Adapter
 }
 
-func New(projectRoot string, deps Dependencies) *App {
-	if projectRoot == "" {
-		projectRoot = "."
+func New(originRoot, workRoot string, deps Dependencies) *App {
+	if originRoot == "" {
+		originRoot = "."
+	}
+	if workRoot == "" {
+		workRoot = originRoot
 	}
 	if deps.Updater == nil {
 		deps.Updater = updater.Default()
 	}
-	return &App{projectRoot: projectRoot, deps: deps}
+	return &App{originRoot: originRoot, workRoot: workRoot, deps: deps}
 }
 
 func (a *App) Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
@@ -98,7 +103,7 @@ func (a *App) syncCommand() *cobra.Command {
 		Short: "synchronize installed skills",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return initializer.Sync(a.projectRoot, initializer.SyncOptions{
+			return initializer.Sync(a.originRoot, initializer.SyncOptions{
 				Input: cmd.InOrStdin(), Output: cmd.OutOrStdout(), DryRun: dryRun, All: all,
 			})
 		},
@@ -116,7 +121,7 @@ func (a *App) implementCommand() *cobra.Command {
 		Long:  "implement the current issue\n\n" + orchestration.QuestionInputHelp,
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			projectConfig, err := config.Load(a.projectRoot)
+			projectConfig, err := config.Load(a.originRoot)
 			if err != nil {
 				return err
 			}
@@ -140,12 +145,12 @@ func (a *App) implementCommand() *cobra.Command {
 				return err
 			}
 			return orchestration.RunImplement(cmd.Context(), orchestration.ImplementOptions{
-				ProjectRoot: a.projectRoot, ProjectConfig: projectConfig, IssueTracker: issueTracker, Ticket: ticket,
-				Implementer: implementer, Reviewer: reviewer, Git: a.gitRunner(),
+				OriginRoot: a.originRoot, WorkRoot: a.workRoot, ProjectConfig: projectConfig, IssueTracker: issueTracker, Ticket: ticket,
+				Implementer: implementer, Reviewer: reviewer, Git: a.gitRunner(a.workRoot), OriginGit: a.gitRunner(a.originRoot),
 				Notifier: a.notifier(projectConfig.Notifications.Enabled), Input: cmd.InOrStdin(), Output: cmd.OutOrStdout(),
 				Verbose: verbose,
 				IdentificationBanner: func(artifactDir string) error {
-					return writeImplementBanner(cmd.OutOrStdout(), a.projectRoot, projectConfig, ticket, artifactDir)
+					return writeImplementBanner(cmd.OutOrStdout(), a.originRoot, projectConfig, ticket, artifactDir)
 				},
 			})
 		},
@@ -163,7 +168,7 @@ func (a *App) reviewCommand() *cobra.Command {
 		Long:  "review the current working-tree changes\n\n" + orchestration.QuestionInputHelp,
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			projectConfig, err := config.Load(a.projectRoot)
+			projectConfig, err := config.Load(a.originRoot)
 			if err != nil {
 				return err
 			}
@@ -191,9 +196,9 @@ func (a *App) reviewCommand() *cobra.Command {
 				return err
 			}
 			return orchestration.RunReview(cmd.Context(), orchestration.ReviewOptions{
-				ProjectRoot: a.projectRoot, ProjectConfig: projectConfig, IssueTracker: issueTracker,
+				OriginRoot: a.originRoot, WorkRoot: a.workRoot, ProjectConfig: projectConfig, IssueTracker: issueTracker,
 				Ticket: ticket, TicketRef: ticketRef, Adapter: adapter, Input: cmd.InOrStdin(), Output: cmd.OutOrStdout(),
-				Raw: raw, Verbose: verbose, Notifier: a.notifier(projectConfig.Notifications.Enabled), Git: a.gitRunner(),
+				Raw: raw, Verbose: verbose, Notifier: a.notifier(projectConfig.Notifications.Enabled), Git: a.gitRunner(a.workRoot),
 				TranscriptUsage: projectConfig.Roles.Review.Harness == config.HarnessClaude,
 				IdentificationBanner: func() error {
 					return writeReviewBanner(cmd.OutOrStdout(), projectConfig, ticketRef, ticket)
@@ -224,7 +229,7 @@ func (a *App) planCommand() *cobra.Command {
 		Short: "plan work in an interactive planner session",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			projectConfig, err := config.Load(a.projectRoot)
+			projectConfig, err := config.Load(a.originRoot)
 			if err != nil {
 				return err
 			}
@@ -246,7 +251,7 @@ func (a *App) planCommand() *cobra.Command {
 				return err
 			}
 			return orchestration.RunPlan(cmd.Context(), orchestration.PlanOptions{
-				ProjectRoot: a.projectRoot, Topic: args[0], TrackerName: projectConfig.Tracker.Issues,
+				WorkRoot: a.workRoot, Topic: args[0], TrackerName: projectConfig.Tracker.Issues,
 				Role: projectConfig.Roles.Plan, IssueTracker: issueTracker, Adapter: adapter,
 				Output: cmd.OutOrStdout(), Spec: spec, Grill: grill, WithDocs: withDocs,
 			})
@@ -264,7 +269,7 @@ func (a *App) initCommand() *cobra.Command {
 		Short: "scaffold a project for the syl workflow",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return initializer.Run(a.projectRoot, cmd.InOrStdin(), cmd.OutOrStdout())
+			return initializer.Run(a.originRoot, cmd.InOrStdin(), cmd.OutOrStdout())
 		},
 	}
 }
@@ -307,7 +312,7 @@ func (a *App) stubCommand(name, description string) *cobra.Command {
 		Short: description,
 		Args:  cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
-			if _, err := config.Load(a.projectRoot); err != nil {
+			if _, err := config.Load(a.originRoot); err != nil {
 				return err
 			}
 			return fmt.Errorf("%s: not implemented yet", name)
@@ -316,18 +321,21 @@ func (a *App) stubCommand(name, description string) *cobra.Command {
 }
 
 func (a *App) harness(role string, name config.Harness) (harness.Adapter, error) {
-	adapter, ok := a.deps.Harnesses[string(name)]
+	if a.harnessAdapters == nil && a.deps.Harnesses != nil {
+		a.harnessAdapters = a.deps.Harnesses(a.workRoot)
+	}
+	adapter, ok := a.harnessAdapters[string(name)]
 	if !ok || adapter == nil {
 		return nil, fmt.Errorf("%s harness %q is not configured", role, name)
 	}
 	return adapter, nil
 }
 
-func (a *App) gitRunner() orchestration.GitRunner {
+func (a *App) gitRunner(root string) orchestration.GitRunner {
 	if a.deps.Git != nil {
-		return a.deps.Git
+		return a.deps.Git(root)
 	}
-	return git.ExecGitRunner{Dir: a.projectRoot}
+	return git.ExecGitRunner{Dir: root}
 }
 
 func (a *App) notifier(enabled bool) orchestration.Notifier {
@@ -342,7 +350,11 @@ func (a *App) notifier(enabled bool) orchestration.Notifier {
 
 func (a *App) newIssueTracker(projectConfig config.Config) (tracker.Tracker, error) {
 	if projectConfig.Tracker.Issues == config.TrackerGitHub {
-		return tracker.NewGitHub(a.deps.GH)
+		var ghRunner tracker.GHRunner
+		if a.deps.GH != nil {
+			ghRunner = a.deps.GH(a.originRoot)
+		}
+		return tracker.NewGitHub(ghRunner)
 	}
-	return tracker.NewLocal(a.projectRoot, "")
+	return tracker.NewLocal(a.originRoot, "")
 }

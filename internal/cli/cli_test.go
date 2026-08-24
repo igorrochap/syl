@@ -11,6 +11,8 @@ import (
 
 	"github.com/igorrochap/syl/internal/config"
 	"github.com/igorrochap/syl/internal/harness"
+	"github.com/igorrochap/syl/internal/orchestration"
+	"github.com/igorrochap/syl/internal/tracker"
 	"github.com/igorrochap/syl/internal/updater"
 	"github.com/igorrochap/syl/internal/usage"
 	"github.com/igorrochap/syl/internal/version"
@@ -33,6 +35,104 @@ func TestRunHelpListsAllCommands(t *testing.T) {
 	}
 	if !strings.Contains(fixture.stdout.String(), "update syl to the latest release") {
 		t.Fatalf("help output %q, want update description", fixture.stdout.String())
+	}
+}
+
+func TestRootsRouteCollaboratorsToTheirOwningRoot(t *testing.T) {
+	originRoot := t.TempDir()
+	workRoot := t.TempDir()
+	configContents := `[tracker]
+issues = "local"
+reviews = "local"
+
+[roles.plan]
+harness = "claude"
+model = "claude-origin-planner"
+effort = "high"
+
+[roles.implement]
+harness = "codex"
+model = "gpt-origin-implementer"
+effort = "high"
+
+[roles.review]
+harness = "claude"
+model = "claude-origin-reviewer"
+effort = "medium"
+`
+	if err := os.MkdirAll(filepath.Join(originRoot, ".syl"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(originRoot, ".syl", "config.toml"), []byte(configContents), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeReviewTicket(t, originRoot, "feature-a", "07", "Origin ticket", "Track the origin root.")
+
+	adapter := &scriptedHarness{first: []harness.Event{
+		{Type: harness.EventSession, SessionID: "root-split-review"},
+		{Type: harness.EventAssistantText, Text: approveVerdictText},
+	}}
+	gitRunner := &reviewGitRunner{diff: "diff --git a/work.txt b/work.txt\n+changed\n"}
+	var harnessRoots []string
+	var gitRoots []string
+	var ghRoots []string
+	app := New(originRoot, workRoot, Dependencies{
+		Harnesses: func(root string) map[string]harness.Adapter {
+			harnessRoots = append(harnessRoots, root)
+			return map[string]harness.Adapter{"claude": adapter}
+		},
+		Git: func(root string) orchestration.GitRunner {
+			gitRoots = append(gitRoots, root)
+			return gitRunner
+		},
+		GH: func(root string) tracker.GHRunner {
+			ghRoots = append(ghRoots, root)
+			return fakeGHRunner{}
+		},
+	})
+	var stdout, stderr strings.Builder
+	if code := app.Run(context.Background(), []string{"review"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("review code = %d, stderr = %q", code, stderr.String())
+	}
+	if got := harnessRoots; len(got) != 1 || got[0] != workRoot {
+		t.Fatalf("harness roots = %v, want [%s]", got, workRoot)
+	}
+	if got := gitRoots; len(got) != 1 || got[0] != workRoot {
+		t.Fatalf("git roots = %v, want [%s]", got, workRoot)
+	}
+	if !strings.Contains(stdout.String(), "claude-origin-reviewer") {
+		t.Fatalf("review output = %q, want configuration loaded from origin root", stdout.String())
+	}
+	if _, err := os.Stat(filepath.Join(originRoot, ".syl", "runs")); err != nil {
+		t.Fatalf("origin run artifacts: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(workRoot, ".syl")); !os.IsNotExist(err) {
+		t.Fatalf("work-root syl state error = %v, want no work-root artifacts", err)
+	}
+
+	projectConfig, err := config.Load(originRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	issueTracker, err := app.newIssueTracker(projectConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tickets, err := issueTracker.List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tickets) != 1 || tickets[0].Number != 7 {
+		t.Fatalf("local tickets = %#v, want ticket #7 from origin root", tickets)
+	}
+	if got := ghRoots; len(got) != 0 {
+		t.Fatalf("GitHub roots = %v, want no GitHub construction for local tracker", got)
+	}
+	if _, err := app.newIssueTracker(config.Config{Tracker: config.TrackerConfig{Issues: config.TrackerGitHub}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := ghRoots; len(got) != 1 || got[0] != originRoot {
+		t.Fatalf("GitHub roots = %v, want [%s]", got, originRoot)
 	}
 }
 
@@ -75,7 +175,7 @@ func TestUsageRendersLatestAndNamedRunWithoutCrossHarnessTotal(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	app := New(root, Dependencies{})
+	app := New(root, root, Dependencies{})
 	var stdout, stderr strings.Builder
 	if code := app.Run(context.Background(), []string{"usage"}, &stdout, &stderr); code != 0 {
 		t.Fatalf("latest usage code = %d, stderr = %q", code, stderr.String())
@@ -166,7 +266,7 @@ func TestUsageReportsRunDirectoryWhenArtifactIsMissingAndNoTranscriptsExist(t *t
 	if err := os.MkdirAll(runDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	app := New(root, Dependencies{})
+	app := New(root, root, Dependencies{})
 	var stdout, stderr strings.Builder
 	if code := app.Run(context.Background(), []string{"usage", filepath.Base(runDir)}, &stdout, &stderr); code != 0 {
 		t.Fatalf("missing usage code = %d, stderr = %q", code, stderr.String())
@@ -352,7 +452,8 @@ func TestRunUpdateReportsVersionChange(t *testing.T) {
 		LatestVersion:  "v1.11.0",
 		Updated:        true,
 	}}
-	app := New(t.TempDir(), Dependencies{Updater: update})
+	root := t.TempDir()
+	app := New(root, root, Dependencies{Updater: update})
 	var stdout, stderr strings.Builder
 
 	code := app.Run(context.Background(), []string{"update"}, &stdout, &stderr)
@@ -376,7 +477,8 @@ func TestRunUpdateReportsAlreadyUpToDate(t *testing.T) {
 		CurrentVersion: "v1.11.0",
 		LatestVersion:  "v1.11.0",
 	}}
-	app := New(t.TempDir(), Dependencies{Updater: update})
+	root := t.TempDir()
+	app := New(root, root, Dependencies{Updater: update})
 	var stdout, stderr strings.Builder
 
 	code := app.Run(context.Background(), []string{"update"}, &stdout, &stderr)
@@ -394,7 +496,8 @@ func TestRunUpdateReportsInstallerFailure(t *testing.T) {
 	t.Cleanup(func() { version.Version = originalVersion })
 
 	update := &fakeUpdater{err: fmt.Errorf("checksum verification failed for syl_Linux_amd64.tar.gz")}
-	app := New(t.TempDir(), Dependencies{Updater: update})
+	root := t.TempDir()
+	app := New(root, root, Dependencies{Updater: update})
 	var stdout, stderr strings.Builder
 
 	code := app.Run(context.Background(), []string{"update"}, &stdout, &stderr)
@@ -426,7 +529,8 @@ func TestRunVersionPrintsBuildMetadata(t *testing.T) {
 		version.Commit = originalCommit
 	})
 
-	app := New(t.TempDir(), Dependencies{})
+	root := t.TempDir()
+	app := New(root, root, Dependencies{})
 	var stdout, stderr strings.Builder
 
 	code := app.Run(context.Background(), []string{"version"}, &stdout, &stderr)
@@ -439,7 +543,8 @@ func TestRunVersionPrintsBuildMetadata(t *testing.T) {
 }
 
 func TestRunSubcommandHelpIsAvailableWithoutConfig(t *testing.T) {
-	app := New(t.TempDir(), Dependencies{})
+	root := t.TempDir()
+	app := New(root, root, Dependencies{})
 	var stdout, stderr strings.Builder
 
 	code := app.Run(context.Background(), []string{"sync", "--help"}, &stdout, &stderr)
@@ -467,7 +572,7 @@ func TestRunRefusesCommandsWithoutConfig(t *testing.T) {
 	for _, command := range []string{"plan", "implement", "review"} {
 		t.Run(command, func(t *testing.T) {
 			root := t.TempDir()
-			app := New(root, Dependencies{})
+			app := New(root, root, Dependencies{})
 			var stdout, stderr strings.Builder
 
 			code := app.Run(context.Background(), []string{command}, &stdout, &stderr)
@@ -490,10 +595,10 @@ func TestImplementResolvesAndMarksGitHubTicketDoing(t *testing.T) {
 			{{Type: harness.EventSession, SessionID: "review"}, {Type: harness.EventAssistantText, Text: approveVerdictText}},
 		},
 	}
-	fixture.app.deps.Harnesses["codex"] = loop
-	fixture.app.deps.Harnesses["claude"] = loop
+	fixture.harnesses["codex"] = loop
+	fixture.harnesses["claude"] = loop
 	github := &implementGitHubRunner{}
-	fixture.app.deps.GH = github
+	fixture.app.deps.GH = fixedGH(github)
 
 	code := fixture.app.Run(context.Background(), []string{"implement", "#42"}, &fixture.stdout, &fixture.stderr)
 	if code != 0 {
@@ -521,7 +626,7 @@ func TestRunRejectsUnexpectedCommandArguments(t *testing.T) {
 
 func TestRunInitCreatesConfig(t *testing.T) {
 	root := t.TempDir()
-	app := New(root, Dependencies{Input: defaultInitInput()})
+	app := New(root, root, Dependencies{Input: defaultInitInput()})
 	var stdout, stderr strings.Builder
 
 	code := app.Run(context.Background(), []string{"init"}, &stdout, &stderr)
@@ -539,7 +644,7 @@ func TestRunInitCreatesConfig(t *testing.T) {
 	}
 }
 
-func TestNewDefaultsToCurrentDirectoryWhenProjectRootIsEmpty(t *testing.T) {
+func TestNewDefaultsToCurrentDirectoryWhenOriginRootIsEmpty(t *testing.T) {
 	root := t.TempDir()
 	workingDirectory, err := os.Getwd()
 	if err != nil {
@@ -553,7 +658,7 @@ func TestNewDefaultsToCurrentDirectoryWhenProjectRootIsEmpty(t *testing.T) {
 			t.Errorf("restore working directory: %v", err)
 		}
 	})
-	app := New("", Dependencies{Input: defaultInitInput()})
+	app := New("", "", Dependencies{Input: defaultInitInput()})
 	var stdout, stderr strings.Builder
 
 	code := app.Run(context.Background(), []string{"init"}, &stdout, &stderr)
