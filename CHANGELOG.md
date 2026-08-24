@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v1.18.1 (2026-08-24)
+
+### Bug Fixes
+
+- **updater**: Handle non-string fields in GitHub release response
+  ([`0bc0608`](https://github.com/igorrochap/syl/commit/0bc060869b8dacfaf0f688f3cbbc5a14de01e802))
+
+
 ## v1.18.0 (2026-08-24)
 
 ### Bug Fixes
