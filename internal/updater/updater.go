@@ -171,11 +171,13 @@ func decodeLatestRelease(response *http.Response) (string, error) {
 		return "", fmt.Errorf("check latest release: GitHub returned %s: %s", response.Status, message)
 	}
 
-	var release map[string]string
+	var release struct {
+		TagName string `json:"tag_name"`
+	}
 	if err := json.NewDecoder(response.Body).Decode(&release); err != nil {
 		return "", fmt.Errorf("decode latest release: %w", err)
 	}
-	tagName := strings.TrimSpace(release["tag_name"])
+	tagName := strings.TrimSpace(release.TagName)
 	if tagName == "" {
 		return "", fmt.Errorf("decode latest release: tag_name is empty")
 	}

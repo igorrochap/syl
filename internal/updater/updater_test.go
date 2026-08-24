@@ -108,6 +108,30 @@ func TestUpdateRejectsDevelopmentVersion(t *testing.T) {
 	}
 }
 
+func TestUpdateDecodesGitHubReleaseWithNumericFields(t *testing.T) {
+	server := newLatestReleaseClient(t, `{"id":123456,"tag_name":"v1.11.0"}`)
+	installer := &recordingInstaller{}
+	updater := New(Options{
+		Client:    server,
+		Installer: installer,
+		Executable: func() (string, error) {
+			return "/usr/local/bin/syl", nil
+		},
+		ReleaseURL: "https://example.test/latest",
+	})
+
+	result, err := updater.Update(context.Background(), "v1.10.0")
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if result.LatestVersion != "v1.11.0" {
+		t.Fatalf("Update() latest version = %q, want %q", result.LatestVersion, "v1.11.0")
+	}
+	if !installer.called {
+		t.Fatal("installer was not called")
+	}
+}
+
 func TestShellInstallerLeavesExistingBinaryOnChecksumFailure(t *testing.T) {
 	testRoot := t.TempDir()
 	releaseDir := filepath.Join(testRoot, "releases", "download", "v1.11.0")
