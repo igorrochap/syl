@@ -60,6 +60,32 @@ effort = "medium"
 	if got.Roles.Review.MCP {
 		t.Fatal("Roles.Review.MCP = true, want false by default")
 	}
+	if got.Worktree.Root != DefaultWorktreeRoot {
+		t.Fatalf("Worktree.Root = %q, want default %q", got.Worktree.Root, DefaultWorktreeRoot)
+	}
+}
+
+func TestLoadHonorsWorktreeRoot(t *testing.T) {
+	root := t.TempDir()
+	writeConfig(t, root, configWithRoleValue("plan", "model", "claude-planner")+"\n[worktree]\nroot = \"/tmp/syl-worktrees\"\n")
+
+	got, err := Load(root)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if got.Worktree.Root != "/tmp/syl-worktrees" {
+		t.Fatalf("Worktree.Root = %q, want explicit root", got.Worktree.Root)
+	}
+}
+
+func TestLoadRejectsEmptyWorktreeRoot(t *testing.T) {
+	root := t.TempDir()
+	writeConfig(t, root, configWithRoleValue("plan", "model", "claude-planner")+"\n[worktree]\nroot = \"   \"\n")
+
+	_, err := Load(root)
+	if err == nil || !strings.Contains(err.Error(), "worktree.root: is required") {
+		t.Fatalf("Load() error = %v, want required worktree root", err)
+	}
 }
 
 func TestLoadHonorsExplicitOptionalValues(t *testing.T) {

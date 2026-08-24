@@ -38,6 +38,10 @@ const (
 	defaultReviewMCP    = false
 )
 
+// DefaultWorktreeRoot is the user-level directory where syl creates
+// implementation worktrees when a project does not configure another root.
+const DefaultWorktreeRoot = "~/.syl/worktrees"
+
 var ErrNotFound = errors.New("syl config not found")
 
 type Tracker string
@@ -58,6 +62,7 @@ type Config struct {
 	Roles         RolesConfig
 	Loop          LoopConfig
 	Notifications NotificationsConfig
+	Worktree      WorktreeConfig
 }
 
 type TrackerConfig struct {
@@ -86,11 +91,16 @@ type NotificationsConfig struct {
 	Enabled bool
 }
 
+type WorktreeConfig struct {
+	Root string
+}
+
 type rawConfig struct {
 	Tracker       rawTracker       `toml:"tracker"`
 	Roles         rawRoles         `toml:"roles"`
 	Loop          rawLoop          `toml:"loop"`
 	Notifications rawNotifications `toml:"notifications"`
+	Worktree      rawWorktree      `toml:"worktree"`
 }
 
 type rawTracker struct {
@@ -117,6 +127,10 @@ type rawLoop struct {
 
 type rawNotifications struct {
 	Enabled bool `toml:"enabled"`
+}
+
+type rawWorktree struct {
+	Root string `toml:"root"`
 }
 
 func Path(projectRoot string) string {
@@ -219,6 +233,9 @@ max_iterations = %d
 
 [notifications]
 enabled = %t
+
+[worktree]
+root = %q
 `, cfg.Tracker.Issues, cfg.Tracker.Reviews,
 		cfg.Roles.Plan.Harness, cfg.Roles.Plan.Model, cfg.Roles.Plan.Effort,
 		cfg.Roles.Plan.MCP,
@@ -226,7 +243,14 @@ enabled = %t
 		cfg.Roles.Implement.MCP,
 		cfg.Roles.Review.Harness, cfg.Roles.Review.Model, cfg.Roles.Review.Effort,
 		cfg.Roles.Review.MCP,
-		cfg.Loop.MaxIterations, cfg.Notifications.Enabled)
+		cfg.Loop.MaxIterations, cfg.Notifications.Enabled, worktreeRoot(cfg.Worktree.Root))
+}
+
+func worktreeRoot(root string) string {
+	if strings.TrimSpace(root) == "" {
+		return DefaultWorktreeRoot
+	}
+	return root
 }
 
 func defaultConfigValue() Config {
@@ -239,6 +263,7 @@ func defaultConfigValue() Config {
 		},
 		Loop:          LoopConfig{MaxIterations: 3},
 		Notifications: NotificationsConfig{Enabled: true},
+		Worktree:      WorktreeConfig{Root: DefaultWorktreeRoot},
 	}
 }
 
@@ -280,6 +305,14 @@ func validate(raw rawConfig, metadata toml.MetaData) (Config, error) {
 		notificationsEnabled = raw.Notifications.Enabled
 	}
 
+	worktreeRoot := DefaultWorktreeRoot
+	if metadata.IsDefined("worktree", "root") {
+		worktreeRoot = strings.TrimSpace(raw.Worktree.Root)
+		if worktreeRoot == "" {
+			return Config{}, errors.New("worktree.root: is required")
+		}
+	}
+
 	return Config{
 		Tracker: TrackerConfig{Issues: issues, Reviews: reviews},
 		Roles: RolesConfig{
@@ -287,6 +320,7 @@ func validate(raw rawConfig, metadata toml.MetaData) (Config, error) {
 		},
 		Loop:          LoopConfig{MaxIterations: maxIterations},
 		Notifications: NotificationsConfig{Enabled: notificationsEnabled},
+		Worktree:      WorktreeConfig{Root: worktreeRoot},
 	}, nil
 }
 
