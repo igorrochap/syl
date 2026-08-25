@@ -115,12 +115,17 @@ func (a *App) syncCommand() *cobra.Command {
 
 func (a *App) implementCommand() *cobra.Command {
 	var verbose bool
+	var useWorktree bool
+	var base string
 	command := &cobra.Command{
 		Use:   "implement N",
 		Short: "implement the current issue",
 		Long:  "implement the current issue\n\n" + orchestration.QuestionInputHelp,
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if strings.TrimSpace(base) != "" && !useWorktree {
+				return errors.New("--base requires --worktree")
+			}
 			projectConfig, err := config.Load(a.originRoot)
 			if err != nil {
 				return err
@@ -136,27 +141,92 @@ func (a *App) implementCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			implementer, err := a.harness("implement", projectConfig.Roles.Implement.Harness)
-			if err != nil {
-				return err
+			var provisionedWorktree *orchestration.Worktree
+			workRoot := a.workRoot
+			statusTracker := issueTracker
+			if useWorktree {
+				provisionedWorktree, statusTracker, err = a.provisionImplementWorktree(
+					cmd.Context(), projectConfig, ticket, base, issueTracker,
+				)
+				if err != nil {
+					return err
+				}
+				workRoot = provisionedWorktree.Path
 			}
-			reviewer, err := a.harness("review", projectConfig.Roles.Review.Harness)
+			implementer, err := a.harnessAtRoot("implement", projectConfig.Roles.Implement.Harness, workRoot)
 			if err != nil {
-				return err
+				return a.cleanupProvisionedWorktree(cmd.Context(), provisionedWorktree, err)
+			}
+			reviewer, err := a.harnessAtRoot("review", projectConfig.Roles.Review.Harness, workRoot)
+			if err != nil {
+				return a.cleanupProvisionedWorktree(cmd.Context(), provisionedWorktree, err)
 			}
 			return orchestration.RunImplement(cmd.Context(), orchestration.ImplementOptions{
-				OriginRoot: a.originRoot, WorkRoot: a.workRoot, ProjectConfig: projectConfig, IssueTracker: issueTracker, Ticket: ticket,
-				Implementer: implementer, Reviewer: reviewer, Git: a.gitRunner(a.workRoot), OriginGit: a.gitRunner(a.originRoot),
+				OriginRoot: a.originRoot, WorkRoot: workRoot, ProjectConfig: projectConfig, IssueTracker: statusTracker, Ticket: ticket,
+				Implementer: implementer, Reviewer: reviewer, Git: a.gitRunner(workRoot), OriginGit: a.gitRunner(a.originRoot),
 				Notifier: a.notifier(projectConfig.Notifications.Enabled), Input: cmd.InOrStdin(), Output: cmd.OutOrStdout(),
-				Verbose: verbose,
+				Verbose:             verbose,
+				ProvisionedWorktree: provisionedWorktree,
 				IdentificationBanner: func(artifactDir string) error {
-					return writeImplementBanner(cmd.OutOrStdout(), a.originRoot, projectConfig, ticket, artifactDir)
+					worktreePath := ""
+					if provisionedWorktree != nil {
+						worktreePath = provisionedWorktree.Path
+					}
+					return writeImplementBanner(cmd.OutOrStdout(), a.originRoot, projectConfig, ticket, artifactDir, worktreePath)
 				},
 			})
 		},
 	}
 	command.Flags().BoolVar(&verbose, "verbose", false, "stream assistant prose in addition to progress output")
+	command.Flags().BoolVar(&useWorktree, "worktree", false, "run the implement/review loop in a dedicated worktree")
+	command.Flags().StringVar(&base, "base", "", "branch the worktree from this ref (defaults to HEAD)")
 	return command
+}
+
+func (a *App) provisionImplementWorktree(
+	ctx context.Context,
+	projectConfig config.Config,
+	ticket tracker.Ticket,
+	base string,
+	issueTracker tracker.Tracker,
+) (*orchestration.Worktree, tracker.Tracker, error) {
+	provisioned, err := orchestration.ProvisionWorktree(ctx, orchestration.WorktreeOptions{
+		OriginRoot:     a.originRoot,
+		ProjectConfig:  projectConfig,
+		Ticket:         ticket,
+		Base:           base,
+		Git:            a.gitRunner(a.originRoot),
+		GitForWorktree: a.gitRunner,
+		OriginGit:      a.gitRunner(a.originRoot),
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	statusTracker := issueTracker
+	if projectConfig.Tracker.Issues == config.TrackerLocal {
+		originTracker, trackerErr := tracker.NewLocal(a.originRoot, "")
+		if trackerErr != nil {
+			return nil, nil, a.cleanupProvisionedWorktree(ctx, &provisioned, trackerErr)
+		}
+		if trackerErr := originTracker.CopyTicketTo(ctx, ticket.Number, provisioned.Path); trackerErr != nil {
+			return nil, nil, a.cleanupProvisionedWorktree(ctx, &provisioned, trackerErr)
+		}
+		statusTracker, err = tracker.NewLocal(provisioned.Path, "")
+		if err != nil {
+			return nil, nil, a.cleanupProvisionedWorktree(ctx, &provisioned, err)
+		}
+	}
+	return &provisioned, statusTracker, nil
+}
+
+func (a *App) cleanupProvisionedWorktree(ctx context.Context, worktree *orchestration.Worktree, cause error) error {
+	if worktree == nil {
+		return cause
+	}
+	if err := orchestration.RemoveWorktree(ctx, a.gitRunner(a.originRoot), *worktree); err != nil {
+		return errors.Join(cause, fmt.Errorf("remove worktree after setup failure: %w", err))
+	}
+	return cause
 }
 
 func (a *App) reviewCommand() *cobra.Command {
@@ -325,6 +395,20 @@ func (a *App) harness(role string, name config.Harness) (harness.Adapter, error)
 		a.harnessAdapters = a.deps.Harnesses(a.workRoot)
 	}
 	adapter, ok := a.harnessAdapters[string(name)]
+	if !ok || adapter == nil {
+		return nil, fmt.Errorf("%s harness %q is not configured", role, name)
+	}
+	return adapter, nil
+}
+
+func (a *App) harnessAtRoot(role string, name config.Harness, root string) (harness.Adapter, error) {
+	if root == a.workRoot {
+		return a.harness(role, name)
+	}
+	if a.deps.Harnesses == nil {
+		return nil, fmt.Errorf("%s harness %q is not configured", role, name)
+	}
+	adapter, ok := a.deps.Harnesses(root)[string(name)]
 	if !ok || adapter == nil {
 		return nil, fmt.Errorf("%s harness %q is not configured", role, name)
 	}

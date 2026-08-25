@@ -226,6 +226,11 @@ planning sequence:
 syl implement 42
 ```
 
+Use `--worktree` to run the loop in a dedicated checkout while leaving the
+current checkout untouched. Add `--base <ref>` to choose the ref the worktree
+branch starts from. The worktree is retained for review; the final summary
+prints the command to remove it after the changes are committed or abandoned.
+
 `syl implement`:
 
 1. Resolves issue `#42` through the Issues Tracker.

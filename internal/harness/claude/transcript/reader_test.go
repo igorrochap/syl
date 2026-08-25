@@ -78,6 +78,25 @@ func TestReaderReportsMissingTranscriptWhenRead(t *testing.T) {
 	}
 }
 
+func TestReaderSlugifiesDotDirectoriesLikeClaudeCode(t *testing.T) {
+	reader := New("/Users/tester")
+
+	path, err := reader.Find("/Users/tester/.syl/worktrees/demo", "session")
+	if err != nil {
+		t.Fatalf("Find() error = %v", err)
+	}
+	want := filepath.Join(
+		"/Users/tester",
+		".claude",
+		"projects",
+		"-Users-tester--syl-worktrees-demo",
+		"session.jsonl",
+	)
+	if path != want {
+		t.Fatalf("Find() path = %q, want %q", path, want)
+	}
+}
+
 func newFixtureReader(t *testing.T) Reader {
 	t.Helper()
 	reader := New(t.TempDir())

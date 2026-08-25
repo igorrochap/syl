@@ -31,6 +31,28 @@ func TestLocalResolveFindsTicketAcrossFeatureDirectories(t *testing.T) {
 	}
 }
 
+func TestLocalCopyTicketToPreservesRelativePath(t *testing.T) {
+	sourceRoot := t.TempDir()
+	writeTicketFile(t, sourceRoot, "feature-a", "07", "Copy me", "todo")
+	local, err := NewLocal(sourceRoot, "")
+	if err != nil {
+		t.Fatalf("NewLocal() error = %v", err)
+	}
+	destinationRoot := t.TempDir()
+
+	if err := local.CopyTicketTo(context.Background(), 7, destinationRoot); err != nil {
+		t.Fatalf("CopyTicketTo() error = %v", err)
+	}
+	path := filepath.Join(destinationRoot, ".scratch", "feature-a", "issues", "07-ticket.md")
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("copied ticket: %v", err)
+	}
+	if !strings.Contains(string(contents), "# 07 — Copy me") || !strings.Contains(string(contents), "**Status:** todo") {
+		t.Fatalf("copied ticket = %q, want original contents", contents)
+	}
+}
+
 func TestParseReferenceAcceptsBareAndHashPrefixedNumbers(t *testing.T) {
 	tests := []struct {
 		name      string

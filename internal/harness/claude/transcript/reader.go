@@ -112,5 +112,12 @@ func projectSlug(projectDir string) string {
 	if absolute, err := filepath.Abs(projectDir); err == nil {
 		projectDir = absolute
 	}
-	return strings.ReplaceAll(projectDir, string(filepath.Separator), "-")
+	// Claude Code uses a dash for every path character outside ASCII letters
+	// and digits, including the dot in hidden directories such as .syl.
+	return strings.Map(func(r rune) rune {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' {
+			return r
+		}
+		return '-'
+	}, projectDir)
 }

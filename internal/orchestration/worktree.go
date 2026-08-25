@@ -18,12 +18,13 @@ import (
 // worktree. Provisioning does not update the ticket or start a harness; it only
 // prepares the checkout for a later implement run.
 type WorktreeOptions struct {
-	OriginRoot    string
-	ProjectConfig config.Config
-	Ticket        tracker.Ticket
-	Base          string
-	Git           GitRunner
-	OriginGit     GitRunner
+	OriginRoot     string
+	ProjectConfig  config.Config
+	Ticket         tracker.Ticket
+	Base           string
+	Git            GitRunner
+	GitForWorktree func(root string) GitRunner
+	OriginGit      GitRunner
 }
 
 // Worktree is the checkout prepared for an implementation run.
@@ -94,7 +95,14 @@ func ProvisionWorktree(ctx context.Context, options WorktreeOptions) (Worktree, 
 		return fail(err)
 	}
 	if len(copied) > 0 {
-		untracked, err := untrackedPaths(ctx, options.Git)
+		worktreeGit := options.Git
+		if options.GitForWorktree != nil {
+			worktreeGit = options.GitForWorktree(worktreePath)
+		}
+		if worktreeGit == nil {
+			return fail(errors.New("check copied agent paths: worktree git runner is not configured"))
+		}
+		untracked, err := untrackedPaths(ctx, worktreeGit)
 		if err != nil {
 			return fail(err)
 		}
@@ -250,11 +258,37 @@ func listRegisteredWorktrees(ctx context.Context, git GitRunner) ([]registeredWo
 }
 
 func rollbackWorktree(ctx context.Context, git GitRunner, path, branch string) {
+	_ = RemoveWorktree(ctx, git, Worktree{Path: path, Branch: branch})
+}
+
+// RemoveWorktree removes a provisioned implementation worktree and its
+// branch. It is intended for setup failures; callers that have started the
+// implement loop should leave the worktree for the user to inspect.
+func RemoveWorktree(ctx context.Context, git GitRunner, worktree Worktree) error {
+	if git == nil {
+		return errors.New("remove worktree: git runner is not configured")
+	}
+	if strings.TrimSpace(worktree.Path) == "" {
+		return errors.New("remove worktree: path is required")
+	}
+	if strings.TrimSpace(worktree.Branch) == "" {
+		return errors.New("remove worktree: branch is required")
+	}
 	cleanupCtx := context.WithoutCancel(ctx)
-	_, _ = git.Run(cleanupCtx, "worktree", "remove", "--force", path)
-	_, _ = git.Run(cleanupCtx, "worktree", "prune")
-	_ = os.RemoveAll(path)
-	_, _ = git.Run(cleanupCtx, "branch", "-D", branch)
+	var cleanupErrors []error
+	if _, err := git.Run(cleanupCtx, "worktree", "remove", "--force", worktree.Path); err != nil {
+		cleanupErrors = append(cleanupErrors, fmt.Errorf("remove worktree %q: %w", worktree.Path, err))
+	}
+	if _, err := git.Run(cleanupCtx, "worktree", "prune"); err != nil {
+		cleanupErrors = append(cleanupErrors, fmt.Errorf("prune worktrees: %w", err))
+	}
+	if err := os.RemoveAll(worktree.Path); err != nil {
+		cleanupErrors = append(cleanupErrors, fmt.Errorf("remove worktree path %q: %w", worktree.Path, err))
+	}
+	if _, err := git.Run(cleanupCtx, "branch", "-D", worktree.Branch); err != nil {
+		cleanupErrors = append(cleanupErrors, fmt.Errorf("remove worktree branch %q: %w", worktree.Branch, err))
+	}
+	return errors.Join(cleanupErrors...)
 }
 
 func copyAgentPaths(originRoot, worktreePath string) ([]string, error) {

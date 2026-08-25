@@ -48,6 +48,39 @@ func NewLocal(projectRoot, featureSlug string) (*Local, error) {
 	return &Local{projectRoot: projectRoot, featureSlug: featureSlug}, nil
 }
 
+// CopyTicketTo copies a resolved ticket into another project checkout while
+// preserving its relative .scratch path. It is used when the source ticket
+// has not been committed into the ref from which a worktree was created.
+func (l *Local) CopyTicketTo(ctx context.Context, number int, destinationRoot string) error {
+	if err := contextError(ctx); err != nil {
+		return err
+	}
+	if strings.TrimSpace(destinationRoot) == "" {
+		return errors.New("cannot copy a local ticket without a destination root")
+	}
+
+	ticketFile, err := l.resolveSingleFile(number)
+	if err != nil {
+		return err
+	}
+	relativePath, err := filepath.Rel(l.projectRoot, ticketFile.path)
+	if err != nil {
+		return fmt.Errorf("resolve local ticket path: %w", err)
+	}
+	destination := filepath.Join(destinationRoot, relativePath)
+	contents, err := os.ReadFile(ticketFile.path)
+	if err != nil {
+		return fmt.Errorf("read local ticket %s: %w", ticketFile.path, err)
+	}
+	if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
+		return fmt.Errorf("create local ticket directory: %w", err)
+	}
+	if err := os.WriteFile(destination, contents, 0o644); err != nil {
+		return fmt.Errorf("write local ticket %s: %w", destination, err)
+	}
+	return nil
+}
+
 func (l *Local) Resolve(ctx context.Context, reference string) (Ticket, error) {
 	if err := contextError(ctx); err != nil {
 		return Ticket{}, err

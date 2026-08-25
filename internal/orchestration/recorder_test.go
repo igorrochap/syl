@@ -66,8 +66,8 @@ func (r *memoryRunRecorder) RecordSessions(iteration int, role string, sessionID
 	recordSessions(&r.sessions, r.sessionKeys, iteration, role, sessionIDs)
 }
 
-func (r *memoryRunRecorder) WriteSummary(iterations int, final verdict.Verdict, nits []verdict.Finding, diffStat string) error {
-	r.files[artifactFilename(summaryArtifact, 0)] = formatImplementSummary(iterations, final, nits, diffStat)
+func (r *memoryRunRecorder) WriteSummary(summary implementSummary) error {
+	r.files[artifactFilename(summaryArtifact, 0)] = formatImplementSummary(summary)
 	return nil
 }
 

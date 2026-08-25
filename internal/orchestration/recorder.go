@@ -21,7 +21,7 @@ type RunRecorder interface {
 	RecordReviewOutput(iteration int, review ReviewExecution) error
 	RecordVerdict(iteration int, reviewVerdict verdict.Verdict) error
 	RecordSessions(iteration int, role string, sessionIDs []string)
-	WriteSummary(iterations int, final verdict.Verdict, nits []verdict.Finding, diffStat string) error
+	WriteSummary(summary implementSummary) error
 	WriteSessions() error
 }
 
@@ -160,13 +160,8 @@ func (r *diskRunRecorder) RecordSessions(iteration int, role string, sessionIDs 
 	recordSessions(&r.sessions, r.sessionKeys, iteration, role, sessionIDs)
 }
 
-func (r *diskRunRecorder) WriteSummary(
-	iterations int,
-	final verdict.Verdict,
-	nits []verdict.Finding,
-	diffStat string,
-) error {
-	return r.write(summaryArtifact, 0, formatImplementSummary(iterations, final, nits, diffStat))
+func (r *diskRunRecorder) WriteSummary(summary implementSummary) error {
+	return r.write(summaryArtifact, 0, formatImplementSummary(summary))
 }
 
 func (r *diskRunRecorder) WriteSessions() error {
