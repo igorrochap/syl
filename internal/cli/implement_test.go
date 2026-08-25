@@ -920,6 +920,226 @@ func TestImplementRefusesDirtyTreeBeforeBranchOrStatusChange(t *testing.T) {
 	}
 }
 
+func TestImplementWorktreeLeavesOriginUntouchedAndReviewsDiffInsideWorktree(t *testing.T) {
+	fixture := newImplementLoopFixture(t)
+	worktreeRoot := filepath.Join(t.TempDir(), "worktrees")
+	configureWorktreeRoot(t, fixture.root, worktreeRoot)
+	if err := os.WriteFile(filepath.Join(fixture.root, "preexisting.txt"), []byte("keep me\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	loop := &loopHarness{
+		streams: [][]harness.Event{
+			{{Type: harness.EventSession, SessionID: "worktree-implement"}},
+			{{Type: harness.EventSession, SessionID: "worktree-review"}, {Type: harness.EventAssistantText, Text: approveVerdictText}},
+		},
+	}
+	harnessRoots := make([]string, 0, 2)
+	fixture.app.deps.Harnesses = func(root string) map[string]harness.Adapter {
+		harnessRoots = append(harnessRoots, root)
+		loop.root = root
+		return map[string]harness.Adapter{"codex": loop, "claude": loop}
+	}
+	fixture.app.deps.GH = fixedGH(&loopGHRunner{})
+
+	initialBranch := gitOutput(t, fixture.root, "branch", "--show-current")
+	initialHead := gitOutput(t, fixture.root, "rev-parse", "HEAD")
+	initialStatus := gitOutput(t, fixture.root, "status", "--porcelain", "--untracked-files=all")
+
+	code := fixture.app.Run(context.Background(), []string{"implement", "#42", "--worktree"}, &fixture.stdout, &fixture.stderr)
+	if code != 0 {
+		t.Fatalf("implement worktree code = %d, stderr = %q", code, fixture.stderr.String())
+	}
+	if len(harnessRoots) != 2 || harnessRoots[0] != harnessRoots[1] {
+		t.Fatalf("harness roots = %v, want two calls for one worktree", harnessRoots)
+	}
+	worktreePath := harnessRoots[0]
+	if worktreePath == fixture.root || !strings.HasPrefix(worktreePath, worktreeRoot+string(filepath.Separator)) {
+		t.Fatalf("worktree path = %q, want a dedicated path below %q", worktreePath, worktreeRoot)
+	}
+
+	if got := gitOutput(t, fixture.root, "branch", "--show-current"); got != initialBranch {
+		t.Fatalf("origin branch = %q, want %q", got, initialBranch)
+	}
+	if got := gitOutput(t, fixture.root, "rev-parse", "HEAD"); got != initialHead {
+		t.Fatalf("origin HEAD = %q, want %q", got, initialHead)
+	}
+	if got := gitOutput(t, fixture.root, "status", "--porcelain", "--untracked-files=all"); got != initialStatus {
+		t.Fatalf("origin status = %q, want %q", got, initialStatus)
+	}
+	if got := gitOutput(t, worktreePath, "branch", "--show-current"); got != "feat/add-resilient-workflow" {
+		t.Fatalf("worktree branch = %q, want implementation branch", got)
+	}
+
+	runDirs, err := filepath.Glob(filepath.Join(fixture.root, ".syl", "runs", "*-42"))
+	if err != nil || len(runDirs) != 1 {
+		t.Fatalf("origin run directories = %v, err = %v; want one run artifact", runDirs, err)
+	}
+	diffPath := filepath.Join(worktreePath, ".syl", "runs", filepath.Base(runDirs[0]), "iteration-01-review.diff")
+	diff, err := os.ReadFile(diffPath)
+	if err != nil {
+		t.Fatalf("read worktree review diff: %v", err)
+	}
+	if !strings.Contains(string(diff), "diff --git a/change.txt b/change.txt") {
+		t.Fatalf("worktree review diff = %q, want implementation change", diff)
+	}
+	summary, err := os.ReadFile(filepath.Join(runDirs[0], "summary.txt"))
+	if err != nil {
+		t.Fatalf("read origin summary: %v", err)
+	}
+	if !strings.Contains(string(summary), "Worktree: "+worktreePath) ||
+		!strings.Contains(string(summary), "git worktree remove --force "+worktreePath) {
+		t.Fatalf("origin summary = %q, want path and cleanup command", summary)
+	}
+	if !strings.Contains(fixture.stdout.String(), "worktree: "+worktreePath) ||
+		!strings.Contains(fixture.stdout.String(), "git worktree remove --force "+worktreePath) {
+		t.Fatalf("worktree output = %q, want path and cleanup command", fixture.stdout.String())
+	}
+	if !strings.Contains(loop.requests[1].Prompt, diffPath) {
+		t.Fatalf("review prompt = %q, want worktree diff path %q", loop.requests[1].Prompt, diffPath)
+	}
+}
+
+func TestImplementWorktreeCleansUpWhenHarnessSetupFails(t *testing.T) {
+	fixture := newImplementLoopFixture(t)
+	worktreeRoot := filepath.Join(t.TempDir(), "worktrees")
+	configureWorktreeRoot(t, fixture.root, worktreeRoot)
+
+	var worktreePath string
+	fixture.app.deps.Harnesses = func(root string) map[string]harness.Adapter {
+		worktreePath = root
+		return map[string]harness.Adapter{}
+	}
+	fixture.app.deps.GH = fixedGH(&loopGHRunner{})
+
+	code := fixture.app.Run(context.Background(), []string{"implement", "#42", "--worktree"}, &fixture.stdout, &fixture.stderr)
+	if code == 0 || !strings.Contains(fixture.stderr.String(), `implement harness "codex" is not configured`) {
+		t.Fatalf("implement worktree code = %d, stderr = %q; want harness setup failure", code, fixture.stderr.String())
+	}
+	if worktreePath == "" {
+		t.Fatal("harness factory was not called")
+	}
+	if _, err := os.Stat(worktreePath); !os.IsNotExist(err) {
+		t.Fatalf("worktree path stat error = %v, want path removed", err)
+	}
+	if got := strings.TrimSpace(gitOutput(t, fixture.root, "branch", "--list", "--format=%(refname:short)", "feat/add-resilient-workflow")); got != "" {
+		t.Fatalf("implementation branch = %q, want branch removed", got)
+	}
+	if got := gitOutput(t, fixture.root, "worktree", "list", "--porcelain"); strings.Contains(got, worktreePath) {
+		t.Fatalf("registered worktrees = %q, want failed worktree removed", got)
+	}
+}
+
+func configureWorktreeRoot(t *testing.T, root, worktreeRoot string) {
+	t.Helper()
+	path := filepath.Join(root, ".syl", "config.toml")
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated := string(contents) + "\n[worktree]\nroot = \"" + worktreeRoot + "\"\n"
+	if err := os.WriteFile(path, []byte(updated), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	commitWorkingTree(t, root, "configure worktree")
+}
+
+func TestImplementWorktreeUsesExplicitBaseRef(t *testing.T) {
+	fixture := newImplementLoopFixture(t)
+	worktreeRoot := filepath.Join(t.TempDir(), "worktrees")
+	configureWorktreeRoot(t, fixture.root, worktreeRoot)
+	base := gitOutput(t, fixture.root, "rev-parse", "HEAD")
+	if err := os.WriteFile(filepath.Join(fixture.root, "tracked.txt"), []byte("later commit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	commitWorkingTree(t, fixture.root, "later commit")
+
+	loop := &loopHarness{
+		streams: [][]harness.Event{
+			{{Type: harness.EventSession, SessionID: "base-implement"}},
+			{{Type: harness.EventSession, SessionID: "base-review"}, {Type: harness.EventAssistantText, Text: approveVerdictText}},
+		},
+	}
+	var worktreePath string
+	fixture.app.deps.Harnesses = func(root string) map[string]harness.Adapter {
+		worktreePath = root
+		loop.root = root
+		return map[string]harness.Adapter{"codex": loop, "claude": loop}
+	}
+	fixture.app.deps.GH = fixedGH(&loopGHRunner{})
+
+	code := fixture.app.Run(context.Background(), []string{"implement", "#42", "--worktree", "--base", base}, &fixture.stdout, &fixture.stderr)
+	if code != 0 {
+		t.Fatalf("implement worktree with base code = %d, stderr = %q", code, fixture.stderr.String())
+	}
+	if got := gitOutput(t, worktreePath, "rev-parse", "HEAD"); got != base {
+		t.Fatalf("worktree HEAD = %q, want explicit base %q", got, base)
+	}
+	contents, err := os.ReadFile(filepath.Join(worktreePath, "tracked.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(contents); got != "initial\n" {
+		t.Fatalf("worktree tracked file = %q, want content from explicit base", got)
+	}
+}
+
+func TestImplementWorktreeUpdatesLocalTicketOnlyInsideWorktree(t *testing.T) {
+	fixture := newImplementLoopFixture(t)
+	worktreeRoot := filepath.Join(t.TempDir(), "worktrees")
+	configureWorktreeRoot(t, fixture.root, worktreeRoot)
+
+	configPath := filepath.Join(fixture.root, ".syl", "config.toml")
+	configContents, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	configContents = []byte(strings.Replace(string(configContents), `issues = "github"`, `issues = "local"`, 1))
+	if err := os.WriteFile(configPath, configContents, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	commitWorkingTree(t, fixture.root, "local worktree config")
+	ticketPath := filepath.Join(fixture.root, ".scratch", "feature-a", "issues", "42-local-worktree.md")
+	if err := os.MkdirAll(filepath.Dir(ticketPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(ticketPath, []byte("# 42 — Add resilient workflow\n\n**What to build:** Use the worktree.\n\n**Blocked by:** None — can start immediately.\n\n**Status:** todo\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	loop := &loopHarness{
+		streams: [][]harness.Event{
+			{{Type: harness.EventSession, SessionID: "local-worktree-implement"}},
+			{{Type: harness.EventSession, SessionID: "local-worktree-review"}, {Type: harness.EventAssistantText, Text: approveVerdictText}},
+		},
+	}
+	var worktreePath string
+	fixture.app.deps.Harnesses = func(root string) map[string]harness.Adapter {
+		worktreePath = root
+		loop.root = root
+		return map[string]harness.Adapter{"codex": loop, "claude": loop}
+	}
+
+	code := fixture.app.Run(context.Background(), []string{"implement", "#42", "--worktree"}, &fixture.stdout, &fixture.stderr)
+	if code != 0 {
+		t.Fatalf("local worktree implement code = %d, stderr = %q", code, fixture.stderr.String())
+	}
+	originTicket, err := os.ReadFile(ticketPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(originTicket), "**Status:** todo") {
+		t.Fatalf("origin ticket = %q, want unchanged todo status", originTicket)
+	}
+	worktreeTicket, err := os.ReadFile(filepath.Join(worktreePath, ".scratch", "feature-a", "issues", "42-local-worktree.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(worktreeTicket), "**Status:** doing") {
+		t.Fatalf("worktree ticket = %q, want doing status", worktreeTicket)
+	}
+}
+
 type implementLoopFixture struct {
 	root      string
 	app       *App

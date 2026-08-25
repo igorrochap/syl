@@ -57,6 +57,21 @@ The structured result that the reviewer Role returns for one iteration. A
 Verdict is `approve` or `revise`. An `approve` Verdict means the issue can
 close. A `revise` Verdict carries findings for the next iteration.
 
+**Worktree**
+A dedicated git checkout that `syl implement --worktree` creates for one
+issue, so the implement/review loop runs without touching the checkout you
+are already in.
+
+**Origin root**
+The directory holding the project's config, run artifacts, and local
+Tracker. Always the checkout you invoked `syl` from, regardless of where a
+run executes.
+
+**Work root**
+The directory where the git runner and Harnesses operate for the current
+run. Equal to the origin root unless `--worktree` is set, in which case it
+is the worktree path.
+
 ## Installation
 
 Install the latest prebuilt binary on Linux or macOS. This method does not
@@ -193,11 +208,15 @@ max_iterations = 3
 
 [notifications]
 enabled = true
+
+[worktree]
+root = "~/.syl/worktrees"
 ```
 
-Edit this file directly to change Trackers, Roles, the iteration limit, or
-notifications. `syl` rejects a config file that has an unknown key, so remove
-a setting instead of leaving a stale one behind.
+Edit this file directly to change Trackers, Roles, the iteration limit,
+notifications, or the centralized worktree root. `syl` rejects a config file
+that has an unknown key, so remove a setting instead of leaving a stale one
+behind.
 
 ### 3. Plan work
 
@@ -221,6 +240,11 @@ planning sequence:
 ```sh
 syl implement 42
 ```
+
+Use `--worktree` to run the loop in a dedicated checkout while leaving the
+current checkout untouched. Add `--base <ref>` to choose the ref the worktree
+branch starts from. The worktree is retained for review; the final summary
+prints the command to remove it after the changes are committed or abandoned.
 
 `syl implement`:
 
@@ -294,6 +318,7 @@ then submit it with an empty line or end-of-file (Ctrl-D).
 | `roles.<role>.mcp` | `true`, `false` | Whether Claude sessions inherit user/project MCP configuration. Defaults to `true` for plan and implement, `false` for review. Codex ignores it. |
 | `loop.max_iterations` | integer | Cap on implement/review iterations for `syl implement`. |
 | `notifications.enabled` | `true`, `false` | Send a desktop or terminal-bell notification on completion or on a `QUESTION`. |
+| `worktree.root` | path | Central root for implementation worktrees. Defaults to `~/.syl/worktrees`. |
 
 `<role>` is `plan`, `implement`, or `review`.
 
@@ -322,6 +347,10 @@ Each `syl implement` run writes its artifacts under
 `syl init` adds `.syl/runs/` to `.gitignore`. Keep an artifact directory when
 you need to audit a run; delete it when you do not.
 
+Artifacts always land in the origin repository's `.syl/runs/`, even for a
+run that executed in a worktree with `--worktree`. Run history survives the
+worktree being removed.
+
 ## Caveats and troubleshooting
 
 - **`syl implement` needs a clean starting point.** It checks that `HEAD`
@@ -335,6 +364,14 @@ you need to audit a run; delete it when you do not.
   an error instead of overwriting it.
 - **Unknown configuration keys fail the load.** Remove an obsolete key from
   `.syl/config.toml` rather than leaving it in place.
+- **A `--worktree` run leaves its changes in the worktree, not your
+  checkout.** Uncommitted changes from the implement/review loop stay in
+  the worktree directory; look there, not in the checkout you ran `syl`
+  from, to inspect or commit them.
+- **`syl` never removes worktrees automatically.** A worktree created by
+  `--worktree` is retained after the run finishes, even after the changes
+  are committed or abandoned. Run the removal command the final summary
+  prints, or worktrees accumulate under `worktree.root` indefinitely.
 
 ## Development
 

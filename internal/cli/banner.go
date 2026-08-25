@@ -10,21 +10,26 @@ import (
 	"github.com/igorrochap/syl/internal/tracker"
 )
 
-func writeImplementBanner(output io.Writer, originRoot string, projectConfig config.Config, ticket tracker.Ticket, artifactDir string) error {
+func writeImplementBanner(output io.Writer, originRoot string, projectConfig config.Config, ticket tracker.Ticket, artifactDir, worktreePath string) error {
 	relativeArtifactDir, err := filepath.Rel(originRoot, artifactDir)
 	if err != nil {
 		return fmt.Errorf("make run artifacts path relative to project root: %w", err)
+	}
+	worktreeLine := ""
+	if worktreePath != "" {
+		worktreeLine = fmt.Sprintf("  worktree: %s\n", worktreePath)
 	}
 	_, err = fmt.Fprintf(output,
 		"syl implement #%d — %s\n"+
 			"  implementer: %s · %s · effort %s\n"+
 			"  reviewer:    %s · %s · effort %s\n"+
 			"  max iterations: %d\n"+
-			"  run artifacts: %s\n",
+			"  run artifacts: %s\n"+
+			"%s",
 		ticket.Number, ticket.Title,
 		projectConfig.Roles.Implement.Harness, projectConfig.Roles.Implement.Model, projectConfig.Roles.Implement.Effort,
 		projectConfig.Roles.Review.Harness, projectConfig.Roles.Review.Model, projectConfig.Roles.Review.Effort,
-		projectConfig.Loop.MaxIterations, relativeArtifactDir,
+		projectConfig.Loop.MaxIterations, relativeArtifactDir, worktreeLine,
 	)
 	if err != nil {
 		return fmt.Errorf("write implement banner: %w", err)

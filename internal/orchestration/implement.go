@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -18,9 +20,18 @@ import (
 )
 
 type implementSetup struct {
-	git         GitRunner
-	branch      string
-	branchPoint string
+	git          GitRunner
+	branch       string
+	branchPoint  string
+	worktreePath string
+}
+
+type implementSummary struct {
+	iterations   int
+	final        verdict.Verdict
+	nits         []verdict.Finding
+	diffStat     string
+	worktreePath string
 }
 
 type ImplementOptions struct {
@@ -37,13 +48,30 @@ type ImplementOptions struct {
 	Input                io.Reader
 	Output               io.Writer
 	Verbose              bool
+	ProvisionedWorktree  *Worktree
 	IdentificationBanner func(artifactDir string) error
 }
 
-func RunImplement(ctx context.Context, options ImplementOptions) error {
+func RunImplement(ctx context.Context, options ImplementOptions) (returnErr error) {
 	projectConfig := options.ProjectConfig
 	issueTracker := options.IssueTracker
 	ticket := options.Ticket
+	originGit := options.OriginGit
+	if originGit == nil {
+		originGit = options.Git
+	}
+	loopStarted := false
+	if options.ProvisionedWorktree != nil && originGit != nil {
+		worktree := *options.ProvisionedWorktree
+		defer func() {
+			if loopStarted {
+				return
+			}
+			if err := RemoveWorktree(ctx, originGit, worktree); err != nil {
+				returnErr = errors.Join(returnErr, fmt.Errorf("remove worktree after setup failure: %w", err))
+			}
+		}()
+	}
 	if options.Git == nil {
 		return errors.New("implement: git runner is not configured")
 	}
@@ -53,11 +81,15 @@ func RunImplement(ctx context.Context, options ImplementOptions) error {
 	if options.Reviewer == nil {
 		return fmt.Errorf("review harness %q is not configured", projectConfig.Roles.Review.Harness)
 	}
-	originGit := options.OriginGit
-	if originGit == nil {
-		originGit = options.Git
+	var (
+		setup implementSetup
+		err   error
+	)
+	if options.ProvisionedWorktree != nil {
+		setup, err = prepareProvisionedImplement(ctx, options.Git, issueTracker, ticket, *options.ProvisionedWorktree)
+	} else {
+		setup, err = prepareImplementWithGit(ctx, options.Git, originGit, issueTracker, ticket)
 	}
-	setup, err := prepareImplementWithGit(ctx, options.Git, originGit, issueTracker, ticket)
 	if err != nil {
 		return err
 	}
@@ -80,18 +112,20 @@ func RunImplement(ctx context.Context, options ImplementOptions) error {
 			return err
 		}
 	}
+	loopStarted = true
 	iterations, final, nits, err := runImplementIterations(ctx, implementIterationsParams{
-		git:           setup.git,
-		workRoot:      options.WorkRoot,
-		implementer:   options.Implementer,
-		reviewer:      options.Reviewer,
-		projectConfig: projectConfig,
-		ticket:        ticket,
-		branchPoint:   setup.branchPoint,
-		recorder:      recorder,
-		questions:     questions,
-		output:        options.Output,
-		verbose:       options.Verbose,
+		git:            setup.git,
+		workRoot:       options.WorkRoot,
+		implementer:    options.Implementer,
+		reviewer:       options.Reviewer,
+		projectConfig:  projectConfig,
+		ticket:         ticket,
+		branchPoint:    setup.branchPoint,
+		reviewDiffRoot: setup.worktreePath,
+		recorder:       recorder,
+		questions:      questions,
+		output:         options.Output,
+		verbose:        options.Verbose,
 	})
 	if err != nil {
 		return err
@@ -101,11 +135,17 @@ func RunImplement(ctx context.Context, options ImplementOptions) error {
 	if err != nil {
 		diffStat = fmt.Sprintf("unavailable: %v", err)
 	}
-	if err := recorder.WriteSummary(iterations, final, nits, diffStat); err != nil {
+	summary := implementSummary{
+		iterations:   iterations,
+		final:        final,
+		nits:         nits,
+		diffStat:     diffStat,
+		worktreePath: setup.worktreePath,
+	}
+	if err := recorder.WriteSummary(summary); err != nil {
 		return err
 	}
-	summary := formatImplementSummary(iterations, final, nits, diffStat)
-	if _, err := io.WriteString(options.Output, summary); err != nil {
+	if _, err := io.WriteString(options.Output, formatImplementSummary(summary)); err != nil {
 		return fmt.Errorf("write implement summary: %w", err)
 	}
 	if err := recorder.WriteSessions(); err != nil {
@@ -157,18 +197,47 @@ func prepareImplementWithGit(
 	return implementSetup{git: workGit, branch: branch, branchPoint: branchPoint}, nil
 }
 
+func prepareProvisionedImplement(
+	ctx context.Context,
+	workGit GitRunner,
+	issueTracker tracker.Tracker,
+	ticket tracker.Ticket,
+	worktree Worktree,
+) (implementSetup, error) {
+	if strings.TrimSpace(worktree.Path) == "" {
+		return implementSetup{}, errors.New("implement worktree path is required")
+	}
+	branchPoint, err := workGit.Run(ctx, "rev-parse", "HEAD")
+	if err != nil {
+		return implementSetup{}, fmt.Errorf("record worktree branch point: %w", err)
+	}
+	branchPoint = strings.TrimSpace(branchPoint)
+	if branchPoint == "" {
+		return implementSetup{}, errors.New("record worktree branch point: git returned an empty ref")
+	}
+	branch := strings.TrimSpace(worktree.Branch)
+	if branch == "" {
+		return implementSetup{}, errors.New("implement worktree branch is required")
+	}
+	if err := issueTracker.UpdateStatus(ctx, ticket.Number, "doing"); err != nil {
+		return implementSetup{}, fmt.Errorf("mark ticket #%d as doing: %w", ticket.Number, err)
+	}
+	return implementSetup{git: workGit, branch: branch, branchPoint: branchPoint, worktreePath: worktree.Path}, nil
+}
+
 type implementIterationsParams struct {
-	git           GitRunner
-	workRoot      string
-	implementer   harness.Adapter
-	reviewer      harness.Adapter
-	projectConfig config.Config
-	ticket        tracker.Ticket
-	branchPoint   string
-	recorder      RunRecorder
-	questions     *QuestionHandler
-	output        io.Writer
-	verbose       bool
+	git            GitRunner
+	workRoot       string
+	implementer    harness.Adapter
+	reviewer       harness.Adapter
+	projectConfig  config.Config
+	ticket         tracker.Ticket
+	branchPoint    string
+	reviewDiffRoot string
+	recorder       RunRecorder
+	questions      *QuestionHandler
+	output         io.Writer
+	verbose        bool
 }
 
 func runImplementIterations(ctx context.Context, params implementIterationsParams) (int, verdict.Verdict, []verdict.Finding, error) {
@@ -237,6 +306,12 @@ func runImplementIterations(ctx context.Context, params implementIterationsParam
 		diffPath, err := params.recorder.RecordReviewDiff(iteration, diff)
 		if err != nil {
 			return 0, verdict.Verdict{}, nil, err
+		}
+		if params.reviewDiffRoot != "" {
+			diffPath, err = recordWorktreeReviewDiff(params.reviewDiffRoot, params.recorder.Dir(), iteration, diff)
+			if err != nil {
+				return 0, verdict.Verdict{}, nil, err
+			}
 		}
 
 		reviewRequest := harness.Request{
@@ -389,16 +464,45 @@ func nitFindings(review verdict.Verdict) []verdict.Finding {
 	return findings
 }
 
-func formatImplementSummary(iterations int, final verdict.Verdict, nits []verdict.Finding, diffStat string) string {
+func formatImplementSummary(summary implementSummary) string {
 	var builder strings.Builder
-	fmt.Fprintf(&builder, "Iterations: %d\nFinal verdict: %s\nSummary: %s\nNit findings:\n", iterations, final.Status, final.Summary)
-	if len(nits) == 0 {
+	fmt.Fprintf(
+		&builder,
+		"Iterations: %d\nFinal verdict: %s\nSummary: %s\nNit findings:\n",
+		summary.iterations, summary.final.Status, summary.final.Summary,
+	)
+	if len(summary.nits) == 0 {
 		builder.WriteString("- (none)\n")
 	} else {
-		for _, finding := range nits {
+		for _, finding := range summary.nits {
 			fmt.Fprintf(&builder, "- [%s] %s — %s\n", finding.Kind, finding.Location, finding.Issue)
 		}
 	}
-	fmt.Fprintf(&builder, "Diff stat:\n%s\n", strings.TrimSpace(diffStat))
+	if summary.worktreePath != "" {
+		fmt.Fprintf(&builder,
+			"Worktree: %s\nRemove worktree: git worktree remove --force %s\n",
+			summary.worktreePath, summary.worktreePath,
+		)
+	}
+	fmt.Fprintf(&builder, "Diff stat:\n%s\n", strings.TrimSpace(summary.diffStat))
 	return builder.String()
+}
+
+func recordWorktreeReviewDiff(worktreeRoot, runDir string, iteration int, diff string) (string, error) {
+	root, err := filepath.Abs(worktreeRoot)
+	if err != nil {
+		return "", fmt.Errorf("resolve worktree review diff root: %w", err)
+	}
+	runName := filepath.Base(filepath.Clean(runDir))
+	if runName == "." || runName == string(filepath.Separator) || runName == "" {
+		return "", errors.New("record worktree review diff: run directory is required")
+	}
+	path := filepath.Join(root, ".syl", "runs", runName, artifactFilename(reviewDiffArtifact, iteration))
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return "", fmt.Errorf("create worktree review diff directory: %w", err)
+	}
+	if err := writeArtifact(path, diff); err != nil {
+		return "", fmt.Errorf("write worktree review diff: %w", err)
+	}
+	return path, nil
 }
