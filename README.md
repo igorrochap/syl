@@ -57,6 +57,21 @@ The structured result that the reviewer Role returns for one iteration. A
 Verdict is `approve` or `revise`. An `approve` Verdict means the issue can
 close. A `revise` Verdict carries findings for the next iteration.
 
+**Worktree**
+A dedicated git checkout that `syl implement --worktree` creates for one
+issue, so the implement/review loop runs without touching the checkout you
+are already in.
+
+**Origin root**
+The directory holding the project's config, run artifacts, and local
+Tracker. Always the checkout you invoked `syl` from, regardless of where a
+run executes.
+
+**Work root**
+The directory where the git runner and Harnesses operate for the current
+run. Equal to the origin root unless `--worktree` is set, in which case it
+is the worktree path.
+
 ## Installation
 
 Install the latest prebuilt binary on Linux or macOS. This method does not
@@ -332,6 +347,10 @@ Each `syl implement` run writes its artifacts under
 `syl init` adds `.syl/runs/` to `.gitignore`. Keep an artifact directory when
 you need to audit a run; delete it when you do not.
 
+Artifacts always land in the origin repository's `.syl/runs/`, even for a
+run that executed in a worktree with `--worktree`. Run history survives the
+worktree being removed.
+
 ## Caveats and troubleshooting
 
 - **`syl implement` needs a clean starting point.** It checks that `HEAD`
@@ -345,6 +364,14 @@ you need to audit a run; delete it when you do not.
   an error instead of overwriting it.
 - **Unknown configuration keys fail the load.** Remove an obsolete key from
   `.syl/config.toml` rather than leaving it in place.
+- **A `--worktree` run leaves its changes in the worktree, not your
+  checkout.** Uncommitted changes from the implement/review loop stay in
+  the worktree directory; look there, not in the checkout you ran `syl`
+  from, to inspect or commit them.
+- **`syl` never removes worktrees automatically.** A worktree created by
+  `--worktree` is retained after the run finishes, even after the changes
+  are committed or abandoned. Run the removal command the final summary
+  prints, or worktrees accumulate under `worktree.root` indefinitely.
 
 ## Development
 

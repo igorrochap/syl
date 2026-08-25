@@ -31,3 +31,15 @@ _Avoid_: review result, approval
 **Session transcript**:
 The durable record a harness writes for one session, and the source of truth for what a role did — what it said, which tools it used, and what it consumed.
 _Avoid_: log, session file, history
+
+**Worktree**:
+A dedicated git checkout that `syl implement --worktree` creates for one issue, so the implement/review loop runs without touching the checkout the user is already in.
+_Avoid_: sandbox, workspace
+
+**Origin root**:
+The directory holding the project's config, run artifacts, and local Tracker. Always the checkout the user invoked `syl` from, regardless of where a run executes.
+_Avoid_: home directory, project root
+
+**Work root**:
+The directory where the git runner and Harness adapters operate for the current run. Equal to the origin root unless `--worktree` is set, in which case it is the worktree path.
+_Avoid_: working directory, execution root
