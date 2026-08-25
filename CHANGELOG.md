@@ -2,6 +2,35 @@
 
 <!-- version list -->
 
+## v1.19.0 (2026-08-25)
+
+### Documentation
+
+- **architecture**: Document worktree and root concepts
+  ([#86](https://github.com/igorrochap/syl/pull/86),
+  [`073467e`](https://github.com/igorrochap/syl/commit/073467e17c0728905c8e3d87afb1e2ce58f728c8))
+
+### Features
+
+- **cli**: Add --worktree support to implement command
+  ([#86](https://github.com/igorrochap/syl/pull/86),
+  [`073467e`](https://github.com/igorrochap/syl/commit/073467e17c0728905c8e3d87afb1e2ce58f728c8))
+
+- **cli**: Implement git worktree support for task execution
+  ([#86](https://github.com/igorrochap/syl/pull/86),
+  [`073467e`](https://github.com/igorrochap/syl/commit/073467e17c0728905c8e3d87afb1e2ce58f728c8))
+
+- **orchestration**: Add worktree provisioning support
+  ([#86](https://github.com/igorrochap/syl/pull/86),
+  [`073467e`](https://github.com/igorrochap/syl/commit/073467e17c0728905c8e3d87afb1e2ce58f728c8))
+
+### Refactoring
+
+- **cli**: Decouple origin and working directories
+  ([#84](https://github.com/igorrochap/syl/pull/84),
+  [`3e9a17b`](https://github.com/igorrochap/syl/commit/3e9a17bde961326dd14cd61cd9abe3d688fb9d0f))
+
+
 ## v1.18.1 (2026-08-24)
 
 ### Bug Fixes
