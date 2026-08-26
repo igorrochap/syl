@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/BurntSushi/toml"
@@ -94,6 +95,7 @@ type NotificationsConfig struct {
 type WorktreeConfig struct {
 	Root  string
 	Setup string
+	Copy  []string
 }
 
 type rawConfig struct {
@@ -131,8 +133,9 @@ type rawNotifications struct {
 }
 
 type rawWorktree struct {
-	Root  string `toml:"root"`
-	Setup string `toml:"setup"`
+	Root  string   `toml:"root"`
+	Setup string   `toml:"setup"`
+	Copy  []string `toml:"copy"`
 }
 
 func Path(projectRoot string) string {
@@ -241,6 +244,9 @@ root = %q
 # A shell command used to provision dependencies in a fresh worktree.
 # Example: setup = "npm ci"
 setup = %q
+# Additional origin paths to copy into a fresh worktree.
+# Example: copy = [".env", ".env.local"]
+copy = %s
 `, cfg.Tracker.Issues, cfg.Tracker.Reviews,
 		cfg.Roles.Plan.Harness, cfg.Roles.Plan.Model, cfg.Roles.Plan.Effort,
 		cfg.Roles.Plan.MCP,
@@ -249,7 +255,15 @@ setup = %q
 		cfg.Roles.Review.Harness, cfg.Roles.Review.Model, cfg.Roles.Review.Effort,
 		cfg.Roles.Review.MCP,
 		cfg.Loop.MaxIterations, cfg.Notifications.Enabled,
-		worktreeRoot(cfg.Worktree.Root), cfg.Worktree.Setup)
+		worktreeRoot(cfg.Worktree.Root), cfg.Worktree.Setup, renderStringList(cfg.Worktree.Copy))
+}
+
+func renderStringList(values []string) string {
+	quoted := make([]string, len(values))
+	for i, value := range values {
+		quoted[i] = strconv.Quote(value)
+	}
+	return "[" + strings.Join(quoted, ", ") + "]"
 }
 
 func worktreeRoot(root string) string {
@@ -326,7 +340,7 @@ func validate(raw rawConfig, metadata toml.MetaData) (Config, error) {
 		},
 		Loop:          LoopConfig{MaxIterations: maxIterations},
 		Notifications: NotificationsConfig{Enabled: notificationsEnabled},
-		Worktree:      WorktreeConfig{Root: worktreeRoot, Setup: raw.Worktree.Setup},
+		Worktree:      WorktreeConfig{Root: worktreeRoot, Setup: raw.Worktree.Setup, Copy: raw.Worktree.Copy},
 	}, nil
 }
 

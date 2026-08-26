@@ -90,7 +90,7 @@ func ProvisionWorktree(ctx context.Context, options WorktreeOptions) (Worktree, 
 		return fail(fmt.Errorf("create worktree %q: %w", worktreePath, err))
 	}
 
-	copied, err := copyAgentPaths(originRoot, worktreePath)
+	copied, err := copyAgentPaths(originRoot, worktreePath, options.ProjectConfig.Worktree.Copy)
 	if err != nil {
 		return fail(err)
 	}
@@ -291,9 +291,10 @@ func RemoveWorktree(ctx context.Context, git GitRunner, worktree Worktree) error
 	return errors.Join(cleanupErrors...)
 }
 
-func copyAgentPaths(originRoot, worktreePath string) ([]string, error) {
+func copyAgentPaths(originRoot, worktreePath string, configuredPaths []string) ([]string, error) {
 	var copied []string
-	for _, relativePath := range []string{".agents", ".claude", "CLAUDE.md"} {
+	paths := append([]string{".agents", ".claude", "CLAUDE.md"}, configuredPaths...)
+	for _, relativePath := range paths {
 		if err := copyMissingPath(
 			filepath.Join(originRoot, filepath.FromSlash(relativePath)),
 			filepath.Join(worktreePath, filepath.FromSlash(relativePath)),

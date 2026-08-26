@@ -69,6 +69,60 @@ func TestProvisionWorktreeCreatesCentralCheckoutAndCopiesOnlyMissingAgentPaths(t
 	}
 }
 
+func TestProvisionWorktreeCopiesConfiguredIgnoredArtifacts(t *testing.T) {
+	origin := newWorktreeRepository(t)
+	writeWorktreeFile(t, filepath.Join(origin, ".gitignore"), ".env\nfixtures/seed.db\n")
+	worktreeGit(t, origin, "add", ".gitignore")
+	worktreeGit(t, origin, "commit", "-m", "ignore local artifacts")
+	writeWorktreeFile(t, filepath.Join(origin, ".env"), "DATABASE_URL=postgres://localhost/syl\n")
+	writeWorktreeFile(t, filepath.Join(origin, "fixtures", "seed.db"), "seeded database\n")
+
+	worktreeRoot := filepath.Join(t.TempDir(), "worktrees")
+	branch := "fix/copy-configured-artifacts"
+	provisioned, err := ProvisionWorktree(context.Background(), WorktreeOptions{
+		OriginRoot:    origin,
+		ProjectConfig: config.Config{Worktree: config.WorktreeConfig{Root: worktreeRoot, Copy: []string{".env", "fixtures/seed.db"}}},
+		Ticket:        tracker.Ticket{Number: 86, Title: "Copy configured artifacts", Body: "Branch: " + branch},
+		Git:           gitadapter.ExecGitRunner{Dir: filepath.Join(worktreeRoot, filepath.Base(origin), worktreeBranchSlug(branch))},
+		OriginGit:     gitadapter.ExecGitRunner{Dir: origin},
+	})
+	if err != nil {
+		t.Fatalf("ProvisionWorktree() error = %v", err)
+	}
+
+	if got := readWorktreeFile(t, filepath.Join(provisioned.Path, ".env")); got != "DATABASE_URL=postgres://localhost/syl\n" {
+		t.Fatalf("copied .env = %q, want origin secret contents", got)
+	}
+	if got := readWorktreeFile(t, filepath.Join(provisioned.Path, "fixtures", "seed.db")); got != "seeded database\n" {
+		t.Fatalf("copied seed database = %q, want origin artifact contents", got)
+	}
+	if got := worktreeGit(t, provisioned.Path, "status", "--porcelain", "--untracked-files=all"); got != "" {
+		t.Fatalf("new worktree status = %q, want ignored copied artifacts to pass the untracked guard", got)
+	}
+}
+
+func TestProvisionWorktreeRefusesConfiguredUnignoredArtifact(t *testing.T) {
+	origin := newWorktreeRepository(t)
+	writeWorktreeFile(t, filepath.Join(origin, "local-secret"), "must not land untracked\n")
+	worktreeRoot := filepath.Join(t.TempDir(), "worktrees")
+	ticket := tracker.Ticket{Number: 87, Title: "Refuse unignored artifact", Body: "Branch: fix/refuse-unignored-artifact"}
+	worktreePath := filepath.Join(worktreeRoot, filepath.Base(origin), worktreeBranchSlug(resolveBranchName(ticket)))
+
+	_, err := ProvisionWorktree(context.Background(), WorktreeOptions{
+		OriginRoot:    origin,
+		ProjectConfig: config.Config{Worktree: config.WorktreeConfig{Root: worktreeRoot, Copy: []string{"local-secret"}}},
+		Ticket:        ticket,
+		Git:           gitadapter.ExecGitRunner{Dir: worktreePath},
+		OriginGit:     gitadapter.ExecGitRunner{Dir: origin},
+	})
+	if err == nil || !strings.Contains(err.Error(), "local-secret") || !strings.Contains(err.Error(), "add these paths to .gitignore") {
+		t.Fatalf("ProvisionWorktree() error = %v, want unignored configured path refusal", err)
+	}
+	if _, statErr := os.Lstat(worktreePath); !os.IsNotExist(statErr) {
+		t.Fatalf("worktree path stat error = %v, want removed path", statErr)
+	}
+}
+
 func TestProvisionWorktreeUsesExplicitBaseRef(t *testing.T) {
 	origin := newWorktreeRepository(t)
 	base := worktreeGit(t, origin, "rev-parse", "HEAD")

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -89,6 +90,21 @@ func TestLoadHonorsWorktreeSetupCommand(t *testing.T) {
 	}
 	if got.Worktree.Setup != "npm ci && echo dependencies-ready" {
 		t.Fatalf("Worktree.Setup = %q, want one shell command string", got.Worktree.Setup)
+	}
+}
+
+func TestLoadHonorsWorktreeCopyPaths(t *testing.T) {
+	root := t.TempDir()
+	writeConfig(t, root, configWithRoleValue("plan", "model", "claude-planner")+
+		"\n[worktree]\ncopy = [\".env\", \".env.local\", \"fixtures/seed.db\"]\n")
+
+	got, err := Load(root)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	want := []string{".env", ".env.local", "fixtures/seed.db"}
+	if !reflect.DeepEqual(got.Worktree.Copy, want) {
+		t.Fatalf("Worktree.Copy = %#v, want %#v", got.Worktree.Copy, want)
 	}
 }
 
