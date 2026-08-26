@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -75,6 +76,32 @@ func TestImplementLoopApprovesOnFirstIteration(t *testing.T) {
 		if !strings.Contains(artifactText, expected) {
 			t.Fatalf("run artifacts = %q, want %q", artifactText, expected)
 		}
+	}
+}
+
+func TestBareImplementDoesNotRunWorktreeSetup(t *testing.T) {
+	fixture := newImplementLoopFixture(t)
+	worktreeRoot := filepath.Join(t.TempDir(), "worktrees")
+	configureWorktreeSetup(t, fixture.root, worktreeRoot, "printf bare-setup-should-not-run >&2; exit 17")
+
+	loop := &loopHarness{
+		root: fixture.root,
+		streams: [][]harness.Event{
+			{{Type: harness.EventSession, SessionID: "bare-implement"}},
+			{{Type: harness.EventSession, SessionID: "bare-review"}, {Type: harness.EventAssistantText, Text: approveVerdictText}},
+		},
+	}
+	fixture.app.deps.Harnesses = func(string) map[string]harness.Adapter {
+		return map[string]harness.Adapter{"codex": loop, "claude": loop}
+	}
+	fixture.app.deps.GH = fixedGH(&loopGHRunner{})
+
+	code := fixture.app.Run(context.Background(), []string{"implement", "#42"}, &fixture.stdout, &fixture.stderr)
+	if code != 0 {
+		t.Fatalf("bare implement code = %d, stderr = %q", code, fixture.stderr.String())
+	}
+	if strings.Contains(fixture.stderr.String(), "bare-setup-should-not-run") {
+		t.Fatalf("stderr = %q, want no worktree setup output", fixture.stderr.String())
 	}
 }
 
@@ -1030,6 +1057,118 @@ func TestImplementWorktreeCleansUpWhenHarnessSetupFails(t *testing.T) {
 	}
 }
 
+func TestImplementWorktreeRunsSetupBeforeHarnessInWorktree(t *testing.T) {
+	fixture := newImplementLoopFixture(t)
+	worktreeRoot := filepath.Join(t.TempDir(), "worktrees")
+	configureWorktreeSetup(t, fixture.root, worktreeRoot, "printf setup-stdout; printf setup-stderr >&2; pwd > setup-cwd")
+
+	loop := &loopHarness{
+		streams: [][]harness.Event{
+			{{Type: harness.EventSession, SessionID: "setup-implement"}},
+			{{Type: harness.EventSession, SessionID: "setup-review"}, {Type: harness.EventAssistantText, Text: approveVerdictText}},
+		},
+	}
+	checkingHarness := &setupCheckingLoopHarness{loopHarness: loop}
+	var worktreePath string
+	fixture.app.deps.Harnesses = func(root string) map[string]harness.Adapter {
+		worktreePath = root
+		loop.root = root
+		checkingHarness.marker = filepath.Join(root, "setup-cwd")
+		return map[string]harness.Adapter{"codex": checkingHarness, "claude": checkingHarness}
+	}
+	fixture.app.deps.GH = fixedGH(&loopGHRunner{})
+
+	code := fixture.app.Run(context.Background(), []string{"implement", "#42", "--worktree"}, &fixture.stdout, &fixture.stderr)
+	if code != 0 {
+		t.Fatalf("implement worktree code = %d, stderr = %q", code, fixture.stderr.String())
+	}
+	setupCWD, err := os.ReadFile(filepath.Join(worktreePath, "setup-cwd"))
+	if err != nil {
+		t.Fatalf("read setup cwd: %v", err)
+	}
+	if got := string(setupCWD); got != worktreePath+"\n" {
+		t.Fatalf("setup cwd = %q, want worktree path %q", got, worktreePath)
+	}
+	if !strings.Contains(fixture.stdout.String(), "setup-stdout") {
+		t.Fatalf("stdout = %q, want setup stdout streamed to the user", fixture.stdout.String())
+	}
+	if !strings.Contains(fixture.stderr.String(), "setup-stderr") {
+		t.Fatalf("stderr = %q, want setup stderr streamed to the user", fixture.stderr.String())
+	}
+}
+
+func TestImplementWorktreeSetupFailureRollsBackBeforeHarnessStarts(t *testing.T) {
+	fixture := newImplementLoopFixture(t)
+	worktreeRoot := filepath.Join(t.TempDir(), "worktrees")
+	configureWorktreeSetup(t, fixture.root, worktreeRoot, "printf setup-failed >&2; exit 17")
+
+	harnessCalled := false
+	fixture.app.deps.Harnesses = func(string) map[string]harness.Adapter {
+		harnessCalled = true
+		return map[string]harness.Adapter{}
+	}
+	fixture.app.deps.GH = fixedGH(&loopGHRunner{})
+
+	code := fixture.app.Run(context.Background(), []string{"implement", "#42", "--worktree"}, &fixture.stdout, &fixture.stderr)
+	if code == 0 || !strings.Contains(fixture.stderr.String(), "run worktree setup") ||
+		!strings.Contains(fixture.stderr.String(), "setup-failed") {
+		t.Fatalf("implement worktree code = %d, stderr = %q, want setup failure", code, fixture.stderr.String())
+	}
+	if harnessCalled {
+		t.Fatal("harness factory was called after setup failed")
+	}
+
+	worktreePath := filepath.Join(worktreeRoot, filepath.Base(fixture.root), "feat-add-resilient-workflow")
+	if _, err := os.Stat(worktreePath); !os.IsNotExist(err) {
+		t.Fatalf("worktree path stat error = %v, want path removed", err)
+	}
+	if got := strings.TrimSpace(gitOutput(t, fixture.root, "branch", "--list", "--format=%(refname:short)", "feat/add-resilient-workflow")); got != "" {
+		t.Fatalf("implementation branch = %q, want branch removed", got)
+	}
+	if got := gitOutput(t, fixture.root, "worktree", "list", "--porcelain"); strings.Contains(got, worktreePath) {
+		t.Fatalf("registered worktrees = %q, want failed worktree removed", got)
+	}
+}
+
+func TestImplementWorktreeSetupCancellationRollsBack(t *testing.T) {
+	fixture := newImplementLoopFixture(t)
+	worktreeRoot := filepath.Join(t.TempDir(), "worktrees")
+	configureWorktreeSetup(t, fixture.root, worktreeRoot, "touch setup-started; sleep 30")
+	fixture.app.deps.GH = fixedGH(&loopGHRunner{})
+	worktreePath := filepath.Join(worktreeRoot, filepath.Base(fixture.root), "feat-add-resilient-workflow")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan int, 1)
+	go func() {
+		result <- fixture.app.Run(ctx, []string{"implement", "#42", "--worktree"}, &fixture.stdout, &fixture.stderr)
+	}()
+	startedPath := filepath.Join(worktreePath, "setup-started")
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, err := os.Stat(startedPath); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("setup process did not start")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+
+	select {
+	case code := <-result:
+		if code == 0 {
+			t.Fatal("implement worktree code = 0, want cancellation failure")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("implement worktree did not stop after setup cancellation")
+	}
+
+	if _, err := os.Stat(worktreePath); !os.IsNotExist(err) {
+		t.Fatalf("worktree path stat error = %v, want path removed after cancellation", err)
+	}
+}
+
 func configureWorktreeRoot(t *testing.T, root, worktreeRoot string) {
 	t.Helper()
 	path := filepath.Join(root, ".syl", "config.toml")
@@ -1042,6 +1181,20 @@ func configureWorktreeRoot(t *testing.T, root, worktreeRoot string) {
 		t.Fatal(err)
 	}
 	commitWorkingTree(t, root, "configure worktree")
+}
+
+func configureWorktreeSetup(t *testing.T, root, worktreeRoot, setup string) {
+	t.Helper()
+	path := filepath.Join(root, ".syl", "config.toml")
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated := fmt.Sprintf("%s\n[worktree]\nroot = %s\nsetup = %s\n", contents, strconv.Quote(worktreeRoot), strconv.Quote(setup))
+	if err := os.WriteFile(path, []byte(updated), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	commitWorkingTree(t, root, "configure worktree setup")
 }
 
 func TestImplementWorktreeUsesExplicitBaseRef(t *testing.T) {
@@ -1190,6 +1343,20 @@ type loopHarness struct {
 	streams               [][]harness.Event
 	requests              []harness.Request
 	leaveChangesUntracked bool
+}
+
+type setupCheckingLoopHarness struct {
+	*loopHarness
+	marker string
+}
+
+func (h *setupCheckingLoopHarness) Run(ctx context.Context, request harness.Request) (harness.Stream, error) {
+	if len(h.requests) == 0 {
+		if _, err := os.Stat(h.marker); err != nil {
+			return nil, fmt.Errorf("setup marker is missing before harness start: %w", err)
+		}
+	}
+	return h.loopHarness.Run(ctx, request)
 }
 
 type resumingLoopHarness struct {

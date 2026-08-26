@@ -78,6 +78,33 @@ func TestLoadHonorsWorktreeRoot(t *testing.T) {
 	}
 }
 
+func TestLoadHonorsWorktreeSetupCommand(t *testing.T) {
+	root := t.TempDir()
+	writeConfig(t, root, configWithRoleValue("plan", "model", "claude-planner")+
+		"\n[worktree]\nsetup = \"npm ci && echo dependencies-ready\"\n")
+
+	got, err := Load(root)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if got.Worktree.Setup != "npm ci && echo dependencies-ready" {
+		t.Fatalf("Worktree.Setup = %q, want one shell command string", got.Worktree.Setup)
+	}
+}
+
+func TestLoadLeavesAbsentWorktreeSetupEmpty(t *testing.T) {
+	root := t.TempDir()
+	writeConfig(t, root, configWithRoleValue("plan", "model", "claude-planner"))
+
+	got, err := Load(root)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if got.Worktree.Setup != "" {
+		t.Fatalf("Worktree.Setup = %q, want empty when absent", got.Worktree.Setup)
+	}
+}
+
 func TestLoadRejectsEmptyWorktreeRoot(t *testing.T) {
 	root := t.TempDir()
 	writeConfig(t, root, configWithRoleValue("plan", "model", "claude-planner")+"\n[worktree]\nroot = \"   \"\n")
