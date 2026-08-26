@@ -214,12 +214,20 @@ root = "~/.syl/worktrees"
 # A shell command used to provision dependencies in a fresh worktree.
 # Example: setup = "npm ci"
 setup = ""
+# Additional origin paths to copy into a fresh worktree.
+# Example: copy = [".env", ".env.local"]
+copy = []
 ```
 
 Edit this file directly to change Trackers, Roles, the iteration limit,
-notifications, the centralized worktree root, or the dependency setup command.
-`syl` rejects a config file that has an unknown key, so remove a setting instead
-of leaving a stale one behind.
+notifications, the centralized worktree root, the dependency setup command, or
+the copied artifact paths. `worktree.copy` is for ignored, non-reproducible
+artifacts that the setup hook cannot regenerate. Copying `.env` moves its
+secrets into `~/.syl/worktrees/...`, a location you may not expect. Do not use
+it for derivable dependency directories such as `node_modules`, `vendor`, or
+`.venv`; let `worktree.setup` create those for the worktree. `syl` rejects a
+config file that has an unknown key, so remove a setting instead of leaving a
+stale one behind.
 
 ### 3. Plan work
 
@@ -249,12 +257,17 @@ current checkout untouched. A fresh git worktree starts with only the tracked
 tree, so ignored dependencies such as `node_modules`, `vendor`, `.venv`,
 `target`, and `dist` are absent. Set `[worktree] setup = "npm ci"` (or the
 project's equivalent shell command) to provision those dependencies before the
-Harness starts. v1 provisions the checkout; the setup hook provisions its
-dependencies. The hook runs only for `--worktree`; a bare `syl implement` uses
-the dependencies already present in the origin checkout. Add `--base <ref>` to
-choose the ref the worktree branch starts from. The worktree is retained for
-review; the final summary prints the command to remove it after the changes are
-committed or abandoned.
+Harness starts. For non-reproducible artifacts, set `[worktree] copy = [".env",
+".env.local"]`; each path is copied from the origin checkout and must not land
+untracked and unignored. Copying `.env` places secrets in
+`~/.syl/worktrees/...`, which may be an unexpected location. Do not copy
+derivable dependency directories such as `node_modules`, `vendor`, or `.venv`;
+the setup hook owns those. v1 provisions the checkout; the setup hook provisions
+its dependencies. The hook and copy list run only for `--worktree`; a bare `syl
+implement` uses the dependencies and artifacts already present in the origin
+checkout. Add `--base <ref>` to choose the ref the worktree branch starts from.
+The worktree is retained for review; the final summary prints the command to
+remove it after the changes are committed or abandoned.
 
 `syl implement`:
 
@@ -330,6 +343,7 @@ then submit it with an empty line or end-of-file (Ctrl-D).
 | `notifications.enabled` | `true`, `false` | Send a desktop or terminal-bell notification on completion or on a `QUESTION`. |
 | `worktree.root` | path | Central root for implementation worktrees. Defaults to `~/.syl/worktrees`. |
 | `worktree.setup` | shell command string | Run after a fresh `--worktree` checkout is provisioned, with that worktree as cwd, to regenerate its dependencies. Omitted or empty means no setup step. |
+| `worktree.copy` | list of paths | Copy these additional paths from the origin checkout into a fresh `--worktree` checkout. Use for ignored, non-reproducible artifacts; untracked-and-unignored copies are refused. Do not use for derivable dependency directories such as `node_modules`, `vendor`, or `.venv`. |
 
 `<role>` is `plan`, `implement`, or `review`.
 
@@ -379,10 +393,13 @@ worktree being removed.
   checkout.** Uncommitted changes from the implement/review loop stay in
   the worktree directory; look there, not in the checkout you ran `syl`
   from, to inspect or commit them.
-- **A fresh worktree contains only the tracked tree.** Ignored build artifacts
-  and dependency directories are not copied. Configure `[worktree] setup` to
-  regenerate derivable dependencies; this hook does not copy non-reproducible
-  files such as `.env`.
+- **A fresh worktree contains only the tracked tree, plus configured copies.**
+  Ignored build artifacts and dependency directories are not copied. Configure
+  `[worktree] setup` to regenerate derivable dependencies, and
+  `[worktree] copy = [".env"]` for non-reproducible ignored artifacts that the
+  hook cannot recreate. Copying `.env` moves secrets into
+  `~/.syl/worktrees/...`, a location you may not expect; do not configure
+  dependency directories such as `node_modules`, `vendor`, or `.venv`.
 - **`syl` never removes worktrees automatically.** A worktree created by
   `--worktree` is retained after the run finishes, even after the changes
   are committed or abandoned. Run the removal command the final summary

@@ -123,7 +123,9 @@ func (a *App) implementCommand() *cobra.Command {
 		Long: "implement the current issue\n\n" +
 			"A fresh --worktree checkout starts with only the tracked tree. Set " +
 			"[worktree] setup = \"...\" in .syl/config.toml to provision its " +
-			"dependencies before the harness starts.\n\n" + orchestration.QuestionInputHelp,
+			"dependencies before the harness starts. Set [worktree] copy = [...] " +
+			"to copy ignored, non-reproducible artifacts such as .env files; copied " +
+			"secrets land under the worktree root.\n\n" + orchestration.QuestionInputHelp,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if strings.TrimSpace(base) != "" && !useWorktree {
