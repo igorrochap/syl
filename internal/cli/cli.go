@@ -120,8 +120,11 @@ func (a *App) implementCommand() *cobra.Command {
 	command := &cobra.Command{
 		Use:   "implement N",
 		Short: "implement the current issue",
-		Long:  "implement the current issue\n\n" + orchestration.QuestionInputHelp,
-		Args:  cobra.MaximumNArgs(1),
+		Long: "implement the current issue\n\n" +
+			"A fresh --worktree checkout starts with only the tracked tree. Set " +
+			"[worktree] setup = \"...\" in .syl/config.toml to provision its " +
+			"dependencies before the harness starts.\n\n" + orchestration.QuestionInputHelp,
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if strings.TrimSpace(base) != "" && !useWorktree {
 				return errors.New("--base requires --worktree")
@@ -147,6 +150,7 @@ func (a *App) implementCommand() *cobra.Command {
 			if useWorktree {
 				provisionedWorktree, statusTracker, err = a.provisionImplementWorktree(
 					cmd.Context(), projectConfig, ticket, base, issueTracker,
+					cmd.OutOrStdout(), cmd.ErrOrStderr(),
 				)
 				if err != nil {
 					return err
@@ -178,7 +182,7 @@ func (a *App) implementCommand() *cobra.Command {
 		},
 	}
 	command.Flags().BoolVar(&verbose, "verbose", false, "stream assistant prose in addition to progress output")
-	command.Flags().BoolVar(&useWorktree, "worktree", false, "run the implement/review loop in a dedicated worktree")
+	command.Flags().BoolVar(&useWorktree, "worktree", false, "run in a dedicated worktree; fresh worktrees contain only the tracked tree, so use [worktree] setup to provision dependencies")
 	command.Flags().StringVar(&base, "base", "", "branch the worktree from this ref (defaults to HEAD)")
 	return command
 }
@@ -189,6 +193,8 @@ func (a *App) provisionImplementWorktree(
 	ticket tracker.Ticket,
 	base string,
 	issueTracker tracker.Tracker,
+	stdout io.Writer,
+	stderr io.Writer,
 ) (*orchestration.Worktree, tracker.Tracker, error) {
 	provisioned, err := orchestration.ProvisionWorktree(ctx, orchestration.WorktreeOptions{
 		OriginRoot:     a.originRoot,
@@ -201,6 +207,9 @@ func (a *App) provisionImplementWorktree(
 	})
 	if err != nil {
 		return nil, nil, err
+	}
+	if err := orchestration.RunWorktreeSetup(ctx, projectConfig.Worktree.Setup, provisioned.Path, stdout, stderr); err != nil {
+		return nil, nil, a.cleanupProvisionedWorktree(ctx, &provisioned, err)
 	}
 	statusTracker := issueTracker
 	if projectConfig.Tracker.Issues == config.TrackerLocal {

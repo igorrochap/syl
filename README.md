@@ -211,12 +211,15 @@ enabled = true
 
 [worktree]
 root = "~/.syl/worktrees"
+# A shell command used to provision dependencies in a fresh worktree.
+# Example: setup = "npm ci"
+setup = ""
 ```
 
 Edit this file directly to change Trackers, Roles, the iteration limit,
-notifications, or the centralized worktree root. `syl` rejects a config file
-that has an unknown key, so remove a setting instead of leaving a stale one
-behind.
+notifications, the centralized worktree root, or the dependency setup command.
+`syl` rejects a config file that has an unknown key, so remove a setting instead
+of leaving a stale one behind.
 
 ### 3. Plan work
 
@@ -242,9 +245,16 @@ syl implement 42
 ```
 
 Use `--worktree` to run the loop in a dedicated checkout while leaving the
-current checkout untouched. Add `--base <ref>` to choose the ref the worktree
-branch starts from. The worktree is retained for review; the final summary
-prints the command to remove it after the changes are committed or abandoned.
+current checkout untouched. A fresh git worktree starts with only the tracked
+tree, so ignored dependencies such as `node_modules`, `vendor`, `.venv`,
+`target`, and `dist` are absent. Set `[worktree] setup = "npm ci"` (or the
+project's equivalent shell command) to provision those dependencies before the
+Harness starts. v1 provisions the checkout; the setup hook provisions its
+dependencies. The hook runs only for `--worktree`; a bare `syl implement` uses
+the dependencies already present in the origin checkout. Add `--base <ref>` to
+choose the ref the worktree branch starts from. The worktree is retained for
+review; the final summary prints the command to remove it after the changes are
+committed or abandoned.
 
 `syl implement`:
 
@@ -319,6 +329,7 @@ then submit it with an empty line or end-of-file (Ctrl-D).
 | `loop.max_iterations` | integer | Cap on implement/review iterations for `syl implement`. |
 | `notifications.enabled` | `true`, `false` | Send a desktop or terminal-bell notification on completion or on a `QUESTION`. |
 | `worktree.root` | path | Central root for implementation worktrees. Defaults to `~/.syl/worktrees`. |
+| `worktree.setup` | shell command string | Run after a fresh `--worktree` checkout is provisioned, with that worktree as cwd, to regenerate its dependencies. Omitted or empty means no setup step. |
 
 `<role>` is `plan`, `implement`, or `review`.
 
@@ -368,6 +379,10 @@ worktree being removed.
   checkout.** Uncommitted changes from the implement/review loop stay in
   the worktree directory; look there, not in the checkout you ran `syl`
   from, to inspect or commit them.
+- **A fresh worktree contains only the tracked tree.** Ignored build artifacts
+  and dependency directories are not copied. Configure `[worktree] setup` to
+  regenerate derivable dependencies; this hook does not copy non-reproducible
+  files such as `.env`.
 - **`syl` never removes worktrees automatically.** A worktree created by
   `--worktree` is retained after the run finishes, even after the changes
   are committed or abandoned. Run the removal command the final summary

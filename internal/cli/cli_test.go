@@ -38,6 +38,24 @@ func TestRunHelpListsAllCommands(t *testing.T) {
 	}
 }
 
+func TestImplementHelpExplainsWorktreeDependencySetup(t *testing.T) {
+	fixture := newTopSeamFixture(t)
+
+	code := fixture.app.Run(context.Background(), []string{"implement", "--help"}, &fixture.stdout, &fixture.stderr)
+	if code != 0 {
+		t.Fatalf("Run() code = %d, want 0; stderr = %q", code, fixture.stderr.String())
+	}
+	for _, expected := range []string{
+		"only the tracked tree",
+		"[worktree] setup",
+		"provision its dependencies",
+	} {
+		if !strings.Contains(fixture.stdout.String(), expected) {
+			t.Fatalf("implement help = %q, want %q", fixture.stdout.String(), expected)
+		}
+	}
+}
+
 func TestRootsRouteCollaboratorsToTheirOwningRoot(t *testing.T) {
 	originRoot := t.TempDir()
 	workRoot := t.TempDir()

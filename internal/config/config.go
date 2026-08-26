@@ -92,7 +92,8 @@ type NotificationsConfig struct {
 }
 
 type WorktreeConfig struct {
-	Root string
+	Root  string
+	Setup string
 }
 
 type rawConfig struct {
@@ -130,7 +131,8 @@ type rawNotifications struct {
 }
 
 type rawWorktree struct {
-	Root string `toml:"root"`
+	Root  string `toml:"root"`
+	Setup string `toml:"setup"`
 }
 
 func Path(projectRoot string) string {
@@ -236,6 +238,9 @@ enabled = %t
 
 [worktree]
 root = %q
+# A shell command used to provision dependencies in a fresh worktree.
+# Example: setup = "npm ci"
+setup = %q
 `, cfg.Tracker.Issues, cfg.Tracker.Reviews,
 		cfg.Roles.Plan.Harness, cfg.Roles.Plan.Model, cfg.Roles.Plan.Effort,
 		cfg.Roles.Plan.MCP,
@@ -243,7 +248,8 @@ root = %q
 		cfg.Roles.Implement.MCP,
 		cfg.Roles.Review.Harness, cfg.Roles.Review.Model, cfg.Roles.Review.Effort,
 		cfg.Roles.Review.MCP,
-		cfg.Loop.MaxIterations, cfg.Notifications.Enabled, worktreeRoot(cfg.Worktree.Root))
+		cfg.Loop.MaxIterations, cfg.Notifications.Enabled,
+		worktreeRoot(cfg.Worktree.Root), cfg.Worktree.Setup)
 }
 
 func worktreeRoot(root string) string {
@@ -320,7 +326,7 @@ func validate(raw rawConfig, metadata toml.MetaData) (Config, error) {
 		},
 		Loop:          LoopConfig{MaxIterations: maxIterations},
 		Notifications: NotificationsConfig{Enabled: notificationsEnabled},
-		Worktree:      WorktreeConfig{Root: worktreeRoot},
+		Worktree:      WorktreeConfig{Root: worktreeRoot, Setup: raw.Worktree.Setup},
 	}, nil
 }
 
