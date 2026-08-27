@@ -60,10 +60,15 @@ Identify the source with commit subjects, user-provided references, and path lis
 
 Use the minimum listing/search calls needed to collect paths to anything in the repo that documents how code should be written, such as `CODING_STANDARDS.md` or `CONTRIBUTING.md`. Pass those paths to the Standards sub-agent; the coordinator needs the path list, not the file contents.
 
-On top of whatever the repo documents, the Standards axis always carries the **smell baseline** — Fowler's code smells (_Refactoring_, ch.3), cataloged in [`skills/refactoring/references/smells.md`](../refactoring/references/smells.md), applying even when a repo documents nothing. The coordinator passes this path without opening it. Two rules bind it:
+On top of whatever the repo documents, the Standards axis always carries two baselines, applying even when a repo documents nothing:
+
+- the **quality bar** — the norms in [`skills/code-quality/SKILL.md`](../code-quality/SKILL.md);
+- the **smell baseline** — Fowler's code smells (_Refactoring_, ch.3), cataloged in [`skills/refactoring/references/smells.md`](../refactoring/references/smells.md).
+
+The coordinator passes both paths without opening them. Two rules bind them:
 
 - **The repo overrides.** A documented repo standard always wins; where it endorses something the baseline would flag, suppress the smell.
-- **Always a judgement call.** Each smell is a labelled heuristic ("possible Feature Envy"), never a hard violation — and, like any standard here, skip anything tooling already enforces.
+- **Always a judgement call.** Each baseline finding is a labelled heuristic ("possible Feature Envy"), never a hard violation — and, like any standard here, skip anything tooling already enforces. The gates examine complexity and style; a reviewer examines what a tool cannot see — a name, a design, the fidelity to the spec.
 
 ### 4. Spawn both sub-agents in parallel
 
@@ -72,8 +77,8 @@ The coordinator's setup ends at this handoff. Send a single message containing b
 **Standards sub-agent prompt** — include:
 
 - In normal mode, the full diff command and commit list. In pre-computed-diff mode, the exact diff-file path and branch-point ref instead; tell the sub-agent that the file is authoritative, must be verified non-empty, and must be read directly without invoking Git to re-derive the diff.
-- The list of standards-source files you found in step 3, plus the path `skills/refactoring/references/smells.md` — tell the sub-agent to read it for the smell baseline (it has repo file access).
-- The brief: "Report — per file/hunk where relevant — (a) every place the diff violates a documented standard: cite the standard (file + the rule); and (b) any baseline smell from `skills/refactoring/references/smells.md` you spot: name it and quote the hunk. Distinguish hard violations from judgement calls — documented-standard breaches can be hard, but baseline smells are always judgement calls, and a documented repo standard overrides the baseline. Skip anything tooling enforces. Under 400 words."
+- The list of standards-source files you found in step 3, plus the paths `skills/code-quality/SKILL.md` and `skills/refactoring/references/smells.md` — tell the sub-agent to read both for the baselines (it has repo file access).
+- The brief: "Report — per file/hunk where relevant — (a) every place the diff violates a documented standard: cite the standard (file + the rule); and (b) any baseline breach you spot — a norm from `skills/code-quality/SKILL.md` or a smell from `skills/refactoring/references/smells.md`: name it and quote the hunk. Distinguish hard violations from judgement calls — documented-standard breaches can be hard, but baseline findings are always judgement calls, and a documented repo standard overrides a baseline. Skip anything tooling enforces. Under 400 words."
 
 **Spec sub-agent prompt** — include:
 

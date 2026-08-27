@@ -23,6 +23,8 @@ A **seam** is the public boundary you test at: the interface where you observe b
 
 Ask: "What's the public interface, and which seams should we test?"
 
+The test norms the seam serves — a failing test per change of behaviour, testing through the public interface, holding the coverage floor — live in [`skills/code-quality/SKILL.md`](../code-quality/SKILL.md).
+
 ## Anti-patterns
 
 - **Implementation-coupled** — mocks internal collaborators, tests private methods, or verifies through a side channel (querying the database instead of using the interface). The tell: the test breaks when you refactor but behavior hasn't changed.
