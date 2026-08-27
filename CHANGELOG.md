@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v1.21.0 (2026-08-27)
+
+### Features
+
+- **notify**: Include project and branch in notifications
+  ([#92](https://github.com/igorrochap/syl/pull/92),
+  [`ce800c6`](https://github.com/igorrochap/syl/commit/ce800c635a87e2e2199993c1ce6161679da9453b))
+
+
 ## v1.20.0 (2026-08-27)
 
 ### Bug Fixes
