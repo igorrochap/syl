@@ -2,6 +2,24 @@
 
 <!-- version list -->
 
+## v1.20.0 (2026-08-27)
+
+### Bug Fixes
+
+- **ci**: Pin GitPython version to 3.1.59
+  ([`d5be78d`](https://github.com/igorrochap/syl/commit/d5be78dff13f2fb3d4d4f007d553792bf067938e))
+
+### Features
+
+- **worktree**: Add setup hook for dependency provisioning
+  ([#89](https://github.com/igorrochap/syl/pull/89),
+  [`ae0fa65`](https://github.com/igorrochap/syl/commit/ae0fa65b0be5e4080b8b8a26d1edb05dda3a8955))
+
+- **worktree**: Allow copying additional artifacts
+  ([#90](https://github.com/igorrochap/syl/pull/90),
+  [`44c82c6`](https://github.com/igorrochap/syl/commit/44c82c6d97d87eba9e421eba43e98c005c8faaa4))
+
+
 ## v1.19.0 (2026-08-25)
 
 ### Documentation
