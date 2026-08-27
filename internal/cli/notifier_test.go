@@ -2,14 +2,17 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	gitadapter "github.com/igorrochap/syl/internal/adapters/git"
 	"github.com/igorrochap/syl/internal/adapters/notify"
 	"github.com/igorrochap/syl/internal/harness"
+	"github.com/igorrochap/syl/internal/orchestration"
 )
 
 func TestSelectNotificationBackendByPlatform(t *testing.T) {
@@ -75,6 +78,75 @@ func TestImplementDoesNotNotifyWhenNotificationsAreDisabled(t *testing.T) {
 	}
 }
 
+func TestImplementCompletionNotificationIdentifiesProjectAndActiveBranch(t *testing.T) {
+	fixture := newImplementLoopFixture(t)
+	notifier := &recordingNotifier{}
+	loop := &loopHarness{
+		root: fixture.root,
+		streams: [][]harness.Event{
+			{{Type: harness.EventSession, SessionID: "implement"}},
+			{{Type: harness.EventSession, SessionID: "review"}, {Type: harness.EventAssistantText, Text: approveVerdictText}},
+		},
+	}
+	fixture.harnesses["codex"] = loop
+	fixture.harnesses["claude"] = loop
+	fixture.app.deps.GH = fixedGH(&loopGHRunner{})
+	fixture.app.deps.Notifier = notifier
+
+	code := fixture.app.Run(context.Background(), []string{"implement", "#42"}, &fixture.stdout, &fixture.stderr)
+	if code != 0 {
+		t.Fatalf("implement code = %d, stderr = %q", code, fixture.stderr.String())
+	}
+
+	want := "[project: " + filepath.Base(fixture.root) + " | branch: feat/add-resilient-workflow] implement #42 finished: approve"
+	if len(notifier.messages) != 1 || notifier.messages[0] != want {
+		t.Fatalf("notifications = %v, want %q", notifier.messages, want)
+	}
+}
+
+func TestImplementCompletionNotificationUsesUnknownBranchWhenGitBranchIsUnavailable(t *testing.T) {
+	tests := []struct {
+		name        string
+		branchValue string
+		branchErr   error
+	}{
+		{name: "empty branch", branchValue: "\n"},
+		{name: "git error", branchErr: errors.New("git branch failed")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fixture := newImplementLoopFixture(t)
+			notifier := &recordingNotifier{}
+			loop := &loopHarness{
+				root: fixture.root,
+				streams: [][]harness.Event{
+					{{Type: harness.EventSession, SessionID: "implement"}},
+					{{Type: harness.EventSession, SessionID: "review"}, {Type: harness.EventAssistantText, Text: approveVerdictText}},
+				},
+			}
+			fixture.harnesses["codex"] = loop
+			fixture.harnesses["claude"] = loop
+			fixture.app.deps.GH = fixedGH(&loopGHRunner{})
+			fixture.app.deps.Git = fixedGit(&branchLookupGit{
+				delegate:    gitadapter.ExecGitRunner{Dir: fixture.root},
+				branchValue: tt.branchValue,
+				branchErr:   tt.branchErr,
+			})
+			fixture.app.deps.Notifier = notifier
+
+			code := fixture.app.Run(context.Background(), []string{"implement", "#42"}, &fixture.stdout, &fixture.stderr)
+			if code != 0 {
+				t.Fatalf("implement code = %d, stderr = %q", code, fixture.stderr.String())
+			}
+
+			want := "[project: " + filepath.Base(fixture.root) + " | branch: unknown-branch] implement #42 finished: approve"
+			if len(notifier.messages) != 1 || notifier.messages[0] != want {
+				t.Fatalf("notifications = %v, want %q", notifier.messages, want)
+			}
+		})
+	}
+}
+
 type recordingNotifier struct {
 	messages []string
 }
@@ -82,4 +154,17 @@ type recordingNotifier struct {
 func (n *recordingNotifier) Notify(_ context.Context, message string) error {
 	n.messages = append(n.messages, strings.TrimSpace(message))
 	return nil
+}
+
+type branchLookupGit struct {
+	delegate    orchestration.GitRunner
+	branchValue string
+	branchErr   error
+}
+
+func (g *branchLookupGit) Run(ctx context.Context, args ...string) (string, error) {
+	if strings.Join(args, " ") == "branch --show-current" {
+		return g.branchValue, g.branchErr
+	}
+	return g.delegate.Run(ctx, args...)
 }

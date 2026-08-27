@@ -808,6 +808,8 @@ func (r *reviewGitRunner) Run(_ context.Context, args ...string) (string, error)
 	switch call {
 	case "rev-parse HEAD":
 		return "branch-point\n", nil
+	case "branch --show-current":
+		return "review-branch\n", nil
 	case "diff branch-point":
 		return r.diff, r.diffErr
 	case "ls-files --others --exclude-standard -z":
