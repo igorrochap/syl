@@ -949,6 +949,8 @@ func TestImplementRefusesDirtyTreeBeforeBranchOrStatusChange(t *testing.T) {
 
 func TestImplementWorktreeLeavesOriginUntouchedAndReviewsDiffInsideWorktree(t *testing.T) {
 	fixture := newImplementLoopFixture(t)
+	notifier := &recordingNotifier{}
+	fixture.app.deps.Notifier = notifier
 	worktreeRoot := filepath.Join(t.TempDir(), "worktrees")
 	configureWorktreeRoot(t, fixture.root, worktreeRoot)
 	if err := os.WriteFile(filepath.Join(fixture.root, "preexisting.txt"), []byte("keep me\n"), 0o644); err != nil {
@@ -1024,6 +1026,10 @@ func TestImplementWorktreeLeavesOriginUntouchedAndReviewsDiffInsideWorktree(t *t
 	}
 	if !strings.Contains(loop.requests[1].Prompt, diffPath) {
 		t.Fatalf("review prompt = %q, want worktree diff path %q", loop.requests[1].Prompt, diffPath)
+	}
+	wantNotification := "[project: " + filepath.Base(fixture.root) + " | branch: feat/add-resilient-workflow] implement #42 finished: approve"
+	if len(notifier.messages) != 1 || notifier.messages[0] != wantNotification {
+		t.Fatalf("notifications = %v, want %q", notifier.messages, wantNotification)
 	}
 }
 

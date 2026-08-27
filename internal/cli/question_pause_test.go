@@ -41,8 +41,9 @@ func TestImplementQuestionPausesAndResumesTheSameSession(t *testing.T) {
 	if len(loop.resumes) != 1 || loop.resumes[0].sessionID != "implement-session" || loop.resumes[0].prompt != "Use SQLite.\nwith WAL." {
 		t.Fatalf("resumes = %#v, want one answer on the original implement session", loop.resumes)
 	}
-	if len(notifier.messages) < 1 || notifier.messages[0] != "syl is waiting for your answer on #42" {
-		t.Fatalf("notifications = %v, want blocked notification for #42", notifier.messages)
+	wantNotification := "[project: " + filepath.Base(fixture.root) + " | branch: feat/add-resilient-workflow] syl is waiting for your answer on #42"
+	if len(notifier.messages) < 1 || notifier.messages[0] != wantNotification {
+		t.Fatalf("notifications = %v, want %q", notifier.messages, wantNotification)
 	}
 	if !strings.Contains(fixture.stdout.String(), "[implement] question on #42") || strings.Contains(fixture.stdout.String(), "QUESTION:") || !strings.Contains(fixture.stdout.String(), "answer sent — resuming implementer…") || !strings.Contains(fixture.stdout.String(), "Iterations: 1") || !strings.Contains(fixture.stdout.String(), "Final verdict: approve") {
 		t.Fatalf("stdout = %q, want question and one-iteration approval", fixture.stdout.String())
@@ -75,8 +76,9 @@ func TestReviewerQuestionPausesAndResumesTheSameSession(t *testing.T) {
 	if len(loop.resumes) != 1 || loop.resumes[0].sessionID != "review-session" || loop.resumes[0].prompt != "Yes, it is a blocker." {
 		t.Fatalf("resumes = %#v, want one answer on the original review session", loop.resumes)
 	}
-	if len(notifier.messages) < 1 || notifier.messages[0] != "syl is waiting for your answer on #42" {
-		t.Fatalf("notifications = %v, want blocked notification for #42", notifier.messages)
+	wantNotification := "[project: " + filepath.Base(fixture.root) + " | branch: feat/add-resilient-workflow] syl is waiting for your answer on #42"
+	if len(notifier.messages) < 1 || notifier.messages[0] != wantNotification {
+		t.Fatalf("notifications = %v, want %q", notifier.messages, wantNotification)
 	}
 }
 
@@ -138,8 +140,9 @@ func TestOneShotReviewHonorsQuestionProtocol(t *testing.T) {
 	if len(loop.resumes) != 1 || loop.resumes[0].sessionID != "review-session" || loop.resumes[0].prompt != "The current working-tree diff." {
 		t.Fatalf("resumes = %#v, want one same-session review resume", loop.resumes)
 	}
-	if len(notifier.messages) != 1 || notifier.messages[0] != "syl is waiting for your answer on review" {
-		t.Fatalf("notifications = %v, want one-shot review blocked notification", notifier.messages)
+	wantNotification := "[project: " + filepath.Base(fixture.root) + " | branch: review-branch] syl is waiting for your answer on review"
+	if len(notifier.messages) != 1 || notifier.messages[0] != wantNotification {
+		t.Fatalf("notifications = %v, want %q", notifier.messages, wantNotification)
 	}
 	if !strings.Contains(fixture.stdout.String(), "VERDICT: approve") {
 		t.Fatalf("stdout = %q, want approval verdict", fixture.stdout.String())

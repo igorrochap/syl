@@ -97,6 +97,7 @@ func RunImplement(ctx context.Context, options ImplementOptions) (returnErr erro
 	if !projectConfig.Notifications.Enabled {
 		notifier = nil
 	}
+	notifier = withNotificationContext(notifier, options.OriginRoot, setup.git)
 	questions := NewQuestionHandler(options.Input, options.Output, "#"+strconv.Itoa(ticket.Number), notifier)
 	recorder, err := newImplementRunRecorder(
 		options.OriginRoot,

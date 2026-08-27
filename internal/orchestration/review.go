@@ -97,6 +97,7 @@ func RunReview(ctx context.Context, options ReviewOptions) error {
 	if !options.ProjectConfig.Notifications.Enabled {
 		notifier = nil
 	}
+	notifier = withNotificationContext(notifier, options.OriginRoot, options.Git)
 	questions := NewQuestionHandler(options.Input, options.Output, options.TicketRef, notifier)
 	mode := QuietHarnessOutput
 	if options.Verbose {
