@@ -47,10 +47,11 @@ func TestInitBlankDirectoryScaffoldsProject(t *testing.T) {
 		t.Fatalf("Run() code = %d, want 0; stderr = %q", code, stderr.String())
 	}
 
-	for _, skill := range []string{"close-issue", "implement", "refactoring", "tdd"} {
+	for _, skill := range []string{"close-issue", "code-quality", "implement", "refactoring", "tdd"} {
 		assertFileExists(t, filepath.Join(root, ".agents", "skills", skill, "SKILL.md"))
 	}
 	assertFileExists(t, filepath.Join(root, ".agents", "skills", "tdd", "tests.md"))
+	assertFileExists(t, filepath.Join(root, ".agents", "skills", "code-quality", "references", "gate-contract.md"))
 	assertFileExists(t, filepath.Join(root, ".agents", "skills", "go-style", "SKILL.md"))
 	lock := readTestSkillsLock(t, root)
 	if lock.Version != 1 || lock.Skills["close-issue"] == "" || lock.Skills["go-style"] == "" {
