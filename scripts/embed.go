@@ -9,5 +9,5 @@ var InstallScript []byte
 
 // QualityScript is the language-neutral quality gate skeleton initialized in a project.
 //
-//go:embed quality.sh
+//go:embed quality-skeleton.sh
 var QualityScript []byte

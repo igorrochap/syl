@@ -10,24 +10,13 @@ notes=()
 failed_gates=()
 
 format() {
-  mapfile -t go_files < <(git ls-files '*.go')
-  unformatted="$(gofmt -l "${go_files[@]}")"
-  if [ -n "$unformatted" ]; then
-    echo "The following Go files are not formatted:"
-    echo "$unformatted"
-    return 1
-  fi
+  # Put the format command for this project here.
+  printf '%s\n' "SKIP  not configured"
 }
 
 vet() {
-  local failed=0
-
-  shellcheck scripts/*.sh || failed=1
-  go vet ./... || failed=1
-  go mod tidy || failed=1
-  git diff --exit-code -- go.mod go.sum || failed=1
-
-  return "$failed"
+  # Put the vet command for this project here.
+  printf '%s\n' "SKIP  not configured"
 }
 
 style() {
@@ -46,13 +35,8 @@ coverage() {
 }
 
 tests() {
-  local failed=0
-
-  go test ./... || failed=1
-  go test -race ./... || failed=1
-  scripts/install_test.sh || failed=1
-
-  return "$failed"
+  # Put the tests command for this project here.
+  printf '%s\n' "SKIP  not configured"
 }
 
 architecture() {
