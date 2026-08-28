@@ -156,6 +156,7 @@ syl init
 - Installs the Skill set into the project.
 - Links a Claude Code integration, when Claude Code is a configured Harness.
 - Adds `.syl/runs/` to `.gitignore`.
+- Writes `scripts/quality.sh` with the seven language-neutral quality gates.
 
 `syl init` shows every planned change and asks for confirmation before it
 writes anything. Run `syl init` again to review or add optional skills; it
@@ -167,6 +168,13 @@ vendored Skill set. `syl sync --dry-run` only prints the report; `syl sync --all
 applies safe updates automatically while still requiring explicit
 confirmation for locally modified skills. Optional skills are never installed
 by `sync`.
+
+The generated `scripts/quality.sh` is the project's quality-gate entry point.
+Run it with no argument to run every gate, or pass a gate name to run one; use
+`--list` to see the names. Each gate starts as `SKIP  not configured`. Fill a
+gate by replacing its stub with the project's command: exit 0 for a pass and a
+non-zero exit for a failure. `syl init` leaves an existing quality script
+untouched, and `syl sync` does not manage it.
 
 ### 2. Configure the workflow
 

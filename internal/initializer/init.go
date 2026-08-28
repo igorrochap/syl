@@ -15,12 +15,14 @@ import (
 
 	"github.com/igorrochap/syl/internal/config"
 	"github.com/igorrochap/syl/internal/tui"
+	"github.com/igorrochap/syl/scripts"
 	vendoredskills "github.com/igorrochap/syl/skills"
 )
 
 const (
-	gitignoreEntry = ".syl/runs/"
-	minimalAgents  = "# Project instructions\n\nThis project is managed with syl.\n"
+	gitignoreEntry    = ".syl/runs/"
+	qualityScriptPath = "scripts/quality.sh"
+	minimalAgents     = "# Project instructions\n\nThis project is managed with syl.\n"
 )
 
 type skillManifest struct {
@@ -43,6 +45,7 @@ type initPlan struct {
 	claudeFileLink       linkPlan
 	writeConfig          bool
 	writeSkillsLock      bool
+	writeQualityScript   bool
 	updateGitignore      bool
 	changes              []string
 	initialized          bool
@@ -161,15 +164,15 @@ func Run(projectRoot string, input io.Reader, output io.Writer) error {
 		return nil
 	}
 
-	if plan.requiresConfirmation {
+	if len(plan.changes) > 0 {
 		fmt.Fprintln(output, "Changes:")
 		for _, change := range plan.changes {
 			fmt.Fprintf(output, "- %s\n", change)
 		}
-		if !confirmed {
-			fmt.Fprintln(output, "No changes made.")
-			return nil
-		}
+	}
+	if plan.requiresConfirmation && !confirmed {
+		fmt.Fprintln(output, "No changes made.")
+		return nil
 	}
 
 	if err := applyInitPlan(plan); err != nil {
@@ -233,6 +236,14 @@ func makeInitPlan(projectRoot string, projectConfig config.Config, manifest skil
 	}
 	if plan.createAgents {
 		plan.changes = append(plan.changes, "create AGENTS.md")
+	}
+
+	plan.writeQualityScript, err = needsQualityScript(projectRoot)
+	if err != nil {
+		return initPlan{}, err
+	}
+	if plan.writeQualityScript {
+		plan.changes = append(plan.changes, "write "+qualityScriptPath)
 	}
 
 	claudeLink, claudeFileLink, linkChanges, err := planLayout(projectRoot)
@@ -309,6 +320,18 @@ func needsAgentsFile(projectRoot string) (bool, error) {
 	return false, nil
 }
 
+func needsQualityScript(projectRoot string) (bool, error) {
+	qualityPath := filepath.Join(projectRoot, filepath.FromSlash(qualityScriptPath))
+	_, err := os.Lstat(qualityPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return true, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("inspect %s: %w", qualityScriptPath, err)
+	}
+	return false, nil
+}
+
 func planLayout(projectRoot string) (linkPlan, linkPlan, []string, error) {
 	claudeLink, err := planLink(projectRoot, ".claude", ".agents", ".claude symlink")
 	if err != nil {
@@ -363,6 +386,11 @@ func applyInitPlan(plan initPlan) error {
 			return fmt.Errorf("create AGENTS.md: %w", err)
 		}
 	}
+	if plan.writeQualityScript {
+		if err := writeQualityScript(plan.root); err != nil {
+			return err
+		}
+	}
 	if err := applyLink(plan.claudeLink); err != nil {
 		return err
 	}
@@ -383,6 +411,35 @@ func applyInitPlan(plan initPlan) error {
 		if err := writeInitSkillsLock(plan); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+func writeQualityScript(projectRoot string) error {
+	qualityPath := filepath.Join(projectRoot, filepath.FromSlash(qualityScriptPath))
+	if err := os.MkdirAll(filepath.Dir(qualityPath), 0o755); err != nil {
+		return fmt.Errorf("create quality script directory: %w", err)
+	}
+	file, err := os.OpenFile(qualityPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o755)
+	if errors.Is(err, os.ErrExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("create %s: %w", qualityScriptPath, err)
+	}
+	written, writeErr := file.Write(scripts.QualityScript)
+	closeErr := file.Close()
+	if writeErr != nil {
+		return fmt.Errorf("write %s: %w", qualityScriptPath, writeErr)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("close %s: %w", qualityScriptPath, closeErr)
+	}
+	if written != len(scripts.QualityScript) {
+		return fmt.Errorf("write %s: %w", qualityScriptPath, io.ErrShortWrite)
+	}
+	if err := os.Chmod(qualityPath, 0o755); err != nil {
+		return fmt.Errorf("set permissions on %s: %w", qualityScriptPath, err)
 	}
 	return nil
 }

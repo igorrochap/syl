@@ -6,3 +6,8 @@ import _ "embed"
 //
 //go:embed install.sh
 var InstallScript []byte
+
+// QualityScript is the language-neutral quality gate skeleton initialized in a project.
+//
+//go:embed quality.sh
+var QualityScript []byte
