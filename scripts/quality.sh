@@ -32,8 +32,31 @@ vet() {
   return "$failed"
 }
 
+quality_base_ref() {
+  local requested_base_ref="${GITHUB_BASE_REF:-}"
+  local base_ref
+  local -a candidate_refs=()
+
+  if [[ -n "$requested_base_ref" ]]; then
+    candidate_refs+=("origin/$requested_base_ref" "$requested_base_ref")
+  fi
+  candidate_refs+=(main origin/main)
+
+  for base_ref in "${candidate_refs[@]}"; do
+    if git rev-parse --verify "${base_ref}^{commit}" >/dev/null 2>&1; then
+      printf '%s\n' "$base_ref"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
 style() {
   local installed_version
+  local base_ref
+  local changed_file
+  local -a changed_go_files=()
 
   if ! command -v golangci-lint >/dev/null 2>&1; then
     echo "golangci-lint ${golangci_lint_version} is required for the style gate." >&2
@@ -49,12 +72,31 @@ style() {
     return 1
   fi
 
-  golangci-lint run --new-from-merge-base=main ./...
+  if ! base_ref="$(quality_base_ref)"; then
+    echo "Could not determine the quality-gate base ref." >&2
+    return 1
+  fi
+
+  while IFS= read -r changed_file; do
+    if [[ -z "$changed_file" ]]; then
+      continue
+    fi
+    case "$changed_file" in
+      *.go) changed_go_files+=("$changed_file") ;;
+    esac
+  done < <(git diff --name-only --diff-filter=ACMR "$base_ref" -- '*.go')
+
+  if (( ${#changed_go_files[@]} == 0 )); then
+    printf '%s\n' "PASS  no changed Go files"
+    return 0
+  fi
+
+  golangci-lint run --new-from-merge-base="$base_ref" ./...
 }
 
 complexity() {
   local complexity_limit=10
-  local merge_base
+  local base_ref
   local changed_file
   local changed_ranges
   local over_limit_output
@@ -64,8 +106,8 @@ complexity() {
   local violations
   local -a changed_files=()
 
-  if ! merge_base="$(git merge-base main HEAD)"; then
-    echo "Could not determine the merge base with main." >&2
+  if ! base_ref="$(quality_base_ref)"; then
+    echo "Could not determine the quality-gate base ref." >&2
     return 1
   fi
 
@@ -74,7 +116,7 @@ complexity() {
       ""|*_test.go) ;;
       *.go) changed_files+=("$changed_file") ;;
     esac
-  done < <(git diff --name-only --diff-filter=ACMR "$merge_base" -- '*.go')
+  done < <(git diff --name-only --diff-filter=ACMR "$base_ref" -- '*.go')
 
   if (( ${#changed_files[@]} == 0 )); then
     printf '%s\n' "PASS  no changed non-test Go files"
@@ -87,7 +129,7 @@ complexity() {
   fi
 
   changed_ranges="$(
-    git diff --no-ext-diff --unified=0 "$merge_base" -- "${changed_files[@]}" |
+    git diff --no-ext-diff --unified=0 "$base_ref" -- "${changed_files[@]}" |
       awk '
         /^\+\+\+ b\// {
           file = substr($0, 7)
