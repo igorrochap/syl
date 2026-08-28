@@ -2,6 +2,7 @@
   "version": 1,
   "skills": [
     { "name": "close-issue", "classification": "core" },
+    { "name": "code-quality", "classification": "core" },
     { "name": "code-review", "classification": "core" },
     { "name": "codebase-design", "classification": "core" },
     { "name": "domain-modeling", "classification": "core" },
