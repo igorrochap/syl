@@ -28,6 +28,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --yes shellcheck
+          go install github.com/fzipp/gocyclo/cmd/gocyclo@v0.6.0
           curl -sSfL https://golangci-lint.run/install.sh | sh -s -- -b "$(go env GOPATH)/bin" v2.13.1
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
