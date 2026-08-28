@@ -2,6 +2,25 @@
 
 <!-- version list -->
 
+## v1.22.0 (2026-08-28)
+
+### Features
+
+- **cli**: Add quality gate script to init ([#106](https://github.com/igorrochap/syl/pull/106),
+  [`d8002f4`](https://github.com/igorrochap/syl/commit/d8002f4b61334745a38f829882a92725d3892a31))
+
+- **cli, skills**: Integrate automated code-quality standards
+  ([#106](https://github.com/igorrochap/syl/pull/106),
+  [`d8002f4`](https://github.com/igorrochap/syl/commit/d8002f4b61334745a38f829882a92725d3892a31))
+
+- **skills**: Add code-quality skill ([#106](https://github.com/igorrochap/syl/pull/106),
+  [`d8002f4`](https://github.com/igorrochap/syl/commit/d8002f4b61334745a38f829882a92725d3892a31))
+
+- **skills**: Integrate code-quality standards into workflow
+  ([#106](https://github.com/igorrochap/syl/pull/106),
+  [`d8002f4`](https://github.com/igorrochap/syl/commit/d8002f4b61334745a38f829882a92725d3892a31))
+
+
 ## v1.21.0 (2026-08-27)
 
 ### Features
