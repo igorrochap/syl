@@ -1,7 +1,6 @@
 name: CI/CD
 
 on:
-  pull_request:
   push:
     branches:
       - main
@@ -16,6 +15,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -23,35 +24,11 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Check formatting
-        run: |
-          mapfile -t go_files < <(git ls-files '*.go')
-          unformatted="$(gofmt -l "${go_files[@]}")"
-          if [ -n "$unformatted" ]; then
-            echo "The following Go files are not formatted:"
-            echo "$unformatted"
-            exit 1
-          fi
+      - name: Install tools
+        run: sudo apt-get update && sudo apt-get install --yes shellcheck
 
-      - name: Check shell scripts
-        run: shellcheck scripts/*.sh
-
-      - name: Vet
-        run: go vet ./...
-
-      - name: Check module files
-        run: |
-          go mod tidy
-          git diff --exit-code -- go.mod go.sum
-
-      - name: Test installer
-        run: scripts/install_test.sh
-
-      - name: Test
-        run: go test ./...
-
-      - name: Test with race detector
-        run: go test -race ./...
+      - name: Run quality gate
+        run: scripts/quality.sh
 
   build:
     name: Build ${{ matrix.release_os }}/${{ matrix.goarch }}
