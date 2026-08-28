@@ -25,7 +25,11 @@ jobs:
           cache: true
 
       - name: Install tools
-        run: sudo apt-get update && sudo apt-get install --yes shellcheck
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes shellcheck
+          curl -sSfL https://golangci-lint.run/install.sh | sh -s -- -b "$(go env GOPATH)/bin" v2.13.1
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
       - name: Run quality gate
         run: scripts/quality.sh
