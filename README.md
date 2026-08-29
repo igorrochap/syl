@@ -176,6 +176,14 @@ gate by replacing its stub with the project's command: exit 0 for a pass and a
 non-zero exit for a failure. `syl init` leaves an existing quality script
 untouched, and `syl sync` does not manage it.
 
+The `style` and `complexity` gates compare the branch with a base. Set
+`QUALITY_BASE_REF` to choose that base explicitly, which is useful for a
+stacked branch on a local machine. The base selection order is
+`QUALITY_BASE_REF`, then `GITHUB_BASE_REF` (trying `origin/<name>` and
+`<name>`), then `origin/main` and `main`. A set but invalid base stops the gate
+instead of falling back. Each diff gate reports the selected base and changed
+file count; both its file list and its analysis use the merge base.
+
 ### 2. Configure the workflow
 
 `syl` reads `.syl/config.toml`. A generated file looks like this:
