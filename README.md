@@ -437,6 +437,19 @@ Pull requests run formatting, ShellCheck, module-file, vet, installer, test,
 and race-detector checks. Pushes to `main` run those checks and then build
 release archives for Linux and macOS on amd64 and arm64.
 
+### Merging into `main`
+
+A ruleset protects `main`. A pull request merges only when all of these hold:
+
+- it is a pull request; a direct push to `main` is rejected;
+- the `quality-gate` check has passed on the head commit; and
+- the branch is up to date with `main`.
+
+The release automation is the one exception. The repository-admin role can
+bypass the ruleset, so the `prepare-release` and `release` jobs push the
+`chore(release): v<number>` commit and tag with `RELEASE_TOKEN`, a
+repository-admin personal access token.
+
 Successful `main` builds use Conventional Commit messages to create semantic
 GitHub releases. Each release contains a checksummed archive for every
 supported platform, which the installer consumes.
