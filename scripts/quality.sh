@@ -339,14 +339,256 @@ complexity() {
 }
 
 coverage() {
-  # Put the coverage command for this project here.
-  printf '%s\n' "SKIP  not configured"
+  local coverage_limit=80
+  local coverage_profile
+  local test_output
+  local test_status=0
+  local base_ref
+  local merge_base
+  local all_changed_files
+  local changed_file
+  local changed_file_count=0
+  local changed_go_file_count=0
+  local coverage_diff
+  local coverage_data
+  local changed_go_line_count=0
+  local changed_candidate_count=0
+  local examined_line_count=0
+  local covered_line_count=0
+  local data_type
+  local data_value
+  local data_extra
+  local uncovered_lines=""
+  local coverage_percentage
+
+  if ! coverage_profile="$(mktemp "${TMPDIR:-/tmp}/syl-coverage.XXXXXX")"; then
+    echo "Could not create the coverage profile." >&2
+    return 1
+  fi
+
+  test_output="$(go test ./... -coverprofile="$coverage_profile" 2>&1)" || test_status=$?
+  if (( test_status != 0 )); then
+    printf '%s\n' "Coverage test run failed:"
+    printf '%s\n' "$test_output"
+    rm -f "$coverage_profile"
+    return 1
+  fi
+
+  if ! base_ref="$(quality_base_ref)"; then
+    rm -f "$coverage_profile"
+    echo "Could not determine the quality-gate base ref." >&2
+    return 1
+  fi
+
+  if ! merge_base="$(quality_merge_base "$base_ref")"; then
+    rm -f "$coverage_profile"
+    return 1
+  fi
+
+  if ! all_changed_files="$(git diff --name-only --diff-filter=ACMR "$merge_base" --)"; then
+    rm -f "$coverage_profile"
+    printf "Could not list files changed from quality-gate merge base '%s'.\n" "$merge_base" >&2
+    return 1
+  fi
+
+  while IFS= read -r changed_file; do
+    if [[ -z "$changed_file" ]]; then
+      continue
+    fi
+    (( changed_file_count += 1 ))
+    case "$changed_file" in
+      # Test files are never instrumented in the coverage profile, so a change
+      # that only touches *_test.go has no coverable lines to examine.
+      *_test.go) ;;
+      *.go) (( changed_go_file_count += 1 )) ;;
+    esac
+  done <<<"$all_changed_files"
+
+  coverage_diff=""
+  if (( changed_go_file_count > 0 )); then
+    if ! coverage_diff="$(git diff --no-ext-diff --unified=0 "$merge_base" -- '*.go' ':(exclude)*_test.go')"; then
+      rm -f "$coverage_profile"
+      printf "Could not collect changed lines from quality-gate merge base '%s'.\n" "$merge_base" >&2
+      return 1
+    fi
+  fi
+
+  if ! coverage_data="$(
+    awk '
+      function is_code_line(content) {
+        if (content ~ /^[[:space:]]*$/ ||
+            content ~ /^[[:space:]]*\/\// ||
+            content ~ /^[[:space:]]*\/\*/ ||
+            content ~ /^[[:space:]]*\*\// ||
+            content ~ /^[[:space:]]*}[[:space:]]*$/) {
+          return 0
+        }
+        return 1
+      }
+
+      FILENAME == ARGV[1] {
+        if ($0 ~ /^\+\+\+ b\//) {
+          file = substr($0, 7)
+          next
+        }
+        if ($0 ~ /^@@ /) {
+          range = $0
+          sub(/^@@ -[^ ]+ /, "", range)
+          sub(/^\+/, "", range)
+          sub(/ .*/, "", range)
+          split(range, bounds, ",")
+          new_line = bounds[1] + 0
+          remaining_lines = bounds[2] == "" ? 1 : bounds[2] + 0
+          next
+        }
+        if (remaining_lines == 0) {
+          next
+        }
+        if ($0 ~ /^\+/) {
+          changed_line_count++
+          content = substr($0, 2)
+          if (is_code_line(content)) {
+            key = file SUBSEP new_line
+            if (!(key in changed)) {
+              changed[key] = 1
+              changed_file_name[key] = file
+              changed_line_number[key] = new_line
+              changed_line_order[++changed_candidate_count] = key
+              changed_file_names[file] = 1
+            }
+          }
+          new_line++
+          remaining_lines--
+          next
+        }
+        if ($0 ~ /^-/) {
+          next
+        }
+        new_line++
+        remaining_lines--
+        next
+      }
+
+      $0 == "mode: set" || NF < 3 {
+        next
+      }
+
+      {
+        location = $1
+        if (location !~ /:[0-9]+\.[0-9]+,[0-9]+\.[0-9]+$/) {
+          next
+        }
+        profile_file = location
+        sub(/:[0-9]+\.[0-9]+,[0-9]+\.[0-9]+$/, "", profile_file)
+        coordinates = location
+        sub(/^.*:/, "", coordinates)
+        split(coordinates, bounds, /[,.]/)
+        start = bounds[1] + 0
+        end = bounds[3] + 0
+        hits = $3 + 0
+
+        for (candidate_file in changed_file_names) {
+          if (profile_file != candidate_file &&
+              (length(profile_file) <= length(candidate_file) ||
+               substr(profile_file, length(profile_file) - length(candidate_file) + 1) != candidate_file ||
+               substr(profile_file, length(profile_file) - length(candidate_file), 1) != "/")) {
+            continue
+          }
+          for (line = start; line <= end; line++) {
+            key = candidate_file SUBSEP line
+            if (!(key in changed)) {
+              continue
+            }
+            examined[key] = 1
+            if (hits > 0) {
+              covered[key] = 1
+            }
+          }
+        }
+      }
+
+      END {
+        printf "changed\t%d\n", changed_line_count
+        printf "candidates\t%d\n", changed_candidate_count
+        examined_count = 0
+        covered_count = 0
+        for (order = 1; order <= changed_candidate_count; order++) {
+          key = changed_line_order[order]
+          if (!(key in examined)) {
+            continue
+          }
+          examined_count++
+          if (key in covered) {
+            covered_count++
+            continue
+          }
+          printf "uncovered\t%s\t%d\n", changed_file_name[key], changed_line_number[key]
+        }
+        printf "examined\t%d\n", examined_count
+        printf "covered\t%d\n", covered_count
+      }
+    ' <(printf '%s\n' "$coverage_diff") "$coverage_profile"
+  )"; then
+    rm -f "$coverage_profile"
+    echo "Could not read the coverage profile." >&2
+    return 1
+  fi
+  rm -f "$coverage_profile"
+
+  while IFS=$'\t' read -r data_type data_value data_extra; do
+    case "$data_type" in
+      changed) changed_go_line_count=$data_value ;;
+      candidates) changed_candidate_count=$data_value ;;
+      examined) examined_line_count=$data_value ;;
+      covered) covered_line_count=$data_value ;;
+      uncovered)
+        if [[ -n "$uncovered_lines" ]]; then
+          uncovered_lines+=$'\n'
+        fi
+        uncovered_lines+="$data_value:$data_extra"
+        ;;
+    esac
+  done <<<"$coverage_data"
+
+  printf 'base %s, %d changed files, Changed lines examined: %d\n' \
+    "$base_ref" "$changed_file_count" "$examined_line_count"
+
+  if (( changed_go_file_count > 0 && changed_go_line_count == 0 )); then
+    printf '%s\n' "FAIL  changed Go files produced no changed lines for coverage; examined 0 lines."
+    return 1
+  fi
+
+  if (( changed_candidate_count > 0 && examined_line_count == 0 )); then
+    printf '%s\n' "FAIL  changed code lines produced no coverage profile entries; examined 0 lines."
+    return 1
+  fi
+
+  if (( examined_line_count == 0 )); then
+    printf '%s\n' "PASS  no changed code lines"
+    return 0
+  fi
+
+  coverage_percentage=$(( covered_line_count * 10000 / examined_line_count ))
+  printf 'Coverage of changed lines: %d.%02d%% (%d/%d), required %d%%.\n' \
+    "$(( coverage_percentage / 100 ))" "$(( coverage_percentage % 100 ))" \
+    "$covered_line_count" "$examined_line_count" "$coverage_limit"
+
+  if (( covered_line_count * 100 < coverage_limit * examined_line_count )); then
+    if [[ -n "$uncovered_lines" ]]; then
+      printf '%s\n' "Lines without tests:"
+      printf '%s\n' "$uncovered_lines"
+    fi
+    return 1
+  fi
+
+  printf 'PASS  changed-line coverage meets %d%%\n' "$coverage_limit"
 }
 
 tests() {
   local failed=0
 
-  go test ./... || failed=1
+  # The coverage gate runs the non-race test suite while writing its profile.
+  # Keep this gate's race run separate without running the same suite twice.
   go test -race ./... || failed=1
   scripts/install_test.sh || failed=1
 
