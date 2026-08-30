@@ -171,6 +171,36 @@ func Untested() int {
 	}
 }
 
+func TestCoveragePassesForTestFileOnlyChange(t *testing.T) {
+	root := newCoverageFixture(t)
+
+	writeCoverageFixtureFile(t, root, "feature_test.go", `package fixture
+
+import "testing"
+
+func TestExisting(t *testing.T) {
+	if Existing() != 1 {
+		t.Fatal("Existing() returned the wrong value")
+	}
+}
+
+func TestExistingAgain(t *testing.T) {
+	if Existing() != 1 {
+		t.Fatal("Existing() returned the wrong value")
+	}
+}
+`)
+	commitCoverageFixture(t, root, "extend test file only")
+
+	output, code := runCoverageGate(t, root, "main")
+	if code != 0 {
+		t.Fatalf("coverage gate code = %d, output = %q; want success", code, output)
+	}
+	if !strings.Contains(output, "Changed lines examined: 0") || !strings.Contains(output, "PASS") {
+		t.Fatalf("coverage gate output = %q, want zero examined lines and PASS", output)
+	}
+}
+
 func TestCoverageUsesMergeBaseForConfiguredBaseRef(t *testing.T) {
 	root := newCoverageFixture(t)
 

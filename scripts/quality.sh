@@ -397,13 +397,16 @@ coverage() {
     fi
     (( changed_file_count += 1 ))
     case "$changed_file" in
+      # Test files are never instrumented in the coverage profile, so a change
+      # that only touches *_test.go has no coverable lines to examine.
+      *_test.go) ;;
       *.go) (( changed_go_file_count += 1 )) ;;
     esac
   done <<<"$all_changed_files"
 
   coverage_diff=""
   if (( changed_go_file_count > 0 )); then
-    if ! coverage_diff="$(git diff --no-ext-diff --unified=0 "$merge_base" -- '*.go')"; then
+    if ! coverage_diff="$(git diff --no-ext-diff --unified=0 "$merge_base" -- '*.go' ':(exclude)*_test.go')"; then
       rm -f "$coverage_profile"
       printf "Could not collect changed lines from quality-gate merge base '%s'.\n" "$merge_base" >&2
       return 1
