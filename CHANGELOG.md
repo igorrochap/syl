@@ -2,6 +2,61 @@
 
 <!-- version list -->
 
+## v1.23.0 (2026-08-31)
+
+### Bug Fixes
+
+- **ci**: Ignore test files in coverage gate ([#115](https://github.com/igorrochap/syl/pull/115),
+  [`e0df63c`](https://github.com/igorrochap/syl/commit/e0df63cd12b554aee74ce160f536de7c1284a04c))
+
+- **ci**: Resolve incorrect style check base reference
+  ([#115](https://github.com/igorrochap/syl/pull/115),
+  [`e0df63c`](https://github.com/igorrochap/syl/commit/e0df63cd12b554aee74ce160f536de7c1284a04c))
+
+### Chores
+
+- **arch**: Enforce architectural dependencies via depguard
+  ([#115](https://github.com/igorrochap/syl/pull/115),
+  [`e0df63c`](https://github.com/igorrochap/syl/commit/e0df63cd12b554aee74ce160f536de7c1284a04c))
+
+- **ci**: Move quality gate to dedicated workflow
+  ([#115](https://github.com/igorrochap/syl/pull/115),
+  [`e0df63c`](https://github.com/igorrochap/syl/commit/e0df63cd12b554aee74ce160f536de7c1284a04c))
+
+- **ci**: Update release token secret ([#115](https://github.com/igorrochap/syl/pull/115),
+  [`e0df63c`](https://github.com/igorrochap/syl/commit/e0df63cd12b554aee74ce160f536de7c1284a04c))
+
+### Documentation
+
+- **readme**: Document the main branch merge rules
+  ([#115](https://github.com/igorrochap/syl/pull/115),
+  [`e0df63c`](https://github.com/igorrochap/syl/commit/e0df63cd12b554aee74ce160f536de7c1284a04c))
+
+### Features
+
+- **ci**: Add golangci-lint to quality gate ([#115](https://github.com/igorrochap/syl/pull/115),
+  [`e0df63c`](https://github.com/igorrochap/syl/commit/e0df63cd12b554aee74ce160f536de7c1284a04c))
+
+- **ci**: Implement comprehensive quality and architecture gates
+  ([#115](https://github.com/igorrochap/syl/pull/115),
+  [`e0df63c`](https://github.com/igorrochap/syl/commit/e0df63cd12b554aee74ce160f536de7c1284a04c))
+
+- **ci**: Implement coverage gate for changed code
+  ([#115](https://github.com/igorrochap/syl/pull/115),
+  [`e0df63c`](https://github.com/igorrochap/syl/commit/e0df63cd12b554aee74ce160f536de7c1284a04c))
+
+- **quality**: Add configurable base ref for gates
+  ([#115](https://github.com/igorrochap/syl/pull/115),
+  [`e0df63c`](https://github.com/igorrochap/syl/commit/e0df63cd12b554aee74ce160f536de7c1284a04c))
+
+- **scripts**: Implement cyclomatic complexity gate
+  ([#115](https://github.com/igorrochap/syl/pull/115),
+  [`e0df63c`](https://github.com/igorrochap/syl/commit/e0df63cd12b554aee74ce160f536de7c1284a04c))
+
+- **scripts**: Implement quality gate logic ([#115](https://github.com/igorrochap/syl/pull/115),
+  [`e0df63c`](https://github.com/igorrochap/syl/commit/e0df63cd12b554aee74ce160f536de7c1284a04c))
+
+
 ## v1.22.0 (2026-08-28)
 
 ### Features
