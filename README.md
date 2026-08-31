@@ -176,6 +176,14 @@ gate by replacing its stub with the project's command: exit 0 for a pass and a
 non-zero exit for a failure. `syl init` leaves an existing quality script
 untouched, and `syl sync` does not manage it.
 
+The `style` and `complexity` gates compare the branch with a base. Set
+`QUALITY_BASE_REF` to choose that base explicitly, which is useful for a
+stacked branch on a local machine. The base selection order is
+`QUALITY_BASE_REF`, then `GITHUB_BASE_REF` (trying `origin/<name>` and
+`<name>`), then `origin/main` and `main`. A set but invalid base stops the gate
+instead of falling back. Each diff gate reports the selected base and changed
+file count; both its file list and its analysis use the merge base.
+
 ### 2. Configure the workflow
 
 `syl` reads `.syl/config.toml`. A generated file looks like this:
@@ -428,6 +436,19 @@ scripts/install_test.sh
 Pull requests run formatting, ShellCheck, module-file, vet, installer, test,
 and race-detector checks. Pushes to `main` run those checks and then build
 release archives for Linux and macOS on amd64 and arm64.
+
+### Merging into `main`
+
+A ruleset protects `main`. A pull request merges only when all of these hold:
+
+- it is a pull request; a direct push to `main` is rejected;
+- the `quality-gate` check has passed on the head commit; and
+- the branch is up to date with `main`.
+
+The release automation is the one exception. The repository-admin role can
+bypass the ruleset, so the `prepare-release` and `release` jobs push the
+`chore(release): v<number>` commit and tag with `RELEASE_TOKEN`, a
+repository-admin personal access token.
 
 Successful `main` builds use Conventional Commit messages to create semantic
 GitHub releases. Each release contains a checksummed archive for every

@@ -15,6 +15,15 @@ Run one gate while you work on what it covers; run the script with no argument b
 
 If `scripts/quality.sh` is absent, the project has no gates. Say so to the user, and ask which commands to run instead of inferring them from the repository.
 
+The `style` and `complexity` gates use a base ref. Set `QUALITY_BASE_REF` to
+choose the base explicitly, which is useful for a stacked branch on a local
+machine. Base refs have this order of precedence: `QUALITY_BASE_REF`, then
+`GITHUB_BASE_REF` (try `origin/<name>` and `<name>`), then the default
+`origin/main` and `main`. If either explicitly supplied variable names no
+existing ref, the gate stops with an error and does not use a lower level.
+Each diff gate reports the selected base and changed-file count. The list of
+changed files and the analysis use the same merge base.
+
 ## The gates
 
 **`format`** — the layout of the source: whitespace, line breaks, import order, and anything else the project's formatter owns. Passes when the files are already in formatted form. Fails when running the formatter would change a file; the fix is to run the formatter and commit the result.
