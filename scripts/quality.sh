@@ -596,8 +596,23 @@ tests() {
 }
 
 architecture() {
-  # Put the architecture command for this project here.
-  printf '%s\n' "SKIP  not configured"
+  local installed_version
+
+  if ! command -v golangci-lint >/dev/null 2>&1; then
+    echo "golangci-lint ${golangci_lint_version} is required for the architecture gate." >&2
+    return 1
+  fi
+
+  if ! installed_version="$(golangci-lint version --short)"; then
+    echo "Could not determine the golangci-lint version." >&2
+    return 1
+  fi
+  if [[ "$installed_version" != "${golangci_lint_version#v}" ]]; then
+    echo "golangci-lint ${golangci_lint_version} is required; found ${installed_version}." >&2
+    return 1
+  fi
+
+  golangci-lint run --enable-only=depguard --tests=false ./...
 }
 
 is_known_gate() {

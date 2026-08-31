@@ -12,3 +12,198 @@ linters:
     - ineffassign
     - unparam
     - gocritic
+
+  settings:
+    depguard:
+      rules:
+        default:
+          files:
+            - "!**/cmd/syl/*.go"
+            - "!**/internal/cli/*.go"
+            - "!**/internal/orchestration/*.go"
+            - "!**/internal/harness/*.go"
+            - "!**/internal/harness/claude/*.go"
+            - "!**/internal/harness/codex/*.go"
+            - "!**/internal/initializer/*.go"
+            - "!**/internal/updater/*.go"
+            - "!**/internal/usage/*.go"
+            - "!**/internal/adapters/gh/*.go"
+            - "!**/internal/adapters/git/*.go"
+            - "!**/internal/adapters/notify/*.go"
+            - "!**/internal/harness/claude/transcript/*.go"
+            - "!**/internal/config/*.go"
+            - "!**/internal/tracker/*.go"
+            - "!**/internal/tui/*.go"
+            - "!**/internal/verdict/*.go"
+            - "!**/internal/version/*.go"
+            - "!**/scripts/*.go"
+            - "!**/skills/*.go"
+          list-mode: lax
+          allow:
+            - $gostd
+            - github.com
+            - golang.org
+          deny:
+            - pkg: github.com/igorrochap/syl
+              desc: project packages must be imported through a recorded composition edge
+        composition:
+          files:
+            - "**/cmd/syl/*.go"
+          list-mode: lax
+          allow:
+            - $gostd
+            - github.com
+            - golang.org
+            - github.com/igorrochap/syl/internal
+            - github.com/igorrochap/syl/scripts
+            - github.com/igorrochap/syl/skills
+          deny:
+            - pkg: github.com/igorrochap/syl
+              desc: project packages must be imported through a recorded composition edge
+        command:
+          files:
+            - "**/internal/cli/*.go"
+          list-mode: lax
+          allow:
+            - $gostd
+            - github.com
+            - golang.org
+            - github.com/igorrochap/syl/internal/adapters/git$
+            - github.com/igorrochap/syl/internal/adapters/notify$
+            - github.com/igorrochap/syl/internal/config$
+            - github.com/igorrochap/syl/internal/harness$
+            - github.com/igorrochap/syl/internal/initializer$
+            - github.com/igorrochap/syl/internal/orchestration$
+            - github.com/igorrochap/syl/internal/tracker$
+            - github.com/igorrochap/syl/internal/updater$
+            - github.com/igorrochap/syl/internal/usage$
+            - github.com/igorrochap/syl/internal/version$
+          deny:
+            - pkg: github.com/igorrochap/syl
+              desc: command packages may depend on application packages and ports, not concrete harness adapters
+        orchestration:
+          files:
+            - "**/internal/orchestration/*.go"
+          list-mode: lax
+          allow:
+            - $gostd
+            - github.com
+            - golang.org
+            - github.com/igorrochap/syl/internal/config$
+            - github.com/igorrochap/syl/internal/harness$
+            - github.com/igorrochap/syl/internal/tracker$
+            - github.com/igorrochap/syl/internal/usage$
+            - github.com/igorrochap/syl/internal/verdict$
+          deny:
+            - pkg: github.com/igorrochap/syl
+              desc: orchestration depends on ports and support packages, not command or adapter packages
+        harness:
+          files:
+            - "**/internal/harness/*.go"
+          list-mode: lax
+          allow:
+            - $gostd
+            - github.com
+            - golang.org
+            - github.com/igorrochap/syl/internal/config$
+          deny:
+            - pkg: github.com/igorrochap/syl
+              desc: the harness port must not depend on its callers or concrete adapters
+        claude:
+          files:
+            - "**/internal/harness/claude/*.go"
+          list-mode: lax
+          allow:
+            - $gostd
+            - github.com
+            - golang.org
+            - github.com/igorrochap/syl/internal/config$
+            - github.com/igorrochap/syl/internal/harness$
+            - github.com/igorrochap/syl/internal/harness/claude/transcript$
+          deny:
+            - pkg: github.com/igorrochap/syl
+              desc: concrete harness adapters depend on the harness port and their implementation support only
+        codex:
+          files:
+            - "**/internal/harness/codex/*.go"
+          list-mode: lax
+          allow:
+            - $gostd
+            - github.com
+            - golang.org
+            - github.com/igorrochap/syl/internal/config$
+            - github.com/igorrochap/syl/internal/harness$
+          deny:
+            - pkg: github.com/igorrochap/syl
+              desc: concrete harness adapters depend on the harness port, not application callers
+        initializer:
+          files:
+            - "**/internal/initializer/*.go"
+          list-mode: lax
+          allow:
+            - $gostd
+            - github.com
+            - golang.org
+            - github.com/igorrochap/syl/internal/config$
+            - github.com/igorrochap/syl/internal/tui$
+            - github.com/igorrochap/syl/scripts$
+            - github.com/igorrochap/syl/skills$
+          deny:
+            - pkg: github.com/igorrochap/syl
+              desc: initialization owns setup and may depend only on configuration, prompts, and embedded assets
+        updater:
+          files:
+            - "**/internal/updater/*.go"
+          list-mode: lax
+          allow:
+            - $gostd
+            - github.com
+            - golang.org
+            - github.com/igorrochap/syl/scripts$
+          deny:
+            - pkg: github.com/igorrochap/syl
+              desc: update support must not depend on command or application packages
+        usage:
+          files:
+            - "**/internal/usage/*.go"
+          list-mode: lax
+          allow:
+            - $gostd
+            - github.com
+            - golang.org
+            - github.com/igorrochap/syl/internal/harness/claude/transcript$
+          deny:
+            - pkg: github.com/igorrochap/syl
+              desc: usage recomputation reads transcript records but must not depend on workflow callers
+        github-adapter:
+          files:
+            - "**/internal/adapters/gh/*.go"
+          list-mode: lax
+          allow:
+            - $gostd
+            - github.com
+            - golang.org
+            - github.com/igorrochap/syl/internal/tracker$
+          deny:
+            - pkg: github.com/igorrochap/syl
+              desc: external adapters implement ports and must not depend on application callers
+        no-project-dependencies:
+          files:
+            - "**/internal/adapters/git/*.go"
+            - "**/internal/adapters/notify/*.go"
+            - "**/internal/harness/claude/transcript/*.go"
+            - "**/internal/config/*.go"
+            - "**/internal/tracker/*.go"
+            - "**/internal/tui/*.go"
+            - "**/internal/verdict/*.go"
+            - "**/internal/version/*.go"
+            - "**/scripts/*.go"
+            - "**/skills/*.go"
+          list-mode: lax
+          allow:
+            - $gostd
+            - github.com
+            - golang.org
+          deny:
+            - pkg: github.com/igorrochap/syl
+              desc: support packages do not depend on other project packages
