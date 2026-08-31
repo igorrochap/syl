@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v1.24.0 (2026-08-31)
+
+### Features
+
+- **docs**: Standardize agent skill specifications
+  ([#117](https://github.com/igorrochap/syl/pull/117),
+  [`a560cac`](https://github.com/igorrochap/syl/commit/a560cacdde8a70677a9ef276d176008f900d2edf))
+
+
 ## v1.23.0 (2026-08-31)
 
 ### Bug Fixes
