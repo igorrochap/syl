@@ -268,12 +268,14 @@ planning sequence:
 syl implement 42
 ```
 
-Pass `--context <text>` to give the implementer Role additional
-context for one invocation. The inline value is included in the implementer
-prompt on the first iteration and on each revision:
+Pass `--implement-context <text>` to give the implementer Role additional
+context for one invocation. Pass `--review-context <text>` to give the
+reviewer Role additional context for the same invocation. Each inline value is
+included in that Role's prompt on the first iteration and on each revision:
 
 ```sh
-syl implement 42 --context "Use the existing GitRunner seam. Do not add a new adapter."
+syl implement 42 --implement-context "Use the existing GitRunner seam. Do not add a new adapter."
+syl implement 42 --review-context "Ignore the vendored skills directory."
 ```
 
 Use `--worktree` to run the loop in a dedicated checkout while leaving the

@@ -48,6 +48,7 @@ type ImplementOptions struct {
 	Input                io.Reader
 	Output               io.Writer
 	Context              string
+	ReviewContext        string
 	Verbose              bool
 	ProvisionedWorktree  *Worktree
 	IdentificationBanner func(artifactDir string) error
@@ -97,6 +98,7 @@ func RunImplement(ctx context.Context, options ImplementOptions) (returnErr erro
 		questions:         run.questions,
 		output:            options.Output,
 		additionalContext: options.Context,
+		reviewContext:     options.ReviewContext,
 		verbose:           options.Verbose,
 	})
 	if err != nil {
@@ -270,6 +272,7 @@ type implementIterationsParams struct {
 	questions         *QuestionHandler
 	output            io.Writer
 	additionalContext string
+	reviewContext     string
 	verbose           bool
 }
 
@@ -329,7 +332,7 @@ func runImplementReview(ctx context.Context, params implementIterationsParams, r
 	reviewRequest := harness.Request{
 		Model:  params.projectConfig.Roles.Review.Model,
 		Effort: params.projectConfig.Roles.Review.Effort,
-		Prompt: composeReviewPrompt("#"+strconv.Itoa(params.ticket.Number), &params.ticket, params.branchPoint, reviewParams.diffPath, ""),
+		Prompt: composeReviewPrompt("#"+strconv.Itoa(params.ticket.Number), &params.ticket, params.branchPoint, reviewParams.diffPath, params.reviewContext),
 		MCP:    params.projectConfig.Roles.Review.MCP,
 	}
 	if _, err := fmt.Fprintf(params.output, "iteration %d/%d — reviewing\n", reviewParams.iteration, params.projectConfig.Loop.MaxIterations); err != nil {
@@ -343,7 +346,7 @@ func runImplementReview(ctx context.Context, params implementIterationsParams, r
 		questions: params.questions,
 	}
 	if reviewParams.previousReviewerSession != "" {
-		reviewOptions.resumePrompt = composeReviewResumePrompt(reviewParams.diffPath, reviewParams.blocking)
+		reviewOptions.resumePrompt = composeReviewResumePrompt(reviewParams.diffPath, reviewParams.blocking, params.reviewContext)
 	}
 	reviewStartedAt := time.Now().UTC()
 	reviewResult, err := runReviewExecutionWithResumeFallback(ctx, params.reviewer, reviewOptions)
