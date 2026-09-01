@@ -176,6 +176,44 @@ func TestRunImplementIterationsContinuesWhenUsageRecordingFails(t *testing.T) {
 	}
 }
 
+func TestRunImplementPassesContextToImplementer(t *testing.T) {
+	const additionalContext = "Use the existing GitRunner seam.\nDo not add a new adapter."
+
+	git := &implementRunGit{}
+	implementer := &capturingImplementAdapter{response: "Implemented the ticket."}
+	reviewer := &capturingImplementAdapter{response: conversationTestVerdict}
+	var output strings.Builder
+	err := RunImplement(context.Background(), ImplementOptions{
+		OriginRoot: t.TempDir(),
+		WorkRoot:   t.TempDir(),
+		ProjectConfig: config.Config{
+			Roles: config.RolesConfig{
+				Implement: config.RoleConfig{Harness: config.HarnessCodex},
+				Review:    config.RoleConfig{Harness: config.HarnessClaude},
+			},
+			Loop: config.LoopConfig{MaxIterations: 1},
+		},
+		IssueTracker: branchSetupTracker{},
+		Ticket:       tracker.Ticket{Number: 42, Title: "Implement context"},
+		Implementer:  implementer,
+		Reviewer:     reviewer,
+		Git:          git,
+		OriginGit:    git,
+		Input:        strings.NewReader(""),
+		Output:       &output,
+		Context:      additionalContext,
+	})
+	if err != nil {
+		t.Fatalf("RunImplement() error = %v", err)
+	}
+	if !strings.Contains(implementer.request.Prompt, additionalContext) {
+		t.Fatalf("implementer prompt = %q, want context %q", implementer.request.Prompt, additionalContext)
+	}
+	if strings.Contains(reviewer.request.Prompt, additionalContext) {
+		t.Fatalf("reviewer prompt = %q, want no implementer context %q", reviewer.request.Prompt, additionalContext)
+	}
+}
+
 func TestDiskRunRecorderDeduplicatesSessionIDs(t *testing.T) {
 	recorder := &diskRunRecorder{
 		dir:         t.TempDir(),
@@ -209,6 +247,42 @@ func TestDiskRunRecorderDeduplicatesSessionIDs(t *testing.T) {
 type staticImplementGit struct {
 	branchPoint string
 	diff        string
+}
+
+type implementRunGit struct {
+	branchSetupGit
+}
+
+func (g *implementRunGit) Run(ctx context.Context, args ...string) (string, error) {
+	switch strings.Join(args, " ") {
+	case "diff abc123":
+		return "diff --git a/change.txt b/change.txt\n+implemented\n", nil
+	case "diff --stat abc123":
+		return " change.txt | 1 +\n", nil
+	default:
+		return g.branchSetupGit.Run(ctx, args...)
+	}
+}
+
+type capturingImplementAdapter struct {
+	request  harness.Request
+	response string
+}
+
+func (a *capturingImplementAdapter) Run(_ context.Context, request harness.Request) (harness.Stream, error) {
+	a.request = request
+	return scriptedConversationStream{events: []harness.Event{
+		{Type: harness.EventSession, SessionID: "implement-session"},
+		{Type: harness.EventAssistantText, Text: a.response},
+	}}, nil
+}
+
+func (*capturingImplementAdapter) Resume(context.Context, string, harness.Request) (harness.Stream, error) {
+	return nil, errors.New("unexpected harness resume")
+}
+
+func (*capturingImplementAdapter) Attach(context.Context, harness.Request) error {
+	return errors.New("unexpected harness attach")
 }
 
 func (g staticImplementGit) Run(_ context.Context, args ...string) (string, error) {

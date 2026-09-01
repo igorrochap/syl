@@ -535,6 +535,56 @@ func TestImplementLoopFeedsBlockingFindingsIntoSecondImplementerPrompt(t *testin
 	}
 }
 
+func TestImplementContextReachesImplementerPromptsOnly(t *testing.T) {
+	fixture := newImplementLoopFixture(t)
+	additionalContext := "Use the existing GitRunner seam.\nDo not add a new adapter."
+	implementer := &loopHarness{
+		root: fixture.root,
+		streams: [][]harness.Event{
+			{{Type: harness.EventSession, SessionID: "implement-1"}, {Type: harness.EventAssistantText, Text: "First pass.\n"}},
+			{{Type: harness.EventSession, SessionID: "review-1"}, {Type: harness.EventAssistantText, Text: reviseVerdictText}},
+			{{Type: harness.EventSession, SessionID: "implement-2"}, {Type: harness.EventAssistantText, Text: "Blocking finding fixed.\n"}},
+			{{Type: harness.EventSession, SessionID: "review-2"}, {Type: harness.EventAssistantText, Text: approveVerdictText}},
+		},
+	}
+	fixture.harnesses["codex"] = implementer
+	fixture.harnesses["claude"] = implementer
+	fixture.app.deps.GH = fixedGH(&loopGHRunner{})
+
+	code := fixture.app.Run(
+		context.Background(),
+		[]string{"implement", "42", "--context", additionalContext},
+		&fixture.stdout,
+		&fixture.stderr,
+	)
+	if code != 0 {
+		t.Fatalf("implement code = %d, stderr = %q", code, fixture.stderr.String())
+	}
+	if len(implementer.requests) != 4 {
+		t.Fatalf("harness requests = %d, want two implement and two review requests", len(implementer.requests))
+	}
+
+	for _, implementRequest := range []harness.Request{implementer.requests[0], implementer.requests[2]} {
+		if !strings.Contains(implementRequest.Prompt, additionalContext) {
+			t.Fatalf("implementer prompt = %q, want context %q", implementRequest.Prompt, additionalContext)
+		}
+	}
+	secondPrompt := implementer.requests[2].Prompt
+	for _, expected := range []string{
+		"- [blocking] internal/orchestration/review.go:42 — handle a missing session",
+		additionalContext,
+	} {
+		if !strings.Contains(secondPrompt, expected) {
+			t.Fatalf("second implementer prompt = %q, want %q", secondPrompt, expected)
+		}
+	}
+	for _, reviewRequest := range []harness.Request{implementer.requests[1], implementer.requests[3]} {
+		if strings.Contains(reviewRequest.Prompt, additionalContext) {
+			t.Fatalf("reviewer prompt = %q, want no implementer context %q", reviewRequest.Prompt, additionalContext)
+		}
+	}
+}
+
 func TestImplementLoopReviewDiffIncludesUntrackedFiles(t *testing.T) {
 	fixture := newImplementLoopFixture(t)
 	loop := &loopHarness{

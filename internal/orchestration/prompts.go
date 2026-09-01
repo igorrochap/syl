@@ -55,11 +55,14 @@ Blocking findings:
 %s`
 )
 
-func composeImplementPrompt(ticket tracker.Ticket, blocking []verdict.Finding, iteration int) string {
+func composeImplementPrompt(ticket tracker.Ticket, blocking []verdict.Finding, iteration int, additionalContext string) string {
+	var prompt string
 	if iteration == 1 {
-		return fmt.Sprintf(implementPrompt, "#"+strconv.Itoa(ticket.Number), ticket.Title, ticket.Body)
+		prompt = fmt.Sprintf(implementPrompt, "#"+strconv.Itoa(ticket.Number), ticket.Title, ticket.Body)
+	} else {
+		prompt = fmt.Sprintf(reviseImplementPrompt, "#"+strconv.Itoa(ticket.Number), formatBlockingFindings(blocking))
 	}
-	return fmt.Sprintf(reviseImplementPrompt, "#"+strconv.Itoa(ticket.Number), formatBlockingFindings(blocking))
+	return appendPromptContext(prompt, additionalContext)
 }
 
 func composeReviewPrompt(ticketRef string, ticket *tracker.Ticket, branchPoint, diffPath, additionalContext string) string {
