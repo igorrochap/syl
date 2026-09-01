@@ -190,7 +190,10 @@ func (a *App) runImplementCommand(cmd *cobra.Command, args []string, commandOpti
 			if provisionedWorktree != nil {
 				worktreePath = provisionedWorktree.Path
 			}
-			return writeImplementBanner(cmd.OutOrStdout(), a.originRoot, projectConfig, ticket, artifactDir, worktreePath)
+			return writeImplementBanner(
+				cmd.OutOrStdout(), a.originRoot, projectConfig, ticket, artifactDir, worktreePath,
+				commandOptions.additionalContext, commandOptions.reviewContext,
+			)
 		},
 	})
 }
@@ -328,7 +331,7 @@ func (a *App) reviewCommand() *cobra.Command {
 				Raw: raw, Verbose: verbose, Notifier: a.notifier(projectConfig.Notifications.Enabled), Git: a.gitRunner(a.workRoot),
 				TranscriptUsage: projectConfig.Roles.Review.Harness == config.HarnessClaude,
 				IdentificationBanner: func() error {
-					return writeReviewBanner(cmd.OutOrStdout(), projectConfig, ticketRef, ticket)
+					return writeReviewBanner(cmd.OutOrStdout(), projectConfig, ticketRef, ticket, additionalContext)
 				},
 			})
 		},

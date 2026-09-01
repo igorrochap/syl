@@ -163,6 +163,8 @@ func initializeImplementRun(options ImplementOptions, setup implementSetup) (imp
 		options.Ticket.Number,
 		setup.branch,
 		setup.branchPoint,
+		options.Context,
+		options.ReviewContext,
 	)
 	if err != nil {
 		return implementRunState{}, err

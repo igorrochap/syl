@@ -67,6 +67,9 @@ func readRunMetadata(path string) runMetadata {
 	}
 	var metadata runMetadata
 	for _, line := range strings.Split(string(contents), "\n") {
+		if strings.HasPrefix(line, " ") || strings.HasPrefix(line, "\t") {
+			continue
+		}
 		key, _, ok := strings.Cut(line, ":")
 		if !ok {
 			continue
