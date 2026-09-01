@@ -2,6 +2,29 @@
 
 <!-- version list -->
 
+## v1.25.0 (2026-09-01)
+
+### Features
+
+- **cli**: Add --context flag to implement command
+  ([#126](https://github.com/igorrochap/syl/pull/126),
+  [`7e9a508`](https://github.com/igorrochap/syl/commit/7e9a50882d91b176c7637bea99b977ddc778bdc1))
+
+- **cli**: Add --context flag to review command ([#126](https://github.com/igorrochap/syl/pull/126),
+  [`7e9a508`](https://github.com/igorrochap/syl/commit/7e9a50882d91b176c7637bea99b977ddc778bdc1))
+
+- **cli**: Add role-specific context flags for runs
+  ([#126](https://github.com/igorrochap/syl/pull/126),
+  [`7e9a508`](https://github.com/igorrochap/syl/commit/7e9a50882d91b176c7637bea99b977ddc778bdc1))
+
+- **cli**: Add separate reviewer context flag ([#126](https://github.com/igorrochap/syl/pull/126),
+  [`7e9a508`](https://github.com/igorrochap/syl/commit/7e9a50882d91b176c7637bea99b977ddc778bdc1))
+
+- **cli**: Record and display role contexts in run metadata
+  ([#126](https://github.com/igorrochap/syl/pull/126),
+  [`7e9a508`](https://github.com/igorrochap/syl/commit/7e9a50882d91b176c7637bea99b977ddc778bdc1))
+
+
 ## v1.24.0 (2026-08-31)
 
 ### Features
