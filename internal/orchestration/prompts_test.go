@@ -144,6 +144,15 @@ Do not change wording.`
 	assertPromptEqual(t, got, want)
 }
 
+func TestComposeReviewPromptWhitespaceOnlyContextMatchesWithoutContext(t *testing.T) {
+	ticket := tracker.Ticket{Number: 42, Title: "Concentrate prompts", Body: "Keep every byte."}
+
+	withoutContext := composeReviewPrompt("#42", &ticket, "abc123", "/tmp/review.diff", "")
+	withWhitespaceContext := composeReviewPrompt("#42", &ticket, "abc123", "/tmp/review.diff", " \n\t ")
+
+	assertPromptEqual(t, withWhitespaceContext, withoutContext)
+}
+
 func TestAppendPromptContext(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -185,7 +194,7 @@ func TestComposeReviewResumePrompt(t *testing.T) {
 		{Kind: verdict.Blocking, Location: "prompts_test.go:20", Issue: "second issue"},
 	}
 
-	got := composeReviewResumePrompt("/tmp/review-2.diff", findings)
+	got := composeReviewResumePrompt("/tmp/review-2.diff", findings, "")
 	want := `This is an incremental re-review in the existing reviewer session. Do not spawn fresh Standards/Spec sub-agents. The implementer has addressed your blocking findings, listed below. The updated diff for this iteration is at /tmp/review-2.diff. Re-examine the changes, verify each blocking finding is resolved, check that the fixes introduced no new problems, and end with the mandatory verdict block from the code-review skill.
 
 Blocking findings:
@@ -193,6 +202,36 @@ Blocking findings:
 - [blocking] prompts_test.go:20 — second issue`
 
 	assertPromptEqual(t, got, want)
+}
+
+func TestComposeReviewResumePromptAppendsContextAfterBlockingFindings(t *testing.T) {
+	findings := []verdict.Finding{
+		{Kind: verdict.Blocking, Location: "review.go:10", Issue: "preserve this finding"},
+	}
+	context := "Ignore the vendored skills directory."
+
+	got := composeReviewResumePrompt("/tmp/review-2.diff", findings, context)
+
+	for _, expected := range []string{
+		"Blocking findings:\n- [blocking] review.go:10 — preserve this finding",
+		"## Additional context supplied by the user for this run\n\n" + context,
+	} {
+		if !strings.Contains(got, expected) {
+			t.Fatalf("resume prompt = %q, want %q", got, expected)
+		}
+	}
+	if strings.Index(got, "Blocking findings:") > strings.Index(got, "## Additional context") {
+		t.Fatalf("resume prompt = %q, want blocking findings before context", got)
+	}
+}
+
+func TestComposeReviewResumePromptWhitespaceOnlyContextMatchesWithoutContext(t *testing.T) {
+	findings := []verdict.Finding{{Kind: verdict.Blocking, Location: "review.go:10", Issue: "first issue"}}
+
+	withoutContext := composeReviewResumePrompt("/tmp/review-2.diff", findings, "")
+	withWhitespaceContext := composeReviewResumePrompt("/tmp/review-2.diff", findings, " \n\t ")
+
+	assertPromptEqual(t, withWhitespaceContext, withoutContext)
 }
 
 func assertPromptEqual(t *testing.T, got, want string) {

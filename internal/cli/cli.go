@@ -38,6 +38,7 @@ type App struct {
 
 type implementCommandOptions struct {
 	additionalContext string
+	reviewContext     string
 	verbose           bool
 	useWorktree       bool
 	base              string
@@ -123,6 +124,7 @@ func (a *App) syncCommand() *cobra.Command {
 func (a *App) implementCommand() *cobra.Command {
 	var verbose bool
 	var additionalContext string
+	var reviewContext string
 	var useWorktree bool
 	var base string
 	command := &cobra.Command{
@@ -138,6 +140,7 @@ func (a *App) implementCommand() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return a.runImplementCommand(cmd, args, implementCommandOptions{
 				additionalContext: additionalContext,
+				reviewContext:     reviewContext,
 				verbose:           verbose,
 				useWorktree:       useWorktree,
 				base:              base,
@@ -145,7 +148,8 @@ func (a *App) implementCommand() *cobra.Command {
 		},
 	}
 	command.Flags().BoolVar(&verbose, "verbose", false, "stream assistant prose in addition to progress output")
-	command.Flags().StringVar(&additionalContext, "context", "", "additional context for the implementer Role")
+	command.Flags().StringVar(&additionalContext, "implement-context", "", "additional context for the implementer Role")
+	command.Flags().StringVar(&reviewContext, "review-context", "", "additional context for the reviewer Role")
 	command.Flags().BoolVar(&useWorktree, "worktree", false, "run in a dedicated worktree; fresh worktrees contain only the tracked tree, so use [worktree] setup to provision dependencies")
 	command.Flags().StringVar(&base, "base", "", "branch the worktree from this ref (defaults to HEAD)")
 	return command
@@ -178,6 +182,7 @@ func (a *App) runImplementCommand(cmd *cobra.Command, args []string, commandOpti
 		Implementer: implementer, Reviewer: reviewer, Git: a.gitRunner(workRoot), OriginGit: a.gitRunner(a.originRoot),
 		Notifier: a.notifier(projectConfig.Notifications.Enabled), Input: cmd.InOrStdin(), Output: cmd.OutOrStdout(),
 		Context:             commandOptions.additionalContext,
+		ReviewContext:       commandOptions.reviewContext,
 		Verbose:             commandOptions.verbose,
 		ProvisionedWorktree: provisionedWorktree,
 		IdentificationBanner: func(artifactDir string) error {

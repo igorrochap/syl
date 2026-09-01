@@ -82,8 +82,9 @@ func appendPromptContext(prompt, additionalContext string) string {
 	return fmt.Sprintf("%s\n\n## Additional context supplied by the user for this run\n\n%s", prompt, additionalContext)
 }
 
-func composeReviewResumePrompt(diffPath string, blocking []verdict.Finding) string {
-	return fmt.Sprintf(reviewResumePrompt, diffPath, formatBlockingFindings(blocking))
+func composeReviewResumePrompt(diffPath string, blocking []verdict.Finding, additionalContext string) string {
+	prompt := fmt.Sprintf(reviewResumePrompt, diffPath, formatBlockingFindings(blocking))
+	return appendPromptContext(prompt, additionalContext)
 }
 
 func composePlanPrompt(options PlanOptions) string {
