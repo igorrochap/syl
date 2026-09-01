@@ -47,14 +47,21 @@ type ImplementOptions struct {
 	Notifier             Notifier
 	Input                io.Reader
 	Output               io.Writer
+	Context              string
 	Verbose              bool
 	ProvisionedWorktree  *Worktree
 	IdentificationBanner func(artifactDir string) error
 }
 
+type implementRunState struct {
+	setup     implementSetup
+	notifier  Notifier
+	questions *QuestionHandler
+	recorder  *diskRunRecorder
+}
+
 func RunImplement(ctx context.Context, options ImplementOptions) (returnErr error) {
 	projectConfig := options.ProjectConfig
-	issueTracker := options.IssueTracker
 	ticket := options.Ticket
 	originGit := options.OriginGit
 	if originGit == nil {
@@ -72,67 +79,31 @@ func RunImplement(ctx context.Context, options ImplementOptions) (returnErr erro
 			}
 		}()
 	}
-	if options.Git == nil {
-		return errors.New("implement: git runner is not configured")
-	}
-	if options.Implementer == nil {
-		return fmt.Errorf("implement harness %q is not configured", projectConfig.Roles.Implement.Harness)
-	}
-	if options.Reviewer == nil {
-		return fmt.Errorf("review harness %q is not configured", projectConfig.Roles.Review.Harness)
-	}
-	var (
-		setup implementSetup
-		err   error
-	)
-	if options.ProvisionedWorktree != nil {
-		setup, err = prepareProvisionedImplement(ctx, options.Git, issueTracker, ticket, *options.ProvisionedWorktree)
-	} else {
-		setup, err = prepareImplementWithGit(ctx, options.Git, originGit, issueTracker, ticket)
-	}
+	run, err := prepareImplementRun(ctx, options, originGit)
 	if err != nil {
 		return err
-	}
-	notifier := options.Notifier
-	if !projectConfig.Notifications.Enabled {
-		notifier = nil
-	}
-	notifier = withNotificationContext(notifier, options.OriginRoot, setup.git)
-	questions := NewQuestionHandler(options.Input, options.Output, "#"+strconv.Itoa(ticket.Number), notifier)
-	recorder, err := newImplementRunRecorder(
-		options.OriginRoot,
-		ticket.Number,
-		setup.branch,
-		setup.branchPoint,
-	)
-	if err != nil {
-		return err
-	}
-	if options.IdentificationBanner != nil {
-		if err := options.IdentificationBanner(recorder.Dir()); err != nil {
-			return err
-		}
 	}
 	loopStarted = true
 	iterations, final, nits, err := runImplementIterations(ctx, implementIterationsParams{
-		git:            setup.git,
-		workRoot:       options.WorkRoot,
-		implementer:    options.Implementer,
-		reviewer:       options.Reviewer,
-		projectConfig:  projectConfig,
-		ticket:         ticket,
-		branchPoint:    setup.branchPoint,
-		reviewDiffRoot: setup.worktreePath,
-		recorder:       recorder,
-		questions:      questions,
-		output:         options.Output,
-		verbose:        options.Verbose,
+		git:               run.setup.git,
+		workRoot:          options.WorkRoot,
+		implementer:       options.Implementer,
+		reviewer:          options.Reviewer,
+		projectConfig:     projectConfig,
+		ticket:            ticket,
+		branchPoint:       run.setup.branchPoint,
+		reviewDiffRoot:    run.setup.worktreePath,
+		recorder:          run.recorder,
+		questions:         run.questions,
+		output:            options.Output,
+		additionalContext: options.Context,
+		verbose:           options.Verbose,
 	})
 	if err != nil {
 		return err
 	}
 
-	diffStat, err := setup.git.Run(ctx, "diff", "--stat", setup.branchPoint)
+	diffStat, err := run.setup.git.Run(ctx, "diff", "--stat", run.setup.branchPoint)
 	if err != nil {
 		diffStat = fmt.Sprintf("unavailable: %v", err)
 	}
@@ -141,22 +112,82 @@ func RunImplement(ctx context.Context, options ImplementOptions) (returnErr erro
 		final:        final,
 		nits:         nits,
 		diffStat:     diffStat,
-		worktreePath: setup.worktreePath,
+		worktreePath: run.setup.worktreePath,
 	}
-	if err := recorder.WriteSummary(summary); err != nil {
+	return completeImplementRun(ctx, options, run, summary)
+}
+
+func prepareImplementRun(ctx context.Context, options ImplementOptions, originGit GitRunner) (implementRunState, error) {
+	if err := validateImplementOptions(options); err != nil {
+		return implementRunState{}, err
+	}
+	var (
+		setup implementSetup
+		err   error
+	)
+	if options.ProvisionedWorktree != nil {
+		setup, err = prepareProvisionedImplement(ctx, options.Git, options.IssueTracker, options.Ticket, *options.ProvisionedWorktree)
+	} else {
+		setup, err = prepareImplementWithGit(ctx, options.Git, originGit, options.IssueTracker, options.Ticket)
+	}
+	if err != nil {
+		return implementRunState{}, err
+	}
+	return initializeImplementRun(options, setup)
+}
+
+func validateImplementOptions(options ImplementOptions) error {
+	if options.Git == nil {
+		return errors.New("implement: git runner is not configured")
+	}
+	if options.Implementer == nil {
+		return fmt.Errorf("implement harness %q is not configured", options.ProjectConfig.Roles.Implement.Harness)
+	}
+	if options.Reviewer == nil {
+		return fmt.Errorf("review harness %q is not configured", options.ProjectConfig.Roles.Review.Harness)
+	}
+	return nil
+}
+
+func initializeImplementRun(options ImplementOptions, setup implementSetup) (implementRunState, error) {
+	notifier := options.Notifier
+	if !options.ProjectConfig.Notifications.Enabled {
+		notifier = nil
+	}
+	notifier = withNotificationContext(notifier, options.OriginRoot, setup.git)
+	questions := NewQuestionHandler(options.Input, options.Output, "#"+strconv.Itoa(options.Ticket.Number), notifier)
+	recorder, err := newImplementRunRecorder(
+		options.OriginRoot,
+		options.Ticket.Number,
+		setup.branch,
+		setup.branchPoint,
+	)
+	if err != nil {
+		return implementRunState{}, err
+	}
+	if options.IdentificationBanner != nil {
+		if err := options.IdentificationBanner(recorder.Dir()); err != nil {
+			return implementRunState{}, err
+		}
+	}
+	return implementRunState{setup: setup, notifier: notifier, questions: questions, recorder: recorder}, nil
+}
+
+func completeImplementRun(ctx context.Context, options ImplementOptions, run implementRunState, summary implementSummary) error {
+	if err := run.recorder.WriteSummary(summary); err != nil {
 		return err
 	}
 	if _, err := io.WriteString(options.Output, formatImplementSummary(summary)); err != nil {
 		return fmt.Errorf("write implement summary: %w", err)
 	}
-	if err := recorder.WriteSessions(); err != nil {
+	if err := run.recorder.WriteSessions(); err != nil {
 		return err
 	}
-	if notifier != nil {
-		_ = notifier.Notify(ctx, fmt.Sprintf("implement #%d finished: %s", ticket.Number, final.Status))
+	if run.notifier != nil {
+		_ = run.notifier.Notify(ctx, fmt.Sprintf("implement #%d finished: %s", options.Ticket.Number, summary.final.Status))
 	}
-	if final.Status == verdict.Revise {
-		return fmt.Errorf("implement loop reached max iterations (%d) with revise verdict", projectConfig.Loop.MaxIterations)
+	if summary.final.Status == verdict.Revise {
+		return fmt.Errorf("implement loop reached max iterations (%d) with revise verdict", options.ProjectConfig.Loop.MaxIterations)
 	}
 	return nil
 }
@@ -227,18 +258,19 @@ func prepareProvisionedImplement(
 }
 
 type implementIterationsParams struct {
-	git            GitRunner
-	workRoot       string
-	implementer    harness.Adapter
-	reviewer       harness.Adapter
-	projectConfig  config.Config
-	ticket         tracker.Ticket
-	branchPoint    string
-	reviewDiffRoot string
-	recorder       RunRecorder
-	questions      *QuestionHandler
-	output         io.Writer
-	verbose        bool
+	git               GitRunner
+	workRoot          string
+	implementer       harness.Adapter
+	reviewer          harness.Adapter
+	projectConfig     config.Config
+	ticket            tracker.Ticket
+	branchPoint       string
+	reviewDiffRoot    string
+	recorder          RunRecorder
+	questions         *QuestionHandler
+	output            io.Writer
+	additionalContext string
+	verbose           bool
 }
 
 type implementReviewParams struct {
@@ -384,7 +416,7 @@ func runImplementTurn(ctx context.Context, params implementIterationsParams, ite
 	implementRequest := harness.Request{
 		Model:  params.projectConfig.Roles.Implement.Model,
 		Effort: params.projectConfig.Roles.Implement.Effort,
-		Prompt: composeImplementPrompt(params.ticket, blocking, iteration),
+		Prompt: composeImplementPrompt(params.ticket, blocking, iteration, params.additionalContext),
 		MCP:    params.projectConfig.Roles.Implement.MCP,
 	}
 	implementStartedAt := time.Now().UTC()

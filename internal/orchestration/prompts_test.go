@@ -1,6 +1,7 @@
 package orchestration
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/igorrochap/syl/internal/tracker"
@@ -10,7 +11,7 @@ import (
 func TestComposeImplementPromptFirstIteration(t *testing.T) {
 	ticket := tracker.Ticket{Number: 42, Title: "Concentrate prompts", Body: "Keep every byte.\n\nDo not change wording."}
 
-	got := composeImplementPrompt(ticket, nil, 1)
+	got := composeImplementPrompt(ticket, nil, 1, "")
 	want := `/implement
 
 Implement the ticket below in the current project. Use the vendored implement skill and leave the working tree with the requested changes for review. Do not commit or push changes.
@@ -42,7 +43,7 @@ func TestComposeImplementPromptRevisionWithBlockingFindings(t *testing.T) {
 		{Kind: verdict.Blocking, Location: "prompts_test.go:20", Issue: "second issue"},
 	}
 
-	got := composeImplementPrompt(ticket, findings, 2)
+	got := composeImplementPrompt(ticket, findings, 2, "")
 	want := `/fix-review
 
 Address ONLY the reviewer's [blocking] findings listed below. Use the vendored fix-review skill. Leave the working tree with the changes for review and do not commit or push changes.
@@ -63,6 +64,37 @@ Blocking findings:
 - [blocking] prompts_test.go:20 — second issue`
 
 	assertPromptEqual(t, got, want)
+}
+
+func TestComposeImplementPromptWhitespaceOnlyContextMatchesWithoutContext(t *testing.T) {
+	ticket := tracker.Ticket{Number: 42, Title: "Concentrate prompts", Body: "Keep every byte."}
+	findings := []verdict.Finding{{Kind: verdict.Blocking, Location: "prompts.go:10", Issue: "first issue"}}
+
+	for _, test := range []struct {
+		name      string
+		iteration int
+		blocking  []verdict.Finding
+	}{
+		{name: "first iteration", iteration: 1},
+		{name: "revision", iteration: 2, blocking: findings},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			withoutContext := composeImplementPrompt(ticket, test.blocking, test.iteration, "")
+			withWhitespaceContext := composeImplementPrompt(ticket, test.blocking, test.iteration, " \n\t ")
+			assertPromptEqual(t, withWhitespaceContext, withoutContext)
+		})
+	}
+}
+
+func TestComposeImplementPromptPreservesMultilineContext(t *testing.T) {
+	ticket := tracker.Ticket{Number: 42}
+	context := "Use the existing GitRunner seam.\nDo not add a new adapter."
+
+	got := composeImplementPrompt(ticket, nil, 1, context)
+
+	if !strings.Contains(got, context) {
+		t.Fatalf("implement prompt = %q, want exact multi-line context %q", got, context)
+	}
 }
 
 func TestComposeReviewPromptWithoutTicket(t *testing.T) {

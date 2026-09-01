@@ -268,6 +268,14 @@ planning sequence:
 syl implement 42
 ```
 
+Pass `--context <text>` to give the implementer Role additional
+context for one invocation. The inline value is included in the implementer
+prompt on the first iteration and on each revision:
+
+```sh
+syl implement 42 --context "Use the existing GitRunner seam. Do not add a new adapter."
+```
+
 Use `--worktree` to run the loop in a dedicated checkout while leaving the
 current checkout untouched. A fresh git worktree starts with only the tracked
 tree, so ignored dependencies such as `node_modules`, `vendor`, `.venv`,
