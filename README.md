@@ -314,6 +314,13 @@ syl review 42
 When the Review log is `github`, an issue reference is required; `syl`
 cannot log a review with no place to log it.
 
+Pass `--context <text>` to give the reviewer Role additional context for one
+invocation. The value is an inline string appended to the review prompt:
+
+```sh
+syl review 42 --context "only the parser changes matter"
+```
+
 For implement and review Roles, `syl` runs Claude Code in a terminal session
 and reads complete assistant messages from the session transcript. `syl`
 refuses to start these Roles from inside another Claude Code session because

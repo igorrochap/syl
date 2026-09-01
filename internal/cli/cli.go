@@ -243,6 +243,7 @@ func (a *App) cleanupProvisionedWorktree(ctx context.Context, worktree *orchestr
 func (a *App) reviewCommand() *cobra.Command {
 	var raw bool
 	var verbose bool
+	var additionalContext string
 	command := &cobra.Command{
 		Use:   "review [N]",
 		Short: "review the current working-tree changes",
@@ -278,7 +279,7 @@ func (a *App) reviewCommand() *cobra.Command {
 			}
 			return orchestration.RunReview(cmd.Context(), orchestration.ReviewOptions{
 				OriginRoot: a.originRoot, WorkRoot: a.workRoot, ProjectConfig: projectConfig, IssueTracker: issueTracker,
-				Ticket: ticket, TicketRef: ticketRef, Adapter: adapter, Input: cmd.InOrStdin(), Output: cmd.OutOrStdout(),
+				Ticket: ticket, TicketRef: ticketRef, Context: additionalContext, Adapter: adapter, Input: cmd.InOrStdin(), Output: cmd.OutOrStdout(),
 				Raw: raw, Verbose: verbose, Notifier: a.notifier(projectConfig.Notifications.Enabled), Git: a.gitRunner(a.workRoot),
 				TranscriptUsage: projectConfig.Roles.Review.Harness == config.HarnessClaude,
 				IdentificationBanner: func() error {
@@ -289,6 +290,7 @@ func (a *App) reviewCommand() *cobra.Command {
 	}
 	command.Flags().BoolVar(&raw, "raw", false, "pass the harness output through untouched")
 	command.Flags().BoolVar(&verbose, "verbose", false, "stream assistant prose in addition to progress output")
+	command.Flags().StringVar(&additionalContext, "context", "", "additional context for the reviewer Role")
 	command.MarkFlagsMutuallyExclusive("raw", "verbose")
 	return command
 }

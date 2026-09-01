@@ -48,6 +48,9 @@ func TestReviewTopSeamApprovePrintsFeedAndWritesLog(t *testing.T) {
 			t.Fatalf("review prompt = %q, want %q", harness.runRequest.Prompt, expected)
 		}
 	}
+	if strings.Contains(harness.runRequest.Prompt, "## Additional context") {
+		t.Fatalf("review prompt = %q, want no additional context section", harness.runRequest.Prompt)
+	}
 	if harness.runRequest.Model != "claude-sonnet-5" || harness.runRequest.Effort != "medium" {
 		t.Fatalf("review request = %#v, want configured model and effort", harness.runRequest)
 	}
@@ -433,6 +436,37 @@ func TestReviewWithTicketIncludesTicketInPromptAndReviewLog(t *testing.T) {
 	}
 	if logContents := readSingleReviewLog(t, fixture.root); !strings.Contains(logContents, "Ticket: #07") {
 		t.Fatalf("review log = %q, want ticket reference", logContents)
+	}
+}
+
+func TestReviewWithContextAppendsContextAfterTicket(t *testing.T) {
+	harness := &scriptedHarness{first: []harness.Event{
+		{Type: harness.EventSession, SessionID: "session-context"},
+		{Type: harness.EventAssistantText, Text: approveVerdictText},
+	}}
+	fixture := newReviewFixture(t, harness)
+	configureLocalIssues(t, fixture.root)
+	ticketBody := "Only review the parser behavior."
+	writeReviewTicket(t, fixture.root, "feature-context", "42", "Parser review", ticketBody)
+
+	contextText := "  only the parser changes matter  "
+	code := fixture.app.Run(
+		context.Background(),
+		[]string{"review", "42", "--context", contextText},
+		&fixture.stdout,
+		&fixture.stderr,
+	)
+	if code != 0 {
+		t.Fatalf("review code = %d, want 0; stderr = %q", code, fixture.stderr.String())
+	}
+	prompt := harness.runRequest.Prompt
+	if !strings.Contains(prompt, "## Additional context supplied by the user for this run\n\nonly the parser changes matter") {
+		t.Fatalf("review prompt = %q, want trimmed additional context", prompt)
+	}
+	bodyIndex := strings.Index(prompt, ticketBody)
+	contextIndex := strings.Index(prompt, "## Additional context")
+	if bodyIndex < 0 || contextIndex <= bodyIndex {
+		t.Fatalf("review prompt = %q, want context after ticket body", prompt)
 	}
 }
 
