@@ -62,12 +62,21 @@ func composeImplementPrompt(ticket tracker.Ticket, blocking []verdict.Finding, i
 	return fmt.Sprintf(reviseImplementPrompt, "#"+strconv.Itoa(ticket.Number), formatBlockingFindings(blocking))
 }
 
-func composeReviewPrompt(ticketRef string, ticket *tracker.Ticket, branchPoint, diffPath string) string {
+func composeReviewPrompt(ticketRef string, ticket *tracker.Ticket, branchPoint, diffPath, additionalContext string) string {
 	prompt := fmt.Sprintf(reviewPrompt, diffPath, branchPoint)
 	if ticket == nil {
+		return appendPromptContext(prompt, additionalContext)
+	}
+	prompt = fmt.Sprintf("%s\n\nReview the current diff against this ticket (%s).\n\nTicket title: %s\n\nTicket body:\n%s", prompt, ticketRef, ticket.Title, ticket.Body)
+	return appendPromptContext(prompt, additionalContext)
+}
+
+func appendPromptContext(prompt, additionalContext string) string {
+	additionalContext = strings.TrimSpace(additionalContext)
+	if additionalContext == "" {
 		return prompt
 	}
-	return fmt.Sprintf("%s\n\nReview the current diff against this ticket (%s).\n\nTicket title: %s\n\nTicket body:\n%s", prompt, ticketRef, ticket.Title, ticket.Body)
+	return fmt.Sprintf("%s\n\n## Additional context supplied by the user for this run\n\n%s", prompt, additionalContext)
 }
 
 func composeReviewResumePrompt(diffPath string, blocking []verdict.Finding) string {

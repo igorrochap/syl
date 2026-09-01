@@ -584,6 +584,9 @@ func TestQuestionAnswerInputProtocolIsDocumentedInHelp(t *testing.T) {
 	if !strings.Contains(fixture.stdout.String(), "single-line answer from stdin") || !strings.Contains(fixture.stdout.String(), "trailing backslash") {
 		t.Fatalf("review help = %q, want QUESTION input protocol", fixture.stdout.String())
 	}
+	if !strings.Contains(fixture.stdout.String(), "--context string") || !strings.Contains(fixture.stdout.String(), "additional context for the reviewer Role") {
+		t.Fatalf("review help = %q, want reviewer context flag", fixture.stdout.String())
+	}
 }
 
 func TestRunRefusesCommandsWithoutConfig(t *testing.T) {

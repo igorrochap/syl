@@ -241,6 +241,14 @@ type implementIterationsParams struct {
 	verbose        bool
 }
 
+type implementReviewParams struct {
+	iteration               int
+	blocking                []verdict.Finding
+	previousReviewerSession string
+	diffPath                string
+	mode                    HarnessOutputMode
+}
+
 func runImplementIterations(ctx context.Context, params implementIterationsParams) (int, verdict.Verdict, []verdict.Finding, error) {
 	var blocking []verdict.Finding
 	var nits []verdict.Finding
@@ -249,132 +257,28 @@ func runImplementIterations(ctx context.Context, params implementIterationsParam
 	iterations := 0
 	for iteration := 1; iteration <= params.projectConfig.Loop.MaxIterations; iteration++ {
 		iterations = iteration
-		activity := "implementing"
-		if iteration > 1 {
-			activity = fmt.Sprintf("revising %d blocking finding(s)", len(blocking))
-		}
-		if _, err := fmt.Fprintf(params.output, "iteration %d/%d — %s\n", iteration, params.projectConfig.Loop.MaxIterations, activity); err != nil {
-			return 0, verdict.Verdict{}, nil, fmt.Errorf("write implement progress: %w", err)
-		}
-
 		mode := QuietHarnessOutput
 		if params.verbose {
 			mode = ParsedHarnessOutput
 		}
-		implementRequest := harness.Request{
-			Model:  params.projectConfig.Roles.Implement.Model,
-			Effort: params.projectConfig.Roles.Implement.Effort,
-			Prompt: composeImplementPrompt(params.ticket, blocking, iteration),
-			MCP:    params.projectConfig.Roles.Implement.MCP,
+		if err := runImplementTurn(ctx, params, iteration, blocking, mode); err != nil {
+			return 0, verdict.Verdict{}, nil, err
 		}
-		implementStartedAt := time.Now().UTC()
-		implementResult, err := runImplementRole(
-			ctx,
-			params.implementer,
-			implementRequest,
-			newRoleLabelWriter(params.output, "implement", ansiColorImplement),
-			mode,
-			params.questions,
-		)
-		implementEndedAt := time.Now().UTC()
+		diffPath, err := prepareIterationReviewDiff(ctx, params, iteration)
 		if err != nil {
 			return 0, verdict.Verdict{}, nil, err
-		}
-		recordRoleUsage(params.recorder, usage.CollectInvocation(usage.Invocation{
-			Iteration:  iteration,
-			Role:       "implement",
-			Harness:    string(params.projectConfig.Roles.Implement.Harness),
-			Model:      params.projectConfig.Roles.Implement.Model,
-			SessionIDs: implementResult.SessionIDs,
-			StartedAt:  implementStartedAt,
-			EndedAt:    implementEndedAt,
-		}, params.workRoot, ""))
-		if err := params.recorder.RecordImplementTurn(
-			iteration,
-			implementResult.Feed,
-			implementResult.Transcript,
-		); err != nil {
-			return 0, verdict.Verdict{}, nil, err
-		}
-		params.recorder.RecordSessions(iteration, "implement", implementResult.SessionIDs)
-		if err := ensureHeadUnchanged(ctx, params.git, params.branchPoint); err != nil {
-			return 0, verdict.Verdict{}, nil, err
-		}
-		diff, err := computeReviewDiff(ctx, params.git, params.branchPoint)
-		if err != nil {
-			return 0, verdict.Verdict{}, nil, err
-		}
-		diffPath, err := params.recorder.RecordReviewDiff(iteration, diff)
-		if err != nil {
-			return 0, verdict.Verdict{}, nil, err
-		}
-		if params.reviewDiffRoot != "" {
-			diffPath, err = recordWorktreeReviewDiff(params.reviewDiffRoot, params.recorder.Dir(), iteration, diff)
-			if err != nil {
-				return 0, verdict.Verdict{}, nil, err
-			}
 		}
 
-		reviewRequest := harness.Request{
-			Model:  params.projectConfig.Roles.Review.Model,
-			Effort: params.projectConfig.Roles.Review.Effort,
-			Prompt: composeReviewPrompt("#"+strconv.Itoa(params.ticket.Number), &params.ticket, params.branchPoint, diffPath),
-			MCP:    params.projectConfig.Roles.Review.MCP,
-		}
-		if _, err := fmt.Fprintf(params.output, "iteration %d/%d — reviewing\n", iteration, params.projectConfig.Loop.MaxIterations); err != nil {
-			return 0, verdict.Verdict{}, nil, fmt.Errorf("write review progress: %w", err)
-		}
-		reviewOptions := reviewResumeOptions{
-			sessionID: previousReviewerSession,
-			request:   reviewRequest,
-			output:    newRoleLabelWriter(params.output, "review", ansiColorReview),
-			mode:      mode,
-			questions: params.questions,
-		}
-		if previousReviewerSession != "" {
-			reviewOptions.resumePrompt = composeReviewResumePrompt(diffPath, blocking)
-		}
-		reviewStartedAt := time.Now().UTC()
-		reviewResult, err := runReviewExecutionWithResumeFallback(ctx, params.reviewer, reviewOptions)
-		reviewEndedAt := time.Now().UTC()
-		if err != nil {
-			var unparseable *UnparseableVerdictError
-			if errors.As(err, &unparseable) {
-				recordReviewUsage(reviewUsageParams{
-					recorder:  params.recorder,
-					iteration: iteration,
-					role:      params.projectConfig.Roles.Review,
-					execution: unparseable.Execution,
-					workRoot:  params.workRoot,
-					startedAt: reviewStartedAt,
-					endedAt:   reviewEndedAt,
-				})
-				if artifactErr := params.recorder.RecordReviewOutput(iteration, unparseable.Execution); artifactErr != nil {
-					return 0, verdict.Verdict{}, nil, artifactErr
-				}
-				return 0, verdict.Verdict{}, nil, reviewTranscriptSavedError(err, params.recorder.Dir())
-			}
-			return 0, verdict.Verdict{}, nil, err
-		}
-		recordReviewUsage(reviewUsageParams{
-			recorder:  params.recorder,
-			iteration: iteration,
-			role:      params.projectConfig.Roles.Review,
-			execution: reviewResult,
-			workRoot:  params.workRoot,
-			startedAt: reviewStartedAt,
-			endedAt:   reviewEndedAt,
+		reviewResult, err := runImplementReview(ctx, params, implementReviewParams{
+			iteration:               iteration,
+			blocking:                blocking,
+			previousReviewerSession: previousReviewerSession,
+			diffPath:                diffPath,
+			mode:                    mode,
 		})
-		if err := params.recorder.RecordReviewOutput(iteration, reviewResult); err != nil {
+		if err != nil {
 			return 0, verdict.Verdict{}, nil, err
 		}
-		if err := params.recorder.RecordVerdict(iteration, reviewResult.Verdict); err != nil {
-			return 0, verdict.Verdict{}, nil, err
-		}
-		if err := ensureHeadUnchanged(ctx, params.git, params.branchPoint); err != nil {
-			return 0, verdict.Verdict{}, nil, err
-		}
-		params.recorder.RecordSessions(iteration, "review", reviewResult.SessionIDs)
 		final = reviewResult.Verdict
 		if _, err := io.WriteString(params.output, formatVerdict(final)); err != nil {
 			return 0, verdict.Verdict{}, nil, fmt.Errorf("write review verdict: %w", err)
@@ -387,6 +291,133 @@ func runImplementIterations(ctx context.Context, params implementIterationsParam
 		previousReviewerSession = lastUsableSessionID(reviewResult.SessionIDs)
 	}
 	return iterations, final, nits, nil
+}
+
+func runImplementReview(ctx context.Context, params implementIterationsParams, reviewParams implementReviewParams) (ReviewExecution, error) {
+	reviewRequest := harness.Request{
+		Model:  params.projectConfig.Roles.Review.Model,
+		Effort: params.projectConfig.Roles.Review.Effort,
+		Prompt: composeReviewPrompt("#"+strconv.Itoa(params.ticket.Number), &params.ticket, params.branchPoint, reviewParams.diffPath, ""),
+		MCP:    params.projectConfig.Roles.Review.MCP,
+	}
+	if _, err := fmt.Fprintf(params.output, "iteration %d/%d — reviewing\n", reviewParams.iteration, params.projectConfig.Loop.MaxIterations); err != nil {
+		return ReviewExecution{}, fmt.Errorf("write review progress: %w", err)
+	}
+	reviewOptions := reviewResumeOptions{
+		sessionID: reviewParams.previousReviewerSession,
+		request:   reviewRequest,
+		output:    newRoleLabelWriter(params.output, "review", ansiColorReview),
+		mode:      reviewParams.mode,
+		questions: params.questions,
+	}
+	if reviewParams.previousReviewerSession != "" {
+		reviewOptions.resumePrompt = composeReviewResumePrompt(reviewParams.diffPath, reviewParams.blocking)
+	}
+	reviewStartedAt := time.Now().UTC()
+	reviewResult, err := runReviewExecutionWithResumeFallback(ctx, params.reviewer, reviewOptions)
+	reviewEndedAt := time.Now().UTC()
+	if err != nil {
+		var unparseable *UnparseableVerdictError
+		if errors.As(err, &unparseable) {
+			recordReviewUsage(reviewUsageParams{
+				recorder:  params.recorder,
+				iteration: reviewParams.iteration,
+				role:      params.projectConfig.Roles.Review,
+				execution: unparseable.Execution,
+				workRoot:  params.workRoot,
+				startedAt: reviewStartedAt,
+				endedAt:   reviewEndedAt,
+			})
+			if artifactErr := params.recorder.RecordReviewOutput(reviewParams.iteration, unparseable.Execution); artifactErr != nil {
+				return ReviewExecution{}, artifactErr
+			}
+			return ReviewExecution{}, reviewTranscriptSavedError(err, params.recorder.Dir())
+		}
+		return ReviewExecution{}, err
+	}
+	recordReviewUsage(reviewUsageParams{
+		recorder:  params.recorder,
+		iteration: reviewParams.iteration,
+		role:      params.projectConfig.Roles.Review,
+		execution: reviewResult,
+		workRoot:  params.workRoot,
+		startedAt: reviewStartedAt,
+		endedAt:   reviewEndedAt,
+	})
+	if err := params.recorder.RecordReviewOutput(reviewParams.iteration, reviewResult); err != nil {
+		return ReviewExecution{}, err
+	}
+	if err := params.recorder.RecordVerdict(reviewParams.iteration, reviewResult.Verdict); err != nil {
+		return ReviewExecution{}, err
+	}
+	if err := ensureHeadUnchanged(ctx, params.git, params.branchPoint); err != nil {
+		return ReviewExecution{}, err
+	}
+	params.recorder.RecordSessions(reviewParams.iteration, "review", reviewResult.SessionIDs)
+	return reviewResult, nil
+}
+
+func prepareIterationReviewDiff(ctx context.Context, params implementIterationsParams, iteration int) (string, error) {
+	diff, err := computeReviewDiff(ctx, params.git, params.branchPoint)
+	if err != nil {
+		return "", err
+	}
+	diffPath, err := params.recorder.RecordReviewDiff(iteration, diff)
+	if err != nil {
+		return "", err
+	}
+	if params.reviewDiffRoot == "" {
+		return diffPath, nil
+	}
+	return recordWorktreeReviewDiff(params.reviewDiffRoot, params.recorder.Dir(), iteration, diff)
+}
+
+func runImplementTurn(ctx context.Context, params implementIterationsParams, iteration int, blocking []verdict.Finding, mode HarnessOutputMode) error {
+	activity := "implementing"
+	if iteration > 1 {
+		activity = fmt.Sprintf("revising %d blocking finding(s)", len(blocking))
+	}
+	if _, err := fmt.Fprintf(params.output, "iteration %d/%d — %s\n", iteration, params.projectConfig.Loop.MaxIterations, activity); err != nil {
+		return fmt.Errorf("write implement progress: %w", err)
+	}
+
+	implementRequest := harness.Request{
+		Model:  params.projectConfig.Roles.Implement.Model,
+		Effort: params.projectConfig.Roles.Implement.Effort,
+		Prompt: composeImplementPrompt(params.ticket, blocking, iteration),
+		MCP:    params.projectConfig.Roles.Implement.MCP,
+	}
+	implementStartedAt := time.Now().UTC()
+	implementResult, err := runImplementRole(
+		ctx,
+		params.implementer,
+		implementRequest,
+		newRoleLabelWriter(params.output, "implement", ansiColorImplement),
+		mode,
+		params.questions,
+	)
+	implementEndedAt := time.Now().UTC()
+	if err != nil {
+		return err
+	}
+	recordRoleUsage(params.recorder, usage.CollectInvocation(usage.Invocation{
+		Iteration:  iteration,
+		Role:       "implement",
+		Harness:    string(params.projectConfig.Roles.Implement.Harness),
+		Model:      params.projectConfig.Roles.Implement.Model,
+		SessionIDs: implementResult.SessionIDs,
+		StartedAt:  implementStartedAt,
+		EndedAt:    implementEndedAt,
+	}, params.workRoot, ""))
+	if err := params.recorder.RecordImplementTurn(
+		iteration,
+		implementResult.Feed,
+		implementResult.Transcript,
+	); err != nil {
+		return err
+	}
+	params.recorder.RecordSessions(iteration, "implement", implementResult.SessionIDs)
+	return ensureHeadUnchanged(ctx, params.git, params.branchPoint)
 }
 
 // recordRoleUsage persists usage as best-effort metadata. Usage collection or

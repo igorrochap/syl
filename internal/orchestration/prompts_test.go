@@ -66,7 +66,7 @@ Blocking findings:
 }
 
 func TestComposeReviewPromptWithoutTicket(t *testing.T) {
-	got := composeReviewPrompt("", nil, "abc123", "/tmp/review.diff")
+	got := composeReviewPrompt("", nil, "abc123", "/tmp/review.diff", "")
 	want := `/code-review
 
 Review the pre-computed diff at /tmp/review.diff against the recorded branch point abc123. This file is the authoritative diff for this review. Do not run Git to re-derive the diff. You may still open individual files for surrounding context. Do not modify files. Do not read or write review documents; the invoking tool records the verdict. The verdict block you print is the only record. End the review with the mandatory verdict block from the code-review skill.
@@ -86,7 +86,7 @@ Ambiguity should have been resolved during planning, and trivial choices should 
 func TestComposeReviewPromptWithTicket(t *testing.T) {
 	ticket := tracker.Ticket{Number: 42, Title: "Concentrate prompts", Body: "Keep every byte.\n\nDo not change wording."}
 
-	got := composeReviewPrompt("#42", &ticket, "abc123", "/tmp/review.diff")
+	got := composeReviewPrompt("#42", &ticket, "abc123", "/tmp/review.diff", "")
 	want := `/code-review
 
 Review the pre-computed diff at /tmp/review.diff against the recorded branch point abc123. This file is the authoritative diff for this review. Do not run Git to re-derive the diff. You may still open individual files for surrounding context. Do not modify files. Do not read or write review documents; the invoking tool records the verdict. The verdict block you print is the only record. End the review with the mandatory verdict block from the code-review skill.
@@ -110,6 +110,41 @@ Keep every byte.
 Do not change wording.`
 
 	assertPromptEqual(t, got, want)
+}
+
+func TestAppendPromptContext(t *testing.T) {
+	tests := []struct {
+		name    string
+		prompt  string
+		context string
+		want    string
+	}{
+		{
+			name:    "non-blank context",
+			prompt:  "base prompt",
+			context: "  only the parser changes matter  ",
+			want:    "base prompt\n\n## Additional context supplied by the user for this run\n\nonly the parser changes matter",
+		},
+		{
+			name:    "empty context",
+			prompt:  "base prompt",
+			context: "",
+			want:    "base prompt",
+		},
+		{
+			name:    "whitespace-only context",
+			prompt:  "base prompt",
+			context: " \n\t ",
+			want:    "base prompt",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got := appendPromptContext(test.prompt, test.context)
+			assertPromptEqual(t, got, test.want)
+		})
+	}
 }
 
 func TestComposeReviewResumePrompt(t *testing.T) {
