@@ -214,6 +214,124 @@ func TestRunImplementPassesContextToImplementer(t *testing.T) {
 	}
 }
 
+func TestImplementRunRecorderRecordsRoleContexts(t *testing.T) {
+	implementContext := "Keep the existing recorder.\nPreserve metadata ordering."
+	reviewContext := "Check the metadata output."
+	recorder, err := newImplementRunRecorder(
+		t.TempDir(),
+		42,
+		"feat/record-role-context",
+		"abc123",
+		implementContext,
+		reviewContext,
+	)
+	if err != nil {
+		t.Fatalf("newImplementRunRecorder() error = %v", err)
+	}
+
+	metadata := readRunMetadataArtifact(t, recorder.Dir())
+	want := "Branch: feat/record-role-context\n" +
+		"Branch point: abc123\n" +
+		"Implementer context:\n" +
+		"  Keep the existing recorder.\n" +
+		"  Preserve metadata ordering.\n" +
+		"Reviewer context:\n" +
+		"  Check the metadata output.\n"
+	if metadata != want {
+		t.Fatalf("metadata = %q, want %q", metadata, want)
+	}
+}
+
+func TestImplementRunRecorderPreservesMetadataWithoutContexts(t *testing.T) {
+	recorder, err := newImplementRunRecorder(
+		t.TempDir(),
+		42,
+		"feat/record-role-context",
+		"abc123",
+		"",
+		"",
+	)
+	if err != nil {
+		t.Fatalf("newImplementRunRecorder() error = %v", err)
+	}
+
+	const want = "Branch: feat/record-role-context\nBranch point: abc123\n"
+	if metadata := readRunMetadataArtifact(t, recorder.Dir()); metadata != want {
+		t.Fatalf("metadata = %q, want %q", metadata, want)
+	}
+}
+
+func TestReviewRunRecorderRecordsReviewerContext(t *testing.T) {
+	reviewContext := "Review only the parser.\nDo not modify files."
+	recorder, err := newReviewRunRecorder(t.TempDir(), "#42", "abc123", reviewContext)
+	if err != nil {
+		t.Fatalf("newReviewRunRecorder() error = %v", err)
+	}
+
+	metadata := readRunMetadataArtifact(t, recorder.Dir())
+	want := "Ticket: #42\n" +
+		"Branch point: abc123\n" +
+		"Reviewer context:\n" +
+		"  Review only the parser.\n" +
+		"  Do not modify files.\n"
+	if metadata != want {
+		t.Fatalf("metadata = %q, want %q", metadata, want)
+	}
+}
+
+func TestRunRecorderKeepsMetadataKeysOutsideMultilineContext(t *testing.T) {
+	implementContext := "first line\nBranch: something\nthird line"
+	recorder, err := newImplementRunRecorder(
+		t.TempDir(),
+		42,
+		"feat/record-role-context",
+		"abc123",
+		implementContext,
+		"",
+	)
+	if err != nil {
+		t.Fatalf("newImplementRunRecorder() error = %v", err)
+	}
+
+	metadata := readRunMetadataArtifact(t, recorder.Dir())
+	for _, expected := range []string{
+		"Implementer context:\n",
+		"  first line\n",
+		"  Branch: something\n",
+		"  third line\n",
+	} {
+		if !strings.Contains(metadata, expected) {
+			t.Errorf("metadata = %q, want %q", metadata, expected)
+		}
+	}
+	if got := countUnindentedMetadataKey(metadata, "Branch"); got != 1 {
+		t.Errorf("unindented Branch keys = %d, want 1", got)
+	}
+}
+
+func readRunMetadataArtifact(t *testing.T, runDir string) string {
+	t.Helper()
+	contents, err := os.ReadFile(filepath.Join(runDir, artifactFilename(metadataArtifact, 0)))
+	if err != nil {
+		t.Fatalf("read metadata artifact: %v", err)
+	}
+	return string(contents)
+}
+
+func countUnindentedMetadataKey(metadata, wantedKey string) int {
+	count := 0
+	for _, line := range strings.Split(metadata, "\n") {
+		if strings.HasPrefix(line, " ") || strings.HasPrefix(line, "\t") {
+			continue
+		}
+		key, _, ok := strings.Cut(line, ":")
+		if ok && strings.TrimSpace(key) == wantedKey {
+			count++
+		}
+	}
+	return count
+}
+
 func TestDiskRunRecorderDeduplicatesSessionIDs(t *testing.T) {
 	recorder := &diskRunRecorder{
 		dir:         t.TempDir(),
