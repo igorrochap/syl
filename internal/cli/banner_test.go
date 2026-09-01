@@ -52,6 +52,37 @@ func TestImplementPrintsIdentificationBannerWithResolvedConfigAndArtifacts(t *te
 	}
 }
 
+func TestImplementBannerShowsContextForEachRole(t *testing.T) {
+	fixture := newImplementLoopFixture(t)
+	loop := &loopHarness{
+		root: fixture.root,
+		streams: [][]harness.Event{
+			{{Type: harness.EventSession, SessionID: "implement-session"}},
+			{{Type: harness.EventSession, SessionID: "review-session"}, {Type: harness.EventAssistantText, Text: approveVerdictText}},
+		},
+	}
+	fixture.harnesses["codex"] = loop
+	fixture.harnesses["claude"] = loop
+	fixture.app.deps.GH = fixedGH(&loopGHRunner{})
+
+	code := fixture.app.Run(context.Background(), []string{
+		"implement", "#42",
+		"--implement-context", "implementer context",
+		"--review-context", "reviewer context",
+	}, &fixture.stdout, &fixture.stderr)
+	if code != 0 {
+		t.Fatalf("implement code = %d, stderr = %q", code, fixture.stderr.String())
+	}
+	for _, expected := range []string{
+		"  implementer: codex · gpt-5.6-luna · effort xhigh · context\n",
+		"  reviewer:    claude · claude-sonnet-5 · effort medium · context\n",
+	} {
+		if !strings.Contains(fixture.stdout.String(), expected) {
+			t.Errorf("stdout = %q, want context indicator %q", fixture.stdout.String(), expected)
+		}
+	}
+}
+
 func TestReviewPrintsTicketIdentificationBannerBeforeVerdict(t *testing.T) {
 	harness := &scriptedHarness{first: []harness.Event{
 		{Type: harness.EventSession, SessionID: "review-session"},
@@ -72,6 +103,23 @@ func TestReviewPrintsTicketIdentificationBannerBeforeVerdict(t *testing.T) {
 	}
 	if got := fixture.stdout.String(); strings.Contains(got, "implementer:") || strings.Contains(got, "max iterations:") || strings.Contains(got, "run artifacts:") {
 		t.Fatalf("stdout = %q, want only the reviewer banner line", got)
+	}
+}
+
+func TestReviewBannerShowsContext(t *testing.T) {
+	harness := &scriptedHarness{first: []harness.Event{
+		{Type: harness.EventSession, SessionID: "review-session"},
+		{Type: harness.EventAssistantText, Text: approveVerdictText},
+	}}
+	fixture := newReviewFixture(t, harness)
+
+	code := fixture.app.Run(context.Background(), []string{"review", "--context", "reviewer context"}, &fixture.stdout, &fixture.stderr)
+	if code != 0 {
+		t.Fatalf("review code = %d, stderr = %q", code, fixture.stderr.String())
+	}
+	want := "  reviewer: claude · claude-sonnet-5 · effort medium · context\n"
+	if !strings.Contains(fixture.stdout.String(), want) {
+		t.Fatalf("stdout = %q, want context indicator %q", fixture.stdout.String(), want)
 	}
 }
 

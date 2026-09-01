@@ -176,6 +176,162 @@ func TestRunImplementIterationsContinuesWhenUsageRecordingFails(t *testing.T) {
 	}
 }
 
+func TestRunImplementPassesContextToImplementer(t *testing.T) {
+	const additionalContext = "Use the existing GitRunner seam.\nDo not add a new adapter."
+
+	git := &implementRunGit{}
+	implementer := &capturingImplementAdapter{response: "Implemented the ticket."}
+	reviewer := &capturingImplementAdapter{response: conversationTestVerdict}
+	var output strings.Builder
+	err := RunImplement(context.Background(), ImplementOptions{
+		OriginRoot: t.TempDir(),
+		WorkRoot:   t.TempDir(),
+		ProjectConfig: config.Config{
+			Roles: config.RolesConfig{
+				Implement: config.RoleConfig{Harness: config.HarnessCodex},
+				Review:    config.RoleConfig{Harness: config.HarnessClaude},
+			},
+			Loop: config.LoopConfig{MaxIterations: 1},
+		},
+		IssueTracker: branchSetupTracker{},
+		Ticket:       tracker.Ticket{Number: 42, Title: "Implement context"},
+		Implementer:  implementer,
+		Reviewer:     reviewer,
+		Git:          git,
+		OriginGit:    git,
+		Input:        strings.NewReader(""),
+		Output:       &output,
+		Context:      additionalContext,
+	})
+	if err != nil {
+		t.Fatalf("RunImplement() error = %v", err)
+	}
+	if !strings.Contains(implementer.request.Prompt, additionalContext) {
+		t.Fatalf("implementer prompt = %q, want context %q", implementer.request.Prompt, additionalContext)
+	}
+	if strings.Contains(reviewer.request.Prompt, additionalContext) {
+		t.Fatalf("reviewer prompt = %q, want no implementer context %q", reviewer.request.Prompt, additionalContext)
+	}
+}
+
+func TestImplementRunRecorderRecordsRoleContexts(t *testing.T) {
+	implementContext := "Keep the existing recorder.\nPreserve metadata ordering."
+	reviewContext := "Check the metadata output."
+	recorder, err := newImplementRunRecorder(
+		t.TempDir(),
+		42,
+		"feat/record-role-context",
+		"abc123",
+		implementContext,
+		reviewContext,
+	)
+	if err != nil {
+		t.Fatalf("newImplementRunRecorder() error = %v", err)
+	}
+
+	metadata := readRunMetadataArtifact(t, recorder.Dir())
+	want := "Branch: feat/record-role-context\n" +
+		"Branch point: abc123\n" +
+		"Implementer context:\n" +
+		"  Keep the existing recorder.\n" +
+		"  Preserve metadata ordering.\n" +
+		"Reviewer context:\n" +
+		"  Check the metadata output.\n"
+	if metadata != want {
+		t.Fatalf("metadata = %q, want %q", metadata, want)
+	}
+}
+
+func TestImplementRunRecorderPreservesMetadataWithoutContexts(t *testing.T) {
+	recorder, err := newImplementRunRecorder(
+		t.TempDir(),
+		42,
+		"feat/record-role-context",
+		"abc123",
+		"",
+		"",
+	)
+	if err != nil {
+		t.Fatalf("newImplementRunRecorder() error = %v", err)
+	}
+
+	const want = "Branch: feat/record-role-context\nBranch point: abc123\n"
+	if metadata := readRunMetadataArtifact(t, recorder.Dir()); metadata != want {
+		t.Fatalf("metadata = %q, want %q", metadata, want)
+	}
+}
+
+func TestReviewRunRecorderRecordsReviewerContext(t *testing.T) {
+	reviewContext := "Review only the parser.\nDo not modify files."
+	recorder, err := newReviewRunRecorder(t.TempDir(), "#42", "abc123", reviewContext)
+	if err != nil {
+		t.Fatalf("newReviewRunRecorder() error = %v", err)
+	}
+
+	metadata := readRunMetadataArtifact(t, recorder.Dir())
+	want := "Ticket: #42\n" +
+		"Branch point: abc123\n" +
+		"Reviewer context:\n" +
+		"  Review only the parser.\n" +
+		"  Do not modify files.\n"
+	if metadata != want {
+		t.Fatalf("metadata = %q, want %q", metadata, want)
+	}
+}
+
+func TestRunRecorderKeepsMetadataKeysOutsideMultilineContext(t *testing.T) {
+	implementContext := "first line\nBranch: something\nthird line"
+	recorder, err := newImplementRunRecorder(
+		t.TempDir(),
+		42,
+		"feat/record-role-context",
+		"abc123",
+		implementContext,
+		"",
+	)
+	if err != nil {
+		t.Fatalf("newImplementRunRecorder() error = %v", err)
+	}
+
+	metadata := readRunMetadataArtifact(t, recorder.Dir())
+	for _, expected := range []string{
+		"Implementer context:\n",
+		"  first line\n",
+		"  Branch: something\n",
+		"  third line\n",
+	} {
+		if !strings.Contains(metadata, expected) {
+			t.Errorf("metadata = %q, want %q", metadata, expected)
+		}
+	}
+	if got := countUnindentedMetadataKey(metadata, "Branch"); got != 1 {
+		t.Errorf("unindented Branch keys = %d, want 1", got)
+	}
+}
+
+func readRunMetadataArtifact(t *testing.T, runDir string) string {
+	t.Helper()
+	contents, err := os.ReadFile(filepath.Join(runDir, artifactFilename(metadataArtifact, 0)))
+	if err != nil {
+		t.Fatalf("read metadata artifact: %v", err)
+	}
+	return string(contents)
+}
+
+func countUnindentedMetadataKey(metadata, wantedKey string) int {
+	count := 0
+	for _, line := range strings.Split(metadata, "\n") {
+		if strings.HasPrefix(line, " ") || strings.HasPrefix(line, "\t") {
+			continue
+		}
+		key, _, ok := strings.Cut(line, ":")
+		if ok && strings.TrimSpace(key) == wantedKey {
+			count++
+		}
+	}
+	return count
+}
+
 func TestDiskRunRecorderDeduplicatesSessionIDs(t *testing.T) {
 	recorder := &diskRunRecorder{
 		dir:         t.TempDir(),
@@ -209,6 +365,42 @@ func TestDiskRunRecorderDeduplicatesSessionIDs(t *testing.T) {
 type staticImplementGit struct {
 	branchPoint string
 	diff        string
+}
+
+type implementRunGit struct {
+	branchSetupGit
+}
+
+func (g *implementRunGit) Run(ctx context.Context, args ...string) (string, error) {
+	switch strings.Join(args, " ") {
+	case "diff abc123":
+		return "diff --git a/change.txt b/change.txt\n+implemented\n", nil
+	case "diff --stat abc123":
+		return " change.txt | 1 +\n", nil
+	default:
+		return g.branchSetupGit.Run(ctx, args...)
+	}
+}
+
+type capturingImplementAdapter struct {
+	request  harness.Request
+	response string
+}
+
+func (a *capturingImplementAdapter) Run(_ context.Context, request harness.Request) (harness.Stream, error) {
+	a.request = request
+	return scriptedConversationStream{events: []harness.Event{
+		{Type: harness.EventSession, SessionID: "implement-session"},
+		{Type: harness.EventAssistantText, Text: a.response},
+	}}, nil
+}
+
+func (*capturingImplementAdapter) Resume(context.Context, string, harness.Request) (harness.Stream, error) {
+	return nil, errors.New("unexpected harness resume")
+}
+
+func (*capturingImplementAdapter) Attach(context.Context, harness.Request) error {
+	return errors.New("unexpected harness attach")
 }
 
 func (g staticImplementGit) Run(_ context.Context, args ...string) (string, error) {

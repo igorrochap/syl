@@ -55,23 +55,36 @@ Blocking findings:
 %s`
 )
 
-func composeImplementPrompt(ticket tracker.Ticket, blocking []verdict.Finding, iteration int) string {
+func composeImplementPrompt(ticket tracker.Ticket, blocking []verdict.Finding, iteration int, additionalContext string) string {
+	var prompt string
 	if iteration == 1 {
-		return fmt.Sprintf(implementPrompt, "#"+strconv.Itoa(ticket.Number), ticket.Title, ticket.Body)
+		prompt = fmt.Sprintf(implementPrompt, "#"+strconv.Itoa(ticket.Number), ticket.Title, ticket.Body)
+	} else {
+		prompt = fmt.Sprintf(reviseImplementPrompt, "#"+strconv.Itoa(ticket.Number), formatBlockingFindings(blocking))
 	}
-	return fmt.Sprintf(reviseImplementPrompt, "#"+strconv.Itoa(ticket.Number), formatBlockingFindings(blocking))
+	return appendPromptContext(prompt, additionalContext)
 }
 
-func composeReviewPrompt(ticketRef string, ticket *tracker.Ticket, branchPoint, diffPath string) string {
+func composeReviewPrompt(ticketRef string, ticket *tracker.Ticket, branchPoint, diffPath, additionalContext string) string {
 	prompt := fmt.Sprintf(reviewPrompt, diffPath, branchPoint)
 	if ticket == nil {
-		return prompt
+		return appendPromptContext(prompt, additionalContext)
 	}
-	return fmt.Sprintf("%s\n\nReview the current diff against this ticket (%s).\n\nTicket title: %s\n\nTicket body:\n%s", prompt, ticketRef, ticket.Title, ticket.Body)
+	prompt = fmt.Sprintf("%s\n\nReview the current diff against this ticket (%s).\n\nTicket title: %s\n\nTicket body:\n%s", prompt, ticketRef, ticket.Title, ticket.Body)
+	return appendPromptContext(prompt, additionalContext)
 }
 
-func composeReviewResumePrompt(diffPath string, blocking []verdict.Finding) string {
-	return fmt.Sprintf(reviewResumePrompt, diffPath, formatBlockingFindings(blocking))
+func appendPromptContext(prompt, additionalContext string) string {
+	additionalContext = strings.TrimSpace(additionalContext)
+	if additionalContext == "" {
+		return prompt
+	}
+	return fmt.Sprintf("%s\n\n## Additional context supplied by the user for this run\n\n%s", prompt, additionalContext)
+}
+
+func composeReviewResumePrompt(diffPath string, blocking []verdict.Finding, additionalContext string) string {
+	prompt := fmt.Sprintf(reviewResumePrompt, diffPath, formatBlockingFindings(blocking))
+	return appendPromptContext(prompt, additionalContext)
 }
 
 func composePlanPrompt(options PlanOptions) string {

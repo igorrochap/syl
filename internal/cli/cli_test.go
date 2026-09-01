@@ -49,10 +49,17 @@ func TestImplementHelpExplainsWorktreeDependencySetup(t *testing.T) {
 		"only the tracked tree",
 		"[worktree] setup",
 		"provision its dependencies",
+		"--implement-context string",
+		"additional context for the implementer Role",
+		"--review-context string",
+		"additional context for the reviewer Role",
 	} {
 		if !strings.Contains(fixture.stdout.String(), expected) {
 			t.Fatalf("implement help = %q, want %q", fixture.stdout.String(), expected)
 		}
+	}
+	if strings.Contains(fixture.stdout.String(), "--context string") {
+		t.Fatalf("implement help = %q, want no generic context flag", fixture.stdout.String())
 	}
 }
 
@@ -583,6 +590,9 @@ func TestQuestionAnswerInputProtocolIsDocumentedInHelp(t *testing.T) {
 	}
 	if !strings.Contains(fixture.stdout.String(), "single-line answer from stdin") || !strings.Contains(fixture.stdout.String(), "trailing backslash") {
 		t.Fatalf("review help = %q, want QUESTION input protocol", fixture.stdout.String())
+	}
+	if !strings.Contains(fixture.stdout.String(), "--context string") || !strings.Contains(fixture.stdout.String(), "additional context for the reviewer Role") {
+		t.Fatalf("review help = %q, want reviewer context flag", fixture.stdout.String())
 	}
 }
 

@@ -268,6 +268,16 @@ planning sequence:
 syl implement 42
 ```
 
+Pass `--implement-context <text>` to give the implementer Role additional
+context for one invocation. Pass `--review-context <text>` to give the
+reviewer Role additional context for the same invocation. Each inline value is
+included in that Role's prompt on the first iteration and on each revision:
+
+```sh
+syl implement 42 --implement-context "Use the existing GitRunner seam. Do not add a new adapter."
+syl implement 42 --review-context "Ignore the vendored skills directory."
+```
+
 Use `--worktree` to run the loop in a dedicated checkout while leaving the
 current checkout untouched. A fresh git worktree starts with only the tracked
 tree, so ignored dependencies such as `node_modules`, `vendor`, `.venv`,
@@ -313,6 +323,13 @@ syl review 42
 
 When the Review log is `github`, an issue reference is required; `syl`
 cannot log a review with no place to log it.
+
+Pass `--context <text>` to give the reviewer Role additional context for one
+invocation. The value is an inline string appended to the review prompt:
+
+```sh
+syl review 42 --context "only the parser changes matter"
+```
 
 For implement and review Roles, `syl` runs Claude Code in a terminal session
 and reads complete assistant messages from the session transcript. `syl`
@@ -374,7 +391,7 @@ Each `syl implement` run writes its artifacts under
 
 ```text
 .syl/runs/20260817T101500.000000000Z-42/
-  metadata.txt                     # branch name and branch point
+  metadata.txt                     # branch/ticket, branch point, optional Role contexts
   sessions.txt                     # harness session IDs per iteration
   iteration-01-implement.feed      # implement role, parsed event feed
   iteration-01-implement.transcript
@@ -387,6 +404,14 @@ Each `syl implement` run writes its artifacts under
 
 `syl init` adds `.syl/runs/` to `.gitignore`. Keep an artifact directory when
 you need to audit a run; delete it when you do not.
+
+`metadata.txt` always keeps its branch or ticket line and its `Branch point`
+line. An implement run may add an `Implementer context:` line and/or a
+`Reviewer context:` line; a review run may add a `Reviewer context:` line.
+Each context line is followed by its value with two spaces of indentation on
+every line. Blank context values are omitted. The indentation keeps text such
+as `Branch: something` inside the context instead of treating it as another
+metadata key.
 
 Artifacts always land in the origin repository's `.syl/runs/`, even for a
 run that executed in a worktree with `--worktree`. Run history survives the

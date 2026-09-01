@@ -67,8 +67,12 @@ func newImplementRunRecorder(
 	issueNumber int,
 	branch string,
 	branchPoint string,
+	implementContext string,
+	reviewContext string,
 ) (*diskRunRecorder, error) {
 	metadata := fmt.Sprintf("Branch: %s\nBranch point: %s\n", branch, branchPoint)
+	metadata = appendRoleContext(metadata, "Implementer", implementContext)
+	metadata = appendRoleContext(metadata, "Reviewer", reviewContext)
 	return newDiskRunRecorder(
 		originRoot,
 		strconv.Itoa(issueNumber),
@@ -81,6 +85,7 @@ func newReviewRunRecorder(
 	originRoot string,
 	ticketRef string,
 	branchPoint string,
+	reviewContext string,
 ) (*diskRunRecorder, error) {
 	suffix := "review"
 	trimmedTicketRef := strings.TrimSpace(ticketRef)
@@ -88,7 +93,28 @@ func newReviewRunRecorder(
 		suffix = strconv.Itoa(number)
 	}
 	metadata := fmt.Sprintf("Ticket: %s\nBranch point: %s\n", trimmedTicketRef, branchPoint)
+	metadata = appendRoleContext(metadata, "Reviewer", reviewContext)
 	return newDiskRunRecorder(originRoot, suffix, metadata, "review")
+}
+
+// Context blocks use two-space indentation so their lines remain separate from
+// the unindented metadata keys. The usage metadata reader relies on that boundary.
+func appendRoleContext(metadata, role, context string) string {
+	context = strings.TrimSpace(context)
+	if context == "" {
+		return metadata
+	}
+
+	var builder strings.Builder
+	builder.WriteString(metadata)
+	builder.WriteString(role)
+	builder.WriteString(" context:\n")
+	for _, line := range strings.Split(context, "\n") {
+		builder.WriteString("  ")
+		builder.WriteString(line)
+		builder.WriteByte('\n')
+	}
+	return builder.String()
 }
 
 func newDiskRunRecorder(

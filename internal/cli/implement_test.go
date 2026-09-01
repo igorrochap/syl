@@ -235,12 +235,15 @@ func TestImplementFailsAfterOneUnparseableReviewReaskAndSavesTranscript(t *testi
 	fixture.harnesses["claude"] = harness
 	fixture.app.deps.GH = fixedGH(&loopGHRunner{})
 
-	code := fixture.app.Run(context.Background(), []string{"implement", "#42"}, &fixture.stdout, &fixture.stderr)
+	code := fixture.app.Run(context.Background(), []string{"implement", "#42", "--review-context", "reviewer-only context"}, &fixture.stdout, &fixture.stderr)
 	if code == 0 || !strings.Contains(fixture.stderr.String(), "reviewer produced no parseable verdict") {
 		t.Fatalf("implement code = %d, stderr = %q, want clear unparseable-verdict failure", code, fixture.stderr.String())
 	}
 	if harness.resumeCount != 1 {
 		t.Fatalf("resume count = %d, want exactly one review re-ask", harness.resumeCount)
+	}
+	if len(harness.resumeRequests) != 1 || harness.resumeRequests[0].Prompt != "emit the verdict block" {
+		t.Fatalf("resume requests = %#v, want exactly the context-free verdict re-ask", harness.resumeRequests)
 	}
 	if len(harness.requests) != 2 {
 		t.Fatalf("harness requests = %d, want one implement and one review request", len(harness.requests))
@@ -258,6 +261,102 @@ func TestImplementFailsAfterOneUnparseableReviewReaskAndSavesTranscript(t *testi
 	artifacts := readAllFiles(t, runDirs[0])
 	if !strings.Contains(artifacts, "The review did not produce a verdict.") || !strings.Contains(artifacts, "The re-ask also omitted the verdict.") {
 		t.Fatalf("run artifacts = %q, want the full failed review transcript", artifacts)
+	}
+}
+
+func TestImplementReviewContextReachesReviewerPromptsOnly(t *testing.T) {
+	fixture := newImplementLoopFixture(t)
+	reviewerContext := "Ignore the vendored skills directory."
+	loop := &resumingLoopHarness{
+		root: fixture.root,
+		streams: [][]harness.Event{
+			{{Type: harness.EventSession, SessionID: "implement-1"}, {Type: harness.EventAssistantText, Text: "First pass.\n"}},
+			{{Type: harness.EventSession, SessionID: "review-1"}, {Type: harness.EventAssistantText, Text: reviseVerdictText}},
+			{{Type: harness.EventSession, SessionID: "implement-2"}, {Type: harness.EventAssistantText, Text: "Blocking finding fixed.\n"}},
+		},
+		resumes: [][]harness.Event{
+			{{Type: harness.EventAssistantText, Text: approveVerdictText}},
+		},
+	}
+	fixture.harnesses["codex"] = loop
+	fixture.harnesses["claude"] = loop
+	fixture.app.deps.GH = fixedGH(&loopGHRunner{})
+
+	code := fixture.app.Run(
+		context.Background(),
+		[]string{"implement", "42", "--review-context", reviewerContext},
+		&fixture.stdout,
+		&fixture.stderr,
+	)
+	if code != 0 {
+		t.Fatalf("implement code = %d, stderr = %q", code, fixture.stderr.String())
+	}
+	if len(loop.requests) != 3 || len(loop.resumeCalls) != 1 {
+		t.Fatalf("harness requests = %d, resume calls = %d, want three requests and one resume", len(loop.requests), len(loop.resumeCalls))
+	}
+	if !strings.Contains(loop.requests[1].Prompt, reviewerContext) {
+		t.Fatalf("first reviewer prompt = %q, want reviewer context %q", loop.requests[1].Prompt, reviewerContext)
+	}
+	if strings.Contains(loop.requests[0].Prompt, reviewerContext) || strings.Contains(loop.requests[2].Prompt, reviewerContext) {
+		t.Fatalf("implementer prompts = %q and %q, want no reviewer context %q", loop.requests[0].Prompt, loop.requests[2].Prompt, reviewerContext)
+	}
+	resumePrompt := loop.resumeCalls[0].request.Prompt
+	for _, expected := range []string{
+		reviewerContext,
+		"internal/orchestration/review.go:42",
+		"handle a missing session",
+	} {
+		if !strings.Contains(resumePrompt, expected) {
+			t.Fatalf("resume prompt = %q, want %q", resumePrompt, expected)
+		}
+	}
+	if strings.Contains(resumePrompt, "/code-review") {
+		t.Fatalf("resume prompt = %q, want incremental review prompt", resumePrompt)
+	}
+}
+
+func TestImplementContextsReachTheirRolesOnly(t *testing.T) {
+	fixture := newImplementLoopFixture(t)
+	implementerContext := "Keep the existing adapter seam."
+	reviewerContext := "Ignore the vendored skills directory."
+	loop := &resumingLoopHarness{
+		root: fixture.root,
+		streams: [][]harness.Event{
+			{{Type: harness.EventSession, SessionID: "implement-1"}},
+			{{Type: harness.EventSession, SessionID: "review-1"}, {Type: harness.EventAssistantText, Text: reviseVerdictText}},
+			{{Type: harness.EventSession, SessionID: "implement-2"}},
+		},
+		resumes: [][]harness.Event{
+			{{Type: harness.EventAssistantText, Text: approveVerdictText}},
+		},
+	}
+	fixture.harnesses["codex"] = loop
+	fixture.harnesses["claude"] = loop
+	fixture.app.deps.GH = fixedGH(&loopGHRunner{})
+
+	code := fixture.app.Run(
+		context.Background(),
+		[]string{"implement", "42", "--implement-context", implementerContext, "--review-context", reviewerContext},
+		&fixture.stdout,
+		&fixture.stderr,
+	)
+	if code != 0 {
+		t.Fatalf("implement code = %d, stderr = %q", code, fixture.stderr.String())
+	}
+	if len(loop.requests) != 3 || len(loop.resumeCalls) != 1 {
+		t.Fatalf("harness requests = %d, resume calls = %d, want three requests and one resume", len(loop.requests), len(loop.resumeCalls))
+	}
+	for _, request := range []harness.Request{loop.requests[0], loop.requests[2]} {
+		if !strings.Contains(request.Prompt, implementerContext) || strings.Contains(request.Prompt, reviewerContext) {
+			t.Fatalf("implementer prompt = %q, want implementer context only", request.Prompt)
+		}
+	}
+	if !strings.Contains(loop.requests[1].Prompt, reviewerContext) || strings.Contains(loop.requests[1].Prompt, implementerContext) {
+		t.Fatalf("reviewer prompt = %q, want reviewer context only", loop.requests[1].Prompt)
+	}
+	resumePrompt := loop.resumeCalls[0].request.Prompt
+	if !strings.Contains(resumePrompt, reviewerContext) || strings.Contains(resumePrompt, implementerContext) {
+		t.Fatalf("resume prompt = %q, want reviewer context only", resumePrompt)
 	}
 }
 
@@ -532,6 +631,56 @@ func TestImplementLoopFeedsBlockingFindingsIntoSecondImplementerPrompt(t *testin
 	}
 	if !strings.Contains(fixture.stdout.String(), "Iterations: 2") || !strings.Contains(fixture.stdout.String(), "Final verdict: approve") {
 		t.Fatalf("stdout = %q, want two-iteration approval summary", fixture.stdout.String())
+	}
+}
+
+func TestImplementContextReachesImplementerPromptsOnly(t *testing.T) {
+	fixture := newImplementLoopFixture(t)
+	additionalContext := "Use the existing GitRunner seam.\nDo not add a new adapter."
+	implementer := &loopHarness{
+		root: fixture.root,
+		streams: [][]harness.Event{
+			{{Type: harness.EventSession, SessionID: "implement-1"}, {Type: harness.EventAssistantText, Text: "First pass.\n"}},
+			{{Type: harness.EventSession, SessionID: "review-1"}, {Type: harness.EventAssistantText, Text: reviseVerdictText}},
+			{{Type: harness.EventSession, SessionID: "implement-2"}, {Type: harness.EventAssistantText, Text: "Blocking finding fixed.\n"}},
+			{{Type: harness.EventSession, SessionID: "review-2"}, {Type: harness.EventAssistantText, Text: approveVerdictText}},
+		},
+	}
+	fixture.harnesses["codex"] = implementer
+	fixture.harnesses["claude"] = implementer
+	fixture.app.deps.GH = fixedGH(&loopGHRunner{})
+
+	code := fixture.app.Run(
+		context.Background(),
+		[]string{"implement", "42", "--implement-context", additionalContext},
+		&fixture.stdout,
+		&fixture.stderr,
+	)
+	if code != 0 {
+		t.Fatalf("implement code = %d, stderr = %q", code, fixture.stderr.String())
+	}
+	if len(implementer.requests) != 4 {
+		t.Fatalf("harness requests = %d, want two implement and two review requests", len(implementer.requests))
+	}
+
+	for _, implementRequest := range []harness.Request{implementer.requests[0], implementer.requests[2]} {
+		if !strings.Contains(implementRequest.Prompt, additionalContext) {
+			t.Fatalf("implementer prompt = %q, want context %q", implementRequest.Prompt, additionalContext)
+		}
+	}
+	secondPrompt := implementer.requests[2].Prompt
+	for _, expected := range []string{
+		"- [blocking] internal/orchestration/review.go:42 — handle a missing session",
+		additionalContext,
+	} {
+		if !strings.Contains(secondPrompt, expected) {
+			t.Fatalf("second implementer prompt = %q, want %q", secondPrompt, expected)
+		}
+	}
+	for _, reviewRequest := range []harness.Request{implementer.requests[1], implementer.requests[3]} {
+		if strings.Contains(reviewRequest.Prompt, additionalContext) {
+			t.Fatalf("reviewer prompt = %q, want no implementer context %q", reviewRequest.Prompt, additionalContext)
+		}
 	}
 }
 
@@ -1433,9 +1582,10 @@ func (s failingHarnessStream) Events() <-chan harness.Event {
 func (s failingHarnessStream) Wait() error { return s.err }
 
 type unparseableReviewImplementHarness struct {
-	root        string
-	requests    []harness.Request
-	resumeCount int
+	root           string
+	requests       []harness.Request
+	resumeCount    int
+	resumeRequests []harness.Request
 }
 
 func (h *unparseableReviewImplementHarness) Run(_ context.Context, request harness.Request) (harness.Stream, error) {
@@ -1462,8 +1612,9 @@ func (h *unparseableReviewImplementHarness) Run(_ context.Context, request harne
 	}
 }
 
-func (h *unparseableReviewImplementHarness) Resume(context.Context, string, harness.Request) (harness.Stream, error) {
+func (h *unparseableReviewImplementHarness) Resume(_ context.Context, _ string, request harness.Request) (harness.Stream, error) {
 	h.resumeCount++
+	h.resumeRequests = append(h.resumeRequests, request)
 	return scriptedHarnessStream{events: []harness.Event{
 		{Type: harness.EventAssistantText, Text: "The re-ask also omitted the verdict."},
 	}}, nil

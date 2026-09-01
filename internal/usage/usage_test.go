@@ -56,6 +56,22 @@ func TestCollectClaudeKeepsLastSnapshotIncludesSubagentsAndSplitsWindows(t *test
 	}
 }
 
+func TestReadRunMetadataIgnoresIndentedContextKeys(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "metadata.txt")
+	contents := "Ticket: #42\n" +
+		"Branch point: abc123\n" +
+		"Reviewer context:\n" +
+		"  Branch: something\n"
+	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	metadata := readRunMetadata(path)
+	if metadata.kind != "review" {
+		t.Fatalf("metadata kind = %q, want review", metadata.kind)
+	}
+}
+
 func TestCollectClaudeReportsMissingTranscript(t *testing.T) {
 	_, err := CollectClaude(t.TempDir(), t.TempDir(), []string{"missing"}, time.Now().Add(-time.Minute), time.Now())
 	if err == nil {

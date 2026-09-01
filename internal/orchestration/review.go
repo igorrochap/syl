@@ -59,6 +59,7 @@ type ReviewOptions struct {
 	IssueTracker         tracker.Tracker
 	Ticket               *tracker.Ticket
 	TicketRef            string
+	Context              string
 	Adapter              harness.Adapter
 	Input                io.Reader
 	Output               io.Writer
@@ -76,6 +77,12 @@ type reviewPreparation struct {
 	recorder    RunRecorder
 }
 
+type standaloneReviewRun struct {
+	review    ReviewExecution
+	startedAt time.Time
+	endedAt   time.Time
+}
+
 func RunReview(ctx context.Context, options ReviewOptions) error {
 	if options.Raw && options.Verbose {
 		return errors.New("review: --raw and --verbose are mutually exclusive")
@@ -83,7 +90,7 @@ func RunReview(ctx context.Context, options ReviewOptions) error {
 	if options.Adapter == nil {
 		return fmt.Errorf("review harness %q is not configured", options.ProjectConfig.Roles.Review.Harness)
 	}
-	preparation, err := prepareReview(ctx, options.OriginRoot, options.TicketRef, options.Git)
+	preparation, err := prepareReviewWithContext(ctx, options.OriginRoot, options.TicketRef, options.Context, options.Git)
 	if err != nil {
 		return err
 	}
@@ -92,7 +99,75 @@ func RunReview(ctx context.Context, options ReviewOptions) error {
 			return err
 		}
 	}
-	prompt := composeReviewPrompt(options.TicketRef, options.Ticket, preparation.branchPoint, preparation.diffPath)
+	run, err := runStandaloneReview(ctx, options, preparation)
+	if err != nil {
+		return handleStandaloneReviewError(options, preparation, run, err)
+	}
+	return completeStandaloneReview(ctx, options, preparation, run)
+}
+
+func completeStandaloneReview(ctx context.Context, options ReviewOptions, preparation reviewPreparation, run standaloneReviewRun) error {
+	recordStandaloneReviewUsage(
+		options,
+		preparation.recorder,
+		run.review,
+		run.startedAt,
+		run.endedAt,
+	)
+	if artifactErr := recordStandaloneReviewArtifacts(preparation.recorder, run.review); artifactErr != nil {
+		return fmt.Errorf("review: save review run artifacts: %w", artifactErr)
+	}
+	if err := recordStandaloneReviewVerdict(ctx, options, preparation, run.review.Verdict); err != nil {
+		return err
+	}
+	reviewVerdict := run.review.Verdict
+	if !options.Raw {
+		if _, err := io.WriteString(options.Output, formatVerdict(reviewVerdict)); err != nil {
+			return fmt.Errorf("write verdict: %w", err)
+		}
+	}
+	if reviewVerdict.Status == verdict.Revise {
+		return ErrReviewNeedsRevision
+	}
+	return nil
+}
+
+func recordStandaloneReviewVerdict(ctx context.Context, options ReviewOptions, preparation reviewPreparation, reviewVerdict verdict.Verdict) error {
+	if options.ProjectConfig.Tracker.Reviews == config.TrackerGitHub {
+		if options.IssueTracker == nil || options.Ticket == nil {
+			return errors.New("github review logging requires an issue reference (N or #N)")
+		}
+		if err := options.IssueTracker.AddComment(ctx, options.Ticket.Number, formatGitHubReviewComment(reviewVerdict)); err != nil {
+			return fmt.Errorf("post review to GitHub issue #%d: %w", options.Ticket.Number, err)
+		}
+	} else {
+		if _, err := writeLocalReviewLog(options.OriginRoot, options.TicketRef, preparation.branchPoint, time.Now().UTC(), reviewVerdict); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func handleStandaloneReviewError(options ReviewOptions, preparation reviewPreparation, run standaloneReviewRun, err error) error {
+	var unparseable *UnparseableVerdictError
+	if !errors.As(err, &unparseable) {
+		return err
+	}
+	recordStandaloneReviewUsage(
+		options,
+		preparation.recorder,
+		unparseable.Execution,
+		run.startedAt,
+		run.endedAt,
+	)
+	if artifactErr := recordStandaloneReviewArtifacts(preparation.recorder, unparseable.Execution); artifactErr != nil {
+		return fmt.Errorf("%w; save review run artifacts: %v", err, artifactErr)
+	}
+	return reviewTranscriptSavedError(err, preparation.recorder.Dir())
+}
+
+func runStandaloneReview(ctx context.Context, options ReviewOptions, preparation reviewPreparation) (standaloneReviewRun, error) {
+	prompt := composeReviewPrompt(options.TicketRef, options.Ticket, preparation.branchPoint, preparation.diffPath, options.Context)
 	notifier := options.Notifier
 	if !options.ProjectConfig.Notifications.Enabled {
 		notifier = nil
@@ -106,61 +181,13 @@ func RunReview(ctx context.Context, options ReviewOptions) error {
 	if options.Raw {
 		mode = RawHarnessOutput
 	}
-	reviewStartedAt := time.Now().UTC()
+	startedAt := time.Now().UTC()
 	review, err := runReview(ctx, options.Adapter, harness.Request{
 		Model: options.ProjectConfig.Roles.Review.Model, Effort: options.ProjectConfig.Roles.Review.Effort,
 		Prompt: prompt, MCP: options.ProjectConfig.Roles.Review.MCP,
 	}, options.Output, mode, questions)
-	reviewEndedAt := time.Now().UTC()
-	if err != nil {
-		var unparseable *UnparseableVerdictError
-		if errors.As(err, &unparseable) {
-			recordStandaloneReviewUsage(
-				options,
-				preparation.recorder,
-				unparseable.Execution,
-				reviewStartedAt,
-				reviewEndedAt,
-			)
-			if artifactErr := recordStandaloneReviewArtifacts(preparation.recorder, unparseable.Execution); artifactErr != nil {
-				return fmt.Errorf("%w; save review run artifacts: %v", err, artifactErr)
-			}
-			return reviewTranscriptSavedError(err, preparation.recorder.Dir())
-		}
-		return err
-	}
-	recordStandaloneReviewUsage(
-		options,
-		preparation.recorder,
-		review,
-		reviewStartedAt,
-		reviewEndedAt,
-	)
-	if artifactErr := recordStandaloneReviewArtifacts(preparation.recorder, review); artifactErr != nil {
-		return fmt.Errorf("review: save review run artifacts: %w", artifactErr)
-	}
-	reviewVerdict := review.Verdict
-	if options.ProjectConfig.Tracker.Reviews == config.TrackerGitHub {
-		if options.IssueTracker == nil || options.Ticket == nil {
-			return errors.New("github review logging requires an issue reference (N or #N)")
-		}
-		if err := options.IssueTracker.AddComment(ctx, options.Ticket.Number, formatGitHubReviewComment(reviewVerdict)); err != nil {
-			return fmt.Errorf("post review to GitHub issue #%d: %w", options.Ticket.Number, err)
-		}
-	} else {
-		if _, err := writeLocalReviewLog(options.OriginRoot, options.TicketRef, preparation.branchPoint, time.Now().UTC(), reviewVerdict); err != nil {
-			return err
-		}
-	}
-	if !options.Raw {
-		if _, err := io.WriteString(options.Output, formatVerdict(reviewVerdict)); err != nil {
-			return fmt.Errorf("write verdict: %w", err)
-		}
-	}
-	if reviewVerdict.Status == verdict.Revise {
-		return ErrReviewNeedsRevision
-	}
-	return nil
+	endedAt := time.Now().UTC()
+	return standaloneReviewRun{review: review, startedAt: startedAt, endedAt: endedAt}, err
 }
 
 type reviewUsageParams struct {
@@ -214,6 +241,10 @@ func recordReviewUsage(params reviewUsageParams) {
 }
 
 func prepareReview(ctx context.Context, originRoot, ticketRef string, git GitRunner) (reviewPreparation, error) {
+	return prepareReviewWithContext(ctx, originRoot, ticketRef, "", git)
+}
+
+func prepareReviewWithContext(ctx context.Context, originRoot, ticketRef, reviewContext string, git GitRunner) (reviewPreparation, error) {
 	if git == nil {
 		return reviewPreparation{}, errors.New("review: git runner is not configured")
 	}
@@ -229,7 +260,7 @@ func prepareReview(ctx context.Context, originRoot, ticketRef string, git GitRun
 	if err != nil {
 		return reviewPreparation{}, fmt.Errorf("review: %w", err)
 	}
-	recorder, err := newReviewRunRecorder(originRoot, ticketRef, branchPoint)
+	recorder, err := newReviewRunRecorder(originRoot, ticketRef, branchPoint, reviewContext)
 	if err != nil {
 		return reviewPreparation{}, err
 	}
