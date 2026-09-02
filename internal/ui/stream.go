@@ -10,6 +10,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/mattn/go-isatty"
+	"github.com/muesli/termenv"
 )
 
 // StreamOptions controls the live rendering of one harness Role.
@@ -17,6 +18,7 @@ type StreamOptions struct {
 	Gutter         string
 	ShowTools      bool
 	Activity       bool
+	Role           string
 	Clock          Clock
 	TickerInterval time.Duration
 }
@@ -68,7 +70,8 @@ func NewStream(output io.Writer, caps Caps, options StreamOptions) *Stream {
 		showTools:   options.ShowTools,
 		atLineStart: true,
 	}
-	stream.activity = newActivityLine(stream, options.Activity, options.Clock, options.TickerInterval)
+	stream.activity = newActivityLine(stream, options.Activity, options.Role, options.Clock, options.TickerInterval)
+	stream.StartTurn()
 	return stream
 }
 
@@ -113,10 +116,16 @@ func (s *Stream) Assistant(text string) error {
 	if text == "" {
 		return nil
 	}
+	s.activity.Stop()
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.pending += text
-	return s.flushCompleteWordsLocked()
+	err := s.flushCompleteWordsLocked()
+	resume := err == nil && s.atLineStart
+	s.mu.Unlock()
+	if resume {
+		s.activity.Resume()
+	}
+	return err
 }
 
 // Tool renders a permanent tool line or starts the terminal-only activity
@@ -154,7 +163,7 @@ func (s *Stream) Tool(name, gist string) error {
 
 // EndTurn flushes the final partial word and clears transient activity.
 func (s *Stream) EndTurn() error {
-	s.activity.Stop()
+	s.activity.EndTurn()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := s.flushPendingLocked(); err != nil {
@@ -167,6 +176,12 @@ func (s *Stream) EndTurn() error {
 		s.atLineStart = true
 	}
 	return nil
+}
+
+// StartTurn starts the transient activity for a new Role turn. It is safe to
+// call when the stream has already started its current turn.
+func (s *Stream) StartTurn() {
+	s.activity.StartTurn()
 }
 
 // Write lets Stream satisfy io.Writer for wrappers that pass visible text
@@ -554,17 +569,22 @@ type activityLine struct {
 	enabled  bool
 	clock    Clock
 	interval time.Duration
+	role     string
 
-	mu      sync.Mutex
-	active  bool
-	tool    string
-	gist    string
-	started time.Time
-	stopCh  chan struct{}
-	doneCh  chan struct{}
+	mu         sync.Mutex
+	active     bool
+	turnActive bool
+	// label is the last action syl knows about, not a live tool status. There
+	// is no tool-completion event, so a tool label may outlive the tool itself.
+	label      string
+	gist       string
+	started    time.Time
+	frame      int
+	stopCh     chan struct{}
+	doneCh     chan struct{}
 }
 
-func newActivityLine(stream *Stream, enabled bool, clock Clock, interval time.Duration) *activityLine {
+func newActivityLine(stream *Stream, enabled bool, role string, clock Clock, interval time.Duration) *activityLine {
 	terminal, terminalOutput := terminalWriter(stream.output)
 	return &activityLine{
 		stream:   stream,
@@ -572,27 +592,70 @@ func newActivityLine(stream *Stream, enabled bool, clock Clock, interval time.Du
 		clock:    clock,
 		interval: interval,
 		terminal: terminal,
+		role:     activityRoleLabel(role),
 	}
 }
 
-func (a *activityLine) Start(tool, gist string) {
+func (a *activityLine) StartTurn() {
 	if !a.enabled {
 		return
 	}
 	a.mu.Lock()
-	if a.active {
+	if a.turnActive {
 		a.mu.Unlock()
 		return
 	}
-	a.active = true
-	a.tool = tool
-	a.gist = gist
+	a.turnActive = true
+	a.label = a.role
+	a.gist = ""
 	a.started = a.clock.Now()
+	a.frame = 0
+	stopCh, doneCh := a.activateLocked()
+	a.mu.Unlock()
+	a.start(stopCh, doneCh)
+}
+
+func (a *activityLine) Start(label, gist string) {
+	if !a.enabled {
+		return
+	}
+	a.mu.Lock()
+	if !a.turnActive {
+		a.turnActive = true
+		a.started = a.clock.Now()
+		a.frame = 0
+	}
+	a.label = label
+	a.gist = gist
+	stopCh, doneCh := a.activateLocked()
+	active := stopCh == nil
+	a.mu.Unlock()
+	if active {
+		a.draw()
+		return
+	}
+	a.start(stopCh, doneCh)
+}
+
+func (a *activityLine) Resume() {
+	a.Start(a.role, "")
+}
+
+func (a *activityLine) activateLocked() (chan struct{}, chan struct{}) {
+	if a.active {
+		return nil, nil
+	}
+	a.active = true
 	a.stopCh = make(chan struct{})
 	a.doneCh = make(chan struct{})
-	stopCh, doneCh := a.stopCh, a.doneCh
-	a.mu.Unlock()
+	return a.stopCh, a.doneCh
+}
+
+func (a *activityLine) start(stopCh, doneCh chan struct{}) {
 	a.draw()
+	if stopCh == nil {
+		return
+	}
 	go a.run(stopCh, doneCh)
 }
 
@@ -616,16 +679,16 @@ func (a *activityLine) draw() {
 		a.mu.Unlock()
 		return
 	}
-	tool, gist, started := a.tool, a.gist, a.started
+	label, gist, started, frame := a.label, a.gist, a.started, a.frame
+	a.frame++
 	a.mu.Unlock()
-	line := "⠋ " + tool
-	if gist != "" {
-		line += " — " + shortGist(gist, 48)
+	line := renderActivityFrame(label, gist, a.clock.Now().Sub(started), frame)
+	if !a.stream.caps.Color {
+		line = removeANSI(line)
 	}
-	line += " (" + formatElapsed(a.clock.Now().Sub(started)) + ")"
 	a.stream.mu.Lock()
 	defer a.stream.mu.Unlock()
-	_, _ = fmt.Fprintf(a.terminal, "\r\x1b[K%s", a.stream.style.muted.Render(line))
+	_, _ = fmt.Fprintf(a.terminal, "\r\x1b[K%s", line)
 }
 
 func (a *activityLine) Stop() {
@@ -645,6 +708,60 @@ func (a *activityLine) Stop() {
 	a.stream.mu.Lock()
 	defer a.stream.mu.Unlock()
 	_, _ = fmt.Fprint(a.terminal, "\r\x1b[K")
+}
+
+func (a *activityLine) EndTurn() {
+	a.Stop()
+	a.mu.Lock()
+	a.turnActive = false
+	a.mu.Unlock()
+}
+
+func activityRoleLabel(role string) string {
+	switch strings.ToLower(strings.TrimSpace(role)) {
+	case "implement":
+		return "Implementing"
+	case "review":
+		return "Reviewing"
+	default:
+		return "Working"
+	}
+}
+
+var activityFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+
+const activityToneFrameCount = 5
+
+var activityToneStyles = []lipgloss.Style{
+	newActivityToneStyle("#626262"),
+	newActivityToneStyle("#858585"),
+}
+
+func newActivityToneStyle(color string) lipgloss.Style {
+	renderer := lipgloss.NewRenderer(io.Discard, termenv.WithProfile(termenv.TrueColor), termenv.WithUnsafe())
+	renderer.SetColorProfile(termenv.TrueColor)
+	return renderer.NewStyle().Foreground(lipgloss.Color(color))
+}
+
+// renderActivityFrame produces one complete transient activity line. The
+// function is pure so the ticker can be tested with deterministic frame input.
+func renderActivityFrame(label, gist string, elapsed time.Duration, frameIndex int) string {
+	frame := activityFrames[positiveModulo(frameIndex, len(activityFrames))]
+	line := frame + " " + label
+	if gist != "" {
+		line += " — " + shortGist(gist, 48)
+	}
+	line += " (" + formatElapsed(elapsed) + ")"
+	tone := positiveModulo(frameIndex/activityToneFrameCount, len(activityToneStyles))
+	return activityToneStyles[tone].Render(line)
+}
+
+func positiveModulo(value, modulus int) int {
+	value %= modulus
+	if value < 0 {
+		return value + modulus
+	}
+	return value
 }
 
 func shortGist(value string, width int) string {
@@ -672,10 +789,21 @@ func formatElapsed(elapsed time.Duration) string {
 	if elapsed < 0 {
 		elapsed = 0
 	}
-	if elapsed < time.Second {
-		return fmt.Sprintf("%.1fs", elapsed.Seconds())
-	}
 	return fmt.Sprintf("%.1fs", elapsed.Seconds())
+}
+
+func removeANSI(value string) string {
+	for {
+		start := strings.Index(value, "\x1b[")
+		if start == -1 {
+			return value
+		}
+		end := strings.IndexByte(value[start:], 'm')
+		if end == -1 {
+			return value[:start]
+		}
+		value = value[:start] + value[start+end+1:]
+	}
 }
 
 func terminalWriter(output io.Writer) (io.Writer, bool) {

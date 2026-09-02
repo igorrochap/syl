@@ -33,6 +33,10 @@ type harnessEventRenderer interface {
 	EndTurn() error
 }
 
+type harnessTurnRenderer interface {
+	StartTurn()
+}
+
 func normalizeSessionID(value string) (string, bool) {
 	value = strings.TrimSpace(value)
 	return value, value != ""
@@ -289,6 +293,7 @@ func consumeHarnessStreamWithArtifact(
 	mode HarnessOutputMode,
 	captureSessionEvents bool,
 ) (harnessStreamResult, error) {
+	startHarnessTurn(output)
 	var transcript strings.Builder
 	var sessionIDs []string
 	parser := newQuestionParser()
@@ -463,12 +468,19 @@ func renderHarnessEvent(output io.Writer, mode HarnessOutputMode, event harness.
 	if mode == RawHarnessOutput {
 		return renderRawHarnessEvent(output, event, parsed, parser, pendingRaw)
 	}
-	if renderer, ok := output.(harnessEventRenderer); ok {
+	if renderer, ok := output.(harnessEventRenderer); ok && pausesActivity(event, parsed) {
 		if err := renderer.BeforeEvent(); err != nil {
 			return err
 		}
 	}
 	return renderParsedHarnessEvent(output, mode, event, parsed, sp, atLineStart)
+}
+
+func pausesActivity(event harness.Event, parsed questionParseResult) bool {
+	if event.Type == harness.EventAssistantText {
+		return true
+	}
+	return event.Type == harness.EventResult && parsed.VisibleText != ""
 }
 
 func renderParsedHarnessEvent(output io.Writer, mode HarnessOutputMode, event harness.Event, parsed questionParseResult, sp *spinner, atLineStart *bool) error {
@@ -574,7 +586,15 @@ func finishHarnessOutput(output io.Writer) error {
 	return renderer.EndTurn()
 }
 
-func newLiveHarnessOutput(output io.Writer, mode HarnessOutputMode) io.Writer {
+func startHarnessTurn(output io.Writer) {
+	renderer, ok := output.(harnessTurnRenderer)
+	if !ok {
+		return
+	}
+	renderer.StartTurn()
+}
+
+func newLiveHarnessOutput(output io.Writer, mode HarnessOutputMode, role string) io.Writer {
 	if mode == RawHarnessOutput {
 		return output
 	}
@@ -583,6 +603,7 @@ func newLiveHarnessOutput(output io.Writer, mode HarnessOutputMode) io.Writer {
 		Gutter:    liveHarnessGutter(caps),
 		ShowTools: mode == ParsedHarnessOutput,
 		Activity:  mode == QuietHarnessOutput,
+		Role:      role,
 	})
 }
 

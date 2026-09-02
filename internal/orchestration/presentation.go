@@ -116,6 +116,14 @@ func (w *reviewProgressWriter) BeforeEvent() error {
 	return nil
 }
 
+func (w *reviewProgressWriter) StartTurn() {
+	renderer, ok := w.output.(harnessTurnRenderer)
+	if !ok {
+		return
+	}
+	renderer.StartTurn()
+}
+
 func (w *reviewProgressWriter) Assistant(text string) error {
 	return w.writeVisible(w.parser.Feed(text))
 }

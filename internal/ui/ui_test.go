@@ -368,6 +368,116 @@ func TestStreamDoesNotWriteCursorEscapesToNonTerminalOutput(t *testing.T) {
 	}
 }
 
+func TestActivityFrameGoldenContainsConsecutiveFrames(t *testing.T) {
+	var output strings.Builder
+	for frameIndex := 0; frameIndex < len(activityFrames)+activityToneFrameCount; frameIndex++ {
+		output.WriteString(renderActivityFrame(
+			"Implementing",
+			"a gist that is deliberately wider than the activity line limit so truncation is visible",
+			time.Duration(frameIndex)*250*time.Millisecond,
+			frameIndex,
+		))
+		output.WriteByte('\n')
+	}
+	assertGolden(t, "activity.golden", []byte(output.String()))
+}
+
+func TestActivityFrameCyclesGlyphsAndMutedTones(t *testing.T) {
+	first := renderActivityFrame("Reviewing", "", 0, 0)
+	second := renderActivityFrame("Reviewing", "", 0, 1)
+	repeated := renderActivityFrame("Reviewing", "", 0, len(activityFrames))
+	if first == second {
+		t.Fatalf("consecutive activity frames are identical: %q", first)
+	}
+	if stripANSI(first) == stripANSI(second) {
+		t.Fatalf("consecutive activity glyphs are identical: %q and %q", first, second)
+	}
+	if first != repeated {
+		t.Fatalf("activity frame at the cycle boundary = %q, want %q", repeated, first)
+	}
+	oneTone := renderActivityFrame("Reviewing", "", 0, 0)
+	otherTone := renderActivityFrame("Reviewing", "", 0, activityToneFrameCount)
+	if oneTone == otherTone {
+		t.Fatalf("activity tone did not change at slow-cycle boundary: %q", oneTone)
+	}
+}
+
+func TestStreamActivityStartsWithRoleBeforeAssistantProse(t *testing.T) {
+	previousTerminal := isTerminal
+	isTerminal = func(fd uintptr) bool { return fd == 42 }
+	t.Cleanup(func() { isTerminal = previousTerminal })
+
+	terminal := &testTerminal{}
+	stream := NewStream(terminal, Caps{Color: true, Width: 48}, StreamOptions{
+		Activity: true, Role: "implement",
+	})
+	if err := stream.Assistant("The implementation is ready.\n"); err != nil {
+		t.Fatal(err)
+	}
+	got := terminal.String()
+	if strings.Index(got, "Implementing") > strings.Index(got, "The implementation") {
+		t.Fatalf("activity = %q, want role indicator before assistant prose", got)
+	}
+	if strings.Contains(got, "The implementation is ready.\x1b[") {
+		t.Fatalf("assistant prose line contains a cursor/style escape: %q", got)
+	}
+}
+
+func TestStreamActivityUsesReviewRoleAndUpdatesToLastTool(t *testing.T) {
+	previousTerminal := isTerminal
+	isTerminal = func(fd uintptr) bool { return fd == 42 }
+	t.Cleanup(func() { isTerminal = previousTerminal })
+
+	terminal := &testTerminal{}
+	stream := NewStream(terminal, Caps{Color: true, Width: 48}, StreamOptions{
+		Activity: true, Role: "review",
+	})
+	if !strings.Contains(terminal.String(), "Reviewing") {
+		t.Fatalf("initial activity = %q, want review role", terminal.String())
+	}
+	if err := stream.Tool("Bash", "go test ./..."); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(terminal.String(), "Bash — go test ./...") {
+		t.Fatalf("tool activity = %q, want tool name and gist", terminal.String())
+	}
+	if err := stream.Assistant("The review is complete.\n"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(terminal.String(), "Reviewing") {
+		t.Fatalf("activity after next event = %q, want role label", terminal.String())
+	}
+}
+
+func TestStreamActivityStopsAtEndOfTurnAndAcrossRedirectedOutput(t *testing.T) {
+	previousTerminal := isTerminal
+	isTerminal = func(fd uintptr) bool { return fd == 42 }
+	t.Cleanup(func() { isTerminal = previousTerminal })
+
+	terminal := &testTerminal{}
+	stream := NewStream(terminal, Caps{Color: true, Width: 48}, StreamOptions{Activity: true, Role: "review"})
+	if err := stream.EndTurn(); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(terminal.String(), "\r\x1b[K") {
+		t.Fatalf("activity at end of turn = %q, want a final clear", terminal.String())
+	}
+
+	var redirected bytes.Buffer
+	redirectedStream := NewStream(&redirected, Caps{Color: false, Width: 0}, StreamOptions{
+		Activity: true, Role: "implement",
+	})
+	if err := redirectedStream.Assistant("redirected output\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := redirectedStream.EndTurn(); err != nil {
+		t.Fatal(err)
+	}
+	if strings.ContainsAny(redirected.String(), "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏") || strings.Contains(redirected.String(), "\x1b[") || strings.Contains(redirected.String(), "(") {
+		t.Fatalf("redirected output = %q, want no activity line", redirected.String())
+	}
+}
+
 func TestStreamStylesInlineMarkdownButLeavesBlockMarkdownLiteral(t *testing.T) {
 	var output bytes.Buffer
 	stream := NewStream(&output, Caps{Color: true}, StreamOptions{})

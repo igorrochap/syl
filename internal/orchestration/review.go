@@ -298,7 +298,7 @@ func RunReviewExecution(ctx context.Context, adapter harness.Adapter, request ha
 }
 
 func RunReviewExecutionWithProgress(ctx context.Context, adapter harness.Adapter, request harness.Request, output io.Writer, mode HarnessOutputMode, questions *QuestionHandler) (ReviewExecution, error) {
-	visibleOutput := newLiveHarnessOutput(output, mode)
+	visibleOutput := newLiveHarnessOutput(output, mode, "review")
 	if mode == RawHarnessOutput {
 		return runReviewExecution(ctx, adapter, request, visibleOutput, mode, questions, nil)
 	}
@@ -348,7 +348,7 @@ func runReviewExecutionWithResumeFallback(ctx context.Context, adapter harness.A
 		return RunReviewExecutionWithProgress(ctx, adapter, options.request, options.output, options.mode, options.questions)
 	}
 
-	visibleOutput := newLiveHarnessOutput(options.output, options.mode)
+	visibleOutput := newLiveHarnessOutput(options.output, options.mode, "review")
 	progress := newReviewProgressWriter(visibleOutput)
 	resumeRequest := options.request
 	resumeRequest.Prompt = options.resumePrompt
