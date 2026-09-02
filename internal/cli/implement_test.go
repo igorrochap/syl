@@ -66,6 +66,9 @@ func TestImplementLoopApprovesOnFirstIteration(t *testing.T) {
 	if !strings.Contains(fixture.stdout.String(), "Iterations: 1") || !strings.Contains(fixture.stdout.String(), "Final verdict: approve") {
 		t.Fatalf("stdout = %q, want final loop summary", fixture.stdout.String())
 	}
+	if !strings.Contains(fixture.stdout.String(), "Nit findings:\n- (none)") {
+		t.Fatalf("stdout = %q, want empty nit findings in final summary", fixture.stdout.String())
+	}
 
 	runDirs, err := filepath.Glob(filepath.Join(fixture.root, ".syl", "runs", "*-42"))
 	if err != nil || len(runDirs) != 1 {
@@ -634,6 +637,78 @@ func TestImplementLoopFeedsBlockingFindingsIntoSecondImplementerPrompt(t *testin
 	}
 }
 
+func TestImplementLoopSummaryUsesFinalVerdictNitsAndPreservesHistory(t *testing.T) {
+	fixture := newImplementLoopFixture(t)
+	configureBannerMaxIterations(t, fixture.root, 2)
+	commitWorkingTree(t, fixture.root, "configure iteration cap")
+	implementer := &loopHarness{
+		root: fixture.root,
+		streams: [][]harness.Event{
+			{{Type: harness.EventSession, SessionID: "implement-1"}},
+			{{
+				Type: harness.EventAssistantText,
+				Text: "VERDICT: revise\nSUMMARY: First pass findings\nFINDINGS:\n" +
+					"- [nit] first.go:1 — nit A\n" +
+					"- [nit] shared.go:2 — nit B initial wording\n",
+			}},
+			{{Type: harness.EventSession, SessionID: "implement-2"}},
+			{{
+				Type: harness.EventAssistantText,
+				Text: "VERDICT: revise\nSUMMARY: Final pass findings\nFINDINGS:\n" +
+					"- [nit] shared.go:2 — nit B final wording\n" +
+					"- [nit] final.go:3 — nit C\n",
+			}},
+		},
+	}
+	fixture.harnesses["codex"] = implementer
+	fixture.harnesses["claude"] = implementer
+	fixture.app.deps.GH = fixedGH(&loopGHRunner{})
+
+	code := fixture.app.Run(context.Background(), []string{"implement", "#42"}, &fixture.stdout, &fixture.stderr)
+	if code == 0 {
+		t.Fatal("implement code = 0, want non-zero when the final verdict reaches the iteration cap")
+	}
+
+	runDirs, err := filepath.Glob(filepath.Join(fixture.root, ".syl", "runs", "*-42"))
+	if err != nil || len(runDirs) != 1 {
+		t.Fatalf("run directories = %v, err = %v; want one issue artifact directory", runDirs, err)
+	}
+	summary, err := os.ReadFile(filepath.Join(runDirs[0], "summary.txt"))
+	if err != nil {
+		t.Fatalf("read summary: %v", err)
+	}
+	summaryText := string(summary)
+	if strings.Contains(summaryText, "nit A") || strings.Contains(summaryText, "nit B initial wording") {
+		t.Fatalf("summary = %q, want only final iteration nit findings", summaryText)
+	}
+	for _, expected := range []string{"nit B final wording", "nit C"} {
+		if !strings.Contains(summaryText, expected) {
+			t.Fatalf("summary = %q, want final iteration finding %q", summaryText, expected)
+		}
+	}
+	if strings.Count(summaryText, "- [nit]") != 2 {
+		t.Fatalf("summary = %q, want exactly two final iteration nit findings", summaryText)
+	}
+	if strings.Index(summaryText, "nit B final wording") > strings.Index(summaryText, "nit C") {
+		t.Fatalf("summary = %q, want final findings in reviewer order", summaryText)
+	}
+
+	firstVerdict, err := os.ReadFile(filepath.Join(runDirs[0], "iteration-01-verdict.txt"))
+	if err != nil {
+		t.Fatalf("read first verdict: %v", err)
+	}
+	if !strings.Contains(string(firstVerdict), "nit A") || !strings.Contains(string(firstVerdict), "nit B initial wording") {
+		t.Fatalf("first verdict = %q, want complete first iteration verdict", firstVerdict)
+	}
+	finalVerdict, err := os.ReadFile(filepath.Join(runDirs[0], "iteration-02-verdict.txt"))
+	if err != nil {
+		t.Fatalf("read final verdict: %v", err)
+	}
+	if !strings.Contains(string(finalVerdict), "nit B final wording") || !strings.Contains(string(finalVerdict), "nit C") {
+		t.Fatalf("final verdict = %q, want complete final iteration verdict", finalVerdict)
+	}
+}
+
 func TestImplementContextReachesImplementerPromptsOnly(t *testing.T) {
 	fixture := newImplementLoopFixture(t)
 	additionalContext := "Use the existing GitRunner seam.\nDo not add a new adapter."
@@ -926,13 +1001,24 @@ func TestImplementLoopStillIteratesForNitOnlyRevisionAndSummarizesNits(t *testin
 		t.Fatalf("second implementer prompt = %q, want nit excluded from implementer instructions", implementer.requests[2].Prompt)
 	}
 	if !strings.Contains(fixture.stdout.String(), "Iterations: 2") || !strings.Contains(fixture.stdout.String(), "[nit] docs/example.md:3 — style could be clearer") {
-		t.Fatalf("stdout = %q, want accumulated nit in final summary", fixture.stdout.String())
+		t.Fatalf("stdout = %q, want per-iteration nit verdict", fixture.stdout.String())
+	}
+	summaryStart := strings.Index(fixture.stdout.String(), "Iterations: 2")
+	if summaryStart < 0 {
+		t.Fatalf("stdout = %q, want final summary", fixture.stdout.String())
+	}
+	finalSummary := fixture.stdout.String()[summaryStart:]
+	if !strings.Contains(finalSummary, "Nit findings:\n- (none)") {
+		t.Fatalf("final summary = %q, want no nit findings", finalSummary)
+	}
+	if strings.Contains(finalSummary, "style could be clearer") {
+		t.Fatalf("final summary = %q, want earlier nit omitted", finalSummary)
 	}
 	if !strings.Contains(fixture.stdout.String(), "iteration 2/3 — revising 0 blocking finding(s)") {
 		t.Fatalf("stdout = %q, want revision transition with zero blocking findings", fixture.stdout.String())
 	}
-	if got := strings.Count(fixture.stdout.String(), "style could be clearer"); got != 2 {
-		t.Fatalf("stdout = %q, want the per-iteration verdict and final summary", fixture.stdout.String())
+	if got := strings.Count(fixture.stdout.String(), "style could be clearer"); got != 1 {
+		t.Fatalf("stdout = %q, want only the first iteration verdict to contain the nit", fixture.stdout.String())
 	}
 }
 

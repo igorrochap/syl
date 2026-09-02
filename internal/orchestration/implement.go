@@ -288,7 +288,6 @@ type implementReviewParams struct {
 
 func runImplementIterations(ctx context.Context, params implementIterationsParams) (int, verdict.Verdict, []verdict.Finding, error) {
 	var blocking []verdict.Finding
-	var nits []verdict.Finding
 	var final verdict.Verdict
 	var previousReviewerSession string
 	iterations := 0
@@ -320,14 +319,13 @@ func runImplementIterations(ctx context.Context, params implementIterationsParam
 		if _, err := io.WriteString(params.output, formatVerdict(final)); err != nil {
 			return 0, verdict.Verdict{}, nil, fmt.Errorf("write review verdict: %w", err)
 		}
-		nits = append(nits, nitFindings(final)...)
 		if final.Status == verdict.Approve {
 			break
 		}
 		blocking = blockingFindings(final)
 		previousReviewerSession = lastUsableSessionID(reviewResult.SessionIDs)
 	}
-	return iterations, final, nits, nil
+	return iterations, final, nitFindings(final), nil
 }
 
 func runImplementReview(ctx context.Context, params implementIterationsParams, reviewParams implementReviewParams) (ReviewExecution, error) {
