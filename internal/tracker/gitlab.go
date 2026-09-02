@@ -14,8 +14,8 @@ import (
 const (
 	gitlabTodoLabel  = "todo"
 	gitlabDoingLabel = "doing"
-	gitlabTodoColor  = "#0E8A16"
-	gitlabDoingColor = "#5319E7"
+	gitlabTodoColor  = "0E8A16"
+	gitlabDoingColor = "5319E7"
 )
 
 type gitlabErrorKind uint8
@@ -197,7 +197,9 @@ func (g *GitLab) ensureLabels(ctx context.Context) error {
 			// Keep an existing project label and its configured color.
 			continue
 		}
-		if _, err := g.run(ctx, "create project label", "label", "create", "--name", label.name, "--color", label.color, "--description", label.description); err != nil {
+		// glab wants the color as a leading-hash hex value or a CSS color name;
+		// the bare six-digit form GitHub accepts is rejected as invalid.
+		if _, err := g.run(ctx, "create project label", "label", "create", "--name", label.name, "--color", "#"+label.color, "--description", label.description); err != nil {
 			return err
 		}
 	}

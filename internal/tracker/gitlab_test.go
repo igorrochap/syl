@@ -60,7 +60,7 @@ func TestGitLabReusesExistingLabelColors(t *testing.T) {
 	if err := gitLab.UpdateStatus(context.Background(), 7, "doing"); err != nil {
 		t.Fatalf("UpdateStatus() error = %v", err)
 	}
-	if runner.hasCall("label create --name todo --color 0E8A16 --description Ready to be worked") || runner.hasCall("label create --name doing --color 5319E7 --description In progress") {
+	if runner.hasCall("label create --name todo --color #0E8A16 --description Ready to be worked") || runner.hasCall("label create --name doing --color #5319E7 --description In progress") {
 		t.Fatalf("UpdateStatus() calls = %#v, want existing label colors preserved", runner.calls)
 	}
 }
