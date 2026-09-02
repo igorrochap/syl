@@ -9,6 +9,25 @@ import (
 	"testing"
 )
 
+func TestTrackerIsRemote(t *testing.T) {
+	tests := []struct {
+		name    string
+		tracker Tracker
+		want    bool
+	}{
+		{name: "GitHub", tracker: TrackerGitHub, want: true},
+		{name: "local", tracker: TrackerLocal, want: false},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := test.tracker.IsRemote(); got != test.want {
+				t.Fatalf("Tracker(%q).IsRemote() = %t, want %t", test.tracker, got, test.want)
+			}
+		})
+	}
+}
+
 func TestLoadAppliesDefaultsAndKeepsTrackerSourcesIndependent(t *testing.T) {
 	root := t.TempDir()
 	writeConfig(t, root, `
@@ -208,7 +227,7 @@ func TestLoadRejectsLocalIssuesWithGitHubReviewLog(t *testing.T) {
 	writeConfig(t, root, contents)
 
 	_, err := Load(root)
-	if err == nil || !strings.Contains(err.Error(), `tracker.reviews = "github" requires tracker.issues = "github"`) {
+	if err == nil || !strings.Contains(err.Error(), `tracker.reviews = "github" and tracker.issues = "local" are incompatible; a remote review log needs a matching remote issue tracker`) {
 		t.Fatalf("Load() error = %v, want clear incompatible tracker error", err)
 	}
 }

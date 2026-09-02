@@ -133,12 +133,12 @@ func completeStandaloneReview(ctx context.Context, options ReviewOptions, prepar
 }
 
 func recordStandaloneReviewVerdict(ctx context.Context, options ReviewOptions, preparation reviewPreparation, reviewVerdict verdict.Verdict) error {
-	if options.ProjectConfig.Tracker.Reviews == config.TrackerGitHub {
+	if options.ProjectConfig.Tracker.Reviews.IsRemote() {
 		if options.IssueTracker == nil || options.Ticket == nil {
-			return errors.New("github review logging requires an issue reference (N or #N)")
+			return errors.New("remote review logging requires an issue reference (N or #N)")
 		}
-		if err := options.IssueTracker.AddComment(ctx, options.Ticket.Number, formatGitHubReviewComment(reviewVerdict)); err != nil {
-			return fmt.Errorf("post review to GitHub issue #%d: %w", options.Ticket.Number, err)
+		if err := options.IssueTracker.AddComment(ctx, options.Ticket.Number, formatRemoteReviewComment(reviewVerdict)); err != nil {
+			return fmt.Errorf("post review to remote issue #%d: %w", options.Ticket.Number, err)
 		}
 	} else {
 		if _, err := writeLocalReviewLog(options.OriginRoot, options.TicketRef, preparation.branchPoint, time.Now().UTC(), reviewVerdict); err != nil {
@@ -516,7 +516,7 @@ func formatVerdict(reviewVerdict verdict.Verdict) string {
 	return builder.String()
 }
 
-func formatGitHubReviewComment(reviewVerdict verdict.Verdict) string {
+func formatRemoteReviewComment(reviewVerdict verdict.Verdict) string {
 	return fmt.Sprintf("## Review verdict\n\n```text\n%s```\n", formatVerdict(reviewVerdict))
 }
 

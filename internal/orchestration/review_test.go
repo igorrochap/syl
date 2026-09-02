@@ -8,7 +8,55 @@ import (
 	"github.com/igorrochap/syl/internal/config"
 	"github.com/igorrochap/syl/internal/harness"
 	"github.com/igorrochap/syl/internal/tracker"
+	"github.com/igorrochap/syl/internal/verdict"
 )
+
+func TestFormatRemoteReviewCommentPreservesBody(t *testing.T) {
+	got := formatRemoteReviewComment(verdict.Verdict{
+		Status:  verdict.Approve,
+		Summary: "Ready",
+		Findings: []verdict.Finding{
+			{Kind: verdict.Blocking, Location: "internal/config/config.go:42", Issue: "Use the remote predicate."},
+		},
+	})
+	want := "## Review verdict\n\n```text\nVERDICT: approve\nSUMMARY: Ready\nFINDINGS:\n- [blocking] internal/config/config.go:42 — Use the remote predicate.\n```\n"
+	if got != want {
+		t.Fatalf("formatRemoteReviewComment() = %q, want %q", got, want)
+	}
+}
+
+func TestRunReviewPostsRemoteReviewComment(t *testing.T) {
+	root := t.TempDir()
+	git := &reviewDiffGit{responses: map[string]reviewDiffResponse{
+		"rev-parse HEAD":                          {output: "branch-point\n"},
+		"diff branch-point":                       {output: "diff --git a/change.txt b/change.txt\n+reviewed\n"},
+		"ls-files --others --exclude-standard -z": {},
+	}}
+	remote := &recordingReviewTracker{}
+	ticket := tracker.Ticket{Number: 42}
+
+	err := RunReview(context.Background(), ReviewOptions{
+		OriginRoot: root,
+		ProjectConfig: config.Config{
+			Tracker: config.TrackerConfig{Reviews: config.TrackerGitHub},
+			Roles:   config.RolesConfig{Review: config.RoleConfig{Harness: config.HarnessClaude}},
+		},
+		IssueTracker: remote,
+		Ticket:       &ticket,
+		TicketRef:    "#42",
+		Adapter:      &capturingReviewAdapter{},
+		Input:        strings.NewReader(""),
+		Output:       &strings.Builder{},
+		Git:          git,
+	})
+	if err != nil {
+		t.Fatalf("RunReview() error = %v, want nil", err)
+	}
+	want := "## Review verdict\n\n```text\nVERDICT: approve\nSUMMARY: Ready\nFINDINGS:\n```\n"
+	if remote.comment != want {
+		t.Fatalf("remote review comment = %q, want %q", remote.comment, want)
+	}
+}
 
 func TestRunReviewPassesAdditionalContextToHarness(t *testing.T) {
 	root := t.TempDir()
@@ -150,3 +198,28 @@ func (a *unparseableReviewAdapter) Resume(context.Context, string, harness.Reque
 }
 
 func (*unparseableReviewAdapter) Attach(context.Context, harness.Request) error { return nil }
+
+type recordingReviewTracker struct {
+	comment string
+}
+
+func (*recordingReviewTracker) Resolve(context.Context, string) (tracker.Ticket, error) {
+	return tracker.Ticket{}, nil
+}
+
+func (*recordingReviewTracker) List(context.Context) ([]tracker.Ticket, error) {
+	return nil, nil
+}
+
+func (*recordingReviewTracker) UpdateStatus(context.Context, int, string) error {
+	return nil
+}
+
+func (t *recordingReviewTracker) AddComment(_ context.Context, _ int, note string) error {
+	t.comment = note
+	return nil
+}
+
+func (*recordingReviewTracker) Create(context.Context, string, string) (tracker.Ticket, error) {
+	return tracker.Ticket{}, nil
+}
