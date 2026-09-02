@@ -2,6 +2,19 @@
 
 <!-- version list -->
 
+## v1.26.2 (2026-09-02)
+
+### Bug Fixes
+
+- **tracker**: Add hex prefix to GitLab label colors
+  ([#142](https://github.com/igorrochap/syl/pull/142),
+  [`59136af`](https://github.com/igorrochap/syl/commit/59136af1825b906e32eb23026e765a90bd435b70))
+
+- **tracker**: Correct GitLab label color format
+  ([#142](https://github.com/igorrochap/syl/pull/142),
+  [`59136af`](https://github.com/igorrochap/syl/commit/59136af1825b906e32eb23026e765a90bd435b70))
+
+
 ## v1.26.1 (2026-09-02)
 
 ### Bug Fixes
