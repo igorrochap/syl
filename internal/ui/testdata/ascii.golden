@@ -1,0 +1,7 @@
+* Step 1: start
+[ok] Verdict: approve
+  Summary: ready
+Findings
+[!] [blocking] main.go:1 - fix it
+- one
+[error] Error: failed

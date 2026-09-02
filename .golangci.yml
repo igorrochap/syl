@@ -35,6 +35,7 @@ linters:
             - "!**/internal/config/*.go"
             - "!**/internal/tracker/*.go"
             - "!**/internal/tui/*.go"
+            - "!**/internal/ui/*.go"
             - "!**/internal/verdict/*.go"
             - "!**/internal/version/*.go"
             - "!**/scripts/*.go"
@@ -76,6 +77,7 @@ linters:
             - github.com/igorrochap/syl/internal/initializer$
             - github.com/igorrochap/syl/internal/orchestration$
             - github.com/igorrochap/syl/internal/tracker$
+            - github.com/igorrochap/syl/internal/ui$
             - github.com/igorrochap/syl/internal/updater$
             - github.com/igorrochap/syl/internal/usage$
             - github.com/igorrochap/syl/internal/version$
@@ -93,6 +95,7 @@ linters:
             - github.com/igorrochap/syl/internal/config$
             - github.com/igorrochap/syl/internal/harness$
             - github.com/igorrochap/syl/internal/tracker$
+            - github.com/igorrochap/syl/internal/ui$
             - github.com/igorrochap/syl/internal/usage$
             - github.com/igorrochap/syl/internal/verdict$
           deny:
@@ -147,6 +150,7 @@ linters:
             - golang.org
             - github.com/igorrochap/syl/internal/config$
             - github.com/igorrochap/syl/internal/tui$
+            - github.com/igorrochap/syl/internal/ui$
             - github.com/igorrochap/syl/scripts$
             - github.com/igorrochap/syl/skills$
           deny:
@@ -220,3 +224,14 @@ linters:
           deny:
             - pkg: github.com/igorrochap/syl
               desc: support packages do not depend on other project packages
+        ui:
+          files:
+            - "**/internal/ui/*.go"
+          list-mode: lax
+          allow:
+            - $gostd
+            - github.com
+            - golang.org
+          deny:
+            - pkg: github.com/igorrochap/syl
+              desc: the UI renderer must not depend on project packages
