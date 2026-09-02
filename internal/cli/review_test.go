@@ -696,7 +696,7 @@ func TestReviewRawPassesHarnessOutputWithoutFeedRendering(t *testing.T) {
 		t.Fatalf("review code = %d, want 0; stderr = %q", code, fixture.stderr.String())
 	}
 	got := fixture.stdout.String()
-	if !strings.HasPrefix(got, "syl review — working tree\n  reviewer: claude · claude-sonnet-5 · effort medium\n") || !strings.HasSuffix(got, rawLine) {
+	if !strings.HasPrefix(got, "syl review — working tree\n  reviewer:    claude · claude-sonnet-5 · effort medium\n") || !strings.HasSuffix(got, rawLine) {
 		t.Fatalf("raw stdout = %q, want the identification banner followed by exact raw output %q", got, rawLine)
 	}
 	if strings.Contains(got, "tool:") || strings.Contains(got, "VERDICT:") {

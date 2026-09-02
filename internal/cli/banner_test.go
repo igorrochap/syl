@@ -97,7 +97,7 @@ func TestReviewPrintsTicketIdentificationBannerBeforeVerdict(t *testing.T) {
 		t.Fatalf("review code = %d, stderr = %q", code, fixture.stderr.String())
 	}
 	wantPrefix := "syl review #07 — Improve the tracker\n" +
-		"  reviewer: claude · claude-sonnet-5 · effort medium\n"
+		"  reviewer:    claude · claude-sonnet-5 · effort medium\n"
 	if got := fixture.stdout.String(); !strings.HasPrefix(got, wantPrefix) {
 		t.Fatalf("stdout = %q, want prefix %q", got, wantPrefix)
 	}
@@ -117,7 +117,7 @@ func TestReviewBannerShowsContext(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("review code = %d, stderr = %q", code, fixture.stderr.String())
 	}
-	want := "  reviewer: claude · claude-sonnet-5 · effort medium · context\n"
+	want := "  reviewer:    claude · claude-sonnet-5 · effort medium · context\n"
 	if !strings.Contains(fixture.stdout.String(), want) {
 		t.Fatalf("stdout = %q, want context indicator %q", fixture.stdout.String(), want)
 	}
@@ -131,7 +131,7 @@ func TestPlanPrintsIdentificationBannerForInvokedTarget(t *testing.T) {
 		t.Fatalf("plan code = %d, stderr = %q", code, fixture.stderr.String())
 	}
 	wantPrefix := "syl plan #42\n" +
-		"  planner:    claude · claude-opus-5 · effort high\n"
+		"  planner:     claude · claude-opus-5 · effort high\n"
 	if got := fixture.stdout.String(); !strings.HasPrefix(got, wantPrefix) {
 		t.Fatalf("stdout = %q, want prefix %q", got, wantPrefix)
 	}

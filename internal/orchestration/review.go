@@ -90,6 +90,7 @@ func RunReview(ctx context.Context, options ReviewOptions) error {
 	if options.Adapter == nil {
 		return fmt.Errorf("review harness %q is not configured", options.ProjectConfig.Roles.Review.Harness)
 	}
+	options.Output = ensureLineTrackingWriter(options.Output)
 	preparation, err := prepareReviewWithContext(ctx, options.OriginRoot, options.TicketRef, options.Context, options.Git)
 	if err != nil {
 		return err
@@ -122,6 +123,9 @@ func completeStandaloneReview(ctx context.Context, options ReviewOptions, prepar
 	}
 	reviewVerdict := run.review.Verdict
 	if !options.Raw {
+		if err := writeLineBreakIfNeeded(options.Output); err != nil {
+			return fmt.Errorf("separate review verdict: %w", err)
+		}
 		if _, err := io.WriteString(options.Output, formatVerdict(reviewVerdict)); err != nil {
 			return fmt.Errorf("write verdict: %w", err)
 		}
@@ -492,6 +496,9 @@ func writeParsedEvent(output io.Writer, event harness.Event) error {
 			return fmt.Errorf("write assistant output: %w", err)
 		}
 	case harness.EventToolUse:
+		if err := writeLineBreakIfNeeded(output); err != nil {
+			return fmt.Errorf("separate tool output: %w", err)
+		}
 		if _, err := fmt.Fprintf(output, "tool: %s", event.ToolName); err != nil {
 			return fmt.Errorf("write tool output: %w", err)
 		}
@@ -507,9 +514,42 @@ func writeParsedEvent(output io.Writer, event harness.Event) error {
 	return nil
 }
 
+func outputAtLineStart(output io.Writer) bool {
+	if lineWriter, ok := output.(interface{ AtLineStart() bool }); ok {
+		return lineWriter.AtLineStart()
+	}
+	if byteWriter, ok := output.(interface{ Bytes() []byte }); ok {
+		return bytesAtLineStart(byteWriter.Bytes())
+	}
+	if stringWriter, ok := output.(interface{ String() string }); ok {
+		return bytesAtLineStart([]byte(stringWriter.String()))
+	}
+	return true
+}
+
+func writeLineBreakIfNeeded(output io.Writer) error {
+	if outputAtLineStart(output) {
+		return nil
+	}
+	_, err := io.WriteString(output, "\n")
+	return err
+}
+
+func bytesAtLineStart(value []byte) bool {
+	if len(value) == 0 {
+		return true
+	}
+	lastByte := value[len(value)-1]
+	return lastByte == '\n' || lastByte == '\r'
+}
+
 func formatVerdict(reviewVerdict verdict.Verdict) string {
 	var builder strings.Builder
 	fmt.Fprintf(&builder, "VERDICT: %s\nSUMMARY: %s\nFINDINGS:\n", reviewVerdict.Status, reviewVerdict.Summary)
+	if len(reviewVerdict.Findings) == 0 {
+		builder.WriteString("- (none)\n")
+		return builder.String()
+	}
 	for _, finding := range reviewVerdict.Findings {
 		fmt.Fprintf(&builder, "- [%s] %s — %s\n", finding.Kind, finding.Location, finding.Issue)
 	}
