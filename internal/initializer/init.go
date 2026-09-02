@@ -67,8 +67,8 @@ func initPromptSpecs(manifest skillManifest) []tui.PromptSpec {
 		specs = append(specs, tui.PromptSpec{Key: "optional", Label: "Optional skills", Kind: tui.MultiPrompt, Options: optional})
 	}
 	specs = append(specs,
-		tui.PromptSpec{Key: "tracker.issues", Label: "Issues tracker", Kind: tui.ChoicePrompt, Options: []string{"github", "local"}, DefaultValue: "github"},
-		tui.PromptSpec{Key: "tracker.reviews", Label: "Review log", Kind: tui.ChoicePrompt, Options: []string{"github", "local"}, DefaultValue: "local"},
+		tui.PromptSpec{Key: "tracker.issues", Label: "Issues tracker", Kind: tui.ChoicePrompt, Options: []string{"github", "local", "gitlab"}, DefaultValue: "github"},
+		tui.PromptSpec{Key: "tracker.reviews", Label: "Review log", Kind: tui.ChoicePrompt, Options: []string{"github", "local", "gitlab"}, DefaultValue: "local"},
 	)
 	for _, role := range []struct {
 		name, harness, model, effort string

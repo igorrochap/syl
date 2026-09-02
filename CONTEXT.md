@@ -17,7 +17,7 @@ The canonical collection of skills vendored in this repo and installed into a pr
 _Avoid_: prompts, commands
 
 **Tracker**:
-Where tickets live for a project — GitHub or local markdown files. Configured independently from the review log: a project can track issues on GitHub while keeping review documents local.
+Where tickets live for a project — GitHub, GitLab, or local markdown files. Configured independently from the review log: a project can track issues on GitHub or GitLab while keeping review documents local.
 _Avoid_: issue system, backlog
 
 **Review log**:
