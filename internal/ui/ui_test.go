@@ -316,7 +316,7 @@ func TestStreamWrapsAssistantProseWithRoleGutterAndFlushesFinalWord(t *testing.T
 func TestStreamOmitsRoleGutterWithoutStyledTerminal(t *testing.T) {
 	var output bytes.Buffer
 	stream := NewStream(&output, Caps{Width: 12, Unicode: true}, StreamOptions{Gutter: "│ "})
-	if err := stream.Assistant("alpha beta"); err != nil {
+	if err := stream.Assistant("alpha beta\n"); err != nil {
 		t.Fatal(err)
 	}
 	if err := stream.EndTurn(); err != nil {
@@ -325,6 +325,17 @@ func TestStreamOmitsRoleGutterWithoutStyledTerminal(t *testing.T) {
 
 	if got := output.String(); got != "alpha beta\n" {
 		t.Fatalf("stream output = %q, want plain output without role gutter", got)
+	}
+}
+
+func TestStreamPropagatesWriteErrors(t *testing.T) {
+	writeErr := errors.New("writer failed")
+	stream := NewStream(errorWriter{err: writeErr}, Caps{}, StreamOptions{})
+	if err := stream.Assistant("alpha"); err != nil {
+		t.Fatal(err)
+	}
+	if err := stream.EndTurn(); !errors.Is(err, writeErr) {
+		t.Fatalf("stream write error = %v, want %v", err, writeErr)
 	}
 }
 

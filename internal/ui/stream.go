@@ -215,49 +215,88 @@ func (s *Stream) writeProseLocked(value string) error {
 		if isTrailingEmptyLine {
 			continue
 		}
-		if lineIndex == 0 && !s.atLineStart {
-			if s.canAppendLocked(line) {
-				if err := s.writeInlineLocked(line); err != nil {
-					return err
-				}
-				s.lineWidth += lipgloss.Width(line)
-				continue
-			}
-			if err := s.writeLocked("\n"); err != nil {
-				return err
-			}
-			s.atLineStart = true
-			s.lineWidth = 0
-			line = strings.TrimLeftFunc(line, unicode.IsSpace)
-		}
-		s.literalLine = s.fenced || isLiteralBlockLine(line)
-		wrapped := wrapLine(line, s.contentWidth())
-		for wrappedIndex, part := range wrapped {
-			if err := s.ensureLineStartLocked(); err != nil {
-				return err
-			}
-			if err := s.writeGutterLocked(); err != nil {
-				return err
-			}
-			if err := s.writeInlineLocked(part); err != nil {
-				return err
-			}
-			s.atLineStart = false
-			s.lineWidth += lipgloss.Width(part)
-			lastPart := wrappedIndex == len(wrapped)-1
-			lastLine := lineIndex == len(lines)-1
-			if !lastPart || !lastLine {
-				if err := s.writeLocked("\n"); err != nil {
-					return err
-				}
-				s.atLineStart = true
-				s.lineWidth = 0
-			}
-		}
-		if isFenceLine(line) {
-			s.fenced = !s.fenced
+		if err := s.writeProseLineLocked(line, lineIndex == 0, lineIndex == len(lines)-1); err != nil {
+			return err
 		}
 	}
+	return nil
+}
+
+func (s *Stream) writeProseLineLocked(line string, allowAppend, lastLine bool) error {
+	if allowAppend && !s.atLineStart {
+		appended, err := s.appendProseLineLocked(line)
+		if err != nil {
+			return err
+		}
+		if appended {
+			return nil
+		}
+		line = strings.TrimLeftFunc(line, unicode.IsSpace)
+	}
+	s.literalLine = s.fenced || isLiteralBlockLine(line)
+	wrapped := wrapLine(line, s.contentWidth())
+	if err := s.writeWrappedProseLineLocked(wrapped, lastLine); err != nil {
+		return err
+	}
+	if isFenceLine(line) {
+		s.fenced = !s.fenced
+	}
+	return nil
+}
+
+func (s *Stream) appendProseLineLocked(line string) (bool, error) {
+	if !s.canAppendLocked(line) {
+		if err := s.writeLocked("\n"); err != nil {
+			return false, err
+		}
+		s.atLineStart = true
+		s.lineWidth = 0
+		return false, nil
+	}
+	if err := s.writeInlineLocked(line); err != nil {
+		return false, err
+	}
+	s.lineWidth += lipgloss.Width(line)
+	return true, nil
+}
+
+func (s *Stream) writeWrappedProseLineLocked(parts []string, lastLine bool) error {
+	for partIndex, part := range parts {
+		if err := s.writeProsePartLocked(part); err != nil {
+			return err
+		}
+		lastPart := partIndex == len(parts)-1
+		if lastPart && lastLine {
+			continue
+		}
+		if err := s.writeLineBreakLocked(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Stream) writeProsePartLocked(part string) error {
+	if err := s.ensureLineStartLocked(); err != nil {
+		return err
+	}
+	if err := s.writeGutterLocked(); err != nil {
+		return err
+	}
+	if err := s.writeInlineLocked(part); err != nil {
+		return err
+	}
+	s.atLineStart = false
+	s.lineWidth += lipgloss.Width(part)
+	return nil
+}
+
+func (s *Stream) writeLineBreakLocked() error {
+	if err := s.writeLocked("\n"); err != nil {
+		return err
+	}
+	s.atLineStart = true
+	s.lineWidth = 0
 	return nil
 }
 
