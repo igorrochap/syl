@@ -93,8 +93,8 @@ func TestGitLabUpdateStatusSwapsLabelsWithoutClosingIssue(t *testing.T) {
 		"label list --output json --per-page 100": {
 			output: `[{"name":"todo"}]`,
 		},
-		"label create --name doing --color 5319E7 --description In progress": {},
-		"issue update 7 --label doing --unlabel todo":                        {},
+		"label create --name doing --color #5319E7 --description In progress": {},
+		"issue update 7 --label doing --unlabel todo":                         {},
 	}}
 	gitLab, err := NewGitLab(runner)
 	if err != nil {
@@ -130,9 +130,9 @@ func TestGitLabBootstrapsMissingLabelsOnlyOnce(t *testing.T) {
 		"label list --output json --per-page 100": {
 			output: `[{"name":"todo"}]`,
 		},
-		"label create --name doing --color 5319E7 --description In progress": {},
-		"issue update 7 --label doing --unlabel todo":                        {},
-		"issue update 8 --label doing --unlabel todo":                        {},
+		"label create --name doing --color #5319E7 --description In progress": {},
+		"issue update 7 --label doing --unlabel todo":                         {},
+		"issue update 8 --label doing --unlabel todo":                         {},
 	}}
 	gitLab, err := NewGitLab(runner)
 	if err != nil {
@@ -147,7 +147,7 @@ func TestGitLabBootstrapsMissingLabelsOnlyOnce(t *testing.T) {
 	if got := runner.count("label list --output json --per-page 100"); got != 1 {
 		t.Fatalf("label list count = %d, want exactly once", got)
 	}
-	if got := runner.count("label create --name doing --color 5319E7 --description In progress"); got != 1 {
+	if got := runner.count("label create --name doing --color #5319E7 --description In progress"); got != 1 {
 		t.Fatalf("doing label create count = %d, want exactly once", got)
 	}
 }

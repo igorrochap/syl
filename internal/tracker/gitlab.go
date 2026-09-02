@@ -14,8 +14,8 @@ import (
 const (
 	gitlabTodoLabel  = "todo"
 	gitlabDoingLabel = "doing"
-	gitlabTodoColor  = "0E8A16"
-	gitlabDoingColor = "5319E7"
+	gitlabTodoColor  = "#0E8A16"
+	gitlabDoingColor = "#5319E7"
 )
 
 type gitlabErrorKind uint8
