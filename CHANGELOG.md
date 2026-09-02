@@ -2,6 +2,27 @@
 
 <!-- version list -->
 
+## v1.26.0 (2026-09-02)
+
+### Features
+
+- **tracker**: Add GitLab issue tracker support ([#133](https://github.com/igorrochap/syl/pull/133),
+  [`bf3c26a`](https://github.com/igorrochap/syl/commit/bf3c26ad18165fb1744a66f9a6b61652927d6468))
+
+- **tracker**: Add GitLab support for issues and reviews
+  ([#133](https://github.com/igorrochap/syl/pull/133),
+  [`bf3c26a`](https://github.com/igorrochap/syl/commit/bf3c26ad18165fb1744a66f9a6b61652927d6468))
+
+- **tracker**: Add support for GitLab issue tracking and reviews
+  ([#133](https://github.com/igorrochap/syl/pull/133),
+  [`bf3c26a`](https://github.com/igorrochap/syl/commit/bf3c26ad18165fb1744a66f9a6b61652927d6468))
+
+### Refactoring
+
+- **config**: Generalize remote tracker support ([#133](https://github.com/igorrochap/syl/pull/133),
+  [`bf3c26a`](https://github.com/igorrochap/syl/commit/bf3c26ad18165fb1744a66f9a6b61652927d6468))
+
+
 ## v1.25.0 (2026-09-01)
 
 ### Features
