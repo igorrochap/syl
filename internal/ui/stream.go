@@ -576,12 +576,12 @@ type activityLine struct {
 	turnActive bool
 	// label is the last action syl knows about, not a live tool status. There
 	// is no tool-completion event, so a tool label may outlive the tool itself.
-	label      string
-	gist       string
-	started    time.Time
-	frame      int
-	stopCh     chan struct{}
-	doneCh     chan struct{}
+	label   string
+	gist    string
+	started time.Time
+	frame   int
+	stopCh  chan struct{}
+	doneCh  chan struct{}
 }
 
 func newActivityLine(stream *Stream, enabled bool, role string, clock Clock, interval time.Duration) *activityLine {
