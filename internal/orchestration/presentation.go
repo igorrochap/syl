@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/igorrochap/syl/internal/harness"
 	"github.com/igorrochap/syl/internal/verdict"
 )
 
@@ -108,6 +109,27 @@ func (w *reviewProgressWriter) AtLineStart() bool {
 	return w.atLineStart
 }
 
+func (w *reviewProgressWriter) BeforeEvent() error {
+	if renderer, ok := w.output.(harnessEventRenderer); ok {
+		return renderer.BeforeEvent()
+	}
+	return nil
+}
+
+func (w *reviewProgressWriter) Assistant(text string) error {
+	return w.writeVisible(w.parser.Feed(text))
+}
+
+func (w *reviewProgressWriter) Tool(name, gist string) error {
+	if err := w.writeVisible(w.parser.Flush()); err != nil {
+		return err
+	}
+	if renderer, ok := w.output.(harnessEventRenderer); ok {
+		return renderer.Tool(name, gist)
+	}
+	return writeParsedEvent(w.output, harness.Event{Type: harness.EventToolUse, ToolName: name, ArgumentGist: gist})
+}
+
 type lineTrackingWriter struct {
 	output      io.Writer
 	atLineStart bool
@@ -142,28 +164,36 @@ func (w *lineTrackingWriter) Write(p []byte) (int, error) {
 }
 
 func (w *reviewProgressWriter) Write(p []byte) (int, error) {
-	visible := w.parser.Feed(string(p))
-	if visible == "" {
-		return len(p), nil
-	}
-	if _, err := io.WriteString(w.output, visible); err != nil {
+	if err := w.Assistant(string(p)); err != nil {
 		return 0, err
 	}
-	w.atLineStart = bytesAtLineStart([]byte(visible))
 	return len(p), nil
 }
 
 func (w *reviewProgressWriter) EndTurn() error {
 	visible := w.parser.Flush()
 	w.parser.Reset()
+	if err := w.writeVisible(visible); err != nil {
+		return err
+	}
+	if renderer, ok := w.output.(harnessEventRenderer); ok {
+		return renderer.EndTurn()
+	}
+	return nil
+}
+
+func (w *reviewProgressWriter) writeVisible(visible string) error {
 	if visible == "" {
 		return nil
 	}
-	_, err := io.WriteString(w.output, visible)
-	if err == nil {
-		w.atLineStart = bytesAtLineStart([]byte(visible))
+	if renderer, ok := w.output.(harnessEventRenderer); ok {
+		return renderer.Assistant(visible)
 	}
-	return err
+	if _, err := io.WriteString(w.output, visible); err != nil {
+		return err
+	}
+	w.atLineStart = bytesAtLineStart([]byte(visible))
+	return nil
 }
 
 const (

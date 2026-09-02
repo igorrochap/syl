@@ -43,10 +43,10 @@ func TestImplementPrintsIdentificationBannerWithResolvedConfigAndArtifacts(t *te
 		t.Fatal(err)
 	}
 	wantPrefix := "syl implement #42 — Add resilient workflow\n" +
-		"  implementer: codex · custom-implementer · effort high\n" +
-		"  reviewer:    claude · claude-custom-reviewer · effort low\n" +
-		"  max iterations: 2\n" +
-		"  run artifacts: " + relativeRunDir + "\n"
+		"  implementer:     codex · custom-implementer · effort high\n" +
+		"  reviewer:        claude · claude-custom-reviewer · effort low\n" +
+		"  max iterations:  2\n" +
+		"  run artifacts:   " + relativeRunDir + "\n"
 	if got := fixture.stdout.String(); !strings.HasPrefix(got, wantPrefix) {
 		t.Fatalf("stdout = %q, want prefix %q", got, wantPrefix)
 	}
@@ -74,8 +74,8 @@ func TestImplementBannerShowsContextForEachRole(t *testing.T) {
 		t.Fatalf("implement code = %d, stderr = %q", code, fixture.stderr.String())
 	}
 	for _, expected := range []string{
-		"  implementer: codex · gpt-5.6-luna · effort xhigh · context\n",
-		"  reviewer:    claude · claude-sonnet-5 · effort medium · context\n",
+		"implementer:     codex · gpt-5.6-luna · effort xhigh · context",
+		"reviewer:        claude · claude-sonnet-5 · effort medium · context",
 	} {
 		if !strings.Contains(fixture.stdout.String(), expected) {
 			t.Errorf("stdout = %q, want context indicator %q", fixture.stdout.String(), expected)
@@ -97,7 +97,7 @@ func TestReviewPrintsTicketIdentificationBannerBeforeVerdict(t *testing.T) {
 		t.Fatalf("review code = %d, stderr = %q", code, fixture.stderr.String())
 	}
 	wantPrefix := "syl review #07 — Improve the tracker\n" +
-		"  reviewer:    claude · claude-sonnet-5 · effort medium\n"
+		"  reviewer:  claude · claude-sonnet-5 · effort medium\n"
 	if got := fixture.stdout.String(); !strings.HasPrefix(got, wantPrefix) {
 		t.Fatalf("stdout = %q, want prefix %q", got, wantPrefix)
 	}
@@ -117,7 +117,7 @@ func TestReviewBannerShowsContext(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("review code = %d, stderr = %q", code, fixture.stderr.String())
 	}
-	want := "  reviewer:    claude · claude-sonnet-5 · effort medium · context\n"
+	want := "  reviewer:  claude · claude-sonnet-5 · effort medium · context\n"
 	if !strings.Contains(fixture.stdout.String(), want) {
 		t.Fatalf("stdout = %q, want context indicator %q", fixture.stdout.String(), want)
 	}
