@@ -25,6 +25,7 @@ type Dependencies struct {
 	Harnesses func(root string) map[string]harness.Adapter
 	Notifier  orchestration.Notifier
 	GH        func(root string) tracker.GHRunner
+	GLab      func(root string) tracker.GLabRunner
 	Git       func(root string) orchestration.GitRunner
 	Updater   updater.Runner
 }
@@ -302,8 +303,8 @@ func (a *App) reviewCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if projectConfig.Tracker.Reviews == config.TrackerGitHub && len(args) == 0 {
-				return errors.New("github review logging requires an issue reference (N or #N)")
+			if projectConfig.Tracker.Reviews.IsRemote() && len(args) == 0 {
+				return errors.New("remote review logging requires an issue reference (N or #N)")
 			}
 
 			var ticket *tracker.Ticket
@@ -500,6 +501,13 @@ func (a *App) newIssueTracker(projectConfig config.Config) (tracker.Tracker, err
 			ghRunner = a.deps.GH(a.originRoot)
 		}
 		return tracker.NewGitHub(ghRunner)
+	}
+	if projectConfig.Tracker.Issues == config.TrackerGitLab {
+		var glabRunner tracker.GLabRunner
+		if a.deps.GLab != nil {
+			glabRunner = a.deps.GLab(a.originRoot)
+		}
+		return tracker.NewGitLab(glabRunner)
 	}
 	return tracker.NewLocal(a.originRoot, "")
 }

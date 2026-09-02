@@ -85,6 +85,10 @@ func fixedGH(runner tracker.GHRunner) func(string) tracker.GHRunner {
 	return func(string) tracker.GHRunner { return runner }
 }
 
+func fixedGLab(runner tracker.GLabRunner) func(string) tracker.GLabRunner {
+	return func(string) tracker.GLabRunner { return runner }
+}
+
 func fixedGit(runner orchestration.GitRunner) func(string) orchestration.GitRunner {
 	return func(string) orchestration.GitRunner { return runner }
 }
@@ -118,3 +122,7 @@ func (fakeNotifier) Notify(context.Context, string) error { return nil }
 type fakeGHRunner struct{}
 
 func (fakeGHRunner) Run(context.Context, ...string) (string, error) { return "", nil }
+
+type fakeGLabRunner struct{}
+
+func (fakeGLabRunner) Run(context.Context, ...string) (string, error) { return "", nil }

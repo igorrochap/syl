@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/igorrochap/syl/internal/config"
 	"github.com/igorrochap/syl/internal/tracker"
 	"github.com/igorrochap/syl/internal/verdict"
 )
@@ -32,6 +33,14 @@ Ticket body (including acceptance criteria):
 Keep every byte.
 
 Do not change wording.`
+
+	assertPromptEqual(t, got, want)
+}
+
+func TestComposePlanPromptNamesGitLabTracker(t *testing.T) {
+	got := composePlanPrompt(PlanOptions{Topic: "publish the issue tracker", TrackerName: config.TrackerGitLab})
+	want := "/to-tickets\n\nTopic: publish the issue tracker\n\n" +
+		"Use the to-tickets skill to produce tickets on the configured GitLab tracker."
 
 	assertPromptEqual(t, got, want)
 }

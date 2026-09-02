@@ -7,6 +7,7 @@ import (
 
 	"github.com/igorrochap/syl/internal/adapters/gh"
 	"github.com/igorrochap/syl/internal/adapters/git"
+	"github.com/igorrochap/syl/internal/adapters/glab"
 	"github.com/igorrochap/syl/internal/cli"
 	"github.com/igorrochap/syl/internal/harness"
 	"github.com/igorrochap/syl/internal/harness/claude"
@@ -27,6 +28,7 @@ func main() {
 		GH: func(root string) tracker.GHRunner {
 			return gh.Runner{Dir: root}
 		},
+		GLab: newGLabRunner,
 		Git: func(root string) orchestration.GitRunner {
 			return git.ExecGitRunner{Dir: root}
 		},
@@ -38,4 +40,8 @@ func main() {
 		},
 	})
 	os.Exit(app.Run(context.Background(), os.Args[1:], os.Stdout, os.Stderr))
+}
+
+func newGLabRunner(root string) tracker.GLabRunner {
+	return glab.Runner{Dir: root}
 }

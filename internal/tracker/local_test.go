@@ -76,6 +76,13 @@ func TestParseReferenceAcceptsBareAndHashPrefixedNumbers(t *testing.T) {
 	}
 }
 
+func TestParseReferenceRejectsInvalidReference(t *testing.T) {
+	_, err := parseReference("not-a-ticket")
+	if err == nil || !strings.Contains(err.Error(), "want N, #N, or an issue URL") {
+		t.Fatalf("parseReference() error = %v, want invalid-reference guidance", err)
+	}
+}
+
 func TestLocalResolveRejectsAmbiguousTicketNumberWithBothPaths(t *testing.T) {
 	root := t.TempDir()
 	writeTicketFile(t, root, "feature-a", "09", "First copy", "todo")

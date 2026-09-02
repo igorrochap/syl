@@ -43,8 +43,10 @@ The set of skills stored in this repository. `syl init` installs the Skill
 set into a project.
 
 **Tracker**
-The place where tickets live for a project. A Tracker is GitHub or local
-markdown files. The Issues Tracker and the Review log use their own,
+The place where tickets live for a project. A Tracker is GitHub, GitLab, or
+local markdown files. The GitHub Tracker requires the `gh` CLI, and the CLI
+must be authenticated. The GitLab Tracker requires the `glab` CLI, and the CLI
+must be authenticated. The Issues Tracker and the Review log use their own,
 independent setting.
 
 **Review log**
@@ -145,8 +147,8 @@ syl init
 `syl init` asks these questions:
 
 - Which optional skills to install, in addition to the core Skill set.
-- Which Tracker to use for issues: `github` or `local`.
-- Which Tracker to use for the review log: `github` or `local`.
+- Which Tracker to use for issues: `github`, `local`, or `gitlab`.
+- Which Tracker to use for the review log: `github`, `local`, or `gitlab`.
 - Which Harness, model, and effort level to use for each Role: plan,
   implement, review.
 
@@ -321,8 +323,9 @@ against that issue:
 syl review 42
 ```
 
-When the Review log is `github`, an issue reference is required; `syl`
-cannot log a review with no place to log it.
+When the Review log uses a remote Tracker, an issue reference is required;
+`syl` cannot log a review with no issue to attach it to. A remote Review log
+must use the same Tracker as the Issues Tracker.
 
 Pass `--context <text>` to give the reviewer Role additional context for one
 invocation. The value is an inline string appended to the review prompt:
@@ -366,8 +369,8 @@ then submit it with an empty line or end-of-file (Ctrl-D).
 
 | Key | Values | Meaning |
 | --- | --- | --- |
-| `tracker.issues` | `github`, `local` | Where issues live. |
-| `tracker.reviews` | `github`, `local` | Where review documents live. |
+| `tracker.issues` | `github`, `local`, `gitlab` | Where issues live. |
+| `tracker.reviews` | `github`, `local`, `gitlab` | Where review documents live. |
 | `roles.<role>.harness` | `claude`, `codex`, `opencode` | Harness for the Role. |
 | `roles.<role>.model` | any string | Model identifier passed to the Harness. |
 | `roles.<role>.effort` | `low`, `medium`, `high`, `xhigh` | Effort level passed to the Harness. |

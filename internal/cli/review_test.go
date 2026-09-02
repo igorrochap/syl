@@ -506,13 +506,35 @@ func TestReviewWithGitHubReviewLogPostsFencedVerdictWithoutClosingIssue(t *testi
 	}
 }
 
+func TestReviewWithGitLabReviewLogPostsVerdictAsNote(t *testing.T) {
+	harness := &scriptedHarness{first: []harness.Event{
+		{Type: harness.EventSession, SessionID: "gitlab-review"},
+		{Type: harness.EventAssistantText, Text: approveVerdictText},
+	}}
+	fixture := newReviewFixture(t, harness)
+	configureGitLabReviewLog(t, fixture.root)
+	glab := &reviewGitLabRunner{}
+	fixture.app.deps.GLab = fixedGLab(glab)
+
+	code := fixture.app.Run(context.Background(), []string{"review", "#42"}, &fixture.stdout, &fixture.stderr)
+	if code != 0 {
+		t.Fatalf("review code = %d, want 0; stderr = %q", code, fixture.stderr.String())
+	}
+	if !strings.Contains(glab.noteBody, "```text") || !strings.Contains(glab.noteBody, approveVerdictText) {
+		t.Fatalf("GitLab note = %q, want fenced verdict", glab.noteBody)
+	}
+	if !glab.hasCallPrefix("issue note 42 --message") {
+		t.Fatalf("GitLab calls = %#v, want issue note", glab.calls)
+	}
+}
+
 func TestReviewWithGitHubReviewLogRequiresIssueNumber(t *testing.T) {
 	harness := &scriptedHarness{}
 	fixture := newReviewFixture(t, harness)
 	configureGitHubReviewLog(t, fixture.root)
 
 	code := fixture.app.Run(context.Background(), []string{"review"}, &fixture.stdout, &fixture.stderr)
-	if code == 0 || !strings.Contains(fixture.stderr.String(), "requires an issue reference") {
+	if code == 0 || !strings.Contains(fixture.stderr.String(), "remote review logging requires an issue reference") {
 		t.Fatalf("review code = %d, stderr = %q, want clear issue-reference failure", code, fixture.stderr.String())
 	}
 	if harness.runRequest.Prompt != "" {
@@ -762,6 +784,20 @@ func configureGitHubReviewLog(t *testing.T, root string) {
 	}
 }
 
+func configureGitLabReviewLog(t *testing.T, root string) {
+	t.Helper()
+	path := filepath.Join(root, ".syl", "config.toml")
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated := strings.Replace(string(contents), `issues = "github"`, `issues = "gitlab"`, 1)
+	updated = strings.Replace(updated, `reviews = "local"`, `reviews = "gitlab"`, 1)
+	if err := os.WriteFile(path, []byte(updated), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func writeReviewTicket(t *testing.T, root, feature, number, title, body string) {
 	t.Helper()
 	path := filepath.Join(root, ".scratch", feature, "issues", number+"-ticket.md")
@@ -830,6 +866,11 @@ type reviewGitHubRunner struct {
 	commentBody string
 }
 
+type reviewGitLabRunner struct {
+	calls    []string
+	noteBody string
+}
+
 type reviewGitRunner struct {
 	calls   []string
 	diff    string
@@ -872,6 +913,31 @@ func (r *reviewGitHubRunner) Run(_ context.Context, args ...string) (string, err
 func (r *reviewGitHubRunner) hasCall(call string) bool {
 	for _, got := range r.calls {
 		if got == call {
+			return true
+		}
+	}
+	return false
+}
+
+func (r *reviewGitLabRunner) Run(_ context.Context, args ...string) (string, error) {
+	call := strings.Join(args, " ")
+	r.calls = append(r.calls, call)
+	switch {
+	case call == "label list --output json --per-page 100":
+		return `[{"name":"todo"},{"name":"doing"}]`, nil
+	case call == "issue view 42 --output json":
+		return `{"iid":42,"title":"Review this","description":"Review body","state":"opened","labels":["doing"]}`, nil
+	case len(args) >= 5 && args[0] == "issue" && args[1] == "note":
+		r.noteBody = args[len(args)-1]
+		return "", nil
+	default:
+		return "", fmt.Errorf("unexpected glab command %q", call)
+	}
+}
+
+func (r *reviewGitLabRunner) hasCallPrefix(prefix string) bool {
+	for _, call := range r.calls {
+		if strings.HasPrefix(call, prefix) {
 			return true
 		}
 	}
