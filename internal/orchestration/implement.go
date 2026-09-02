@@ -499,7 +499,7 @@ func runImplementRole(
 	var feed bytes.Buffer
 	visibleOutput := output
 	if mode != RawHarnessOutput {
-		visibleOutput = newLiveHarnessOutput(output, mode)
+		visibleOutput = newLiveHarnessOutput(output, mode, "implement")
 	}
 	artifactOutput := newPlainHarnessOutput(&feed, mode)
 	result, err := runHarnessConversation(ctx, adapter, func(runContext context.Context) (harness.Stream, error) {
