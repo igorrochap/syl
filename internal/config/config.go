@@ -17,6 +17,7 @@ const configRelativePath = ".syl/config.toml"
 
 const (
 	TrackerGitHub Tracker = "github"
+	TrackerGitLab Tracker = "gitlab"
 	TrackerLocal  Tracker = "local"
 )
 
@@ -51,7 +52,7 @@ type Effort string
 
 // IsRemote reports whether the tracker stores tickets outside the local filesystem.
 func (t Tracker) IsRemote() bool {
-	return t == TrackerGitHub
+	return t == TrackerGitHub || t == TrackerGitLab
 }
 
 // WriteMode controls whether Write creates a new config or replaces an
@@ -364,7 +365,7 @@ func parseRolesConfig(raw rawRoles) (RolesConfig, error) {
 }
 
 func parseTracker(key, value string) (Tracker, error) {
-	return parseEnum(key, value, []Tracker{TrackerGitHub, TrackerLocal}, "github or local")
+	return parseEnum(key, value, []Tracker{TrackerGitHub, TrackerLocal, TrackerGitLab}, "github, local, or gitlab")
 }
 
 func parseRole(prefix string, raw rawRole, defaultMCP bool) (RoleConfig, error) {

@@ -28,6 +28,7 @@ linters:
             - "!**/internal/updater/*.go"
             - "!**/internal/usage/*.go"
             - "!**/internal/adapters/gh/*.go"
+            - "!**/internal/adapters/glab/*.go"
             - "!**/internal/adapters/git/*.go"
             - "!**/internal/adapters/notify/*.go"
             - "!**/internal/harness/claude/transcript/*.go"
@@ -178,6 +179,18 @@ linters:
         github-adapter:
           files:
             - "**/internal/adapters/gh/*.go"
+          list-mode: lax
+          allow:
+            - $gostd
+            - github.com
+            - golang.org
+            - github.com/igorrochap/syl/internal/tracker$
+          deny:
+            - pkg: github.com/igorrochap/syl
+              desc: external adapters implement ports and must not depend on application callers
+        gitlab-adapter:
+          files:
+            - "**/internal/adapters/glab/*.go"
           list-mode: lax
           allow:
             - $gostd

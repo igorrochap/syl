@@ -92,6 +92,9 @@ func composePlanPrompt(options PlanOptions) string {
 	if options.TrackerName == config.TrackerGitHub {
 		trackerName = "GitHub"
 	}
+	if options.TrackerName == config.TrackerGitLab {
+		trackerName = "GitLab"
+	}
 	topic := strings.TrimSpace(options.Topic)
 
 	if !options.Grill && !options.Spec {

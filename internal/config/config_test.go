@@ -16,6 +16,7 @@ func TestTrackerIsRemote(t *testing.T) {
 		want    bool
 	}{
 		{name: "GitHub", tracker: TrackerGitHub, want: true},
+		{name: "GitLab", tracker: TrackerGitLab, want: true},
 		{name: "local", tracker: TrackerLocal, want: false},
 	}
 
@@ -25,6 +26,51 @@ func TestTrackerIsRemote(t *testing.T) {
 				t.Fatalf("Tracker(%q).IsRemote() = %t, want %t", test.tracker, got, test.want)
 			}
 		})
+	}
+}
+
+func TestLoadAcceptsGitLabForIssuesAndRemoteReviews(t *testing.T) {
+	root := t.TempDir()
+	writeConfig(t, root, strings.Replace(
+		configWithRoleValue("plan", "model", "claude-planner"),
+		`issues = "github"`, `issues = "gitlab"`, 1,
+	))
+
+	got, err := Load(root)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if got.Tracker.Issues != TrackerGitLab || got.Tracker.Reviews != TrackerLocal {
+		t.Fatalf("Tracker = %#v, want gitlab/local", got.Tracker)
+	}
+
+	contents := strings.Replace(
+		configWithRoleValue("plan", "model", "claude-planner"),
+		`issues = "github"`, `issues = "gitlab"`, 1,
+	)
+	contents = strings.Replace(contents, `reviews = "local"`, `reviews = "gitlab"`, 1)
+	writeConfig(t, root, contents)
+	got, err = Load(root)
+	if err != nil {
+		t.Fatalf("Load() with GitLab review error = %v", err)
+	}
+	if got.Tracker.Issues != TrackerGitLab || got.Tracker.Reviews != TrackerGitLab {
+		t.Fatalf("Tracker = %#v, want gitlab/gitlab", got.Tracker)
+	}
+}
+
+func TestLoadRejectsMismatchedGitHubAndGitLabTrackers(t *testing.T) {
+	root := t.TempDir()
+	contents := strings.Replace(
+		configWithRoleValue("plan", "model", "claude-planner"),
+		`issues = "github"`, `issues = "gitlab"`, 1,
+	)
+	contents = strings.Replace(contents, `reviews = "local"`, `reviews = "github"`, 1)
+	writeConfig(t, root, contents)
+
+	_, err := Load(root)
+	if err == nil || !strings.Contains(err.Error(), `tracker.reviews = "github" and tracker.issues = "gitlab" are incompatible`) {
+		t.Fatalf("Load() error = %v, want mismatched remote tracker error", err)
 	}
 }
 
@@ -312,6 +358,13 @@ mcp = "sometimes"
 			}
 			if !strings.Contains(err.Error(), tt.wantKey) {
 				t.Fatalf("Load() error = %q, want key %q", err, tt.wantKey)
+			}
+			if strings.Contains(tt.wantKey, "tracker.") {
+				for _, trackerName := range []string{"github", "local", "gitlab"} {
+					if !strings.Contains(err.Error(), trackerName) {
+						t.Fatalf("Load() error = %q, want accepted tracker %q", err, trackerName)
+					}
+				}
 			}
 		})
 	}
