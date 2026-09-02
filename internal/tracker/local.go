@@ -363,10 +363,16 @@ func ticketStatus(lines []string) (string, int) {
 
 func parseReference(reference string) (int, error) {
 	value := strings.TrimSpace(reference)
+	if match := issueNumberPattern.FindStringSubmatch(value); match != nil {
+		number, err := strconv.Atoi(match[1])
+		if err == nil && number > 0 {
+			return number, nil
+		}
+	}
 	value = strings.TrimSpace(strings.TrimPrefix(value, "#"))
 	number, err := strconv.Atoi(value)
 	if err != nil || number < 1 {
-		return 0, fmt.Errorf("invalid ticket reference %q; want N or #N", reference)
+		return 0, fmt.Errorf("invalid ticket reference %q; want N, #N, or an issue URL", reference)
 	}
 	return number, nil
 }

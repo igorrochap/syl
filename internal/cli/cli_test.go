@@ -161,6 +161,29 @@ effort = "medium"
 	}
 }
 
+func TestNewIssueTrackerUsesGitLabRunnerAtOriginRoot(t *testing.T) {
+	root := t.TempDir()
+	runner := fakeGLabRunner{}
+	var roots []string
+	app := New(root, t.TempDir(), Dependencies{
+		GLab: func(gotRoot string) tracker.GLabRunner {
+			roots = append(roots, gotRoot)
+			return runner
+		},
+	})
+
+	issueTracker, err := app.newIssueTracker(config.Config{Tracker: config.TrackerConfig{Issues: config.TrackerGitLab}})
+	if err != nil {
+		t.Fatalf("newIssueTracker() error = %v", err)
+	}
+	if _, ok := issueTracker.(*tracker.GitLab); !ok {
+		t.Fatalf("newIssueTracker() = %T, want *tracker.GitLab", issueTracker)
+	}
+	if len(roots) != 1 || roots[0] != root {
+		t.Fatalf("GitLab roots = %v, want [%s]", roots, root)
+	}
+}
+
 func TestUsageRendersLatestAndNamedRunWithoutCrossHarnessTotal(t *testing.T) {
 	root := t.TempDir()
 	runsDir := filepath.Join(root, ".syl", "runs")
@@ -640,6 +663,34 @@ func TestImplementResolvesAndMarksGitHubTicketDoing(t *testing.T) {
 	}
 }
 
+func TestImplementResolvesGitLabTicketAndReportsItsTitle(t *testing.T) {
+	fixture := newImplementLoopFixture(t)
+	setIssueTracker(t, fixture.root, config.TrackerGitLab)
+	commitWorkingTree(t, fixture.root, "GitLab fixture")
+	loop := &loopHarness{
+		root: fixture.root,
+		streams: [][]harness.Event{
+			{{Type: harness.EventSession, SessionID: "gitlab-implement"}},
+			{{Type: harness.EventSession, SessionID: "gitlab-review"}, {Type: harness.EventAssistantText, Text: approveVerdictText}},
+		},
+	}
+	fixture.harnesses["codex"] = loop
+	fixture.harnesses["claude"] = loop
+	glab := &implementGitLabRunner{}
+	fixture.app.deps.GLab = fixedGLab(glab)
+
+	code := fixture.app.Run(context.Background(), []string{"implement", "#42"}, &fixture.stdout, &fixture.stderr)
+	if code != 0 {
+		t.Fatalf("implement code = %d, want 0; stderr = %q", code, fixture.stderr.String())
+	}
+	if !strings.Contains(fixture.stdout.String(), "syl implement #42 — Add resilient workflow") {
+		t.Fatalf("implement output = %q, want GitLab ticket title in banner", fixture.stdout.String())
+	}
+	if !glab.hasCall("issue update 42 --label doing --unlabel todo") {
+		t.Fatalf("GitLab calls = %#v, want todo to doing transition", glab.calls)
+	}
+}
+
 func TestRunRejectsUnexpectedCommandArguments(t *testing.T) {
 	fixture := newTopSeamFixture(t)
 
@@ -718,6 +769,34 @@ func (r *implementGitHubRunner) Run(_ context.Context, args ...string) (string, 
 }
 
 func (r *implementGitHubRunner) hasCall(call string) bool {
+	for _, got := range r.calls {
+		if got == call {
+			return true
+		}
+	}
+	return false
+}
+
+type implementGitLabRunner struct {
+	calls []string
+}
+
+func (r *implementGitLabRunner) Run(_ context.Context, args ...string) (string, error) {
+	call := strings.Join(args, " ")
+	r.calls = append(r.calls, call)
+	switch call {
+	case "label list --output json --per-page 100":
+		return `[{"name":"todo"},{"name":"doing"}]`, nil
+	case "issue view 42 --output json":
+		return `{"id":9042,"iid":42,"title":"Add resilient workflow","description":"Acceptance criteria: leave a working implementation.","state":"opened","labels":["todo"]}`, nil
+	case "issue update 42 --label doing --unlabel todo":
+		return "", nil
+	default:
+		return "", fmt.Errorf("unexpected glab command %q", call)
+	}
+}
+
+func (r *implementGitLabRunner) hasCall(call string) bool {
 	for _, got := range r.calls {
 		if got == call {
 			return true

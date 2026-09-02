@@ -21,6 +21,7 @@ not permitted.
 | Application support | `internal/updater` | `scripts` |
 | Port | `internal/harness` | `internal/config` |
 | Port adapter | `internal/adapters/gh` | `internal/tracker` |
+| Port adapter | `internal/adapters/glab` | `internal/tracker` |
 | Port adapter | `internal/harness/claude` | `internal/config`, `internal/harness`, `internal/harness/claude/transcript` |
 | Port adapter | `internal/harness/codex` | `internal/config`, `internal/harness` |
 | Support | `internal/usage` | `internal/harness/claude/transcript` |
