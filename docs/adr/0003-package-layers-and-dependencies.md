@@ -15,9 +15,9 @@ not permitted.
 | Layer | Package | May import |
 | --- | --- | --- |
 | Composition | `cmd/syl` | every package under `internal/`, plus `scripts` and `skills` |
-| Command | `internal/cli` | `internal/adapters/git`, `internal/adapters/notify`, `internal/config`, `internal/harness`, `internal/initializer`, `internal/orchestration`, `internal/tracker`, `internal/updater`, `internal/usage`, `internal/version` |
-| Application | `internal/orchestration` | `internal/config`, `internal/harness`, `internal/tracker`, `internal/usage`, `internal/verdict` |
-| Application support | `internal/initializer` | `internal/config`, `internal/tui`, `scripts`, `skills` |
+| Command | `internal/cli` | `internal/adapters/git`, `internal/adapters/notify`, `internal/config`, `internal/harness`, `internal/initializer`, `internal/orchestration`, `internal/tracker`, `internal/ui`, `internal/updater`, `internal/usage`, `internal/version` |
+| Application | `internal/orchestration` | `internal/config`, `internal/harness`, `internal/tracker`, `internal/ui`, `internal/usage`, `internal/verdict` |
+| Application support | `internal/initializer` | `internal/config`, `internal/tui`, `internal/ui`, `scripts`, `skills` |
 | Application support | `internal/updater` | `scripts` |
 | Port | `internal/harness` | `internal/config` |
 | Port adapter | `internal/adapters/gh` | `internal/tracker` |
@@ -26,6 +26,7 @@ not permitted.
 | Port adapter | `internal/harness/codex` | `internal/config`, `internal/harness` |
 | Support | `internal/usage` | `internal/harness/claude/transcript` |
 | Support with no project-package edges | `internal/adapters/git`, `internal/adapters/notify`, `internal/config`, `internal/harness/claude/transcript`, `internal/tracker`, `internal/tui`, `internal/verdict`, `internal/version`, `scripts`, `skills` | none |
+| Support with no project-package edges | `internal/ui` | none |
 
 ## Exceptions
 
