@@ -287,6 +287,7 @@ type implementReviewParams struct {
 }
 
 func runImplementIterations(ctx context.Context, params implementIterationsParams) (int, verdict.Verdict, []verdict.Finding, error) {
+	params.output = ensureLineTrackingWriter(params.output)
 	var blocking []verdict.Finding
 	var final verdict.Verdict
 	var previousReviewerSession string
@@ -316,6 +317,9 @@ func runImplementIterations(ctx context.Context, params implementIterationsParam
 			return 0, verdict.Verdict{}, nil, err
 		}
 		final = reviewResult.Verdict
+		if err := writeLineBreakIfNeeded(params.output); err != nil {
+			return 0, verdict.Verdict{}, nil, fmt.Errorf("separate review verdict: %w", err)
+		}
 		if _, err := io.WriteString(params.output, formatVerdict(final)); err != nil {
 			return 0, verdict.Verdict{}, nil, fmt.Errorf("write review verdict: %w", err)
 		}
@@ -335,13 +339,14 @@ func runImplementReview(ctx context.Context, params implementIterationsParams, r
 		Prompt: composeReviewPrompt("#"+strconv.Itoa(params.ticket.Number), &params.ticket, params.branchPoint, reviewParams.diffPath, params.reviewContext),
 		MCP:    params.projectConfig.Roles.Review.MCP,
 	}
+	reviewOutput := newRoleLabelWriter(params.output, "review", ansiColorReview)
 	if _, err := fmt.Fprintf(params.output, "iteration %d/%d — reviewing\n", reviewParams.iteration, params.projectConfig.Loop.MaxIterations); err != nil {
 		return ReviewExecution{}, fmt.Errorf("write review progress: %w", err)
 	}
 	reviewOptions := reviewResumeOptions{
 		sessionID: reviewParams.previousReviewerSession,
 		request:   reviewRequest,
-		output:    newRoleLabelWriter(params.output, "review", ansiColorReview),
+		output:    reviewOutput,
 		mode:      reviewParams.mode,
 		questions: params.questions,
 	}
@@ -551,7 +556,7 @@ func formatImplementSummary(summary implementSummary) string {
 			summary.worktreePath, summary.worktreePath,
 		)
 	}
-	fmt.Fprintf(&builder, "Diff stat:\n%s\n", strings.TrimSpace(summary.diffStat))
+	fmt.Fprintf(&builder, "Diff stat:\n%s\n", strings.TrimRight(summary.diffStat, " \t\r\n"))
 	return builder.String()
 }
 

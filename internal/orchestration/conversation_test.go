@@ -35,6 +35,24 @@ func TestRunReviewExecutionDoesNotDuplicateResultAfterAssistantDeltas(t *testing
 	}
 }
 
+func TestConsumeHarnessStreamSeparatesToolsWithoutSplittingAssistantChunks(t *testing.T) {
+	stream := scriptedConversationStream{events: []harness.Event{
+		{Type: harness.EventAssistantText, Text: "running the full quality gate"},
+		{Type: harness.EventAssistantText, Text: " now"},
+		{Type: harness.EventToolUse, ToolName: "Bash", ArgumentGist: "go test ./..."},
+	}}
+	var output strings.Builder
+
+	if _, err := consumeHarnessStream(stream, &output, ParsedHarnessOutput); err != nil {
+		t.Fatalf("consumeHarnessStream() error = %v", err)
+	}
+
+	want := "running the full quality gate now\ntool: Bash — go test ./...\n"
+	if output.String() != want {
+		t.Fatalf("parsed output = %q, want %q", output.String(), want)
+	}
+}
+
 func TestRunReviewExecutionUsesResultTextWhenNoAssistantDeltasArrive(t *testing.T) {
 	adapter := &scriptedConversationAdapter{runs: [][]harness.Event{{
 		{Type: harness.EventSession, SessionID: "review-session"},

@@ -10,6 +10,8 @@ import (
 	"github.com/igorrochap/syl/internal/tracker"
 )
 
+const bannerRoleLabelWidth = len("implementer:")
+
 func writeImplementBanner(
 	output io.Writer,
 	originRoot string,
@@ -29,13 +31,15 @@ func writeImplementBanner(
 	reviewContextIndicator := contextIndicator(reviewContext)
 	_, err = fmt.Fprintf(output,
 		"syl implement #%d — %s\n"+
-			"  implementer: %s · %s · effort %s%s\n"+
-			"  reviewer:    %s · %s · effort %s%s\n"+
+			"  %s %s · %s · effort %s%s\n"+
+			"  %s %s · %s · effort %s%s\n"+
 			"  max iterations: %d\n"+
 			"  run artifacts: %s\n"+
 			"%s",
 		ticket.Number, ticket.Title,
+		formatBannerRoleLabel("implementer:"),
 		projectConfig.Roles.Implement.Harness, projectConfig.Roles.Implement.Model, projectConfig.Roles.Implement.Effort, implementContextIndicator,
+		formatBannerRoleLabel("reviewer:"),
 		projectConfig.Roles.Review.Harness, projectConfig.Roles.Review.Model, projectConfig.Roles.Review.Effort, reviewContextIndicator,
 		projectConfig.Loop.MaxIterations, relativeArtifactDir, worktreeLine,
 	)
@@ -50,8 +54,9 @@ func writeReviewBanner(output io.Writer, projectConfig config.Config, ticketRef 
 	if ticket != nil {
 		heading = fmt.Sprintf("syl review %s — %s", ticketRef, ticket.Title)
 	}
-	_, err := fmt.Fprintf(output, "%s\n  reviewer: %s · %s · effort %s%s\n",
+	_, err := fmt.Fprintf(output, "%s\n  %s %s · %s · effort %s%s\n",
 		heading,
+		formatBannerRoleLabel("reviewer:"),
 		projectConfig.Roles.Review.Harness, projectConfig.Roles.Review.Model, projectConfig.Roles.Review.Effort, contextIndicator(reviewContext),
 	)
 	if err != nil {
@@ -72,12 +77,17 @@ func writePlanBanner(output io.Writer, projectConfig config.Config, target strin
 	if target = strings.TrimSpace(target); target != "" {
 		heading += " " + target
 	}
-	_, err := fmt.Fprintf(output, "%s\n  planner:    %s · %s · effort %s\n",
+	_, err := fmt.Fprintf(output, "%s\n  %s %s · %s · effort %s\n",
 		heading,
+		formatBannerRoleLabel("planner:"),
 		projectConfig.Roles.Plan.Harness, projectConfig.Roles.Plan.Model, projectConfig.Roles.Plan.Effort,
 	)
 	if err != nil {
 		return fmt.Errorf("write plan banner: %w", err)
 	}
 	return nil
+}
+
+func formatBannerRoleLabel(label string) string {
+	return fmt.Sprintf("%-*s", bannerRoleLabelWidth, label)
 }

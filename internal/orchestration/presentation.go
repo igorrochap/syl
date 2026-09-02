@@ -6,8 +6,6 @@ import (
 	"os"
 	"strings"
 
-	"github.com/mattn/go-isatty"
-
 	"github.com/igorrochap/syl/internal/verdict"
 )
 
@@ -87,12 +85,13 @@ func lineMarkerPrefixLength(value, marker string) int {
 }
 
 type reviewProgressWriter struct {
-	output io.Writer
-	parser *streamMarkerParser
+	output      io.Writer
+	parser      *streamMarkerParser
+	atLineStart bool
 }
 
 func newReviewProgressWriter(output io.Writer) *reviewProgressWriter {
-	return &reviewProgressWriter{output: output, parser: newStreamMarkerParser(verdict.BlockStartMarker)}
+	return &reviewProgressWriter{output: output, parser: newStreamMarkerParser(verdict.BlockStartMarker), atLineStart: true}
 }
 
 // Unwrap exposes the underlying writer so the quiet-mode spinner can detect the
@@ -100,6 +99,46 @@ func newReviewProgressWriter(output io.Writer) *reviewProgressWriter {
 // the same animation as the implementer instead of no spinner at all.
 func (w *reviewProgressWriter) Unwrap() io.Writer {
 	return w.output
+}
+
+func (w *reviewProgressWriter) AtLineStart() bool {
+	if lineWriter, ok := w.output.(interface{ AtLineStart() bool }); ok {
+		return lineWriter.AtLineStart()
+	}
+	return w.atLineStart
+}
+
+type lineTrackingWriter struct {
+	output      io.Writer
+	atLineStart bool
+}
+
+func newLineTrackingWriter(output io.Writer) *lineTrackingWriter {
+	return &lineTrackingWriter{output: output, atLineStart: true}
+}
+
+func ensureLineTrackingWriter(output io.Writer) io.Writer {
+	if _, ok := output.(interface{ AtLineStart() bool }); ok {
+		return output
+	}
+	return newLineTrackingWriter(output)
+}
+
+func (w *lineTrackingWriter) Unwrap() io.Writer {
+	return w.output
+}
+
+func (w *lineTrackingWriter) AtLineStart() bool {
+	return w.atLineStart
+}
+
+func (w *lineTrackingWriter) Write(p []byte) (int, error) {
+	n, err := w.output.Write(p)
+	if n > 0 {
+		lastByte := p[n-1]
+		w.atLineStart = lastByte == '\n' || lastByte == '\r'
+	}
+	return n, err
 }
 
 func (w *reviewProgressWriter) Write(p []byte) (int, error) {
@@ -110,6 +149,7 @@ func (w *reviewProgressWriter) Write(p []byte) (int, error) {
 	if _, err := io.WriteString(w.output, visible); err != nil {
 		return 0, err
 	}
+	w.atLineStart = bytesAtLineStart([]byte(visible))
 	return len(p), nil
 }
 
@@ -120,6 +160,9 @@ func (w *reviewProgressWriter) EndTurn() error {
 		return nil
 	}
 	_, err := io.WriteString(w.output, visible)
+	if err == nil {
+		w.atLineStart = bytesAtLineStart([]byte(visible))
+	}
 	return err
 }
 
@@ -154,15 +197,16 @@ func (w *roleLabelWriter) Unwrap() io.Writer {
 	return w.output
 }
 
+func (w *roleLabelWriter) AtLineStart() bool {
+	return w.atLineStart
+}
+
 func shouldColorizeOutput(output io.Writer) bool {
 	if os.Getenv("NO_COLOR") != "" {
 		return false
 	}
-	file, ok := output.(interface{ Fd() uintptr })
-	if !ok {
-		return false
-	}
-	return isatty.IsTerminal(file.Fd())
+	_, ok := terminalWriter(output)
+	return ok
 }
 
 func (w *roleLabelWriter) Write(p []byte) (int, error) {

@@ -144,6 +144,85 @@ func TestRunImplementIterationsRecordsReviseThenApproveInMemory(t *testing.T) {
 	}
 }
 
+func TestRunImplementIterationsStartsVerdictOnANewLineAfterReviewProse(t *testing.T) {
+	recorder := newMemoryRunRecorder()
+	implementer := &scriptedConversationAdapter{runs: [][]harness.Event{{
+		{Type: harness.EventSession, SessionID: "implement-1"},
+		{Type: harness.EventAssistantText, Text: "implementation"},
+	}}}
+	reviewer := &scriptedConversationAdapter{
+		runs: [][]harness.Event{{
+			{Type: harness.EventSession, SessionID: "review-1"},
+			{Type: harness.EventAssistantText, Text: "Review prose"},
+		}},
+		resumes: [][]harness.Event{{
+			{Type: harness.EventAssistantText, Text: "VERDICT: approve\nSUMMARY: Ready\nFINDINGS:"},
+		}},
+	}
+	var output strings.Builder
+
+	_, _, _, err := runImplementIterations(context.Background(), implementIterationsParams{
+		git:           staticImplementGit{branchPoint: "branch-point", diff: "diff --git a/a b/a\n"},
+		implementer:   implementer,
+		reviewer:      reviewer,
+		projectConfig: config.Config{Loop: config.LoopConfig{MaxIterations: 1}},
+		ticket:        tracker.Ticket{Number: 42, Title: "Separate verdict"},
+		branchPoint:   "branch-point",
+		recorder:      recorder,
+		output:        &output,
+	})
+	if err != nil {
+		t.Fatalf("runImplementIterations() error = %v", err)
+	}
+
+	verdictIndex := strings.Index(output.String(), "VERDICT:")
+	if verdictIndex == 0 || output.String()[verdictIndex-1] != '\n' {
+		t.Fatalf("output = %q, want VERDICT at the start of a line", output.String())
+	}
+}
+
+func TestRunImplementIterationsReportsReviewSeparatorWriteError(t *testing.T) {
+	recorder := newMemoryRunRecorder()
+	implementer := &scriptedConversationAdapter{runs: [][]harness.Event{{
+		{Type: harness.EventAssistantText, Text: "implementation"},
+	}}}
+	reviewer := &scriptedConversationAdapter{
+		runs: [][]harness.Event{{
+			{Type: harness.EventSession, SessionID: "review-1"},
+			{Type: harness.EventAssistantText, Text: "Review prose"},
+		}},
+		resumes: [][]harness.Event{{
+			{Type: harness.EventAssistantText, Text: "VERDICT: approve\nSUMMARY: Ready\nFINDINGS:"},
+		}},
+	}
+
+	_, _, _, err := runImplementIterations(context.Background(), implementIterationsParams{
+		git:           staticImplementGit{branchPoint: "branch-point", diff: "diff --git a/a b/a\n"},
+		implementer:   implementer,
+		reviewer:      reviewer,
+		projectConfig: config.Config{Loop: config.LoopConfig{MaxIterations: 1}},
+		ticket:        tracker.Ticket{Number: 42, Title: "Separate verdict"},
+		branchPoint:   "branch-point",
+		recorder:      recorder,
+		output:        &separatorFailingWriter{},
+	})
+	if err == nil || !strings.Contains(err.Error(), "separate review verdict") {
+		t.Fatalf("runImplementIterations() error = %v, want separator failure", err)
+	}
+}
+
+func TestFormatImplementSummaryPreservesDiffStatIndentation(t *testing.T) {
+	got := formatImplementSummary(implementSummary{
+		final:    verdict.Verdict{Status: verdict.Approve, Summary: "Ready"},
+		diffStat: " change.go | 1 +\n other.go  | 2 ++\n",
+	})
+
+	want := "Diff stat:\n change.go | 1 +\n other.go  | 2 ++\n"
+	if !strings.Contains(got, want) {
+		t.Fatalf("formatImplementSummary() = %q, want diff stat rows with leading spaces", got)
+	}
+}
+
 func TestRunImplementIterationsContinuesWhenUsageRecordingFails(t *testing.T) {
 	recorder := &failingUsageRecorder{memoryRunRecorder: newMemoryRunRecorder()}
 	implementer := &scriptedConversationAdapter{runs: [][]harness.Event{{
