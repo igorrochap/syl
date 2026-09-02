@@ -79,6 +79,9 @@ type styleSet struct {
 	positive lipgloss.Style
 	negative lipgloss.Style
 	muted    lipgloss.Style
+	code     lipgloss.Style
+	bold     lipgloss.Style
+	italic   lipgloss.Style
 }
 
 type outputLine struct {
@@ -117,6 +120,9 @@ func New(output io.Writer, caps Caps) *Renderer {
 			positive: lipglossRenderer.NewStyle().Bold(true).Foreground(lipgloss.Color("#04B575")),
 			negative: lipglossRenderer.NewStyle().Bold(true).Foreground(lipgloss.Color("#FF4672")),
 			muted:    lipglossRenderer.NewStyle().Foreground(lipgloss.Color("#626262")),
+			code:     lipglossRenderer.NewStyle().Foreground(lipgloss.Color("#04B575")),
+			bold:     lipglossRenderer.NewStyle().Bold(true),
+			italic:   lipglossRenderer.NewStyle().Italic(true),
 		},
 	}
 }

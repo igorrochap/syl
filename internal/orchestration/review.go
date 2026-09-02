@@ -15,6 +15,7 @@ import (
 	"github.com/igorrochap/syl/internal/config"
 	"github.com/igorrochap/syl/internal/harness"
 	"github.com/igorrochap/syl/internal/tracker"
+	"github.com/igorrochap/syl/internal/ui"
 	"github.com/igorrochap/syl/internal/usage"
 	"github.com/igorrochap/syl/internal/verdict"
 )
@@ -123,10 +124,10 @@ func completeStandaloneReview(ctx context.Context, options ReviewOptions, prepar
 	}
 	reviewVerdict := run.review.Verdict
 	if !options.Raw {
-		if err := writeLineBreakIfNeeded(options.Output); err != nil {
-			return fmt.Errorf("separate review verdict: %w", err)
-		}
-		if _, err := io.WriteString(options.Output, formatVerdict(reviewVerdict)); err != nil {
+		renderer := ui.New(options.Output, ui.DetectCaps(options.Output))
+		if err := renderer.ReviewVerdict(ui.ReviewVerdict{
+			Status: string(reviewVerdict.Status), Summary: reviewVerdict.Summary, Findings: toUIFindings(reviewVerdict.Findings),
+		}); err != nil {
 			return fmt.Errorf("write verdict: %w", err)
 		}
 	}
@@ -184,6 +185,11 @@ func runStandaloneReview(ctx context.Context, options ReviewOptions, preparation
 	}
 	if options.Raw {
 		mode = RawHarnessOutput
+	}
+	if !options.Raw {
+		if err := writeRoleSection(options.Output, "Reviewer"); err != nil {
+			return standaloneReviewRun{}, fmt.Errorf("write review role: %w", err)
+		}
 	}
 	startedAt := time.Now().UTC()
 	review, err := runReview(ctx, options.Adapter, harness.Request{
@@ -276,7 +282,7 @@ func prepareReviewWithContext(ctx context.Context, originRoot, ticketRef, review
 }
 
 func runReview(ctx context.Context, adapter harness.Adapter, request harness.Request, output io.Writer, mode HarnessOutputMode, questions *QuestionHandler) (ReviewExecution, error) {
-	return RunReviewExecution(ctx, adapter, request, output, mode, questions)
+	return RunReviewExecutionWithProgress(ctx, adapter, request, output, mode, questions)
 }
 
 func recordStandaloneReviewArtifacts(recorder RunRecorder, review ReviewExecution) error {
@@ -292,7 +298,11 @@ func RunReviewExecution(ctx context.Context, adapter harness.Adapter, request ha
 }
 
 func RunReviewExecutionWithProgress(ctx context.Context, adapter harness.Adapter, request harness.Request, output io.Writer, mode HarnessOutputMode, questions *QuestionHandler) (ReviewExecution, error) {
-	progress := newReviewProgressWriter(output)
+	visibleOutput := newLiveHarnessOutput(output, mode)
+	if mode == RawHarnessOutput {
+		return runReviewExecution(ctx, adapter, request, visibleOutput, mode, questions, nil)
+	}
+	progress := newReviewProgressWriter(visibleOutput)
 	return runReviewExecution(ctx, adapter, request, progress, mode, questions, progress)
 }
 
@@ -338,7 +348,8 @@ func runReviewExecutionWithResumeFallback(ctx context.Context, adapter harness.A
 		return RunReviewExecutionWithProgress(ctx, adapter, options.request, options.output, options.mode, options.questions)
 	}
 
-	progress := newReviewProgressWriter(options.output)
+	visibleOutput := newLiveHarnessOutput(options.output, options.mode)
+	progress := newReviewProgressWriter(visibleOutput)
 	resumeRequest := options.request
 	resumeRequest.Prompt = options.resumePrompt
 	review, err := runReviewExecutionFrom(ctx, adapter, reviewExecutionOptions{
@@ -391,10 +402,11 @@ func (e *reviewResumeError) Unwrap() error { return e.cause }
 
 func runReviewExecutionFrom(ctx context.Context, adapter harness.Adapter, options reviewExecutionOptions) (ReviewExecution, error) {
 	var feed bytes.Buffer
+	artifactOutput := newPlainHarnessOutput(&feed, options.mode)
 	first, err := runHarnessConversation(ctx, adapter, options.start, conversationOptions{
 		request:   options.request,
 		output:    options.output,
-		artifact:  &feed,
+		artifact:  artifactOutput,
 		mode:      options.mode,
 		questions: options.questions,
 		role:      "review",
@@ -407,10 +419,8 @@ func runReviewExecutionFrom(ctx context.Context, adapter harness.Adapter, option
 		}
 		return ReviewExecution{}, reviewErr
 	}
-	if options.turnOutput != nil {
-		if err := options.turnOutput.EndTurn(); err != nil {
-			return ReviewExecution{}, fmt.Errorf("flush review output: %w", err)
-		}
+	if err := endReviewTurn(options.turnOutput); err != nil {
+		return ReviewExecution{}, err
 	}
 	reviewVerdict, parseErr := verdict.Parse(first.Transcript)
 	if parseErr == nil {
@@ -424,7 +434,7 @@ func runReviewExecutionFrom(ctx context.Context, adapter harness.Adapter, option
 	retryOptions := conversationOptions{
 		request:   options.request,
 		output:    options.output,
-		artifact:  &feed,
+		artifact:  artifactOutput,
 		mode:      options.mode,
 		questions: options.questions,
 		role:      "review",
@@ -435,10 +445,8 @@ func runReviewExecutionFrom(ctx context.Context, adapter harness.Adapter, option
 	if err != nil {
 		return ReviewExecution{}, err
 	}
-	if options.turnOutput != nil {
-		if err := options.turnOutput.EndTurn(); err != nil {
-			return ReviewExecution{}, fmt.Errorf("flush review output: %w", err)
-		}
+	if err := endReviewTurn(options.turnOutput); err != nil {
+		return ReviewExecution{}, err
 	}
 	transcript := appendReviewTranscript(first.Transcript, retry.Transcript)
 	sessions := append(append([]string(nil), first.SessionIDs...), retry.SessionIDs...)
@@ -449,6 +457,16 @@ func runReviewExecutionFrom(ctx context.Context, adapter harness.Adapter, option
 
 	execution := ReviewExecution{Transcript: transcript, Feed: feed.String(), SessionIDs: sessions}
 	return execution, &UnparseableVerdictError{Execution: execution, Cause: parseErr}
+}
+
+func endReviewTurn(turnOutput reviewTurnOutput) error {
+	if turnOutput == nil {
+		return nil
+	}
+	if err := turnOutput.EndTurn(); err != nil {
+		return fmt.Errorf("flush review output: %w", err)
+	}
+	return nil
 }
 
 func lastUsableSessionID(sessionIDs []string) string {
@@ -490,6 +508,24 @@ func writeRawEvent(output io.Writer, event harness.Event) error {
 }
 
 func writeParsedEvent(output io.Writer, event harness.Event) error {
+	if renderer, ok := output.(harnessEventRenderer); ok {
+		return renderWithHarnessEventRenderer(renderer, event)
+	}
+	return writeLegacyParsedEvent(output, event)
+}
+
+func renderWithHarnessEventRenderer(renderer harnessEventRenderer, event harness.Event) error {
+	switch event.Type {
+	case harness.EventAssistantText, harness.EventResult:
+		return renderer.Assistant(event.Text)
+	case harness.EventToolUse:
+		return renderer.Tool(event.ToolName, event.ArgumentGist)
+	default:
+		return nil
+	}
+}
+
+func writeLegacyParsedEvent(output io.Writer, event harness.Event) error {
 	switch event.Type {
 	case harness.EventAssistantText:
 		if _, err := io.WriteString(output, event.Text); err != nil {

@@ -3,15 +3,19 @@ package cli
 import (
 	"bytes"
 	"context"
+	"flag"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"testing"
 
+	"github.com/creack/pty"
 	"github.com/igorrochap/syl/internal/harness"
 	"github.com/igorrochap/syl/internal/orchestration"
 	"github.com/igorrochap/syl/internal/tracker"
 )
+
+var updateCLIGolden = flag.Bool("update-cli-golden", false, "rewrite CLI golden files")
 
 type topSeamFixture struct {
 	root      string
@@ -19,6 +23,44 @@ type topSeamFixture struct {
 	harnesses map[string]harness.Adapter
 	stdout    bytes.Buffer
 	stderr    bytes.Buffer
+}
+
+type terminalCapture struct {
+	fd uintptr
+	bytes.Buffer
+}
+
+func newStyledTerminalCapture(t *testing.T) *terminalCapture {
+	t.Helper()
+	master, terminal, err := pty.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = terminal.Close() })
+	t.Cleanup(func() { _ = master.Close() })
+	if err := pty.Setsize(terminal, &pty.Winsize{Cols: 120, Rows: 24}); err != nil {
+		t.Fatal(err)
+	}
+	return &terminalCapture{fd: terminal.Fd()}
+}
+
+func (w *terminalCapture) Fd() uintptr { return w.fd }
+
+func assertCLIGolden(t *testing.T, name string, actual []byte) {
+	t.Helper()
+	path := filepath.Join("testdata", name)
+	if *updateCLIGolden {
+		if err := os.WriteFile(path, actual, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(actual, want) {
+		t.Fatalf("golden %s mismatch:\n got: %q\nwant: %q", name, actual, want)
+	}
 }
 
 func newTopSeamFixture(t *testing.T) *topSeamFixture {

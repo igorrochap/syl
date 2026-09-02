@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,6 +14,41 @@ import (
 	"github.com/igorrochap/syl/internal/harness"
 	"github.com/igorrochap/syl/internal/usage"
 )
+
+func TestReviewOutputMatchesPlainAndStyledGolden(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		styled bool
+	}{
+		{name: "plain"},
+		{name: "styled", styled: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if test.styled {
+				t.Setenv("NO_COLOR", "")
+			} else {
+				t.Setenv("NO_COLOR", "1")
+			}
+			harness := &scriptedHarness{first: []harness.Event{
+				{Type: harness.EventSession, SessionID: "review-session"},
+				{Type: harness.EventAssistantText, Text: "Reviewing the diff...\n"},
+				{Type: harness.EventToolUse, ToolName: "Bash", ArgumentGist: `{"command":"cat review.diff"}`},
+				{Type: harness.EventAssistantText, Text: "Done.\n" + approveVerdictText},
+			}}
+			fixture := newReviewFixture(t, harness)
+			var output io.Writer = &strings.Builder{}
+			if test.styled {
+				output = newStyledTerminalCapture(t)
+			}
+			code := fixture.app.Run(context.Background(), []string{"review", "--verbose"}, output, &fixture.stderr)
+			if code != 0 {
+				t.Fatalf("review code = %d, stderr = %q", code, fixture.stderr.String())
+			}
+			actual := output.(interface{ String() string }).String()
+			assertCLIGolden(t, test.name+"-review.golden", []byte(actual))
+		})
+	}
+}
 
 func TestReviewTopSeamApprovePrintsFeedAndWritesLog(t *testing.T) {
 	harness := &scriptedHarness{first: []harness.Event{
@@ -696,7 +732,7 @@ func TestReviewRawPassesHarnessOutputWithoutFeedRendering(t *testing.T) {
 		t.Fatalf("review code = %d, want 0; stderr = %q", code, fixture.stderr.String())
 	}
 	got := fixture.stdout.String()
-	if !strings.HasPrefix(got, "syl review — working tree\n  reviewer:    claude · claude-sonnet-5 · effort medium\n") || !strings.HasSuffix(got, rawLine) {
+	if !strings.HasPrefix(got, "syl review — working tree\n  reviewer:  claude · claude-sonnet-5 · effort medium\n") || !strings.HasSuffix(got, rawLine) {
 		t.Fatalf("raw stdout = %q, want the identification banner followed by exact raw output %q", got, rawLine)
 	}
 	if strings.Contains(got, "tool:") || strings.Contains(got, "VERDICT:") {

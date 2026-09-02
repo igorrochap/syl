@@ -204,10 +204,10 @@ func TestRunImplementIterationsReportsReviewSeparatorWriteError(t *testing.T) {
 		ticket:        tracker.Ticket{Number: 42, Title: "Separate verdict"},
 		branchPoint:   "branch-point",
 		recorder:      recorder,
-		output:        &separatorFailingWriter{},
+		output:        &separatorFailingWriter{failOnVerdict: true},
 	})
-	if err == nil || !strings.Contains(err.Error(), "separate review verdict") {
-		t.Fatalf("runImplementIterations() error = %v, want separator failure", err)
+	if err == nil || !strings.Contains(err.Error(), "write review verdict") {
+		t.Fatalf("runImplementIterations() error = %v, want rendered verdict write failure", err)
 	}
 }
 

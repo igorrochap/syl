@@ -8,6 +8,7 @@ import (
 
 	"github.com/igorrochap/syl/internal/config"
 	"github.com/igorrochap/syl/internal/tracker"
+	"github.com/igorrochap/syl/internal/ui"
 )
 
 const bannerRoleLabelWidth = len("implementer:")
@@ -23,26 +24,29 @@ func writeImplementBanner(
 	if err != nil {
 		return fmt.Errorf("make run artifacts path relative to project root: %w", err)
 	}
-	worktreeLine := ""
-	if worktreePath != "" {
-		worktreeLine = fmt.Sprintf("  worktree: %s\n", worktreePath)
-	}
 	implementContextIndicator := contextIndicator(implementContext)
 	reviewContextIndicator := contextIndicator(reviewContext)
-	_, err = fmt.Fprintf(output,
-		"syl implement #%d — %s\n"+
-			"  %s %s · %s · effort %s%s\n"+
-			"  %s %s · %s · effort %s%s\n"+
-			"  max iterations: %d\n"+
-			"  run artifacts: %s\n"+
-			"%s",
-		ticket.Number, ticket.Title,
-		formatBannerRoleLabel("implementer:"),
-		projectConfig.Roles.Implement.Harness, projectConfig.Roles.Implement.Model, projectConfig.Roles.Implement.Effort, implementContextIndicator,
-		formatBannerRoleLabel("reviewer:"),
-		projectConfig.Roles.Review.Harness, projectConfig.Roles.Review.Model, projectConfig.Roles.Review.Effort, reviewContextIndicator,
-		projectConfig.Loop.MaxIterations, relativeArtifactDir, worktreeLine,
-	)
+	rows := []ui.Field{
+		{
+			Label: "implementer",
+			Value: fmt.Sprintf("%s · %s · effort %s%s",
+				projectConfig.Roles.Implement.Harness, projectConfig.Roles.Implement.Model, projectConfig.Roles.Implement.Effort, implementContextIndicator),
+		},
+		{
+			Label: "reviewer",
+			Value: fmt.Sprintf("%s · %s · effort %s%s",
+				projectConfig.Roles.Review.Harness, projectConfig.Roles.Review.Model, projectConfig.Roles.Review.Effort, reviewContextIndicator),
+		},
+		{Label: "max iterations", Value: fmt.Sprintf("%d", projectConfig.Loop.MaxIterations)},
+		{Label: "run artifacts", Value: relativeArtifactDir},
+	}
+	if worktreePath != "" {
+		rows = append(rows, ui.Field{Label: "worktree", Value: worktreePath})
+	}
+	err = ui.New(output, ui.DetectCaps(output)).Banner(ui.Banner{
+		Title: fmt.Sprintf("syl implement #%d — %s", ticket.Number, ticket.Title),
+		Rows:  rows,
+	})
 	if err != nil {
 		return fmt.Errorf("write implement banner: %w", err)
 	}
@@ -54,11 +58,11 @@ func writeReviewBanner(output io.Writer, projectConfig config.Config, ticketRef 
 	if ticket != nil {
 		heading = fmt.Sprintf("syl review %s — %s", ticketRef, ticket.Title)
 	}
-	_, err := fmt.Fprintf(output, "%s\n  %s %s · %s · effort %s%s\n",
-		heading,
-		formatBannerRoleLabel("reviewer:"),
-		projectConfig.Roles.Review.Harness, projectConfig.Roles.Review.Model, projectConfig.Roles.Review.Effort, contextIndicator(reviewContext),
-	)
+	err := ui.New(output, ui.DetectCaps(output)).Banner(ui.Banner{
+		Title: heading,
+		Rows: []ui.Field{{Label: "reviewer", Value: fmt.Sprintf("%s · %s · effort %s%s",
+			projectConfig.Roles.Review.Harness, projectConfig.Roles.Review.Model, projectConfig.Roles.Review.Effort, contextIndicator(reviewContext))}},
+	})
 	if err != nil {
 		return fmt.Errorf("write review banner: %w", err)
 	}

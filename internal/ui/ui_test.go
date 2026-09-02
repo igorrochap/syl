@@ -8,7 +8,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/creack/pty"
 )
@@ -44,6 +46,32 @@ func TestPrimitivesHavePlainAndStyledGoldens(t *testing.T) {
 			name: "verdict",
 			render: func(renderer *Renderer) error {
 				return renderer.Verdict(Verdict{Status: "approve", Summary: "The renderer is ready."})
+			},
+		},
+		{
+			name: "review",
+			render: func(renderer *Renderer) error {
+				return renderer.ReviewVerdict(ReviewVerdict{
+					Status:  "revise",
+					Summary: "Keep this machine-readable summary on one unchanged line.",
+					Findings: []Finding{
+						{Kind: "blocking", Location: "internal/ui/review.go:29", Issue: "Keep this complete finding on one unchanged line."},
+						{Kind: "nit", Location: "internal/ui/ui_test.go:1", Issue: "Keep this fixture focused."},
+					},
+				})
+			},
+		},
+		{
+			name: "implement",
+			render: func(renderer *Renderer) error {
+				return renderer.RunSummary(RunSummary{
+					Iterations:   2,
+					FinalVerdict: "revise",
+					Summary:      "The implement loop needs one more focused correction.",
+					NitFindings:  []Finding{{Kind: "nit", Location: "internal/ui/ui_test.go:1", Issue: "Add the command-level golden."}},
+					WorktreePath: "/tmp/syl-worktree",
+					DiffStat:     " internal/ui/review.go | 12 ++++--------\n 1 file changed, 4 insertions(+), 8 deletions(-)",
+				})
 			},
 		},
 		{
@@ -268,6 +296,181 @@ func TestRendererHandlesEmptyValuesAndWriteFailures(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestStreamWrapsAssistantProseWithRoleGutterAndFlushesFinalWord(t *testing.T) {
+	var output bytes.Buffer
+	stream := NewStream(&output, Caps{Color: true, Width: 12, Unicode: true}, StreamOptions{Gutter: "│ "})
+	if err := stream.Assistant("alpha beta gamma"); err != nil {
+		t.Fatal(err)
+	}
+	if err := stream.EndTurn(); err != nil {
+		t.Fatal(err)
+	}
+
+	want := "\x1b[38;2;97;97;97m│ \x1b[0malpha beta\n\x1b[38;2;97;97;97m│ \x1b[0mgamma\n"
+	if got := output.String(); got != want {
+		t.Fatalf("stream output = %q, want %q", got, want)
+	}
+}
+
+func TestStreamOmitsRoleGutterWithoutStyledTerminal(t *testing.T) {
+	var output bytes.Buffer
+	stream := NewStream(&output, Caps{Width: 12, Unicode: true}, StreamOptions{Gutter: "│ "})
+	if err := stream.Assistant("alpha beta"); err != nil {
+		t.Fatal(err)
+	}
+	if err := stream.EndTurn(); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := output.String(); got != "alpha beta\n" {
+		t.Fatalf("stream output = %q, want plain output without role gutter", got)
+	}
+}
+
+func TestStreamOverwideTokenIsEmittedWithoutLooping(t *testing.T) {
+	var output bytes.Buffer
+	stream := NewStream(&output, Caps{Width: 10}, StreamOptions{Gutter: "│ "})
+	path := "/tmp/a-file-path-that-is-wider-than-the-terminal"
+	if err := stream.Assistant(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := stream.EndTurn(); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.String(), path) {
+		t.Fatalf("stream output = %q, want over-wide token %q", output.String(), path)
+	}
+}
+
+func TestStreamDoesNotWriteCursorEscapesToNonTerminalOutput(t *testing.T) {
+	var output bytes.Buffer
+	stream := NewStream(&output, Caps{Color: false}, StreamOptions{Activity: true})
+	if err := stream.Tool("Bash", "cat review.diff"); err != nil {
+		t.Fatal(err)
+	}
+	if err := stream.EndTurn(); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(output.String(), "\x1b[") {
+		t.Fatalf("stream output = %q, want no cursor-control escape", output.String())
+	}
+}
+
+func TestStreamStylesInlineMarkdownButLeavesBlockMarkdownLiteral(t *testing.T) {
+	var output bytes.Buffer
+	stream := NewStream(&output, Caps{Color: true}, StreamOptions{})
+	text := "`code` **bold** *italic*\n- bullet\n### heading\n| **table** |\n```\n**fenced**\n```"
+	if err := stream.Assistant(text); err != nil {
+		t.Fatal(err)
+	}
+	if err := stream.EndTurn(); err != nil {
+		t.Fatal(err)
+	}
+
+	got := output.String()
+	if !strings.Contains(got, "\x1b[") {
+		t.Fatalf("stream output = %q, want styled output", got)
+	}
+	for _, expected := range []string{"code", "bold", "italic", "- bullet", "### heading", "| **table** |", "**fenced**"} {
+		if !strings.Contains(stripANSI(got), expected) {
+			t.Fatalf("stream output = %q, want visible text %q", got, expected)
+		}
+	}
+	if strings.Contains(stripANSI(got), "`code`") || strings.Contains(stripANSI(got), "**bold**") || strings.Contains(stripANSI(got), "*italic*") {
+		t.Fatalf("stream output = %q, want inline markers rendered away", got)
+	}
+}
+
+func TestStreamActivityAdvancesWithItsOwnTickerAndClearsOnNextEvent(t *testing.T) {
+	previousTerminal := isTerminal
+	isTerminal = func(fd uintptr) bool { return fd == 42 }
+	t.Cleanup(func() { isTerminal = previousTerminal })
+
+	clock := &testClock{now: time.Date(2026, 9, 2, 12, 0, 0, 0, time.UTC), tickCh: make(chan time.Time, 1)}
+	terminal := &testTerminal{}
+	stream := NewStream(terminal, Caps{Color: true, Width: 48}, StreamOptions{
+		Activity: true, Clock: clock, TickerInterval: time.Second,
+	})
+	if err := stream.Tool("Bash", "cat review.diff"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(terminal.String(), "Bash") || !strings.Contains(terminal.String(), "0.0s") {
+		t.Fatalf("activity = %q, want tool and initial elapsed time", terminal.String())
+	}
+	clock.now = clock.now.Add(2 * time.Second)
+	clock.tick()
+	deadline := time.Now().Add(time.Second)
+	for !strings.Contains(terminal.String(), "2.0s") && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if !strings.Contains(terminal.String(), "2.0s") {
+		t.Fatalf("activity = %q, want ticker-driven elapsed update", terminal.String())
+	}
+	if err := stream.BeforeEvent(); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(terminal.String(), "\r\x1b[K") {
+		t.Fatalf("activity = %q, want clear escape after next event", terminal.String())
+	}
+}
+
+func stripANSI(value string) string {
+	for {
+		start := strings.Index(value, "\x1b[")
+		if start == -1 {
+			return value
+		}
+		end := strings.IndexByte(value[start:], 'm')
+		if end == -1 {
+			return value[:start]
+		}
+		value = value[:start] + value[start+end+1:]
+	}
+}
+
+type testTerminal struct {
+	mu sync.Mutex
+	bytes.Buffer
+}
+
+func (t *testTerminal) Fd() uintptr { return 42 }
+
+func (t *testTerminal) Write(value []byte) (int, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.Buffer.Write(value)
+}
+
+func (t *testTerminal) String() string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.Buffer.String()
+}
+
+type testClock struct {
+	now    time.Time
+	tickCh chan time.Time
+}
+
+func (c *testClock) Now() time.Time { return c.now }
+
+func (c *testClock) NewTicker(time.Duration) Ticker {
+	if c.tickCh == nil {
+		c.tickCh = make(chan time.Time)
+	}
+	return testTicker{channel: c.tickCh}
+}
+
+func (c *testClock) tick() {
+	c.tickCh <- c.now
+}
+
+type testTicker struct{ channel <-chan time.Time }
+
+func (t testTicker) C() <-chan time.Time { return t.channel }
+
+func (testTicker) Stop() {}
 
 type errorWriter struct {
 	err error

@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,6 +16,71 @@ import (
 	"github.com/igorrochap/syl/internal/harness/codex"
 	"github.com/igorrochap/syl/internal/usage"
 )
+
+func TestImplementOutputMatchesPlainAndStyledGolden(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		styled bool
+	}{
+		{name: "plain"},
+		{name: "styled", styled: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if test.styled {
+				t.Setenv("NO_COLOR", "")
+			} else {
+				t.Setenv("NO_COLOR", "1")
+			}
+			fixture := newImplementLoopFixture(t)
+			loop := &loopHarness{
+				root: fixture.root,
+				streams: [][]harness.Event{
+					{
+						{Type: harness.EventSession, SessionID: "implement-session"},
+						{Type: harness.EventAssistantText, Text: "Implementer is working.\n"},
+					},
+					{
+						{Type: harness.EventSession, SessionID: "review-session"},
+						{Type: harness.EventAssistantText, Text: approveVerdictText},
+					},
+				},
+			}
+			fixture.harnesses["codex"] = loop
+			fixture.harnesses["claude"] = loop
+			fixture.app.deps.GH = fixedGH(&loopGHRunner{})
+
+			var output io.Writer = &strings.Builder{}
+			if test.styled {
+				output = newStyledTerminalCapture(t)
+			}
+			code := fixture.app.Run(context.Background(), []string{"implement", "--verbose", "#42"}, output, &fixture.stderr)
+			if code != 0 {
+				t.Fatalf("implement code = %d, stderr = %q", code, fixture.stderr.String())
+			}
+			actual := normalizeImplementGoldenOutput(output.(interface{ String() string }).String())
+			assertCLIGolden(t, test.name+"-implement.golden", []byte(actual))
+		})
+	}
+}
+
+func normalizeImplementGoldenOutput(value string) string {
+	const (
+		pathPrefix = ".syl/runs/"
+		pathSuffix = "-42"
+	)
+	for {
+		start := strings.Index(value, pathPrefix)
+		if start == -1 {
+			return value
+		}
+		suffixOffset := strings.Index(value[start:], pathSuffix)
+		if suffixOffset == -1 {
+			return value
+		}
+		end := start + suffixOffset + len(pathSuffix)
+		value = value[:start] + pathPrefix + "<run-dir>" + value[end:]
+	}
+}
 
 func TestImplementLoopApprovesOnFirstIteration(t *testing.T) {
 	fixture := newImplementLoopFixture(t)
@@ -412,16 +478,8 @@ func TestImplementLoopStreamsImplementerAndReviewerProgress(t *testing.T) {
 	if !strings.Contains(output, "VERDICT: approve") {
 		t.Fatalf("stdout = %q, want the rendered reviewer verdict", output)
 	}
-	for _, expected := range []string{
-		"[implement] Implementer is working.",
-		"[implement] tool: edit — change.txt",
-		"[review] Reviewer is checking the diff.",
-		"[review] Verify the diff first.",
-		"[review] tool: cat — iteration review diff",
-	} {
-		if !strings.Contains(output, expected) {
-			t.Fatalf("stdout = %q, want line labeled %q", output, expected)
-		}
+	if strings.Contains(output, "│ ") || strings.Contains(output, "◆ Implementer") || strings.Contains(output, "◆ Reviewer") {
+		t.Fatalf("stdout = %q, want plain output without role decoration", output)
 	}
 }
 
@@ -456,14 +514,17 @@ func TestImplementLoopQuietlyShowsProgressWithoutToolCalls(t *testing.T) {
 	for _, expected := range []string{
 		"iteration 1/3 — implementing",
 		"iteration 1/3 — reviewing",
-		"[implement] Implementer internal prose.",
-		"[review] Reviewer internal prose.",
+		"Implementer internal prose.",
+		"Reviewer internal prose.",
 		"VERDICT: approve",
 		"SUMMARY: The working tree is ready",
 	} {
 		if !strings.Contains(output, expected) {
 			t.Fatalf("stdout = %q, want %q", output, expected)
 		}
+	}
+	if strings.Contains(output, "│ ") || strings.Contains(output, "◆ Implementer") || strings.Contains(output, "◆ Reviewer") {
+		t.Fatalf("stdout = %q, want plain output without role decoration", output)
 	}
 	for _, suppressed := range []string{"tool: edit — change.txt", "tool: cat — iteration review diff"} {
 		if strings.Contains(output, suppressed) {
@@ -1255,7 +1316,7 @@ func TestImplementWorktreeLeavesOriginUntouchedAndReviewsDiffInsideWorktree(t *t
 		!strings.Contains(string(summary), "git worktree remove --force "+worktreePath) {
 		t.Fatalf("origin summary = %q, want path and cleanup command", summary)
 	}
-	if !strings.Contains(fixture.stdout.String(), "worktree: "+worktreePath) ||
+	if !strings.Contains(fixture.stdout.String(), "Worktree: "+worktreePath) ||
 		!strings.Contains(fixture.stdout.String(), "git worktree remove --force "+worktreePath) {
 		t.Fatalf("worktree output = %q, want path and cleanup command", fixture.stdout.String())
 	}

@@ -191,7 +191,7 @@ func TestRunHarnessConversationRendersQuestionAndConfirmsResume(t *testing.T) {
 		}
 	}
 	for _, expected := range []string{
-		"[implement] question on #42",
+		"implement question on #42",
 		"Which database should this use?",
 		"answer> ",
 		"answer sent — resuming implementer…",

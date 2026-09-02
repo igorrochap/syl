@@ -1,0 +1,10 @@
+Iterations: 2
+Final verdict: revise
+Summary: The implement loop needs one more focused correction.
+Nit findings:
+- [nit] internal/ui/ui_test.go:1 — Add the command-level golden.
+Worktree: /tmp/syl-worktree
+Remove worktree: git worktree remove --force /tmp/syl-worktree
+Diff stat:
+ internal/ui/review.go | 12 ++++--------
+ 1 file changed, 4 insertions(+), 8 deletions(-)
