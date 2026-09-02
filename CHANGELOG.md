@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v1.26.1 (2026-09-02)
+
+### Bug Fixes
+
+- **cli**: Update implementation loop to track latest iteration nits
+  ([#141](https://github.com/igorrochap/syl/pull/141),
+  [`2b6f2f8`](https://github.com/igorrochap/syl/commit/2b6f2f8262103476077f34224c055bb455b48991))
+
+
 ## v1.26.0 (2026-09-02)
 
 ### Features
