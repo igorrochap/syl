@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v1.26.3 (2026-09-02)
+
+### Bug Fixes
+
+- **cli**: Ensure output formatting consistency ([#143](https://github.com/igorrochap/syl/pull/143),
+  [`ab57792`](https://github.com/igorrochap/syl/commit/ab577927077ba07445b45915d82677ec035aab44))
+
+
 ## v1.26.2 (2026-09-02)
 
 ### Bug Fixes
