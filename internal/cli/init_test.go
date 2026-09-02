@@ -238,7 +238,7 @@ func runQualityScriptWithEnvironment(t *testing.T, root string, environment []st
 
 func TestInitKeyboardTUIAcceptsDefaultsAndTogglesSelections(t *testing.T) {
 	root := t.TempDir()
-	input := strings.NewReader(" \n\n\x1b[B\n" + strings.Repeat("\n", 9))
+	input := strings.NewReader(" \n\n\x1b[A\n" + strings.Repeat("\n", 9))
 	app := New(root, root, Dependencies{Input: input})
 	var stdout, stderr strings.Builder
 

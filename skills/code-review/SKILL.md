@@ -10,7 +10,7 @@ Two-axis review of the diff between `HEAD` and a fixed point the user supplies:
 
 Both axes run as **parallel sub-agents** so they don't pollute each other's context, then this skill aggregates their findings.
 
-The project's issue tracker should have been provided to you, including how it tracks reviews specifically (GitHub PR/issue comments, or a local `.scratch/` log) — this determines how you document findings in the Documenting section below. If these details are missing, ask the user before proceeding.
+The project's issue tracker should have been provided to you, including how it tracks reviews specifically (comments on a remote issue tracker, or a local `.scratch/` log) — this determines how you document findings in the Documenting section below. If these details are missing, ask the user before proceeding.
 
 ## Coordinator contract
 
@@ -108,10 +108,10 @@ Reporting them separately stops one axis from masking the other.
 
 **Tool-driven mode.** When the invoking prompt explicitly says that the tool records the verdict, skip the rest of this section. Do not read prior review documents or write a new review document; the verdict block is the only record. Choose this mode only from that prompt instruction, never from an inference about who invoked the skill.
 
-If this project tracks reviews on GitHub, the verdict block you print at the
-end (per the Verdict contract below) is the record — it's posted as a PR/issue
-comment by the tool that invoked you. Skip the rest of this section entirely;
-do not also write a `.scratch` review document.
+If this project tracks reviews on a remote issue tracker, the verdict block you
+print at the end (per the Verdict contract below) is the record — it's posted
+as an issue comment by the tool that invoked you. Skip the rest of this section
+entirely; do not also write a `.scratch` review document.
 
 Otherwise (local review tracking): do not write review findings into the issue
 file itself — the issue file is the spec/checklist, not a review log. Instead
