@@ -302,8 +302,8 @@ func (a *App) reviewCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if projectConfig.Tracker.Reviews == config.TrackerGitHub && len(args) == 0 {
-				return errors.New("github review logging requires an issue reference (N or #N)")
+			if projectConfig.Tracker.Reviews.IsRemote() && len(args) == 0 {
+				return errors.New("remote review logging requires an issue reference (N or #N)")
 			}
 
 			var ticket *tracker.Ticket

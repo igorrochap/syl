@@ -49,6 +49,11 @@ type Tracker string
 type Harness string
 type Effort string
 
+// IsRemote reports whether the tracker stores tickets outside the local filesystem.
+func (t Tracker) IsRemote() bool {
+	return t == TrackerGitHub
+}
+
 // WriteMode controls whether Write creates a new config or replaces an
 // existing one.
 type WriteMode bool
@@ -288,26 +293,11 @@ func defaultConfigValue() Config {
 }
 
 func validate(raw rawConfig, metadata toml.MetaData) (Config, error) {
-	issues, err := parseTracker("tracker.issues", raw.Tracker.Issues)
+	trackerConfig, err := parseTrackerConfig(raw.Tracker)
 	if err != nil {
 		return Config{}, err
 	}
-	reviews, err := parseTracker("tracker.reviews", raw.Tracker.Reviews)
-	if err != nil {
-		return Config{}, err
-	}
-	if issues == TrackerLocal && reviews == TrackerGitHub {
-		return Config{}, errors.New(`tracker.reviews = "github" requires tracker.issues = "github" so review comments have a remote issue`)
-	}
-	plan, err := parseRole("roles.plan", raw.Roles.Plan, defaultPlanMCP)
-	if err != nil {
-		return Config{}, err
-	}
-	implement, err := parseRole("roles.implement", raw.Roles.Implement, defaultImplementMCP)
-	if err != nil {
-		return Config{}, err
-	}
-	review, err := parseRole("roles.review", raw.Roles.Review, defaultReviewMCP)
+	rolesConfig, err := parseRolesConfig(raw.Roles)
 	if err != nil {
 		return Config{}, err
 	}
@@ -334,14 +324,43 @@ func validate(raw rawConfig, metadata toml.MetaData) (Config, error) {
 	}
 
 	return Config{
-		Tracker: TrackerConfig{Issues: issues, Reviews: reviews},
-		Roles: RolesConfig{
-			Plan: plan, Implement: implement, Review: review,
-		},
+		Tracker:       trackerConfig,
+		Roles:         rolesConfig,
 		Loop:          LoopConfig{MaxIterations: maxIterations},
 		Notifications: NotificationsConfig{Enabled: notificationsEnabled},
 		Worktree:      WorktreeConfig{Root: worktreeRoot, Setup: raw.Worktree.Setup, Copy: raw.Worktree.Copy},
 	}, nil
+}
+
+func parseTrackerConfig(raw rawTracker) (TrackerConfig, error) {
+	issues, err := parseTracker("tracker.issues", raw.Issues)
+	if err != nil {
+		return TrackerConfig{}, err
+	}
+	reviews, err := parseTracker("tracker.reviews", raw.Reviews)
+	if err != nil {
+		return TrackerConfig{}, err
+	}
+	if reviews.IsRemote() && reviews != issues {
+		return TrackerConfig{}, fmt.Errorf("tracker.reviews = %q and tracker.issues = %q are incompatible; a remote review log needs a matching remote issue tracker", reviews, issues)
+	}
+	return TrackerConfig{Issues: issues, Reviews: reviews}, nil
+}
+
+func parseRolesConfig(raw rawRoles) (RolesConfig, error) {
+	plan, err := parseRole("roles.plan", raw.Plan, defaultPlanMCP)
+	if err != nil {
+		return RolesConfig{}, err
+	}
+	implement, err := parseRole("roles.implement", raw.Implement, defaultImplementMCP)
+	if err != nil {
+		return RolesConfig{}, err
+	}
+	review, err := parseRole("roles.review", raw.Review, defaultReviewMCP)
+	if err != nil {
+		return RolesConfig{}, err
+	}
+	return RolesConfig{Plan: plan, Implement: implement, Review: review}, nil
 }
 
 func parseTracker(key, value string) (Tracker, error) {

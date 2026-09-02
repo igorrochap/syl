@@ -512,7 +512,7 @@ func TestReviewWithGitHubReviewLogRequiresIssueNumber(t *testing.T) {
 	configureGitHubReviewLog(t, fixture.root)
 
 	code := fixture.app.Run(context.Background(), []string{"review"}, &fixture.stdout, &fixture.stderr)
-	if code == 0 || !strings.Contains(fixture.stderr.String(), "requires an issue reference") {
+	if code == 0 || !strings.Contains(fixture.stderr.String(), "remote review logging requires an issue reference") {
 		t.Fatalf("review code = %d, stderr = %q, want clear issue-reference failure", code, fixture.stderr.String())
 	}
 	if harness.runRequest.Prompt != "" {
