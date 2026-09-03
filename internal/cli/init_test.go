@@ -13,7 +13,7 @@ import (
 	"github.com/igorrochap/syl/internal/config"
 )
 
-const defaultInitPromptCount = 12
+const defaultInitPromptCount = 13
 
 func defaultInitInput() *strings.Reader {
 	return strings.NewReader(strings.Repeat("\n", defaultInitPromptCount))
@@ -21,7 +21,7 @@ func defaultInitInput() *strings.Reader {
 
 func initInputWithConfirmation(answer string) *strings.Reader {
 	lines := make([]string, defaultInitPromptCount+1)
-	lines[defaultInitPromptCount] = answer
+	lines[4] = answer
 	return strings.NewReader(strings.Join(lines, "\n") + "\n")
 }
 
@@ -31,6 +31,7 @@ func TestInitBlankDirectoryScaffoldsProject(t *testing.T) {
 		"go-style",
 		"github",
 		"local",
+		"configure",
 		"claude",
 		"claude-opus-5",
 		"high",
@@ -358,7 +359,7 @@ func TestInitRerunShowsChangesAndDoesNotModifyWithoutConfirmation(t *testing.T) 
 	}
 
 	runAgainInput := strings.NewReader(strings.Join([]string{
-		"", "local", "github", "codex", "new-model", "low",
+		"", "local", "github", "configure", "codex", "new-model", "low",
 		"", "", "", "", "", "", "no",
 	}, "\n") + "\n")
 	again := New(root, root, Dependencies{Input: runAgainInput})

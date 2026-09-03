@@ -15,6 +15,7 @@ import (
 
 	"github.com/igorrochap/syl/internal/config"
 	"github.com/igorrochap/syl/internal/tui"
+	"github.com/igorrochap/syl/internal/ui"
 	"github.com/igorrochap/syl/scripts"
 	vendoredskills "github.com/igorrochap/syl/skills"
 )
@@ -23,6 +24,8 @@ const (
 	gitignoreEntry    = ".syl/runs/"
 	qualityScriptPath = "scripts/quality.sh"
 	minimalAgents     = "# Project instructions\n\nThis project is managed with syl.\n"
+	recommendedRoles  = "recommended"
+	configuredRoles   = "configure"
 )
 
 type skillManifest struct {
@@ -62,28 +65,38 @@ type linkPlan struct {
 
 func initPromptSpecs(manifest skillManifest) []tui.PromptSpec {
 	optional := optionalSkillNames(manifest)
-	specs := make([]tui.PromptSpec, 0, 12)
+	specs := make([]tui.PromptSpec, 0, 13)
 	if len(optional) > 0 {
 		specs = append(specs, tui.PromptSpec{Key: "optional", Label: "Optional skills", Kind: tui.MultiPrompt, Options: optional})
 	}
 	specs = append(specs,
 		tui.PromptSpec{Key: "tracker.issues", Label: "Issues tracker", Kind: tui.ChoicePrompt, Options: []string{"github", "local", "gitlab"}, DefaultValue: "github"},
 		tui.PromptSpec{Key: "tracker.reviews", Label: "Review log", Kind: tui.ChoicePrompt, Options: []string{"github", "local", "gitlab"}, DefaultValue: "local"},
+		tui.PromptSpec{Key: "roles", Label: "Role defaults", Kind: tui.ChoicePrompt, Options: []string{recommendedRoles, configuredRoles}, DefaultValue: recommendedRoles},
 	)
-	for _, role := range []struct {
-		name, harness, model, effort string
-	}{
-		{name: "plan", harness: "claude", model: "claude-opus-5", effort: "high"},
-		{name: "implement", harness: "codex", model: "gpt-5.6-luna", effort: "xhigh"},
-		{name: "review", harness: "claude", model: "claude-sonnet-5", effort: "medium"},
-	} {
-		specs = append(specs,
-			tui.PromptSpec{Key: role.name + ".harness", Label: role.name + " harness", Kind: tui.ChoicePrompt, Options: []string{"claude", "codex", "opencode"}, DefaultValue: role.harness},
-			tui.PromptSpec{Key: role.name + ".model", Label: role.name + " model", Kind: tui.TextPrompt, DefaultValue: role.model},
-			tui.PromptSpec{Key: role.name + ".effort", Label: role.name + " effort", Kind: tui.ChoicePrompt, Options: []string{"low", "medium", "high", "xhigh"}, DefaultValue: role.effort},
-		)
+	for _, spec := range rolePromptSpecs() {
+		spec.Skip = skipRolePrompt
+		specs = append(specs, spec)
 	}
 	return specs
+}
+
+func rolePromptSpecs() []tui.PromptSpec {
+	return []tui.PromptSpec{
+		{Key: "plan.harness", Label: "plan harness", Kind: tui.ChoicePrompt, Options: []string{"claude", "codex", "opencode"}, DefaultValue: "claude"},
+		{Key: "plan.model", Label: "plan model", Kind: tui.TextPrompt, DefaultValue: "claude-opus-5"},
+		{Key: "plan.effort", Label: "plan effort", Kind: tui.ChoicePrompt, Options: []string{"low", "medium", "high", "xhigh"}, DefaultValue: "high"},
+		{Key: "implement.harness", Label: "implement harness", Kind: tui.ChoicePrompt, Options: []string{"claude", "codex", "opencode"}, DefaultValue: "codex"},
+		{Key: "implement.model", Label: "implement model", Kind: tui.TextPrompt, DefaultValue: "gpt-5.6-luna"},
+		{Key: "implement.effort", Label: "implement effort", Kind: tui.ChoicePrompt, Options: []string{"low", "medium", "high", "xhigh"}, DefaultValue: "xhigh"},
+		{Key: "review.harness", Label: "review harness", Kind: tui.ChoicePrompt, Options: []string{"claude", "codex", "opencode"}, DefaultValue: "claude"},
+		{Key: "review.model", Label: "review model", Kind: tui.TextPrompt, DefaultValue: "claude-sonnet-5"},
+		{Key: "review.effort", Label: "review effort", Kind: tui.ChoicePrompt, Options: []string{"low", "medium", "high", "xhigh"}, DefaultValue: "medium"},
+	}
+}
+
+func skipRolePrompt(answers map[string]tui.Answer) bool {
+	return answers["roles"].Value == recommendedRoles
 }
 
 func runInitWizard(projectRoot string, input io.Reader, output io.Writer, manifest skillManifest) (initPlan, bool, error) {
@@ -102,7 +115,7 @@ func runInitWizard(projectRoot string, input io.Reader, output io.Writer, manife
 		}
 		return tui.PromptSpec{Key: "confirmation", Label: changesPrompt(plan), Kind: tui.ChoicePrompt, Options: []string{"yes", "no"}, DefaultValue: "no"}, true, nil
 	}
-	answers, err := tui.Run(input, output, initPromptSpecs(manifest), finalizer)
+	answers, err := tui.RunWithRenderer(input, output, initPromptSpecs(manifest), finalizer, initPromptRenderer(output))
 	if err != nil {
 		return initPlan{}, false, err
 	}
@@ -110,8 +123,44 @@ func runInitWizard(projectRoot string, input io.Reader, output io.Writer, manife
 	return plan, confirmed, nil
 }
 
+func initPromptRenderer(output io.Writer) tui.ViewRenderer {
+	return promptRenderer(ui.DetectCaps(output))
+}
+
+func promptRenderer(caps ui.Caps) tui.ViewRenderer {
+	return func(view tui.PromptView) string {
+		options := make([]ui.PromptOption, 0, len(view.Options))
+		for _, option := range view.Options {
+			options = append(options, ui.PromptOption{
+				Label:    option.Label,
+				Cursor:   option.Cursor,
+				Checkbox: option.Checkbox,
+				Selected: option.Selected,
+			})
+		}
+		var builder strings.Builder
+		if err := ui.New(&builder, caps).Prompt(ui.Prompt{
+			Step:         ui.Step{Number: view.Step, Total: view.Total, Label: view.Label},
+			Options:      options,
+			Input:        view.Input,
+			DefaultValue: view.DefaultValue,
+			Hint:         view.Hint,
+			Message:      view.Message,
+		}); err != nil {
+			return ""
+		}
+		return builder.String()
+	}
+}
+
 func configFromAnswers(answers map[string]tui.Answer) (config.Config, []string, error) {
-	value := func(key string) string { return answers[key].Value }
+	defaults := roleDefaults()
+	value := func(key string) string {
+		if answer := answers[key].Value; answer != "" {
+			return answer
+		}
+		return defaults[key]
+	}
 	roles := config.RolesConfig{
 		Plan:      config.RoleConfig{Harness: config.Harness(value("plan.harness")), Model: value("plan.model"), Effort: config.Effort(value("plan.effort")), MCP: true},
 		Implement: config.RoleConfig{Harness: config.Harness(value("implement.harness")), Model: value("implement.model"), Effort: config.Effort(value("implement.effort")), MCP: true},
@@ -122,6 +171,14 @@ func configFromAnswers(answers map[string]tui.Answer) (config.Config, []string, 
 		Roles:   roles, Loop: config.LoopConfig{MaxIterations: 3}, Notifications: config.NotificationsConfig{Enabled: true},
 		Worktree: config.WorktreeConfig{Root: config.DefaultWorktreeRoot},
 	}, answers["optional"].Selected, nil
+}
+
+func roleDefaults() map[string]string {
+	defaults := make(map[string]string, len(rolePromptSpecs()))
+	for _, spec := range rolePromptSpecs() {
+		defaults[spec.Key] = spec.DefaultValue
+	}
+	return defaults
 }
 
 func optionalSkillNames(manifest skillManifest) []string {

@@ -26,7 +26,31 @@ type PromptSpec struct {
 	Kind         PromptKind
 	Options      []string
 	DefaultValue string
+	Skip         func(map[string]Answer) bool
 }
+
+// PromptOption is the visible state of one option in a prompt.
+type PromptOption struct {
+	Label    string
+	Cursor   bool
+	Checkbox bool
+	Selected bool
+}
+
+// PromptView is the visible state of the current prompt.
+type PromptView struct {
+	Step         int
+	Total        int
+	Label        string
+	Options      []PromptOption
+	Input        string
+	DefaultValue string
+	Hint         string
+	Message      string
+}
+
+// ViewRenderer renders a prompt view for the terminal's output capabilities.
+type ViewRenderer func(PromptView) string
 
 type Answer struct {
 	Value    string
@@ -34,24 +58,35 @@ type Answer struct {
 }
 
 type promptModel struct {
-	specs           []PromptSpec
-	answers         map[string]Answer
-	index           int
-	cursor          int
-	buffer          []rune
-	selected        map[string]bool
-	message         string
-	err             error
-	done            bool
-	afterPrompts    func(map[string]Answer) (PromptSpec, bool, error)
-	afterPromptsRun bool
+	specs         []PromptSpec
+	answers       map[string]Answer
+	index         int
+	cursor        int
+	buffer        []rune
+	selected      map[string]bool
+	message       string
+	err           error
+	done          bool
+	afterPrompts  func(map[string]Answer) (PromptSpec, bool, error)
+	baseSpecCount int
+	renderer      ViewRenderer
 }
 
 // Run renders a sequence of prompts. The finalizer may append one confirmation
 // prompt after the initial sequence has been answered.
 func Run(input io.Reader, output io.Writer, specs []PromptSpec, finalizer func(map[string]Answer) (PromptSpec, bool, error)) (map[string]Answer, error) {
+	return run(input, output, specs, finalizer, nil)
+}
+
+// RunWithRenderer runs prompts using the supplied renderer for each view.
+func RunWithRenderer(input io.Reader, output io.Writer, specs []PromptSpec, finalizer func(map[string]Answer) (PromptSpec, bool, error), renderer ViewRenderer) (map[string]Answer, error) {
+	return run(input, output, specs, finalizer, renderer)
+}
+
+func run(input io.Reader, output io.Writer, specs []PromptSpec, finalizer func(map[string]Answer) (PromptSpec, bool, error), renderer ViewRenderer) (map[string]Answer, error) {
 	model := newPromptModel(specs)
 	model.afterPrompts = finalizer
+	model.renderer = renderer
 	options := []tea.ProgramOption{tea.WithInput(input), tea.WithOutput(output)}
 	if !isInteractiveOutput(output) {
 		options = append(options, tea.WithoutRenderer())
@@ -79,9 +114,10 @@ func isInteractiveOutput(output io.Writer) bool {
 
 func newPromptModel(specs []PromptSpec) *promptModel {
 	model := &promptModel{
-		specs:    specs,
-		answers:  make(map[string]Answer, len(specs)),
-		selected: make(map[string]bool),
+		specs:         specs,
+		answers:       make(map[string]Answer, len(specs)),
+		selected:      make(map[string]bool),
+		baseSpecCount: len(specs),
 	}
 	model.resetCurrent()
 	return model
@@ -97,10 +133,12 @@ func (m *promptModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	if !ok {
 		return m, nil
 	}
-	if key.Type == tea.KeyCtrlC || key.Type == tea.KeyEsc {
-		m.err = errors.New("init cancelled")
-		m.done = true
-		return m, tea.Quit
+	handled, quit := m.handleGlobalKey(key)
+	if handled {
+		if quit {
+			return m, tea.Quit
+		}
+		return m, nil
 	}
 	if m.index >= len(m.specs) {
 		m.done = true
@@ -122,9 +160,22 @@ func (m *promptModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m *promptModel) handleGlobalKey(key tea.KeyMsg) (bool, bool) {
+	if key.Type == tea.KeyCtrlC {
+		m.err = errors.New("init cancelled")
+		m.done = true
+		return true, true
+	}
+	if key.Type == tea.KeyEsc || key.Type == tea.KeyLeft {
+		m.goBack()
+		return true, false
+	}
+	return false, false
+}
+
 func (m *promptModel) updateChoice(spec PromptSpec, key tea.KeyMsg) {
 	switch key.Type {
-	case tea.KeyUp, tea.KeyLeft:
+	case tea.KeyUp:
 		m.moveCursor(-1, len(spec.Options))
 		m.buffer = nil
 	case tea.KeyDown, tea.KeyRight:
@@ -149,7 +200,7 @@ func (m *promptModel) updateChoice(spec PromptSpec, key tea.KeyMsg) {
 
 func (m *promptModel) updateMulti(spec PromptSpec, key tea.KeyMsg) {
 	switch key.Type {
-	case tea.KeyUp, tea.KeyLeft:
+	case tea.KeyUp:
 		m.moveCursor(-1, len(spec.Options))
 	case tea.KeyDown, tea.KeyRight:
 		m.moveCursor(1, len(spec.Options))
@@ -220,25 +271,15 @@ func (m *promptModel) moveCursor(delta, count int) {
 
 func (m *promptModel) advance(spec PromptSpec, answer Answer) {
 	m.answers[spec.Key] = answer
-	m.index++
 	m.buffer = nil
 	m.message = ""
-	if m.index >= len(m.specs) {
-		if m.afterPrompts != nil && !m.afterPromptsRun {
-			m.afterPromptsRun = true
-			spec, addPrompt, err := m.afterPrompts(m.answers)
-			if err != nil {
-				m.err = err
-				m.done = true
-				return
-			}
-			if addPrompt {
-				m.specs = append(m.specs, spec)
-				m.resetCurrent()
-				return
-			}
-		}
+	if m.index >= m.baseSpecCount {
 		m.done = true
+		return
+	}
+	m.index = m.nextPromptIndex(m.index + 1)
+	if m.index >= m.baseSpecCount {
+		m.finishPrompts()
 		return
 	}
 	m.resetCurrent()
@@ -246,16 +287,21 @@ func (m *promptModel) advance(spec PromptSpec, answer Answer) {
 
 func (m *promptModel) resetCurrent() {
 	m.cursor = 0
+	m.buffer = nil
 	m.selected = make(map[string]bool)
 	if m.index >= len(m.specs) {
 		return
 	}
 	spec := m.specs[m.index]
-	if spec.Kind != ChoicePrompt {
+	answer, answered := m.answers[spec.Key]
+	if answered {
+		m.restoreAnswer(spec, answer)
 		return
 	}
-	if index, ok := findOption(spec.DefaultValue, spec.Options); ok {
-		m.cursor = index
+	if spec.Kind == ChoicePrompt {
+		if index, ok := findOption(spec.DefaultValue, spec.Options); ok {
+			m.cursor = index
+		}
 	}
 }
 
@@ -264,44 +310,179 @@ func (m *promptModel) View() string {
 		return ""
 	}
 	spec := m.specs[m.index]
-	var builder strings.Builder
-	fmt.Fprintf(&builder, "%s\n\n", spec.Label)
+	view := PromptView{
+		Step:         m.currentStep(),
+		Total:        m.totalSteps(),
+		Label:        spec.Label,
+		Options:      makePromptOptions(spec, m.cursor, m.selected),
+		Input:        string(m.buffer),
+		DefaultValue: spec.DefaultValue,
+		Hint:         promptHint(spec, m.buffer, m.cursor),
+		Message:      m.message,
+	}
+	if m.renderer != nil {
+		return m.renderer(view)
+	}
+	return renderPlainPrompt(view)
+}
+
+func (m *promptModel) goBack() {
+	if m.index >= m.baseSpecCount {
+		delete(m.answers, m.specs[m.index].Key)
+	}
+	previous := m.previousPromptIndex(m.index)
+	if previous < 0 {
+		return
+	}
+	m.index = previous
+	m.resetCurrent()
+}
+
+func (m *promptModel) finishPrompts() {
+	if m.afterPrompts == nil {
+		m.done = true
+		return
+	}
+	spec, addPrompt, err := m.afterPrompts(m.answers)
+	if err != nil {
+		m.err = err
+		m.done = true
+		return
+	}
+	if !addPrompt {
+		m.done = true
+		return
+	}
+	if len(m.specs) == m.baseSpecCount {
+		m.specs = append(m.specs, spec)
+	} else {
+		m.specs[m.baseSpecCount] = spec
+	}
+	m.index = m.baseSpecCount
+	m.resetCurrent()
+}
+
+func (m *promptModel) nextPromptIndex(start int) int {
+	for index := start; index < m.baseSpecCount; index++ {
+		if m.isSkipped(index) {
+			// Answers from an inactive branch must not leak into finalization.
+			delete(m.answers, m.specs[index].Key)
+			continue
+		}
+		return index
+	}
+	return m.baseSpecCount
+}
+
+func (m *promptModel) previousPromptIndex(start int) int {
+	for index := start - 1; index >= 0; index-- {
+		if !m.isSkipped(index) {
+			return index
+		}
+	}
+	return -1
+}
+
+func (m *promptModel) isSkipped(index int) bool {
+	return index < m.baseSpecCount && m.specs[index].Skip != nil && m.specs[index].Skip(m.answers)
+}
+
+func (m *promptModel) currentStep() int {
+	step := 0
+	for index := 0; index <= m.index && index < len(m.specs); index++ {
+		if index < m.baseSpecCount && m.isSkipped(index) {
+			continue
+		}
+		step++
+	}
+	return step
+}
+
+func (m *promptModel) totalSteps() int {
+	total := 0
+	for index := 0; index < m.baseSpecCount; index++ {
+		if !m.isSkipped(index) {
+			total++
+		}
+	}
+	if len(m.specs) > m.baseSpecCount {
+		total++
+	}
+	return total
+}
+
+func (m *promptModel) restoreAnswer(spec PromptSpec, answer Answer) {
 	switch spec.Kind {
 	case ChoicePrompt:
-		for index, option := range spec.Options {
-			marker := " "
-			if index == m.cursor {
-				marker = ">"
-			}
-			fmt.Fprintf(&builder, "%s %s\n", marker, option)
-		}
-		if len(m.buffer) > 0 {
-			fmt.Fprintf(&builder, "\nTyped override: %s\n", string(m.buffer))
-		} else {
-			fmt.Fprintf(&builder, "\nEnter accepts %s; arrows navigate.\n", spec.Options[m.cursor])
+		if index, ok := findOption(answer.Value, spec.Options); ok {
+			m.cursor = index
 		}
 	case MultiPrompt:
-		for index, option := range spec.Options {
-			cursor := " "
-			if index == m.cursor {
-				cursor = ">"
-			}
-			checked := " "
-			if m.selected[option] {
-				checked = "x"
-			}
-			fmt.Fprintf(&builder, "%s [%s] %s\n", cursor, checked, option)
-		}
-		if len(m.buffer) > 0 {
-			fmt.Fprintf(&builder, "\nTyped selection: %s\n", string(m.buffer))
-		} else {
-			builder.WriteString("\nSpace toggles; Enter accepts; arrows navigate.\n")
+		for _, option := range answer.Selected {
+			m.selected[option] = true
 		}
 	case TextPrompt:
-		fmt.Fprintf(&builder, "Type an override, or press Enter for %s:\n> %s\n", spec.DefaultValue, string(m.buffer))
+		m.buffer = []rune(answer.Value)
 	}
-	if m.message != "" {
-		fmt.Fprintf(&builder, "\n%s\n", m.message)
+}
+
+func makePromptOptions(spec PromptSpec, cursor int, selected map[string]bool) []PromptOption {
+	options := make([]PromptOption, 0, len(spec.Options))
+	for index, option := range spec.Options {
+		options = append(options, PromptOption{
+			Label:    option,
+			Cursor:   index == cursor,
+			Checkbox: spec.Kind == MultiPrompt,
+			Selected: selected[option],
+		})
+	}
+	return options
+}
+
+func promptHint(spec PromptSpec, buffer []rune, cursor int) string {
+	if len(buffer) > 0 {
+		if spec.Kind == MultiPrompt {
+			return "Typed selection: " + string(buffer)
+		}
+		return "Typed override: " + string(buffer)
+	}
+	if spec.Kind == MultiPrompt {
+		return "Space toggles; Enter accepts; arrows navigate; Esc goes back."
+	}
+	if spec.Kind == ChoicePrompt {
+		if len(spec.Options) == 0 || cursor >= len(spec.Options) {
+			return "Enter accepts the default; arrows navigate; Esc goes back."
+		}
+		return fmt.Sprintf("Enter accepts %s; arrows navigate; Esc goes back.", spec.Options[cursor])
+	}
+	return "Enter accepts; Esc goes back."
+}
+
+func renderPlainPrompt(view PromptView) string {
+	var builder strings.Builder
+	fmt.Fprintf(&builder, "Step %d of %d: %s\n", view.Step, view.Total, view.Label)
+	for _, option := range view.Options {
+		cursor := "  "
+		if option.Cursor {
+			cursor = "> "
+		}
+		marker := ""
+		if option.Checkbox {
+			marker = "[ ] "
+			if option.Selected {
+				marker = "[x] "
+			}
+		}
+		fmt.Fprintf(&builder, "%s%s%s\n", cursor, marker, option.Label)
+	}
+	if len(view.Options) == 0 {
+		fmt.Fprintf(&builder, "Type an override, or press Enter for %s:\n> %s\n", view.DefaultValue, view.Input)
+	}
+	if view.Hint != "" {
+		fmt.Fprintf(&builder, "%s\n", view.Hint)
+	}
+	if view.Message != "" {
+		fmt.Fprintf(&builder, "%s\n", view.Message)
 	}
 	return builder.String()
 }
