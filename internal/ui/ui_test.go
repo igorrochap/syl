@@ -43,6 +43,20 @@ func TestPrimitivesHavePlainAndStyledGoldens(t *testing.T) {
 			},
 		},
 		{
+			name: "prompt",
+			render: func(renderer *Renderer) error {
+				return renderer.Prompt(Prompt{
+					Step: Step{Number: 2, Total: 5, Label: "Issues tracker"},
+					Options: []PromptOption{
+						{Label: "github", Cursor: true},
+						{Label: "local"},
+						{Label: "gitlab"},
+					},
+					Hint: "Enter accepts github; arrows navigate; Esc goes back.",
+				})
+			},
+		},
+		{
 			name: "verdict",
 			render: func(renderer *Renderer) error {
 				return renderer.Verdict(Verdict{Status: "approve", Summary: "The renderer is ready."})
@@ -146,6 +160,36 @@ func TestASCIIOutputUsesFallbackGlyphs(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertGolden(t, "ascii.golden", output.Bytes())
+}
+
+func TestPromptRendersMultiSelectAndTextInputStates(t *testing.T) {
+	var output bytes.Buffer
+	renderer := New(&output, Caps{Color: true, Width: 80, Unicode: true})
+	if err := renderer.Prompt(Prompt{
+		Step: Step{Number: 1, Total: 2, Label: "Optional skills"},
+		Options: []PromptOption{
+			{Label: "go-style", Cursor: true, Checkbox: true, Selected: true},
+			{Label: "prototype", Checkbox: true},
+		},
+		Hint: "Space toggles; Enter accepts.",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := renderer.Prompt(Prompt{
+		Step:         Step{Number: 2, Total: 2, Label: "Model"},
+		Input:        "custom-model",
+		DefaultValue: "default-model",
+		Message:      "Unknown model",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	got := stripANSI(output.String())
+	for _, expected := range []string{"☑ go-style", "☐ prototype", "> custom-model", "Unknown model"} {
+		if !strings.Contains(got, expected) {
+			t.Fatalf("prompt output = %q, want %q", got, expected)
+		}
+	}
 }
 
 func TestWidthHandling(t *testing.T) {

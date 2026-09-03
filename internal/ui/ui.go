@@ -37,10 +37,30 @@ type Field struct {
 // BannerRow is an alternate name for Field for callers that prefer row terminology.
 type BannerRow = Field
 
-// Step is a section or progress heading. Number is optional and omitted when zero.
+// Step is a section or progress heading. Number is optional and omitted when zero;
+// Total adds a progress total when it is also greater than zero.
 type Step struct {
 	Number int
+	Total  int
 	Label  string
+}
+
+// Prompt is the visible state of one interactive question.
+type Prompt struct {
+	Step         Step
+	Options      []PromptOption
+	Input        string
+	DefaultValue string
+	Hint         string
+	Message      string
+}
+
+// PromptOption is one selectable option in a Prompt.
+type PromptOption struct {
+	Label    string
+	Cursor   bool
+	Checkbox bool
+	Selected bool
 }
 
 // Verdict is a review outcome and its summary.
@@ -144,14 +164,33 @@ func (r *Renderer) Banner(value Banner) error {
 
 // Step writes a section or progress heading.
 func (r *Renderer) Step(value Step) error {
-	label := strings.TrimSpace(value.Label)
-	if value.Number > 0 {
-		label = fmt.Sprintf("Step %d: %s", value.Number, label)
-	}
 	return r.writeLines([]outputLine{{
-		text:  r.glyph("◆", "*") + " " + label,
+		text:  r.stepText(value),
 		style: r.style.heading,
 	}})
+}
+
+// Prompt writes one styled interactive question and its current input state.
+func (r *Renderer) Prompt(value Prompt) error {
+	lines := make([]outputLine, 0, len(value.Options)+4)
+	if value.Step.Label != "" {
+		lines = append(lines, outputLine{text: r.stepText(value.Step), style: r.style.heading})
+	}
+	if len(value.Options) > 0 {
+		lines = append(lines, r.promptOptionLines(value.Options)...)
+	} else {
+		lines = append(lines,
+			outputLine{text: "Type an override, or press Enter for " + value.DefaultValue + ":", style: r.style.muted},
+			outputLine{text: "> " + value.Input, style: r.style.code},
+		)
+	}
+	if value.Hint != "" {
+		lines = append(lines, outputLine{text: value.Hint, style: r.style.muted})
+	}
+	if value.Message != "" {
+		lines = append(lines, outputLine{text: value.Message, style: r.style.negative})
+	}
+	return r.writeLines(lines)
 }
 
 // Section writes a section heading without a step number.
@@ -256,6 +295,42 @@ func (r *Renderer) Error(err error) error {
 		text:  r.glyph("✗", "[error]") + " Error: " + message,
 		style: r.style.negative,
 	}})
+}
+
+func (r *Renderer) stepText(value Step) string {
+	label := strings.TrimSpace(value.Label)
+	if value.Number > 0 && value.Total > 0 {
+		label = fmt.Sprintf("Step %d of %d: %s", value.Number, value.Total, label)
+	} else if value.Number > 0 {
+		label = fmt.Sprintf("Step %d: %s", value.Number, label)
+	}
+	return r.glyph("◆", "*") + " " + label
+}
+
+func (r *Renderer) promptOptionLines(options []PromptOption) []outputLine {
+	lines := make([]outputLine, 0, len(options))
+	for _, option := range options {
+		cursor := "  "
+		if option.Cursor {
+			cursor = r.glyph("❯ ", "> ")
+		}
+		marker := ""
+		if option.Checkbox {
+			marker = r.glyph("☐ ", "[ ] ")
+			if option.Selected {
+				marker = r.glyph("☑ ", "[x] ")
+			}
+		}
+		style := r.style.label
+		if option.Cursor {
+			style = r.style.heading
+		}
+		if option.Selected {
+			style = r.style.positive
+		}
+		lines = append(lines, outputLine{text: cursor + marker + option.Label, style: style})
+	}
+	return lines
 }
 
 func (r *Renderer) writeLines(lines []outputLine) error {
