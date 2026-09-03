@@ -358,6 +358,32 @@ func TestCommandErrorFallsBackWhenRendererCannotWrite(t *testing.T) {
 	}
 }
 
+func TestRenderUsagePropagatesRendererErrors(t *testing.T) {
+	for _, failAt := range []int{1, 2} {
+		t.Run(fmt.Sprintf("write %d", failAt), func(t *testing.T) {
+			writer := &failAtWriter{failAt: failAt}
+			err := renderUsage(writer, usage.Artifact{Disclaimer: usage.Disclaimer})
+			if err == nil {
+				t.Fatalf("renderUsage() error = nil, want write failure at call %d", failAt)
+			}
+		})
+	}
+}
+
+func TestRenderUsageUsesDefaultUntrackedReason(t *testing.T) {
+	var output strings.Builder
+	artifact := usage.Artifact{
+		Entries:    []usage.Entry{{Iteration: 1, Role: "review", Harness: "claude", Model: "claude-sonnet-5"}},
+		Disclaimer: usage.Disclaimer,
+	}
+	if err := renderUsage(&output, artifact); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.String(), "not tracked: usage was not tracked") {
+		t.Fatalf("usage output = %q, want default untracked reason", output.String())
+	}
+}
+
 func TestUsageRecomputesClaudeTranscriptWhenArtifactIsMissing(t *testing.T) {
 	fixture := newTopSeamFixture(t)
 	runDir := filepath.Join(fixture.root, ".syl", "runs", "20260820T120000.000000000Z-41")
@@ -837,6 +863,20 @@ func (w *failOnceWriter) Write(value []byte) (int, error) {
 
 func (w *failOnceWriter) String() string {
 	return w.output.String()
+}
+
+type failAtWriter struct {
+	failAt int
+	writes int
+	output strings.Builder
+}
+
+func (w *failAtWriter) Write(value []byte) (int, error) {
+	w.writes++
+	if w.writes == w.failAt {
+		return 0, errors.New("write failed")
+	}
+	return w.output.Write(value)
 }
 
 func TestNewDefaultsToCurrentDirectoryWhenOriginRootIsEmpty(t *testing.T) {
