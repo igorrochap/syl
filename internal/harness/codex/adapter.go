@@ -63,6 +63,8 @@ func (a *Adapter) Attach(ctx context.Context, request harness.Request) error {
 	if a.projectRoot != "" {
 		process.Dir = a.projectRoot
 	}
+	// Attach is the interactive plan session; the child owns the terminal, so
+	// syl must leave its input and output unwrapped and unbuffered.
 	process.Stdin = os.Stdin
 	process.Stdout = os.Stdout
 	process.Stderr = os.Stderr

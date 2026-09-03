@@ -162,6 +162,16 @@ func (r *Renderer) Banner(value Banner) error {
 	return r.writeLines(lines)
 }
 
+// Text writes one or more ordinary user-facing lines with the renderer's label style.
+func (r *Renderer) Text(value string) error {
+	return r.writeLines([]outputLine{{text: value, style: r.style.label}})
+}
+
+// PromptLine writes an inline user-facing prompt without appending a newline.
+func (r *Renderer) PromptLine(value string) error {
+	return writeString(r.output, r.style.label.Render(value))
+}
+
 // Step writes a section or progress heading.
 func (r *Renderer) Step(value Step) error {
 	return r.writeLines([]outputLine{{

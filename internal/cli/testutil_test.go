@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/creack/pty"
@@ -48,6 +49,9 @@ func (w *terminalCapture) Fd() uintptr { return w.fd }
 
 func assertCLIGolden(t *testing.T, name string, actual []byte) {
 	t.Helper()
+	if isPlainCLIGolden(name) && bytes.IndexByte(actual, '\x1b') != -1 {
+		t.Fatalf("plain golden %s contains an escape sequence: %q", name, actual)
+	}
 	path := filepath.Join("testdata", name)
 	if *updateCLIGolden {
 		if err := os.WriteFile(path, actual, 0o644); err != nil {
@@ -61,6 +65,10 @@ func assertCLIGolden(t *testing.T, name string, actual []byte) {
 	if !bytes.Equal(actual, want) {
 		t.Fatalf("golden %s mismatch:\n got: %q\nwant: %q", name, actual, want)
 	}
+}
+
+func isPlainCLIGolden(name string) bool {
+	return strings.HasPrefix(name, "plain-") || strings.Contains(name, "-plain.")
 }
 
 func newTopSeamFixture(t *testing.T) *topSeamFixture {

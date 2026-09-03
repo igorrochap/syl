@@ -1,0 +1,8 @@
+iteration 1
+implement (codex, gpt-5.6-luna):   input 2.0k (50% cached) · output 80 (40 reasoning)
+review (claude, claude-sonnet-5):  not tracked: Claude transcript is missing
+
+iteration 2
+review (claude, claude-sonnet-5):  weighted_estimate=12.00 input_tokens=10 output_tokens=2 cache_write_tokens=0 cache_read_tokens=0
+
+Disclaimer: weighted_estimate is an estimate of plan-quota pressure, not a billing statement.

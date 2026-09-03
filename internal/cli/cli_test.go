@@ -2,7 +2,9 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -231,8 +233,8 @@ func TestUsageRendersLatestAndNamedRunWithoutCrossHarnessTotal(t *testing.T) {
 	output := stdout.String()
 	for _, expected := range []string{
 		"iteration 1",
-		"implement (codex, gpt-5.6-luna): input 2.0M (96% cached) · output 24.2k (13.7k reasoning)",
-		"review (claude, claude-sonnet-5): weighted_estimate=34.00",
+		"implement (codex, gpt-5.6-luna):   input 2.0M (96% cached) · output 24.2k (13.7k reasoning)",
+		"review (claude, claude-sonnet-5):  weighted_estimate=34.00",
 		"input_tokens=20",
 		"cache_write_tokens=8",
 		"cache_read_tokens=10",
@@ -254,8 +256,105 @@ func TestUsageRendersLatestAndNamedRunWithoutCrossHarnessTotal(t *testing.T) {
 	if code := app.Run(context.Background(), []string{"usage", filepath.Base(oldRun)}, &stdout, &stderr); code != 0 {
 		t.Fatalf("named usage code = %d, stderr = %q", code, stderr.String())
 	}
-	if !strings.Contains(stdout.String(), "review (claude, claude-sonnet-5): weighted_estimate=5.00") {
+	if !strings.Contains(stdout.String(), "review (claude, claude-sonnet-5):  weighted_estimate=5.00") {
 		t.Fatalf("named usage output = %q, want named run", stdout.String())
+	}
+}
+
+func TestUsageOutputMatchesPlainAndStyledGoldens(t *testing.T) {
+	root := t.TempDir()
+	runDir := filepath.Join(root, ".syl", "runs", "20260820T130000.000000000Z-42")
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := usage.WriteArtifact(filepath.Join(runDir, "usage.json"), usage.Artifact{
+		SchemaVersion: usage.SchemaVersion,
+		Disclaimer:    usage.Disclaimer,
+		Entries: []usage.Entry{
+			{Iteration: 1, Role: "implement", Harness: "codex", Model: "gpt-5.6-luna", Tracked: true, Metrics: &usage.Metrics{
+				InputTokens: 2_000, CachedInputTokens: 1_000, OutputTokens: 80, ReasoningOutputTokens: 40,
+			}},
+			{Iteration: 1, Role: "review", Harness: "claude", Model: "claude-sonnet-5", Reason: "Claude transcript is missing"},
+			{Iteration: 2, Role: "review", Harness: "claude", Model: "claude-sonnet-5", Tracked: true, Metrics: &usage.Metrics{
+				InputTokens: 10, OutputTokens: 2, WeightedEstimate: 12,
+			}},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, test := range []struct {
+		name   string
+		styled bool
+	}{
+		{name: "plain"},
+		{name: "styled", styled: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if test.styled {
+				t.Setenv("NO_COLOR", "")
+			} else {
+				t.Setenv("NO_COLOR", "1")
+			}
+			app := New(root, root, Dependencies{})
+			var output interface {
+				io.Writer
+				String() string
+			} = &strings.Builder{}
+			if test.styled {
+				output = newStyledTerminalCapture(t)
+			}
+			var stderr strings.Builder
+			if code := app.Run(context.Background(), []string{"usage"}, output, &stderr); code != 0 {
+				t.Fatalf("usage code = %d, stderr = %q", code, stderr.String())
+			}
+			assertCLIGolden(t, "usage-"+test.name+".golden", []byte(output.String()))
+		})
+	}
+}
+
+func TestCommandErrorsRenderToStandardErrorWithPlainAndStyledGoldens(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		styled bool
+	}{
+		{name: "plain"},
+		{name: "styled", styled: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if test.styled {
+				t.Setenv("NO_COLOR", "")
+			} else {
+				t.Setenv("NO_COLOR", "1")
+			}
+			fixture := newTopSeamFixture(t)
+			var stderr interface {
+				io.Writer
+				String() string
+			} = &fixture.stderr
+			if test.styled {
+				stderr = newStyledTerminalCapture(t)
+			}
+			if code := fixture.app.Run(context.Background(), []string{"review", "--raw", "--verbose"}, &fixture.stdout, stderr); code == 0 {
+				t.Fatal("command code = 0, want validation error")
+			}
+			if fixture.stdout.Len() != 0 {
+				t.Fatalf("stdout = %q, want error on stderr", fixture.stdout.String())
+			}
+			assertCLIGolden(t, "error-"+test.name+".golden", []byte(stderr.String()))
+		})
+	}
+}
+
+func TestCommandErrorFallsBackWhenRendererCannotWrite(t *testing.T) {
+	fixture := newTopSeamFixture(t)
+	var stderr failOnceWriter
+
+	if code := fixture.app.Run(context.Background(), []string{"review", "--raw", "--verbose"}, &fixture.stdout, &stderr); code == 0 {
+		t.Fatal("command code = 0, want validation error")
+	}
+	if got, want := stderr.String(), "syl: if any flags in the group [raw verbose] are set none of the others can be; [raw verbose] were all set\n"; got != want {
+		t.Fatalf("fallback stderr = %q, want %q", got, want)
 	}
 }
 
@@ -296,7 +395,7 @@ func TestUsageRecomputesClaudeTranscriptWhenArtifactIsMissing(t *testing.T) {
 	for _, expected := range []string{
 		"recomputed from transcripts — usage.json not found",
 		"iteration 1",
-		"review (claude, claude-sonnet-5): weighted_estimate=17.50 input_tokens=10 output_tokens=2 cache_write_tokens=4 cache_read_tokens=5",
+		"review (claude, claude-sonnet-5):  weighted_estimate=17.50 input_tokens=10 output_tokens=2 cache_write_tokens=4 cache_read_tokens=5",
 		usage.Disclaimer,
 	} {
 		if !strings.Contains(output, expected) {
@@ -346,8 +445,8 @@ func TestUsageRecomputesResumedClaudeSessionUsingArtifactWindows(t *testing.T) {
 	output := stdout.String()
 	for _, expected := range []string{
 		"recomputed from transcripts — usage.json not found",
-		"iteration 1\nreview (claude, claude-sonnet-5): weighted_estimate=11.00 input_tokens=10 output_tokens=1",
-		"iteration 2\nreview (claude, claude-sonnet-5): weighted_estimate=22.00 input_tokens=20 output_tokens=2",
+		"iteration 1\nreview (claude, claude-sonnet-5):  weighted_estimate=11.00 input_tokens=10 output_tokens=1",
+		"iteration 2\nreview (claude, claude-sonnet-5):  weighted_estimate=22.00 input_tokens=20 output_tokens=2",
 	} {
 		if !strings.Contains(output, expected) {
 			t.Fatalf("resumed usage output = %q, want %q", output, expected)
@@ -372,7 +471,7 @@ func TestUsageLabelsResumedClaudeSessionCombinedWhenArtifactWindowsAreUnavailabl
 		t.Fatalf("combined usage code = %d, stderr = %q", code, stderr.String())
 	}
 	output := stdout.String()
-	if !strings.Contains(output, "review, iterations 1–2 combined (claude, claude-sonnet-5): weighted_estimate=33.00 input_tokens=30 output_tokens=3") {
+	if !strings.Contains(output, "review, iterations 1–2 combined (claude, claude-sonnet-5):  weighted_estimate=33.00 input_tokens=30 output_tokens=3") {
 		t.Fatalf("combined usage output = %q, want one labeled combined row", output)
 	}
 	if strings.Contains(output, "iteration 2\nreview (") {
@@ -399,8 +498,8 @@ func TestUsageReportsUnavailableFallbackRolesWithoutFailing(t *testing.T) {
 	}
 	output := stdout.String()
 	for _, expected := range []string{
-		"implement (codex, gpt-5.6-luna): usage unavailable",
-		"review (claude, claude-sonnet-5): usage unavailable",
+		"implement (codex, gpt-5.6-luna):   usage unavailable",
+		"review (claude, claude-sonnet-5):  usage unavailable",
 	} {
 		if !strings.Contains(output, expected) {
 			t.Fatalf("unavailable usage output = %q, want %q", output, expected)
@@ -426,7 +525,7 @@ func TestUsageRecomputesCodexRolloutWhenArtifactIsMissing(t *testing.T) {
 	if code := fixture.app.Run(context.Background(), []string{"usage", filepath.Base(runDir)}, &stdout, &stderr); code != 0 {
 		t.Fatalf("Codex fallback code = %d, stderr = %q", code, stderr.String())
 	}
-	if !strings.Contains(stdout.String(), "implement (codex, gpt-5.6-luna): input 1.0k (90% cached) · output 80 (40 reasoning)") {
+	if !strings.Contains(stdout.String(), "implement (codex, gpt-5.6-luna):  input 1.0k (90% cached) · output 80 (40 reasoning)") {
 		t.Fatalf("Codex fallback output = %q, want rollout usage", stdout.String())
 	}
 }
@@ -721,6 +820,23 @@ func TestRunInitCreatesConfig(t *testing.T) {
 	if !strings.Contains(stdout.String(), ".syl/config.toml") {
 		t.Fatalf("stdout = %q, want config path", stdout.String())
 	}
+}
+
+type failOnceWriter struct {
+	failed bool
+	output strings.Builder
+}
+
+func (w *failOnceWriter) Write(value []byte) (int, error) {
+	if !w.failed {
+		w.failed = true
+		return 0, errors.New("render failed")
+	}
+	return w.output.Write(value)
+}
+
+func (w *failOnceWriter) String() string {
+	return w.output.String()
 }
 
 func TestNewDefaultsToCurrentDirectoryWhenOriginRootIsEmpty(t *testing.T) {
