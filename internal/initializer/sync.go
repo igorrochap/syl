@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/igorrochap/syl/internal/ui"
 )
 
 type SyncOptions struct {
@@ -51,73 +53,113 @@ func Sync(projectRoot string, options SyncOptions) error {
 	if err != nil {
 		return err
 	}
-	writeSyncReport(options.Output, report)
+	renderer := ui.New(options.Output, ui.DetectCaps(options.Output))
+	if err := writeSyncReport(renderer, options.Output, report); err != nil {
+		return err
+	}
 	if options.DryRun {
 		return nil
 	}
 
+	changed, err := applySyncDecisions(projectRoot, options, renderer, &report)
+	if err != nil {
+		return err
+	}
+	if err := reconcileSyncLock(projectRoot, &report); err != nil {
+		return err
+	}
+	if !changed && allSkillsUnchanged(report) {
+		if err := renderer.Text("Skills are up to date."); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func applySyncDecisions(projectRoot string, options SyncOptions, renderer *ui.Renderer, report *syncReport) (bool, error) {
 	input := options.Input
 	if input == nil {
 		input = strings.NewReader("")
 	}
 	reader := bufio.NewReader(input)
-	lockDirty := false
 	changed := false
 	for index := range report.skills {
 		skill := &report.skills[index]
-		if skill.status == syncUnchanged || skill.status == syncMissingOptional {
+		if !requiresSyncDecision(*skill) {
 			continue
 		}
-
-		update := options.All && canAutoUpdate(*skill)
-		if !update {
-			decision, err := promptSyncDecision(reader, options.Output, *skill)
-			if err != nil {
-				return err
-			}
-			update = decision == syncUpdate
+		update, err := decideSyncUpdate(reader, renderer, options, *skill)
+		if err != nil {
+			return false, err
 		}
 		if !update {
 			continue
 		}
-
-		if err := updateSkill(projectRoot, *skill); err != nil {
-			return err
+		if err := applySkillUpdate(projectRoot, renderer, report, skill); err != nil {
+			return false, err
 		}
-		fmt.Fprintf(options.Output, "Updated skill %s to the vendored version.\n", skill.manifest.Name)
-		skill.installed = skill.vendored
-		skill.present = true
-		skill.status = syncUnchanged
-		report.lock.Skills[skill.manifest.Name] = skill.vendored.Hash
-		if err := writeSkillsLock(projectRoot, report.lock); err != nil {
-			return err
-		}
-		lockDirty = true
 		changed = true
 	}
+	return changed, nil
+}
 
+func requiresSyncDecision(skill syncSkill) bool {
+	return skill.status != syncUnchanged && skill.status != syncMissingOptional
+}
+
+func decideSyncUpdate(reader *bufio.Reader, renderer *ui.Renderer, options SyncOptions, skill syncSkill) (bool, error) {
+	if options.All && canAutoUpdate(skill) {
+		return true, nil
+	}
+	decision, err := promptSyncDecision(reader, renderer, options.Output, skill)
+	if err != nil {
+		return false, err
+	}
+	return decision == syncUpdate, nil
+}
+
+func applySkillUpdate(projectRoot string, renderer *ui.Renderer, report *syncReport, skill *syncSkill) error {
+	if err := updateSkill(projectRoot, *skill); err != nil {
+		return err
+	}
+	if err := renderer.Text(fmt.Sprintf("Updated skill %s to the vendored version.", skill.manifest.Name)); err != nil {
+		return err
+	}
+	skill.installed = skill.vendored
+	skill.present = true
+	skill.status = syncUnchanged
+	report.lock.Skills[skill.manifest.Name] = skill.vendored.Hash
+	return writeSkillsLock(projectRoot, report.lock)
+}
+
+func reconcileSyncLock(projectRoot string, report *syncReport) error {
+	lockDirty := false
 	for _, skill := range report.skills {
-		if skill.status == syncUnchanged && report.lock.Skills[skill.manifest.Name] != skill.vendored.Hash {
+		if syncLockNeedsVendoredHash(report.lock, skill) {
 			report.lock.Skills[skill.manifest.Name] = skill.vendored.Hash
 			lockDirty = true
 		}
-		if !skill.present {
-			if _, ok := report.lock.Skills[skill.manifest.Name]; ok {
-				delete(report.lock.Skills, skill.manifest.Name)
-				lockDirty = true
-			}
+		if syncLockNeedsRemoval(report.lock, skill) {
+			delete(report.lock.Skills, skill.manifest.Name)
+			lockDirty = true
 		}
 	}
-	if lockDirty {
-		if err := writeSkillsLock(projectRoot, report.lock); err != nil {
-			return err
-		}
+	if !lockDirty {
+		return nil
 	}
+	return writeSkillsLock(projectRoot, report.lock)
+}
 
-	if !changed && allSkillsUnchanged(report) {
-		fmt.Fprintln(options.Output, "Skills are up to date.")
+func syncLockNeedsVendoredHash(lock skillsLock, skill syncSkill) bool {
+	return skill.status == syncUnchanged && lock.Skills[skill.manifest.Name] != skill.vendored.Hash
+}
+
+func syncLockNeedsRemoval(lock skillsLock, skill syncSkill) bool {
+	if skill.present {
+		return false
 	}
-	return nil
+	_, ok := lock.Skills[skill.manifest.Name]
+	return ok
 }
 
 func makeSyncReport(projectRoot string) (syncReport, error) {
@@ -181,21 +223,46 @@ func makeSyncReport(projectRoot string) (syncReport, error) {
 	return report, nil
 }
 
-func writeSyncReport(output io.Writer, report syncReport) {
-	fmt.Fprintln(output, "Skill sync report:")
-	for _, skill := range report.skills {
-		fmt.Fprintf(output, "- %s: %s\n", skill.manifest.Name, skill.status)
-		if skill.status == syncLocallyModified {
-			fmt.Fprintln(output, renderSkillDiff(skill))
-			fmt.Fprintf(output, "WARNING: %s is locally-modified; explicit confirmation is required before overwrite.\n", skill.manifest.Name)
-		}
+func writeSyncReport(renderer *ui.Renderer, output io.Writer, report syncReport) error {
+	if err := renderer.Text("Skill sync report:"); err != nil {
+		return err
 	}
-	for _, name := range report.extra {
-		fmt.Fprintf(output, "- %s: extra (project skill; untouched)\n", name)
+	if err := writeSyncSkillReport(renderer, output, report.skills); err != nil {
+		return err
+	}
+	if err := writeSyncExtraSkills(renderer, report.extra); err != nil {
+		return err
 	}
 	if len(report.skills) == 0 && len(report.extra) == 0 {
-		fmt.Fprintln(output, "- no installed skills")
+		return renderer.Text("- no installed skills")
 	}
+	return nil
+}
+
+func writeSyncSkillReport(renderer *ui.Renderer, output io.Writer, skills []syncSkill) error {
+	for _, skill := range skills {
+		if err := renderer.Text(fmt.Sprintf("- %s: %s", skill.manifest.Name, skill.status)); err != nil {
+			return err
+		}
+		if skill.status == syncLocallyModified {
+			if err := writeSkillDiff(output, skill); err != nil {
+				return err
+			}
+			if err := renderer.Text(fmt.Sprintf("WARNING: %s is locally-modified; explicit confirmation is required before overwrite.", skill.manifest.Name)); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func writeSyncExtraSkills(renderer *ui.Renderer, names []string) error {
+	for _, name := range names {
+		if err := renderer.Text(fmt.Sprintf("- %s: extra (project skill; untouched)", name)); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func allSkillsUnchanged(report syncReport) bool {
@@ -224,35 +291,71 @@ const (
 	syncKeep   syncDecision = "keep"
 )
 
-func promptSyncDecision(reader *bufio.Reader, output io.Writer, skill syncSkill) (syncDecision, error) {
+func promptSyncDecision(reader *bufio.Reader, renderer *ui.Renderer, output io.Writer, skill syncSkill) (syncDecision, error) {
 	if skill.status == syncLocallyModified {
-		fmt.Fprintf(output, "WARNING: %s has local changes; choose explicitly.\n", skill.manifest.Name)
+		if err := renderer.Text(fmt.Sprintf("WARNING: %s has local changes; choose explicitly.", skill.manifest.Name)); err != nil {
+			return "", err
+		}
 	}
 	for {
-		fmt.Fprintf(output, "Decision for %s [update/keep local/show diff]: ", skill.manifest.Name)
-		line, err := reader.ReadString('\n')
-		line = strings.ToLower(strings.TrimSpace(line))
-		if line == "d" || line == "diff" || line == "show diff" || line == "show diff first" {
-			fmt.Fprintln(output, renderSkillDiff(skill))
-			if err != nil {
-				return "", fmt.Errorf("sync decision for %s: %w", skill.manifest.Name, err)
-			}
-			continue
+		if err := renderer.PromptLine(fmt.Sprintf("Decision for %s [update/keep local/show diff]: ", skill.manifest.Name)); err != nil {
+			return "", err
 		}
-		switch line {
-		case "u", "update", "update to vendored":
-			return syncUpdate, nil
-		case "k", "keep", "keep local":
-			return syncKeep, nil
-		default:
-			if err != nil {
-				if errors.Is(err, io.EOF) {
-					return "", fmt.Errorf("sync requires a decision for %s", skill.manifest.Name)
-				}
-				return "", fmt.Errorf("read sync decision for %s: %w", skill.manifest.Name, err)
-			}
-			fmt.Fprintln(output, "Choose update, keep local, or show diff first.")
+		decision, handled, err := readSyncDecision(reader, output, skill)
+		if err != nil {
+			return "", err
 		}
+		if handled {
+			return decision, nil
+		}
+		if err := renderer.Text("Choose update, keep local, or show diff first."); err != nil {
+			return "", err
+		}
+	}
+}
+
+func readSyncDecision(reader *bufio.Reader, output io.Writer, skill syncSkill) (syncDecision, bool, error) {
+	line, readErr := reader.ReadString('\n')
+	line = strings.ToLower(strings.TrimSpace(line))
+	if isSyncDiffCommand(line) {
+		if err := writeSkillDiff(output, skill); err != nil {
+			return "", false, err
+		}
+		if readErr != nil {
+			return "", false, fmt.Errorf("sync decision for %s: %w", skill.manifest.Name, readErr)
+		}
+		return "", false, nil
+	}
+	decision, ok := syncDecisionFor(line)
+	if ok {
+		return decision, true, nil
+	}
+	if readErr != nil {
+		if errors.Is(readErr, io.EOF) {
+			return "", false, fmt.Errorf("sync requires a decision for %s", skill.manifest.Name)
+		}
+		return "", false, fmt.Errorf("read sync decision for %s: %w", skill.manifest.Name, readErr)
+	}
+	return "", false, nil
+}
+
+func isSyncDiffCommand(line string) bool {
+	switch line {
+	case "d", "diff", "show diff", "show diff first":
+		return true
+	default:
+		return false
+	}
+}
+
+func syncDecisionFor(line string) (syncDecision, bool) {
+	switch line {
+	case "u", "update", "update to vendored":
+		return syncUpdate, true
+	case "k", "keep", "keep local":
+		return syncKeep, true
+	default:
+		return "", false
 	}
 }
 
@@ -323,6 +426,18 @@ func renderSkillDiff(skill syncSkill) string {
 		writeDiffLines(&diff, installed, installedOK, vendored, vendoredOK)
 	}
 	return strings.TrimRight(diff.String(), "\n")
+}
+
+func writeSkillDiff(output io.Writer, skill syncSkill) error {
+	value := renderSkillDiff(skill) + "\n"
+	written, err := io.WriteString(output, value)
+	if err != nil {
+		return err
+	}
+	if written != len(value) {
+		return io.ErrShortWrite
+	}
+	return nil
 }
 
 func writeDiffLines(output *strings.Builder, installed []byte, installedOK bool, vendored []byte, vendoredOK bool) {

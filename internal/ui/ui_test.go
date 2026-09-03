@@ -114,6 +114,12 @@ func TestPrimitivesHavePlainAndStyledGoldens(t *testing.T) {
 			},
 		},
 		{
+			name: "text",
+			render: func(renderer *Renderer) error {
+				return renderer.Text("Created: #14, #15")
+			},
+		},
+		{
 			name: "error",
 			render: func(renderer *Renderer) error {
 				return renderer.Error(errors.New("cannot read .syl/config.toml"))
@@ -325,6 +331,9 @@ func TestRendererHandlesEmptyValuesAndWriteFailures(t *testing.T) {
 	if err := renderer.Table(nil); err != nil {
 		t.Fatal(err)
 	}
+	if err := renderer.Text("plain text"); err != nil {
+		t.Fatal(err)
+	}
 	if err := renderer.Error(nil); err != nil {
 		t.Fatal(err)
 	}
@@ -332,6 +341,9 @@ func TestRendererHandlesEmptyValuesAndWriteFailures(t *testing.T) {
 	writeErr := errors.New("writer failed")
 	if err := New(errorWriter{err: writeErr}, Caps{}).Step(Step{Label: "step"}); !errors.Is(err, writeErr) {
 		t.Fatalf("write error = %v, want %v", err, writeErr)
+	}
+	if err := New(errorWriter{err: writeErr}, Caps{}).PromptLine("prompt: "); !errors.Is(err, writeErr) {
+		t.Fatalf("prompt write error = %v, want %v", err, writeErr)
 	}
 	if err := New(shortWriter{}, Caps{}).Step(Step{Label: "step"}); !errors.Is(err, io.ErrShortWrite) {
 		t.Fatalf("short write error = %v, want %v", err, io.ErrShortWrite)

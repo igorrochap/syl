@@ -131,7 +131,7 @@ func TestPlanPrintsIdentificationBannerForInvokedTarget(t *testing.T) {
 		t.Fatalf("plan code = %d, stderr = %q", code, fixture.stderr.String())
 	}
 	wantPrefix := "syl plan #42\n" +
-		"  planner:     claude · claude-opus-5 · effort high\n"
+		"  planner:  claude · claude-opus-5 · effort high\n"
 	if got := fixture.stdout.String(); !strings.HasPrefix(got, wantPrefix) {
 		t.Fatalf("stdout = %q, want prefix %q", got, wantPrefix)
 	}

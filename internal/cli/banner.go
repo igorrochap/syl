@@ -11,8 +11,6 @@ import (
 	"github.com/igorrochap/syl/internal/ui"
 )
 
-const bannerRoleLabelWidth = len("implementer:")
-
 func writeImplementBanner(
 	output io.Writer,
 	originRoot string,
@@ -81,17 +79,16 @@ func writePlanBanner(output io.Writer, projectConfig config.Config, target strin
 	if target = strings.TrimSpace(target); target != "" {
 		heading += " " + target
 	}
-	_, err := fmt.Fprintf(output, "%s\n  %s %s · %s · effort %s\n",
-		heading,
-		formatBannerRoleLabel("planner:"),
-		projectConfig.Roles.Plan.Harness, projectConfig.Roles.Plan.Model, projectConfig.Roles.Plan.Effort,
-	)
+	err := ui.New(output, ui.DetectCaps(output)).Banner(ui.Banner{
+		Title: heading,
+		Rows: []ui.Field{{
+			Label: "planner",
+			Value: fmt.Sprintf("%s · %s · effort %s",
+				projectConfig.Roles.Plan.Harness, projectConfig.Roles.Plan.Model, projectConfig.Roles.Plan.Effort),
+		}},
+	})
 	if err != nil {
 		return fmt.Errorf("write plan banner: %w", err)
 	}
 	return nil
-}
-
-func formatBannerRoleLabel(label string) string {
-	return fmt.Sprintf("%-*s", bannerRoleLabelWidth, label)
 }

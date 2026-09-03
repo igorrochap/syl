@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/igorrochap/syl/internal/config"
+	"github.com/igorrochap/syl/internal/ui"
 	"github.com/igorrochap/syl/internal/usage"
 	"github.com/spf13/cobra"
 )
@@ -33,10 +34,11 @@ func (a *App) usageCommand() *cobra.Command {
 					if recomputeErr != nil {
 						return recomputeErr
 					}
-					if _, writeErr := fmt.Fprintln(cmd.OutOrStdout(), "recomputed from transcripts — usage.json not found"); writeErr != nil {
+					renderer := ui.New(cmd.OutOrStdout(), ui.DetectCaps(cmd.OutOrStdout()))
+					if writeErr := renderer.Text("recomputed from transcripts — usage.json not found"); writeErr != nil {
 						return writeErr
 					}
-					return renderUsage(cmd.OutOrStdout(), artifact)
+					return renderUsageWithRenderer(renderer, artifact)
 				}
 				return err
 			}
@@ -107,65 +109,91 @@ func resolveUsageRun(originRoot string, args []string) (string, error) {
 }
 
 func renderUsage(output io.Writer, artifact usage.Artifact) error {
+	renderer := ui.New(output, ui.DetectCaps(output))
+	return renderUsageWithRenderer(renderer, artifact)
+}
+
+func renderUsageWithRenderer(renderer *ui.Renderer, artifact usage.Artifact) error {
 	lastIteration := -1
+	rows := make([]ui.Row, 0)
 	for _, entry := range artifact.Entries {
-		if entry.Iteration != lastIteration {
-			if lastIteration != -1 {
-				if _, err := io.WriteString(output, "\n"); err != nil {
-					return err
-				}
-			}
-			if _, err := fmt.Fprintf(output, "iteration %d\n", entry.Iteration); err != nil {
+		if lastIteration != -1 && entry.Iteration != lastIteration {
+			if err := renderUsageIteration(renderer, lastIteration, rows, lastIteration != artifact.Entries[0].Iteration); err != nil {
 				return err
 			}
-			lastIteration = entry.Iteration
+			rows = rows[:0]
 		}
-		if _, err := fmt.Fprintf(output, "%s (%s, %s): ", entry.Role, entry.Harness, entry.Model); err != nil {
-			return err
-		}
-		if !entry.Tracked || entry.Metrics == nil {
-			reason := entry.Reason
-			if reason == "" {
-				reason = "usage was not tracked"
-			}
-			if reason == "usage unavailable" {
-				if _, err := io.WriteString(output, "usage unavailable\n"); err != nil {
-					return err
-				}
-				continue
-			}
-			if _, err := fmt.Fprintf(output, "not tracked: %s\n", reason); err != nil {
-				return err
-			}
-			continue
-		}
-		metrics := entry.Metrics
-		if entry.Harness == "codex" {
-			cachedPercent := 0.0
-			if metrics.InputTokens > 0 {
-				cachedPercent = 100 * float64(metrics.CachedInputTokens) / float64(metrics.InputTokens)
-			}
-			if _, err := fmt.Fprintf(output,
-				"input %s (%.0f%% cached) · output %s (%s reasoning)\n",
-				formatTokenCount(metrics.InputTokens), math.Round(cachedPercent),
-				formatTokenCount(metrics.OutputTokens), formatTokenCount(metrics.ReasoningOutputTokens),
-			); err != nil {
-				return err
-			}
-			continue
-		}
-		if _, err := fmt.Fprintf(output,
-			"weighted_estimate=%.2f input_tokens=%d output_tokens=%d cache_write_tokens=%d cache_read_tokens=%d\n",
-			metrics.WeightedEstimate, metrics.InputTokens, metrics.OutputTokens,
-			metrics.CacheWriteTokens, metrics.CacheReadTokens,
-		); err != nil {
+		lastIteration = entry.Iteration
+		rows = append(rows, usageRow(entry))
+	}
+	if lastIteration != -1 {
+		if err := renderUsageIteration(renderer, lastIteration, rows, lastIteration != artifact.Entries[0].Iteration); err != nil {
 			return err
 		}
 	}
-	if _, err := fmt.Fprintf(output, "\nDisclaimer: %s\n", artifact.Disclaimer); err != nil {
+	if err := renderer.Text(""); err != nil {
+		return err
+	}
+	if err := renderer.Text("Disclaimer: " + artifact.Disclaimer); err != nil {
 		return err
 	}
 	return nil
+}
+
+func renderUsageIteration(renderer *ui.Renderer, iteration int, rows []ui.Row, separate bool) error {
+	if separate {
+		if err := renderer.Text(""); err != nil {
+			return err
+		}
+	}
+	if err := renderer.Text(fmt.Sprintf("iteration %d", iteration)); err != nil {
+		return err
+	}
+	return renderer.Table(rows)
+}
+
+func usageRow(entry usage.Entry) ui.Row {
+	return ui.Row{
+		Key:   fmt.Sprintf("%s (%s, %s):", entry.Role, entry.Harness, entry.Model),
+		Value: usageValue(entry),
+	}
+}
+
+func usageValue(entry usage.Entry) string {
+	if !entry.Tracked || entry.Metrics == nil {
+		reason := entry.Reason
+		if reason == "" {
+			reason = "usage was not tracked"
+		}
+		if reason == "usage unavailable" {
+			return reason
+		}
+		return "not tracked: " + reason
+	}
+	if entry.Harness == "codex" {
+		return formatCodexUsage(*entry.Metrics)
+	}
+	return formatClaudeUsage(*entry.Metrics)
+}
+
+func formatCodexUsage(metrics usage.Metrics) string {
+	cachedPercent := 0.0
+	if metrics.InputTokens > 0 {
+		cachedPercent = 100 * float64(metrics.CachedInputTokens) / float64(metrics.InputTokens)
+	}
+	return fmt.Sprintf(
+		"input %s (%.0f%% cached) · output %s (%s reasoning)",
+		formatTokenCount(metrics.InputTokens), math.Round(cachedPercent),
+		formatTokenCount(metrics.OutputTokens), formatTokenCount(metrics.ReasoningOutputTokens),
+	)
+}
+
+func formatClaudeUsage(metrics usage.Metrics) string {
+	return fmt.Sprintf(
+		"weighted_estimate=%.2f input_tokens=%d output_tokens=%d cache_write_tokens=%d cache_read_tokens=%d",
+		metrics.WeightedEstimate, metrics.InputTokens, metrics.OutputTokens,
+		metrics.CacheWriteTokens, metrics.CacheReadTokens,
+	)
 }
 
 func formatTokenCount(tokens int64) string {

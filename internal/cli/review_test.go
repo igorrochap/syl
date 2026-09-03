@@ -321,7 +321,7 @@ func TestStandaloneReviewUsageRecomputesFromRecordedSession(t *testing.T) {
 	}
 	for _, expected := range []string{
 		"recomputed from transcripts — usage.json not found",
-		"review (claude, claude-sonnet-5): weighted_estimate=12.00 input_tokens=10 output_tokens=2",
+		"review (claude, claude-sonnet-5):  weighted_estimate=12.00 input_tokens=10 output_tokens=2",
 	} {
 		if !strings.Contains(stdout.String(), expected) {
 			t.Fatalf("recomputed standalone usage = %q, want %q", stdout.String(), expected)
@@ -380,7 +380,7 @@ func TestStandaloneReviewRecordsUsageDuringRun(t *testing.T) {
 	if code := fixture.app.Run(context.Background(), []string{"usage"}, &stdout, &stderr); code != 0 {
 		t.Fatalf("standalone usage code = %d, stderr = %q", code, stderr.String())
 	}
-	if !strings.Contains(stdout.String(), "review (claude, claude-sonnet-5): weighted_estimate=17.50") {
+	if !strings.Contains(stdout.String(), "review (claude, claude-sonnet-5):  weighted_estimate=17.50") {
 		t.Fatalf("standalone usage output = %q, want recorded review usage", stdout.String())
 	}
 	if strings.Contains(stdout.String(), "recomputed from transcripts") {

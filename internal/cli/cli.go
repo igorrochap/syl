@@ -15,6 +15,7 @@ import (
 	"github.com/igorrochap/syl/internal/initializer"
 	"github.com/igorrochap/syl/internal/orchestration"
 	"github.com/igorrochap/syl/internal/tracker"
+	"github.com/igorrochap/syl/internal/ui"
 	"github.com/igorrochap/syl/internal/updater"
 	"github.com/igorrochap/syl/internal/version"
 	"github.com/spf13/cobra"
@@ -74,7 +75,10 @@ func (a *App) Run(ctx context.Context, args []string, stdout, stderr io.Writer) 
 		command.SetIn(a.deps.Input)
 	}
 	if err := command.ExecuteContext(ctx); err != nil {
-		fmt.Fprintf(stderr, "syl: %s\n", err)
+		message := "syl: " + err.Error()
+		if renderErr := ui.New(stderr, ui.DetectCaps(stderr)).Text(message); renderErr != nil {
+			_, _ = fmt.Fprintln(stderr, message)
+		}
 		return 1
 	}
 	return 0
