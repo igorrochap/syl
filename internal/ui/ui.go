@@ -134,8 +134,8 @@ func New(output io.Writer, caps Caps) *Renderer {
 		output: output,
 		caps:   caps,
 		style: styleSet{
-			title:    lipglossRenderer.NewStyle().Bold(true).Foreground(lipgloss.Color("#7D56F4")),
-			heading:  lipglossRenderer.NewStyle().Bold(true).Foreground(lipgloss.Color("#7D56F4")),
+			title:    lipglossRenderer.NewStyle().Bold(true).Foreground(lipgloss.Color("#7DD3FC")),
+			heading:  lipglossRenderer.NewStyle().Bold(true).Foreground(lipgloss.Color("#7DD3FC")),
 			label:    lipglossRenderer.NewStyle().Foreground(lipgloss.Color("#626262")),
 			positive: lipglossRenderer.NewStyle().Bold(true).Foreground(lipgloss.Color("#04B575")),
 			negative: lipglossRenderer.NewStyle().Bold(true).Foreground(lipgloss.Color("#FF4672")),

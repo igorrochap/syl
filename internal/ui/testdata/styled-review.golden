@@ -1,5 +1,5 @@
 [1;38;2;255;70;113mVERDICT: revise[0m
 [38;2;97;97;97mSUMMARY: Keep this machine-readable summary on one unchanged line.[0m
-[1;38;2;125;86;243mFINDINGS:[0m
+[1;38;2;125;211;252mFINDINGS:[0m
 [1;38;2;255;70;113m- [blocking] internal/ui/review.go:29 — Keep this complete finding on one unchanged line.[0m
 [38;2;97;97;97m- [nit] internal/ui/ui_test.go:1 — Keep this fixture focused.[0m
