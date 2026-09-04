@@ -832,7 +832,21 @@ func formatElapsed(elapsed time.Duration) string {
 	if elapsed < 0 {
 		elapsed = 0
 	}
-	return fmt.Sprintf("%.1fs", elapsed.Seconds())
+	if elapsed < time.Minute {
+		// Keep one-decimal rounding from displaying 60.0s in the seconds range.
+		if elapsed >= time.Minute-50*time.Millisecond {
+			return "59.9s"
+		}
+		return fmt.Sprintf("%.1fs", elapsed.Seconds())
+	}
+	if elapsed < time.Hour {
+		minutes := elapsed / time.Minute
+		seconds := (elapsed / time.Second) % 60
+		return fmt.Sprintf("%dm%02ds", minutes, seconds)
+	}
+	hours := elapsed / time.Hour
+	minutes := (elapsed / time.Minute) % 60
+	return fmt.Sprintf("%dh%02dm", hours, minutes)
 }
 
 func removeANSI(value string) string {
