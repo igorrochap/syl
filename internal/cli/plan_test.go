@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -146,6 +147,42 @@ func TestPlanReportsTicketsCreatedOnGitHubTracker(t *testing.T) {
 		if !strings.Contains(fixture.stdout.String(), want) {
 			t.Fatalf("stdout = %q, want %q", fixture.stdout.String(), want)
 		}
+	}
+}
+
+func TestPlanOutputMatchesPlainAndStyledGoldens(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		styled bool
+	}{
+		{name: "plain"},
+		{name: "styled", styled: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if test.styled {
+				t.Setenv("NO_COLOR", "")
+			} else {
+				t.Setenv("NO_COLOR", "1")
+			}
+			fixture := newPlanFixture(t)
+			setIssueTracker(t, fixture.root, config.TrackerLocal)
+			fixture.harnesses["claude"] = &planHarness{attach: func() error {
+				writePlanTicket(t, fixture.root, "offline", 14, "Sync later", "None — can start immediately")
+				return nil
+			}}
+			var output interface {
+				io.Writer
+				String() string
+			} = &fixture.stdout
+			if test.styled {
+				output = newStyledTerminalCapture(t)
+			}
+			code := fixture.app.Run(context.Background(), []string{"plan", "#42"}, output, &fixture.stderr)
+			if code != 0 {
+				t.Fatalf("plan code = %d, stderr = %q", code, fixture.stderr.String())
+			}
+			assertCLIGolden(t, "plan-"+test.name+".golden", []byte(output.String()))
+		})
 	}
 }
 

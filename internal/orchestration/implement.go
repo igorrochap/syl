@@ -15,6 +15,7 @@ import (
 	"github.com/igorrochap/syl/internal/config"
 	"github.com/igorrochap/syl/internal/harness"
 	"github.com/igorrochap/syl/internal/tracker"
+	"github.com/igorrochap/syl/internal/ui"
 	"github.com/igorrochap/syl/internal/usage"
 	"github.com/igorrochap/syl/internal/verdict"
 )
@@ -181,7 +182,11 @@ func completeImplementRun(ctx context.Context, options ImplementOptions, run imp
 	if err := run.recorder.WriteSummary(summary); err != nil {
 		return err
 	}
-	if _, err := io.WriteString(options.Output, formatImplementSummary(summary)); err != nil {
+	renderer := ui.New(options.Output, ui.DetectCaps(options.Output))
+	if err := renderer.RunSummary(ui.RunSummary{
+		Iterations: summary.iterations, FinalVerdict: string(summary.final.Status), Summary: summary.final.Summary,
+		NitFindings: toUIFindings(summary.nits), WorktreePath: summary.worktreePath, DiffStat: summary.diffStat,
+	}); err != nil {
 		return fmt.Errorf("write implement summary: %w", err)
 	}
 	if err := run.recorder.WriteSessions(); err != nil {
@@ -317,10 +322,10 @@ func runImplementIterations(ctx context.Context, params implementIterationsParam
 			return 0, verdict.Verdict{}, nil, err
 		}
 		final = reviewResult.Verdict
-		if err := writeLineBreakIfNeeded(params.output); err != nil {
-			return 0, verdict.Verdict{}, nil, fmt.Errorf("separate review verdict: %w", err)
-		}
-		if _, err := io.WriteString(params.output, formatVerdict(final)); err != nil {
+		renderer := ui.New(params.output, ui.DetectCaps(params.output))
+		if err := renderer.ReviewVerdict(ui.ReviewVerdict{
+			Status: string(final.Status), Summary: final.Summary, Findings: toUIFindings(final.Findings),
+		}); err != nil {
 			return 0, verdict.Verdict{}, nil, fmt.Errorf("write review verdict: %w", err)
 		}
 		if final.Status == verdict.Approve {
@@ -339,14 +344,17 @@ func runImplementReview(ctx context.Context, params implementIterationsParams, r
 		Prompt: composeReviewPrompt("#"+strconv.Itoa(params.ticket.Number), &params.ticket, params.branchPoint, reviewParams.diffPath, params.reviewContext),
 		MCP:    params.projectConfig.Roles.Review.MCP,
 	}
-	reviewOutput := newRoleLabelWriter(params.output, "review", ansiColorReview)
-	if _, err := fmt.Fprintf(params.output, "iteration %d/%d — reviewing\n", reviewParams.iteration, params.projectConfig.Loop.MaxIterations); err != nil {
+	renderer := ui.New(params.output, ui.DetectCaps(params.output))
+	if err := writeRoleSection(params.output, "Reviewer"); err != nil {
+		return ReviewExecution{}, fmt.Errorf("write review role: %w", err)
+	}
+	if err := renderer.Step(ui.Step{Label: fmt.Sprintf("iteration %d/%d — reviewing", reviewParams.iteration, params.projectConfig.Loop.MaxIterations)}); err != nil {
 		return ReviewExecution{}, fmt.Errorf("write review progress: %w", err)
 	}
 	reviewOptions := reviewResumeOptions{
 		sessionID: reviewParams.previousReviewerSession,
 		request:   reviewRequest,
-		output:    reviewOutput,
+		output:    params.output,
 		mode:      reviewParams.mode,
 		questions: params.questions,
 	}
@@ -417,7 +425,11 @@ func runImplementTurn(ctx context.Context, params implementIterationsParams, ite
 	if iteration > 1 {
 		activity = fmt.Sprintf("revising %d blocking finding(s)", len(blocking))
 	}
-	if _, err := fmt.Fprintf(params.output, "iteration %d/%d — %s\n", iteration, params.projectConfig.Loop.MaxIterations, activity); err != nil {
+	renderer := ui.New(params.output, ui.DetectCaps(params.output))
+	if err := writeRoleSection(params.output, "Implementer"); err != nil {
+		return fmt.Errorf("write implement role: %w", err)
+	}
+	if err := renderer.Step(ui.Step{Label: fmt.Sprintf("iteration %d/%d — %s", iteration, params.projectConfig.Loop.MaxIterations, activity)}); err != nil {
 		return fmt.Errorf("write implement progress: %w", err)
 	}
 
@@ -432,7 +444,7 @@ func runImplementTurn(ctx context.Context, params implementIterationsParams, ite
 		ctx,
 		params.implementer,
 		implementRequest,
-		newRoleLabelWriter(params.output, "implement", ansiColorImplement),
+		params.output,
 		mode,
 		params.questions,
 	)
@@ -485,12 +497,17 @@ func runImplementRole(
 	questions *QuestionHandler,
 ) (implementExecution, error) {
 	var feed bytes.Buffer
+	visibleOutput := output
+	if mode != RawHarnessOutput {
+		visibleOutput = newLiveHarnessOutput(output, mode, "implement")
+	}
+	artifactOutput := newPlainHarnessOutput(&feed, mode)
 	result, err := runHarnessConversation(ctx, adapter, func(runContext context.Context) (harness.Stream, error) {
 		return adapter.Run(runContext, request)
 	}, conversationOptions{
 		request:   request,
-		output:    output,
-		artifact:  &feed,
+		output:    visibleOutput,
+		artifact:  artifactOutput,
 		mode:      mode,
 		questions: questions,
 		role:      "implement",
@@ -534,6 +551,14 @@ func nitFindings(review verdict.Verdict) []verdict.Finding {
 		}
 	}
 	return findings
+}
+
+func toUIFindings(findings []verdict.Finding) []ui.Finding {
+	converted := make([]ui.Finding, 0, len(findings))
+	for _, finding := range findings {
+		converted = append(converted, ui.Finding{Kind: string(finding.Kind), Location: finding.Location, Issue: finding.Issue})
+	}
+	return converted
 }
 
 func formatImplementSummary(summary implementSummary) string {

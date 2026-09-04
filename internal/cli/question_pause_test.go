@@ -45,7 +45,7 @@ func TestImplementQuestionPausesAndResumesTheSameSession(t *testing.T) {
 	if len(notifier.messages) < 1 || notifier.messages[0] != wantNotification {
 		t.Fatalf("notifications = %v, want %q", notifier.messages, wantNotification)
 	}
-	if !strings.Contains(fixture.stdout.String(), "[implement] question on #42") || strings.Contains(fixture.stdout.String(), "QUESTION:") || !strings.Contains(fixture.stdout.String(), "answer sent — resuming implementer…") || !strings.Contains(fixture.stdout.String(), "Iterations: 1") || !strings.Contains(fixture.stdout.String(), "Final verdict: approve") {
+	if !strings.Contains(fixture.stdout.String(), "implement question on #42") || strings.Contains(fixture.stdout.String(), "QUESTION:") || !strings.Contains(fixture.stdout.String(), "answer sent — resuming implementer…") || !strings.Contains(fixture.stdout.String(), "Iterations: 1") || !strings.Contains(fixture.stdout.String(), "Final verdict: approve") {
 		t.Fatalf("stdout = %q, want question and one-iteration approval", fixture.stdout.String())
 	}
 }
@@ -173,7 +173,7 @@ func TestOneShotReviewRawQuestionRendersWithoutProtocolMarkers(t *testing.T) {
 	if strings.Contains(fixture.stdout.String(), "QUESTION:") || strings.Contains(fixture.stdout.String(), "END QUESTION") {
 		t.Fatalf("stdout = %q, want raw QUESTION markers hidden in raw mode", fixture.stdout.String())
 	}
-	if !strings.Contains(fixture.stdout.String(), "[review] question on review") {
+	if !strings.Contains(fixture.stdout.String(), "review question on review") {
 		t.Fatalf("stdout = %q, want rendered review question in raw mode", fixture.stdout.String())
 	}
 }

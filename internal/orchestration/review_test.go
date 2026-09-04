@@ -143,7 +143,7 @@ func TestRunReviewSeparatesRenderedVerdictForOpaqueOutputWriter(t *testing.T) {
 		t.Fatalf("RunReview() error = %v, want nil", err)
 	}
 
-	want := "Reviewer prose.\nVERDICT: approve\nSUMMARY: Ready\nFINDINGS:\nVERDICT: approve\nSUMMARY: Ready\nFINDINGS:\n- (none)\n"
+	want := "Reviewer prose.\nVERDICT: approve\nSUMMARY: Ready\nFINDINGS:\n- (none)\n"
 	if output.value.String() != want {
 		t.Fatalf("standalone review output = %q, want %q", output.value.String(), want)
 	}
@@ -158,11 +158,12 @@ func (w *opaqueReviewWriter) Write(p []byte) (int, error) {
 }
 
 type separatorFailingWriter struct {
-	value bytes.Buffer
+	value         bytes.Buffer
+	failOnVerdict bool
 }
 
 func (w *separatorFailingWriter) Write(p []byte) (int, error) {
-	if string(p) == "\n" {
+	if (!w.failOnVerdict && string(p) == "\n") || (w.failOnVerdict && strings.Contains(string(p), "VERDICT:")) {
 		return 0, errors.New("separator write failed")
 	}
 	return w.value.Write(p)

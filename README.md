@@ -149,8 +149,12 @@ syl init
 - Which optional skills to install, in addition to the core Skill set.
 - Which Tracker to use for issues: `github`, `local`, or `gitlab`.
 - Which Tracker to use for the review log: `github`, `local`, or `gitlab`.
-- Which Harness, model, and effort level to use for each Role: plan,
-  implement, review.
+- Whether to use the recommended Role defaults or configure each Role.
+- When configuring Roles, which Harness, model, and effort level to use for
+  plan, implement, and review.
+
+Use `Esc` or the left arrow to return to the previous question while editing;
+`Ctrl+C` aborts the wizard.
 
 `syl init` then:
 

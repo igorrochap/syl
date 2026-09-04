@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"path/filepath"
 	"strings"
 
 	"github.com/igorrochap/syl/internal/adapters/git"
@@ -15,6 +16,7 @@ import (
 	"github.com/igorrochap/syl/internal/initializer"
 	"github.com/igorrochap/syl/internal/orchestration"
 	"github.com/igorrochap/syl/internal/tracker"
+	"github.com/igorrochap/syl/internal/ui"
 	"github.com/igorrochap/syl/internal/updater"
 	"github.com/igorrochap/syl/internal/version"
 	"github.com/spf13/cobra"
@@ -74,7 +76,10 @@ func (a *App) Run(ctx context.Context, args []string, stdout, stderr io.Writer) 
 		command.SetIn(a.deps.Input)
 	}
 	if err := command.ExecuteContext(ctx); err != nil {
-		fmt.Fprintf(stderr, "syl: %s\n", err)
+		message := "syl: " + err.Error()
+		if renderErr := ui.New(stderr, ui.DetectCaps(stderr)).Text(message); renderErr != nil {
+			_, _ = fmt.Fprintln(stderr, message)
+		}
 		return 1
 	}
 	return 0
@@ -187,16 +192,44 @@ func (a *App) runImplementCommand(cmd *cobra.Command, args []string, commandOpti
 		Verbose:             commandOptions.verbose,
 		ProvisionedWorktree: provisionedWorktree,
 		IdentificationBanner: func(artifactDir string) error {
-			worktreePath := ""
-			if provisionedWorktree != nil {
-				worktreePath = provisionedWorktree.Path
+			worktreePath := provisionedWorktreePath(provisionedWorktree)
+			relativeArtifactDir, err := filepath.Rel(a.originRoot, artifactDir)
+			if err != nil {
+				return fmt.Errorf("make run artifacts path relative to project root: %w", err)
 			}
-			return writeImplementBanner(
-				cmd.OutOrStdout(), a.originRoot, projectConfig, ticket, artifactDir, worktreePath,
-				commandOptions.additionalContext, commandOptions.reviewContext,
-			)
+			rows := []ui.Field{
+				{
+					Label: "implementer",
+					Value: fmt.Sprintf("%s · %s · effort %s%s",
+						projectConfig.Roles.Implement.Harness, projectConfig.Roles.Implement.Model, projectConfig.Roles.Implement.Effort, contextIndicator(commandOptions.additionalContext)),
+				},
+				{
+					Label: "reviewer",
+					Value: fmt.Sprintf("%s · %s · effort %s%s",
+						projectConfig.Roles.Review.Harness, projectConfig.Roles.Review.Model, projectConfig.Roles.Review.Effort, contextIndicator(commandOptions.reviewContext)),
+				},
+				{Label: "max iterations", Value: fmt.Sprintf("%d", projectConfig.Loop.MaxIterations)},
+				{Label: "run artifacts", Value: relativeArtifactDir},
+			}
+			if worktreePath != "" {
+				rows = append(rows, ui.Field{Label: "worktree", Value: worktreePath})
+			}
+			if err := ui.New(cmd.OutOrStdout(), ui.DetectCaps(cmd.OutOrStdout())).Banner(ui.Banner{
+				Title: fmt.Sprintf("syl implement #%d — %s", ticket.Number, ticket.Title),
+				Rows:  rows,
+			}); err != nil {
+				return fmt.Errorf("write implement banner: %w", err)
+			}
+			return nil
 		},
 	})
+}
+
+func provisionedWorktreePath(worktree *orchestration.Worktree) string {
+	if worktree == nil {
+		return ""
+	}
+	return worktree.Path
 }
 
 func (a *App) resolveImplementTarget(ctx context.Context, args []string) (config.Config, tracker.Tracker, tracker.Ticket, error) {
@@ -332,7 +365,18 @@ func (a *App) reviewCommand() *cobra.Command {
 				Raw: raw, Verbose: verbose, Notifier: a.notifier(projectConfig.Notifications.Enabled), Git: a.gitRunner(a.workRoot),
 				TranscriptUsage: projectConfig.Roles.Review.Harness == config.HarnessClaude,
 				IdentificationBanner: func() error {
-					return writeReviewBanner(cmd.OutOrStdout(), projectConfig, ticketRef, ticket, additionalContext)
+					heading := "syl review — working tree"
+					if ticket != nil {
+						heading = fmt.Sprintf("syl review %s — %s", ticketRef, ticket.Title)
+					}
+					if err := ui.New(cmd.OutOrStdout(), ui.DetectCaps(cmd.OutOrStdout())).Banner(ui.Banner{
+						Title: heading,
+						Rows: []ui.Field{{Label: "reviewer", Value: fmt.Sprintf("%s · %s · effort %s%s",
+							projectConfig.Roles.Review.Harness, projectConfig.Roles.Review.Model, projectConfig.Roles.Review.Effort, contextIndicator(additionalContext))}},
+					}); err != nil {
+						return fmt.Errorf("write review banner: %w", err)
+					}
+					return nil
 				},
 			})
 		},
@@ -379,8 +423,19 @@ func (a *App) planCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if err := writePlanBanner(cmd.OutOrStdout(), projectConfig, args[0]); err != nil {
-				return err
+			heading := "syl plan"
+			if target := strings.TrimSpace(args[0]); target != "" {
+				heading += " " + target
+			}
+			if err := ui.New(cmd.OutOrStdout(), ui.DetectCaps(cmd.OutOrStdout())).Banner(ui.Banner{
+				Title: heading,
+				Rows: []ui.Field{{
+					Label: "planner",
+					Value: fmt.Sprintf("%s · %s · effort %s",
+						projectConfig.Roles.Plan.Harness, projectConfig.Roles.Plan.Model, projectConfig.Roles.Plan.Effort),
+				}},
+			}); err != nil {
+				return fmt.Errorf("write plan banner: %w", err)
 			}
 			return orchestration.RunPlan(cmd.Context(), orchestration.PlanOptions{
 				WorkRoot: a.workRoot, Topic: args[0], TrackerName: projectConfig.Tracker.Issues,

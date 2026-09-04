@@ -1,0 +1,5 @@
+VERDICT: revise
+SUMMARY: Keep this machine-readable summary on one unchanged line.
+FINDINGS:
+- [blocking] internal/ui/review.go:29 — Keep this complete finding on one unchanged line.
+- [nit] internal/ui/ui_test.go:1 — Keep this fixture focused.

@@ -1,0 +1,9 @@
+syl review — working tree
+  reviewer:  claude · claude-sonnet-5 · effort medium
+Reviewing the diff...
+tool: Bash — {"command":"cat review.diff"}
+Done.
+VERDICT: approve
+SUMMARY: The working tree is ready
+FINDINGS:
+- (none)

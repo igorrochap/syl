@@ -1,0 +1,10 @@
+[1;38;2;125;211;252msyl review — working tree[0m
+[38;2;97;97;97m  reviewer:  claude · claude-sonnet-5 · effort medium[0m
+[1;38;2;125;211;252m◆ Reviewer[0m
+[38;2;97;97;97m│ [0mReviewing the diff...
+[38;2;97;97;97m│ [0m[38;2;97;97;97mtool: Bash — {"command":"cat review.diff"}[0m
+[38;2;97;97;97m│ [0mDone.
+[1;38;2;4;181;117mVERDICT: approve[0m
+[38;2;97;97;97mSUMMARY: The working tree is ready[0m
+[1;38;2;125;211;252mFINDINGS:[0m
+[38;2;97;97;97m- (none)[0m

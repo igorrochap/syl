@@ -1,0 +1,12 @@
+Skill sync report:
+- core-skill: missing core
+- optional-skill: missing optional
+- moved-skill: differing (vendored-moved-forward)
+- local-skill: differing (locally-modified)
+content diff for local-skill:
+--- installed/.agents/skills/local-skill/SKILL.md
++++ vendored/local-skill/SKILL.md
+-old
++new
+WARNING: local-skill is locally-modified; explicit confirmation is required before overwrite.
+- project-skill: extra (project skill; untouched)

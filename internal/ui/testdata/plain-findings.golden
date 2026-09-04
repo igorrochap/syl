@@ -1,0 +1,5 @@
+Findings
+⚠ [blocking] internal/ui/ui.go:1 — keep output
+append-only
+• [nit] internal/ui/ui_test.go:1 — add another
+fixture

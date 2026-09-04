@@ -14,6 +14,7 @@ import (
 	"github.com/igorrochap/syl/internal/config"
 	"github.com/igorrochap/syl/internal/harness"
 	"github.com/igorrochap/syl/internal/tracker"
+	"github.com/igorrochap/syl/internal/ui"
 )
 
 // PlanOptions contains the boundaries and user choices for an interactive plan session.
@@ -112,8 +113,9 @@ func createdTickets(before, after []tracker.Ticket) []tracker.Ticket {
 }
 
 func writeCreatedTickets(output io.Writer, created []tracker.Ticket) error {
+	renderer := ui.New(output, ui.DetectCaps(output))
 	if len(created) == 0 {
-		if _, err := fmt.Fprintln(output, "No tickets created."); err != nil {
+		if err := renderer.Text("No tickets created."); err != nil {
 			return fmt.Errorf("write created tickets report: %w", err)
 		}
 		return nil
@@ -123,11 +125,11 @@ func writeCreatedTickets(output io.Writer, created []tracker.Ticket) error {
 	for _, ticket := range created {
 		numbers = append(numbers, "#"+strconv.Itoa(ticket.Number))
 	}
-	if _, err := fmt.Fprintf(output, "Created: %s\n", strings.Join(numbers, ", ")); err != nil {
+	if err := renderer.Text("Created: " + strings.Join(numbers, ", ")); err != nil {
 		return fmt.Errorf("write created tickets report: %w", err)
 	}
 	if next, ok := nextCreatedTicket(created); ok {
-		if _, err := fmt.Fprintf(output, "Next: syl implement %d\n", next); err != nil {
+		if err := renderer.Text(fmt.Sprintf("Next: syl implement %d", next)); err != nil {
 			return fmt.Errorf("write created tickets report: %w", err)
 		}
 	}
