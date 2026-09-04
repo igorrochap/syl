@@ -408,6 +408,118 @@ func TestStreamSeparatesAssistantMessagesButNotTools(t *testing.T) {
 	}
 }
 
+func TestStreamSeparatesAssistantMessagesAcrossToolEvents(t *testing.T) {
+	tests := []struct {
+		name      string
+		showTools bool
+		events    []streamEvent
+		want      string
+	}{
+		{
+			name: "one invisible tool",
+			events: []streamEvent{
+				assistantEvent("first"),
+				toolEvent("inspect"),
+				assistantEvent("second"),
+			},
+			want: "first\n\nsecond\n",
+		},
+		{
+			name: "several invisible tools",
+			events: []streamEvent{
+				assistantEvent("first"),
+				toolEvent("inspect"),
+				toolEvent("check"),
+				toolEvent("finish"),
+				assistantEvent("second"),
+			},
+			want: "first\n\nsecond\n",
+		},
+		{
+			name:      "visible tool",
+			showTools: true,
+			events: []streamEvent{
+				assistantEvent("first"),
+				toolEvent("inspect"),
+				assistantEvent("second"),
+			},
+			want: "first\ntool: Bash — inspect\nsecond\n",
+		},
+		{
+			name: "turn begins with a tool",
+			events: []streamEvent{
+				toolEvent("inspect"),
+				assistantEvent("first"),
+			},
+			want: "first\n",
+		},
+		{
+			name: "turn ends with a tool",
+			events: []streamEvent{
+				assistantEvent("first"),
+				toolEvent("finish"),
+			},
+			want: "first\n",
+		},
+		{
+			name: "message already ends with a newline",
+			events: []streamEvent{
+				assistantEvent("first\n"),
+				toolEvent("inspect"),
+				assistantEvent("second"),
+			},
+			want: "first\n\nsecond\n",
+		},
+		{
+			name: "empty messages between tools",
+			events: []streamEvent{
+				assistantEvent("first"),
+				toolEvent("inspect"),
+				assistantEvent(""),
+				toolEvent("check"),
+				assistantEvent("   \n"),
+				toolEvent("finish"),
+				assistantEvent("second"),
+			},
+			want: "first\n\nsecond\n",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var output bytes.Buffer
+			stream := NewStream(&output, Caps{Unicode: true}, StreamOptions{ShowTools: test.showTools})
+			renderStreamEvents(t, stream, test.events)
+			if got := output.String(); got != test.want {
+				t.Fatalf("stream output = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
+func TestStreamAlternatingAssistantMessagesHavePlainAndStyledGoldens(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		color bool
+	}{
+		{name: "plain"},
+		{name: "styled", color: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var output bytes.Buffer
+			stream := NewStream(&output, Caps{Color: test.color, Width: 48, Unicode: true}, StreamOptions{Gutter: "│ "})
+			renderStreamEvents(t, stream, []streamEvent{
+				assistantEvent("First assistant message."),
+				toolEvent("inspect"),
+				assistantEvent("Second assistant message."),
+				toolEvent("finish"),
+				assistantEvent("Third assistant message."),
+			})
+			assertGolden(t, test.name+"-stream-alternating-messages.golden", output.Bytes())
+		})
+	}
+}
+
 func TestStreamIgnoresEmptyAssistantMessagesWhenSeparating(t *testing.T) {
 	var output bytes.Buffer
 	stream := NewStream(&output, Caps{Unicode: true}, StreamOptions{})
@@ -788,6 +900,70 @@ func TestStreamActivityClearsBeforeAssistantMessageSeparator(t *testing.T) {
 
 	if !strings.Contains(terminal.String(), "\r\x1b[K\nsecond\n") {
 		t.Fatalf("activity output = %q, want activity clear immediately before separated prose", terminal.String())
+	}
+}
+
+func TestStreamActivityClearsBeforeSeparatorAfterInvisibleTool(t *testing.T) {
+	previousTerminal := isTerminal
+	isTerminal = func(fd uintptr) bool { return fd == 42 }
+	t.Cleanup(func() { isTerminal = previousTerminal })
+
+	terminal := &testTerminal{}
+	stream := NewStream(terminal, Caps{Color: true, Width: 48}, StreamOptions{Activity: true})
+	renderStreamEvents(t, stream, []streamEvent{
+		assistantEvent("first\n"),
+		toolEvent("inspect"),
+		assistantEvent("second"),
+	})
+
+	if !strings.Contains(terminal.String(), "\r\x1b[K\nsecond\n") {
+		t.Fatalf("activity output = %q, want activity clear before separated prose", terminal.String())
+	}
+}
+
+type streamEvent struct {
+	kind streamEventKind
+	name string
+	gist string
+	text string
+}
+
+type streamEventKind uint8
+
+const (
+	streamAssistantEvent streamEventKind = iota
+	streamToolEvent
+)
+
+func assistantEvent(text string) streamEvent {
+	return streamEvent{kind: streamAssistantEvent, text: text}
+}
+
+func toolEvent(gist string) streamEvent {
+	return streamEvent{kind: streamToolEvent, name: "Bash", gist: gist}
+}
+
+func renderStreamEvents(t *testing.T, stream *Stream, events []streamEvent) {
+	t.Helper()
+	for _, event := range events {
+		if err := stream.BeforeEvent(); err != nil {
+			t.Fatal(err)
+		}
+		switch event.kind {
+		case streamAssistantEvent:
+			if err := stream.Assistant(event.text); err != nil {
+				t.Fatal(err)
+			}
+		case streamToolEvent:
+			if err := stream.Tool(event.name, event.gist); err != nil {
+				t.Fatal(err)
+			}
+		default:
+			t.Fatalf("unknown stream event kind %d", event.kind)
+		}
+	}
+	if err := stream.EndTurn(); err != nil {
+		t.Fatal(err)
 	}
 }
 
