@@ -369,6 +369,132 @@ func TestStreamWrapsAssistantProseWithRoleGutterAndFlushesFinalWord(t *testing.T
 	}
 }
 
+func TestStreamSeparatesAssistantMessagesButNotTools(t *testing.T) {
+	var output bytes.Buffer
+	stream := NewStream(&output, Caps{Unicode: true}, StreamOptions{ShowTools: true})
+
+	if err := stream.BeforeEvent(); err != nil {
+		t.Fatal(err)
+	}
+	if err := stream.Assistant("first message"); err != nil {
+		t.Fatal(err)
+	}
+	if err := stream.Tool("Bash", "inspect"); err != nil {
+		t.Fatal(err)
+	}
+	if err := stream.BeforeEvent(); err != nil {
+		t.Fatal(err)
+	}
+	if err := stream.Assistant("second message"); err != nil {
+		t.Fatal(err)
+	}
+	if err := stream.BeforeEvent(); err != nil {
+		t.Fatal(err)
+	}
+	if err := stream.Assistant("third message"); err != nil {
+		t.Fatal(err)
+	}
+	if err := stream.Tool("Bash", "finish"); err != nil {
+		t.Fatal(err)
+	}
+	if err := stream.EndTurn(); err != nil {
+		t.Fatal(err)
+	}
+
+	want := "first message\ntool: Bash — inspect\nsecond message\n\nthird message\ntool: Bash — finish\n"
+	if got := output.String(); got != want {
+		t.Fatalf("stream output = %q, want %q", got, want)
+	}
+}
+
+func TestStreamIgnoresEmptyAssistantMessagesWhenSeparating(t *testing.T) {
+	var output bytes.Buffer
+	stream := NewStream(&output, Caps{Unicode: true}, StreamOptions{})
+
+	for _, message := range []string{"first", "", "   \n", "second"} {
+		if err := stream.BeforeEvent(); err != nil {
+			t.Fatal(err)
+		}
+		if err := stream.Assistant(message); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := stream.EndTurn(); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := output.String(); got != "first\n\nsecond\n" {
+		t.Fatalf("stream output = %q, want one separator for two real messages", got)
+	}
+}
+
+func TestStreamDoesNotDoubleSeparateMessageEndingWithNewline(t *testing.T) {
+	var output bytes.Buffer
+	stream := NewStream(&output, Caps{Unicode: true}, StreamOptions{})
+
+	for _, message := range []string{"first\n", "second"} {
+		if err := stream.BeforeEvent(); err != nil {
+			t.Fatal(err)
+		}
+		if err := stream.Assistant(message); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := stream.EndTurn(); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := output.String(); got != "first\n\nsecond\n" {
+		t.Fatalf("stream output = %q, want exactly one blank line", got)
+	}
+}
+
+func TestStreamTwoAssistantMessagesHavePlainAndStyledGoldens(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		color bool
+	}{
+		{name: "plain"},
+		{name: "styled", color: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var output bytes.Buffer
+			stream := NewStream(&output, Caps{Color: test.color, Width: 48, Unicode: true}, StreamOptions{Gutter: "│ "})
+			for _, message := range []string{"First assistant message.", "Second assistant message."} {
+				if err := stream.BeforeEvent(); err != nil {
+					t.Fatal(err)
+				}
+				if err := stream.Assistant(message); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := stream.EndTurn(); err != nil {
+				t.Fatal(err)
+			}
+			assertGolden(t, test.name+"-stream-two-messages.golden", output.Bytes())
+		})
+	}
+}
+
+func TestStreamWrappedAssistantMessageHasNoInternalBlankLines(t *testing.T) {
+	var output bytes.Buffer
+	stream := NewStream(&output, Caps{Width: 16, Unicode: true}, StreamOptions{})
+	if err := stream.BeforeEvent(); err != nil {
+		t.Fatal(err)
+	}
+	if err := stream.Assistant("alpha beta gamma delta epsilon"); err != nil {
+		t.Fatal(err)
+	}
+	if err := stream.EndTurn(); err != nil {
+		t.Fatal(err)
+	}
+
+	assertGolden(t, "plain-stream-wrapped-message.golden", output.Bytes())
+	if strings.Contains(output.String(), "\n\n") {
+		t.Fatalf("stream output = %q, want no blank line inside one wrapped message", output.String())
+	}
+}
+
 func TestStreamOmitsRoleGutterWithoutStyledTerminal(t *testing.T) {
 	var output bytes.Buffer
 	stream := NewStream(&output, Caps{Width: 12, Unicode: true}, StreamOptions{Gutter: "│ "})
@@ -589,6 +715,31 @@ func TestStreamActivityAdvancesWithItsOwnTickerAndClearsOnNextEvent(t *testing.T
 	}
 	if !strings.HasSuffix(terminal.String(), "\r\x1b[K") {
 		t.Fatalf("activity = %q, want clear escape after next event", terminal.String())
+	}
+}
+
+func TestStreamActivityClearsBeforeAssistantMessageSeparator(t *testing.T) {
+	previousTerminal := isTerminal
+	isTerminal = func(fd uintptr) bool { return fd == 42 }
+	t.Cleanup(func() { isTerminal = previousTerminal })
+
+	terminal := &testTerminal{}
+	stream := NewStream(terminal, Caps{Color: true, Width: 48}, StreamOptions{Activity: true})
+	if err := stream.Assistant("first\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := stream.BeforeEvent(); err != nil {
+		t.Fatal(err)
+	}
+	if err := stream.Assistant("second"); err != nil {
+		t.Fatal(err)
+	}
+	if err := stream.EndTurn(); err != nil {
+		t.Fatal(err)
+	}
+
+	if !strings.Contains(terminal.String(), "\r\x1b[K\nsecond\n") {
+		t.Fatalf("activity output = %q, want activity clear immediately before separated prose", terminal.String())
 	}
 }
 
