@@ -1,22 +1,22 @@
-[1;38;2;125;86;243msyl implement #42 — Add resilient workflow[0m
+[1;38;2;125;211;252msyl implement #42 — Add resilient workflow[0m
 [38;2;97;97;97m  implementer:     codex · gpt-5.6-luna · effort xhigh[0m
 [38;2;97;97;97m  reviewer:        claude · claude-sonnet-5 · effort medium[0m
 [38;2;97;97;97m  max iterations:  3[0m
 [38;2;97;97;97m  run artifacts:   .syl/runs/<run-dir>[0m
-[1;38;2;125;86;243m◆ Implementer[0m
-[1;38;2;125;86;243m◆ iteration 1/3 — implementing[0m
+[1;38;2;125;211;252m◆ Implementer[0m
+[1;38;2;125;211;252m◆ iteration 1/3 — implementing[0m
 [38;2;97;97;97m│ [0mImplementer is working.
-[1;38;2;125;86;243m◆ Reviewer[0m
-[1;38;2;125;86;243m◆ iteration 1/3 — reviewing[0m
+[1;38;2;125;211;252m◆ Reviewer[0m
+[1;38;2;125;211;252m◆ iteration 1/3 — reviewing[0m
 [1;38;2;4;181;117mVERDICT: approve[0m
 [38;2;97;97;97mSUMMARY: The working tree is ready[0m
-[1;38;2;125;86;243mFINDINGS:[0m
+[1;38;2;125;211;252mFINDINGS:[0m
 [38;2;97;97;97m- (none)[0m
-[1;38;2;125;86;243mIterations: 1[0m
+[1;38;2;125;211;252mIterations: 1[0m
 [38;2;97;97;97mFinal verdict: approve[0m
 [38;2;97;97;97mSummary: The working tree is ready[0m
-[1;38;2;125;86;243mNit findings:[0m
+[1;38;2;125;211;252mNit findings:[0m
 [38;2;97;97;97m- (none)[0m
-[1;38;2;125;86;243mDiff stat:[0m
+[1;38;2;125;211;252mDiff stat:[0m
 [38;2;97;97;97m change.txt | 1 +[0m
 [38;2;97;97;97m 1 file changed, 1 insertion(+)[0m

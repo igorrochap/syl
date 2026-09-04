@@ -1,4 +1,4 @@
-[1;38;2;125;86;243mFindings[0m
+[1;38;2;125;211;252mFindings[0m
 [1;38;2;255;70;113m⚠ [blocking] internal/ui/ui.go:1 — keep output[0m
 [1;38;2;255;70;113mappend-only[0m
 [38;2;97;97;97m• [nit] internal/ui/ui_test.go:1 — add another[0m
