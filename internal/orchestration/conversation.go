@@ -303,16 +303,6 @@ func consumeHarnessStreamWithArtifact(
 	if mode == QuietHarnessOutput {
 		artifactMode = ParsedHarnessOutput
 	}
-	var sp *spinner
-	// atLineStart tracks whether the terminal cursor is at the start of a fresh
-	// line, so the spinner can be handed a clean line to draw on and prose is
-	// never clobbered by its cursor-control escapes.
-	atLineStart := true
-	if mode == QuietHarnessOutput && !isHarnessEventRenderer(output) {
-		sp = newSpinner(output)
-		sp.Start()
-		defer sp.Stop()
-	}
 	state := harnessStreamState{
 		transcript:           &transcript,
 		sessionIDs:           &sessionIDs,
@@ -323,7 +313,6 @@ func consumeHarnessStreamWithArtifact(
 	options := streamEventOptions{
 		output: output, artifact: artifact, mode: mode, artifactMode: artifactMode,
 		parser: parser, pendingRaw: &pendingRaw, artifactPendingRaw: &artifactPendingRaw,
-		spinner: sp, atLineStart: &atLineStart,
 	}
 	if blocked, err := consumeHarnessEvents(events, stream, &state, options); err != nil {
 		return harnessStreamResult{}, err
@@ -334,7 +323,7 @@ func consumeHarnessStreamWithArtifact(
 		}, nil
 	}
 
-	if err := flushHarnessStream(parser, &state, output, artifact, mode, pendingRaw, artifactPendingRaw, sp); err != nil {
+	if err := flushHarnessStream(parser, &state, output, artifact, mode, pendingRaw, artifactPendingRaw); err != nil {
 		return harnessStreamResult{}, err
 	}
 	if err := finishHarnessOutput(output); err != nil {
@@ -372,7 +361,7 @@ func consumeHarnessEvents(events <-chan harness.Event, stream harness.Stream, st
 	return false, nil
 }
 
-func flushHarnessStream(parser *questionParser, state *harnessStreamState, output, artifact io.Writer, mode HarnessOutputMode, pendingRaw, artifactPendingRaw []harness.Event, sp *spinner) error {
+func flushHarnessStream(parser *questionParser, state *harnessStreamState, output, artifact io.Writer, mode HarnessOutputMode, pendingRaw, artifactPendingRaw []harness.Event) error {
 	if err := flushRawEvents(output, pendingRaw); err != nil {
 		return err
 	}
@@ -385,7 +374,6 @@ func flushHarnessStream(parser *questionParser, state *harnessStreamState, outpu
 	}
 	state.transcript.WriteString(flush)
 	if mode != RawHarnessOutput {
-		sp.Stop()
 		if err := writeParsedEvent(output, harness.Event{Type: harness.EventAssistantText, Text: flush}); err != nil {
 			return err
 		}
@@ -404,8 +392,6 @@ type streamEventOptions struct {
 	parser             *questionParser
 	pendingRaw         *[]harness.Event
 	artifactPendingRaw *[]harness.Event
-	spinner            *spinner
-	atLineStart        *bool
 }
 
 type harnessStreamState struct {
@@ -425,11 +411,11 @@ func (s *harnessStreamState) process(event harness.Event, options streamEventOpt
 	if useEventText {
 		parsed = options.parser.Feed(event.Text)
 	}
-	if err := renderHarnessEvent(options.output, options.mode, event, parsed, options.parser, options.pendingRaw, options.spinner, options.atLineStart); err != nil {
+	if err := renderHarnessEvent(options.output, options.mode, event, parsed, options.parser, options.pendingRaw); err != nil {
 		return false, err
 	}
 	if options.artifact != nil {
-		if err := renderHarnessEvent(options.artifact, options.artifactMode, event, parsed, options.parser, options.artifactPendingRaw, nil, nil); err != nil {
+		if err := renderHarnessEvent(options.artifact, options.artifactMode, event, parsed, options.parser, options.artifactPendingRaw); err != nil {
 			return false, err
 		}
 	}
@@ -464,7 +450,7 @@ func harnessResultError(event harness.Event) error {
 	return fmt.Errorf("harness returned an error: %s", harnessError)
 }
 
-func renderHarnessEvent(output io.Writer, mode HarnessOutputMode, event harness.Event, parsed questionParseResult, parser *questionParser, pendingRaw *[]harness.Event, sp *spinner, atLineStart *bool) error {
+func renderHarnessEvent(output io.Writer, mode HarnessOutputMode, event harness.Event, parsed questionParseResult, parser *questionParser, pendingRaw *[]harness.Event) error {
 	if mode == RawHarnessOutput {
 		return renderRawHarnessEvent(output, event, parsed, parser, pendingRaw)
 	}
@@ -473,7 +459,7 @@ func renderHarnessEvent(output io.Writer, mode HarnessOutputMode, event harness.
 			return err
 		}
 	}
-	return renderParsedHarnessEvent(output, mode, event, parsed, sp, atLineStart)
+	return renderParsedHarnessEvent(output, event, parsed)
 }
 
 func pausesActivity(event harness.Event, parsed questionParseResult) bool {
@@ -483,37 +469,10 @@ func pausesActivity(event harness.Event, parsed questionParseResult) bool {
 	return event.Type == harness.EventResult && parsed.VisibleText != ""
 }
 
-func renderParsedHarnessEvent(output io.Writer, mode HarnessOutputMode, event harness.Event, parsed questionParseResult, sp *spinner, atLineStart *bool) error {
+func renderParsedHarnessEvent(output io.Writer, event harness.Event, parsed questionParseResult) error {
 	visibleEvent := event
 	visibleEvent.Text = parsed.VisibleText
-	if mode == QuietHarnessOutput && !isHarnessEventRenderer(output) {
-		return renderLegacyQuietEvent(output, visibleEvent, sp, atLineStart)
-	}
-	sp.Stop()
-	if err := writeParsedEvent(output, visibleEvent); err != nil {
-		return err
-	}
-	if atLineStart != nil && visibleEvent.Text != "" {
-		*atLineStart = strings.HasSuffix(visibleEvent.Text, "\n")
-	}
-	return nil
-}
-
-func renderLegacyQuietEvent(output io.Writer, event harness.Event, sp *spinner, atLineStart *bool) error {
-	if event.Type == harness.EventToolUse {
-		return startSpinner(output, sp, atLineStart)
-	}
-	if !eventHasVisibleProse(event) {
-		return nil
-	}
-	sp.Stop()
-	if err := writeParsedEvent(output, event); err != nil {
-		return err
-	}
-	if atLineStart != nil && event.Text != "" {
-		*atLineStart = strings.HasSuffix(event.Text, "\n")
-	}
-	return nil
+	return writeParsedEvent(output, visibleEvent)
 }
 
 func renderRawHarnessEvent(output io.Writer, event harness.Event, parsed questionParseResult, parser *questionParser, pendingRaw *[]harness.Event) error {
@@ -530,35 +489,6 @@ func renderRawHarnessEvent(output io.Writer, event harness.Event, parsed questio
 	}
 	*pendingRaw = nil
 	return writeRawEvent(output, event)
-}
-
-// eventHasVisibleProse reports whether an event carries assistant prose that
-// quiet mode should print. Tool calls, session ids, and empty text are silent;
-// the spinner covers them instead.
-func eventHasVisibleProse(event harness.Event) bool {
-	switch event.Type {
-	case harness.EventAssistantText, harness.EventResult:
-		return event.Text != ""
-	default:
-		return false
-	}
-}
-
-// startSpinner (re)starts the spinner for a stretch of silent work, first
-// ending the current line if prose left the cursor mid-line so the animation
-// never overwrites it. It is a no-op when the spinner is disabled or nil.
-func startSpinner(output io.Writer, sp *spinner, atLineStart *bool) error {
-	if sp == nil || !sp.enabled {
-		return nil
-	}
-	if atLineStart != nil && !*atLineStart {
-		if _, err := io.WriteString(output, "\n"); err != nil {
-			return fmt.Errorf("write harness output: %w", err)
-		}
-		*atLineStart = true
-	}
-	sp.Start()
-	return nil
 }
 
 func flushRawEvents(output io.Writer, events []harness.Event) error {
