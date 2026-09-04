@@ -164,8 +164,8 @@ func (s *Stream) Tool(name, gist string) error {
 			s.mu.Unlock()
 			return err
 		}
+		// The activity line is transient, so preserve the previous assistant state.
 		s.eventBoundary = false
-		s.lastEventWasAssistant = false
 		s.mu.Unlock()
 		s.activity.Start(name, gist)
 		return nil
