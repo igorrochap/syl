@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -551,17 +552,64 @@ func TestStreamDoesNotWriteCursorEscapesToNonTerminalOutput(t *testing.T) {
 }
 
 func TestActivityFrameGoldenContainsConsecutiveFrames(t *testing.T) {
+	elapsedFrames := []time.Duration{
+		0,
+		250 * time.Millisecond,
+		500 * time.Millisecond,
+		750 * time.Millisecond,
+		1 * time.Second,
+		1*time.Second + 250*time.Millisecond,
+		1*time.Second + 500*time.Millisecond,
+		1*time.Second + 750*time.Millisecond,
+		2 * time.Second,
+		2*time.Second + 250*time.Millisecond,
+		time.Minute,
+		time.Minute + 3*time.Second,
+		time.Hour,
+		time.Hour + 5*time.Minute,
+		24*time.Hour + 5*time.Minute,
+	}
 	var output strings.Builder
-	for frameIndex := 0; frameIndex < len(activityFrames)+activityToneFrameCount; frameIndex++ {
+	for frameIndex, elapsed := range elapsedFrames {
 		output.WriteString(renderActivityFrame(
 			"Implementing",
 			"a gist that is deliberately wider than the activity line limit so truncation is visible",
-			time.Duration(frameIndex)*250*time.Millisecond,
+			elapsed,
 			frameIndex,
 		))
 		output.WriteByte('\n')
 	}
 	assertGolden(t, "activity.golden", []byte(output.String()))
+}
+
+func TestFormatElapsed(t *testing.T) {
+	tests := []struct {
+		name    string
+		elapsed time.Duration
+		want    string
+	}{
+		{name: "seconds", elapsed: 8*time.Second + 400*time.Millisecond, want: "8.4s"},
+		{name: "negative", elapsed: -time.Second, want: "0.0s"},
+		{name: "rounding stays below minute", elapsed: 59*time.Second + 950*time.Millisecond, want: "59.9s"},
+		{name: "one minute", elapsed: time.Minute, want: "1m00s"},
+		{name: "minutes and seconds", elapsed: 2*time.Minute + 3*time.Second + 999*time.Millisecond, want: "2m03s"},
+		{name: "last minute before hour", elapsed: 59*time.Minute + 59*time.Second, want: "59m59s"},
+		{name: "one hour", elapsed: time.Hour, want: "1h00m"},
+		{name: "hours and minutes", elapsed: time.Hour + 5*time.Minute + 59*time.Second, want: "1h05m"},
+		{name: "beyond a day", elapsed: 24*time.Hour + 5*time.Minute, want: "24h05m"},
+	}
+	unitShape := regexp.MustCompile(`^(?:\d+\.\ds|\d+m\d{2}s|\d+h\d{2}m)$`)
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got := formatElapsed(test.elapsed)
+			if got != test.want {
+				t.Fatalf("formatElapsed(%s) = %q, want %q", test.elapsed, got, test.want)
+			}
+			if !unitShape.MatchString(got) {
+				t.Fatalf("formatElapsed(%s) = %q, want an allowed one- or two-unit shape", test.elapsed, got)
+			}
+		})
+	}
 }
 
 func TestActivityFrameCyclesGlyphsAndMutedTones(t *testing.T) {
