@@ -43,14 +43,16 @@ type Stream struct {
 	style  styleSet
 	gutter string
 
-	showTools   bool
-	pending     string
-	atLineStart bool
-	lineWidth   int
-	fenced      bool
-	literalLine bool
-	mu          sync.Mutex
-	activity    *activityLine
+	showTools             bool
+	pending               string
+	eventBoundary         bool
+	lastEventWasAssistant bool
+	atLineStart           bool
+	lineWidth             int
+	fenced                bool
+	literalLine           bool
+	mu                    sync.Mutex
+	activity              *activityLine
 }
 
 // NewStream constructs a live Role renderer.
@@ -63,12 +65,13 @@ func NewStream(output io.Writer, caps Caps, options StreamOptions) *Stream {
 		options.TickerInterval = 100 * time.Millisecond
 	}
 	stream := &Stream{
-		output:      renderer.output,
-		caps:        renderer.caps,
-		style:       renderer.style,
-		gutter:      streamGutter(renderer.caps, options.Gutter),
-		showTools:   options.ShowTools,
-		atLineStart: true,
+		output:        renderer.output,
+		caps:          renderer.caps,
+		style:         renderer.style,
+		gutter:        streamGutter(renderer.caps, options.Gutter),
+		showTools:     options.ShowTools,
+		eventBoundary: true,
+		atLineStart:   true,
 	}
 	stream.activity = newActivityLine(stream, options.Activity, options.Role, options.Clock, options.TickerInterval)
 	stream.StartTurn()
@@ -100,31 +103,50 @@ func (s *Stream) AtLineStart() bool {
 	return s.atLineStart
 }
 
-// BeforeEvent finishes any activity from the previous Harness event and
-// flushes a buffered partial word before the next event is rendered.
+// BeforeEvent finishes any activity from the previous Harness event, flushes
+// a buffered partial word, and records the next event boundary.
 func (s *Stream) BeforeEvent() error {
 	s.activity.Stop()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.flushPendingLocked()
+	if err := s.flushPendingLocked(); err != nil {
+		return err
+	}
+	s.eventBoundary = true
+	return nil
 }
 
 // Assistant appends streamed assistant prose. Complete words are rendered
 // immediately while a final partial word remains buffered until the next event
 // or the end of the turn.
 func (s *Stream) Assistant(text string) error {
-	if text == "" {
+	if strings.TrimSpace(text) == "" {
+		s.mu.Lock()
+		s.eventBoundary = false
+		s.mu.Unlock()
 		return nil
 	}
 	s.activity.Stop()
 	s.mu.Lock()
+	resume := false
+	defer func() {
+		s.mu.Unlock()
+		if resume {
+			s.activity.Resume()
+		}
+	}()
+	separatorWritten := false
+	if s.eventBoundary && s.lastEventWasAssistant {
+		if err := s.writeAssistantSeparatorLocked(); err != nil {
+			return err
+		}
+		separatorWritten = true
+	}
+	s.eventBoundary = false
+	s.lastEventWasAssistant = true
 	s.pending += text
 	err := s.flushCompleteWordsLocked()
-	resume := err == nil && s.atLineStart
-	s.mu.Unlock()
-	if resume {
-		s.activity.Resume()
-	}
+	resume = err == nil && s.atLineStart && !separatorWritten
 	return err
 }
 
@@ -142,6 +164,8 @@ func (s *Stream) Tool(name, gist string) error {
 			s.mu.Unlock()
 			return err
 		}
+		s.eventBoundary = false
+		s.lastEventWasAssistant = false
 		s.mu.Unlock()
 		s.activity.Start(name, gist)
 		return nil
@@ -158,7 +182,12 @@ func (s *Stream) Tool(name, gist string) error {
 	if gist != "" {
 		line += " — " + gist
 	}
-	return s.writeLineLocked(line, s.style.label)
+	if err := s.writeLineLocked(line, s.style.label); err != nil {
+		return err
+	}
+	s.eventBoundary = false
+	s.lastEventWasAssistant = false
+	return nil
 }
 
 // EndTurn flushes the final partial word and clears transient activity.
@@ -175,6 +204,8 @@ func (s *Stream) EndTurn() error {
 		}
 		s.atLineStart = true
 	}
+	s.eventBoundary = true
+	s.lastEventWasAssistant = false
 	return nil
 }
 
@@ -221,6 +252,18 @@ func (s *Stream) flushPendingLocked() error {
 	visible := s.pending
 	s.pending = ""
 	return s.writeProseLocked(visible)
+}
+
+func (s *Stream) writeAssistantSeparatorLocked() error {
+	if !s.atLineStart {
+		if err := s.writeLineBreakLocked(); err != nil {
+			return err
+		}
+	}
+	if err := s.writeGutterLocked(); err != nil {
+		return err
+	}
+	return s.writeLineBreakLocked()
 }
 
 func (s *Stream) writeProseLocked(value string) error {
