@@ -401,8 +401,14 @@ func runImplementReview(ctx context.Context, params implementIterationsParams, r
 	if err := ensureHeadUnchanged(ctx, params.git, params.branchPoint); err != nil {
 		return ReviewExecution{}, err
 	}
-	params.recorder.RecordSessions(reviewParams.iteration, "review", reviewResult.SessionIDs)
-	return reviewResult, nil
+	return recordReviewSessions(params.recorder, reviewParams.iteration, reviewResult)
+}
+
+func recordReviewSessions(recorder RunRecorder, iteration int, review ReviewExecution) (ReviewExecution, error) {
+	if err := recorder.RecordSessions(iteration, "review", review.SessionIDs); err != nil {
+		return ReviewExecution{}, fmt.Errorf("record review sessions: %w", err)
+	}
+	return review, nil
 }
 
 func prepareIterationReviewDiff(ctx context.Context, params implementIterationsParams, iteration int) (string, error) {
@@ -468,7 +474,9 @@ func runImplementTurn(ctx context.Context, params implementIterationsParams, ite
 	); err != nil {
 		return err
 	}
-	params.recorder.RecordSessions(iteration, "implement", implementResult.SessionIDs)
+	if err := params.recorder.RecordSessions(iteration, "implement", implementResult.SessionIDs); err != nil {
+		return fmt.Errorf("record implement sessions: %w", err)
+	}
 	return ensureHeadUnchanged(ctx, params.git, params.branchPoint)
 }
 

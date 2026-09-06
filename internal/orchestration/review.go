@@ -289,8 +289,7 @@ func recordStandaloneReviewArtifacts(recorder RunRecorder, review ReviewExecutio
 	if err := recorder.RecordReviewOutput(0, review); err != nil {
 		return err
 	}
-	recorder.RecordSessions(0, "review", review.SessionIDs)
-	return recorder.WriteSessions()
+	return recorder.RecordSessions(0, "review", review.SessionIDs)
 }
 
 func RunReviewExecution(ctx context.Context, adapter harness.Adapter, request harness.Request, output io.Writer, mode HarnessOutputMode, questions *QuestionHandler) (ReviewExecution, error) {

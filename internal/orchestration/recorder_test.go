@@ -62,8 +62,9 @@ func (r *memoryRunRecorder) RecordVerdict(iteration int, reviewVerdict verdict.V
 	return nil
 }
 
-func (r *memoryRunRecorder) RecordSessions(iteration int, role string, sessionIDs []string) {
+func (r *memoryRunRecorder) RecordSessions(iteration int, role string, sessionIDs []string) error {
 	recordSessions(&r.sessions, r.sessionKeys, iteration, role, sessionIDs)
+	return r.WriteSessions()
 }
 
 func (r *memoryRunRecorder) WriteSummary(summary implementSummary) error {
@@ -86,6 +87,20 @@ type failingUsageRecorder struct {
 func (r *failingUsageRecorder) RecordUsage(usage.Entry) error {
 	r.usageCalls++
 	return errors.New("usage artifact is unavailable")
+}
+
+type failingSessionsRecorder struct {
+	*memoryRunRecorder
+	role string
+	err  error
+}
+
+func (r *failingSessionsRecorder) RecordSessions(iteration int, role string, sessionIDs []string) error {
+	recordSessions(&r.sessions, r.sessionKeys, iteration, role, sessionIDs)
+	if role == r.role {
+		return r.err
+	}
+	return r.WriteSessions()
 }
 
 func TestRunImplementIterationsRecordsReviseThenApproveInMemory(t *testing.T) {
@@ -255,6 +270,68 @@ func TestRunImplementIterationsContinuesWhenUsageRecordingFails(t *testing.T) {
 	}
 }
 
+func TestRunImplementIterationsReportsImplementSessionWriteError(t *testing.T) {
+	sessionWriteError := errors.New("sessions artifact is unavailable")
+	recorder := &failingSessionsRecorder{
+		memoryRunRecorder: newMemoryRunRecorder(),
+		role:              "implement",
+		err:               sessionWriteError,
+	}
+	implementer := &scriptedConversationAdapter{runs: [][]harness.Event{{
+		{Type: harness.EventSession, SessionID: "implement-1"},
+		{Type: harness.EventAssistantText, Text: "implementation"},
+	}}}
+	reviewer := &scriptedConversationAdapter{runs: [][]harness.Event{{
+		{Type: harness.EventSession, SessionID: "review-1"},
+		{Type: harness.EventAssistantText, Text: "VERDICT: approve\nSUMMARY: Ready\nFINDINGS:\n"},
+	}}}
+
+	_, _, _, err := runImplementIterations(context.Background(), implementIterationsParams{
+		git:           staticImplementGit{branchPoint: "branch-point", diff: "diff --git a/a b/a\n"},
+		implementer:   implementer,
+		reviewer:      reviewer,
+		projectConfig: config.Config{Loop: config.LoopConfig{MaxIterations: 1}},
+		ticket:        tracker.Ticket{Number: 42, Title: "Record implement sessions"},
+		branchPoint:   "branch-point",
+		recorder:      recorder,
+		output:        io.Discard,
+	})
+	if err == nil || !strings.Contains(err.Error(), "record implement sessions") || !errors.Is(err, sessionWriteError) {
+		t.Fatalf("runImplementIterations() error = %v, want implement session write failure", err)
+	}
+}
+
+func TestRunImplementIterationsReportsReviewSessionWriteError(t *testing.T) {
+	sessionWriteError := errors.New("sessions artifact is unavailable")
+	recorder := &failingSessionsRecorder{
+		memoryRunRecorder: newMemoryRunRecorder(),
+		role:              "review",
+		err:               sessionWriteError,
+	}
+	implementer := &scriptedConversationAdapter{runs: [][]harness.Event{{
+		{Type: harness.EventSession, SessionID: "implement-1"},
+		{Type: harness.EventAssistantText, Text: "implementation"},
+	}}}
+	reviewer := &scriptedConversationAdapter{runs: [][]harness.Event{{
+		{Type: harness.EventSession, SessionID: "review-1"},
+		{Type: harness.EventAssistantText, Text: "VERDICT: approve\nSUMMARY: Ready\nFINDINGS:\n"},
+	}}}
+
+	_, _, _, err := runImplementIterations(context.Background(), implementIterationsParams{
+		git:           staticImplementGit{branchPoint: "branch-point", diff: "diff --git a/a b/a\n"},
+		implementer:   implementer,
+		reviewer:      reviewer,
+		projectConfig: config.Config{Loop: config.LoopConfig{MaxIterations: 1}},
+		ticket:        tracker.Ticket{Number: 42, Title: "Record review sessions"},
+		branchPoint:   "branch-point",
+		recorder:      recorder,
+		output:        io.Discard,
+	})
+	if err == nil || !strings.Contains(err.Error(), "record review sessions") || !errors.Is(err, sessionWriteError) {
+		t.Fatalf("runImplementIterations() error = %v, want review session write failure", err)
+	}
+}
+
 func TestRunImplementPassesContextToImplementer(t *testing.T) {
 	const additionalContext = "Use the existing GitRunner seam.\nDo not add a new adapter."
 
@@ -388,6 +465,46 @@ func TestRunRecorderKeepsMetadataKeysOutsideMultilineContext(t *testing.T) {
 	}
 }
 
+func TestDiskRunRecorderFlushesSessionsAfterEachRole(t *testing.T) {
+	recorder := &diskRunRecorder{
+		dir:         t.TempDir(),
+		sessionKeys: make(map[sessionKey]struct{}),
+	}
+
+	if err := recorder.RecordSessions(1, "implement", []string{"implement-1"}); err != nil {
+		t.Fatalf("record iteration 1 implement sessions: %v", err)
+	}
+	assertSessionsArtifact(t, recorder.Dir(), "iteration 1 implement: implement-1\n")
+
+	if err := recorder.RecordSessions(1, "review", []string{"review-1"}); err != nil {
+		t.Fatalf("record iteration 1 review sessions: %v", err)
+	}
+	assertSessionsArtifact(t, recorder.Dir(),
+		"iteration 1 implement: implement-1\n"+
+			"iteration 1 review: review-1\n",
+	)
+
+	if err := recorder.RecordSessions(2, "implement", []string{"implement-2"}); err != nil {
+		t.Fatalf("record iteration 2 implement sessions: %v", err)
+	}
+	assertSessionsArtifact(t, recorder.Dir(),
+		"iteration 1 implement: implement-1\n"+
+			"iteration 1 review: review-1\n"+
+			"iteration 2 implement: implement-2\n",
+	)
+}
+
+func assertSessionsArtifact(t *testing.T, runDir, want string) {
+	t.Helper()
+	contents, err := os.ReadFile(filepath.Join(runDir, artifactFilename(sessionsArtifact, 0)))
+	if err != nil {
+		t.Fatalf("read sessions artifact: %v", err)
+	}
+	if string(contents) != want {
+		t.Fatalf("sessions artifact = %q, want %q", contents, want)
+	}
+}
+
 func readRunMetadataArtifact(t *testing.T, runDir string) string {
 	t.Helper()
 	contents, err := os.ReadFile(filepath.Join(runDir, artifactFilename(metadataArtifact, 0)))
@@ -416,10 +533,18 @@ func TestDiskRunRecorderDeduplicatesSessionIDs(t *testing.T) {
 		dir:         t.TempDir(),
 		sessionKeys: make(map[sessionKey]struct{}),
 	}
-	recorder.RecordSessions(2, "review", []string{"review-session", "review-session"})
-	recorder.RecordSessions(1, "implement", []string{"review-session"})
-	recorder.RecordSessions(1, "review", []string{"review-session", "review-session-2"})
-	recorder.RecordSessions(2, "review", []string{"review-session", "review-session-2", ""})
+	if err := recorder.RecordSessions(2, "review", []string{"review-session", "review-session"}); err != nil {
+		t.Fatalf("record iteration 2 review sessions: %v", err)
+	}
+	if err := recorder.RecordSessions(1, "implement", []string{"review-session"}); err != nil {
+		t.Fatalf("record iteration 1 implement sessions: %v", err)
+	}
+	if err := recorder.RecordSessions(1, "review", []string{"review-session", "review-session-2"}); err != nil {
+		t.Fatalf("record iteration 1 review sessions: %v", err)
+	}
+	if err := recorder.RecordSessions(2, "review", []string{"review-session", "review-session-2", ""}); err != nil {
+		t.Fatalf("record iteration 2 review sessions: %v", err)
+	}
 
 	if got, want := len(recorder.sessions), 5; got != want {
 		t.Fatalf("recorded sessions = %d, want %d: %v", got, want, recorder.sessions)
@@ -438,6 +563,22 @@ func TestDiskRunRecorderDeduplicatesSessionIDs(t *testing.T) {
 		"iteration 2 review: review-session-2\n"
 	if string(got) != want {
 		t.Fatalf("sessions artifact = %q, want %q", got, want)
+	}
+}
+
+func TestDiskRunRecorderReportsSessionWriteFailure(t *testing.T) {
+	runDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(runDir, artifactFilename(sessionsArtifact, 0)), 0o755); err != nil {
+		t.Fatalf("create sessions artifact directory: %v", err)
+	}
+	recorder := &diskRunRecorder{
+		dir:         runDir,
+		sessionKeys: make(map[sessionKey]struct{}),
+	}
+
+	err := recorder.RecordSessions(1, "review", []string{"review-session"})
+	if err == nil || !strings.Contains(err.Error(), "write run artifact") {
+		t.Fatalf("RecordSessions() error = %v, want sessions artifact write failure", err)
 	}
 }
 
