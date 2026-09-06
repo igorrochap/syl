@@ -15,6 +15,23 @@ func (a *PTYAdapter) attach(ctx context.Context, request harness.Request) error 
 	if err != nil {
 		return err
 	}
+	return a.runInteractive(ctx, args)
+}
+
+// AttachSession hands the terminal to a recorded Claude Code session.
+func (a *PTYAdapter) AttachSession(
+	ctx context.Context,
+	sessionID string,
+	request harness.Request,
+) error {
+	args, err := attachSessionArgs(sessionID, request)
+	if err != nil {
+		return err
+	}
+	return a.runInteractive(ctx, args)
+}
+
+func (a *PTYAdapter) runInteractive(ctx context.Context, args []string) error {
 	command := a.command
 	if command == "" {
 		command = "claude"

@@ -351,6 +351,10 @@ func (*capturingReviewAdapter) Resume(context.Context, string, harness.Request) 
 
 func (*capturingReviewAdapter) Attach(context.Context, harness.Request) error { return nil }
 
+func (*capturingReviewAdapter) AttachSession(context.Context, string, harness.Request) error {
+	return nil
+}
+
 type unparseableReviewAdapter struct {
 	first []harness.Event
 	retry []harness.Event
@@ -365,6 +369,10 @@ func (a *unparseableReviewAdapter) Resume(context.Context, string, harness.Reque
 }
 
 func (*unparseableReviewAdapter) Attach(context.Context, harness.Request) error { return nil }
+
+func (*unparseableReviewAdapter) AttachSession(context.Context, string, harness.Request) error {
+	return nil
+}
 
 type recordingReviewTracker struct {
 	comment string

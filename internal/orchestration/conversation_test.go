@@ -358,6 +358,10 @@ func (a *scriptedConversationAdapter) Resume(_ context.Context, sessionID string
 
 func (*scriptedConversationAdapter) Attach(context.Context, harness.Request) error { return nil }
 
+func (*scriptedConversationAdapter) AttachSession(context.Context, string, harness.Request) error {
+	return nil
+}
+
 type scriptedConversationStream struct {
 	events []harness.Event
 }

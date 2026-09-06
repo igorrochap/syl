@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -257,6 +258,71 @@ func TestCodexAttachInvokesInteractivePrompt(t *testing.T) {
 	}
 	if !reflect.DeepEqual(gotArgs, wantArgs) {
 		t.Fatalf("Codex attach args = %#v, want %#v", gotArgs, wantArgs)
+	}
+}
+
+func TestCodexAttachSessionInvokesResumeWithoutRequestSettings(t *testing.T) {
+	for _, mcp := range []bool{false, true} {
+		name := "MCP disabled"
+		if mcp {
+			name = "MCP enabled"
+		}
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			argsPath := filepath.Join(root, "args")
+			command := fakeCodexCommand(t, argsPath, nil)
+			adapter := &Adapter{command: command, projectRoot: root}
+
+			err := adapter.AttachSession(context.Background(), "codex-session", harness.Request{
+				Model:  "ignored-model",
+				Effort: config.Effort("ignored-effort"),
+				MCP:    mcp,
+			})
+			if err != nil {
+				t.Fatalf("AttachSession() error = %v", err)
+			}
+
+			gotArgs := strings.Split(strings.TrimSpace(readFile(t, argsPath)), "\n")
+			for i := range gotArgs {
+				gotArgs[i] = strings.ReplaceAll(gotArgs[i], "\x1c", "\n")
+			}
+			wantArgs := []string{"resume", "codex-session", "--cd", root}
+			if !reflect.DeepEqual(gotArgs, wantArgs) {
+				t.Fatalf("Codex attach session args = %#v, want %#v", gotArgs, wantArgs)
+			}
+		})
+	}
+}
+
+func TestCodexAttachSessionRejectsBlankSessionID(t *testing.T) {
+	adapter := &Adapter{command: "does-not-run"}
+	for _, sessionID := range []string{"", " \t\n"} {
+		t.Run(strconv.Quote(sessionID), func(t *testing.T) {
+			err := adapter.AttachSession(context.Background(), sessionID, harness.Request{})
+			if err == nil || !strings.Contains(err.Error(), "Codex") {
+				t.Fatalf("AttachSession() error = %v, want Codex session error", err)
+			}
+		})
+	}
+}
+
+func TestCodexAttachSessionUsesProjectRootAndReportsExitFailure(t *testing.T) {
+	root := t.TempDir()
+	workingDirectoryPath := filepath.Join(root, "working-directory")
+	command := filepath.Join(t.TempDir(), "codex")
+	script := "#!/bin/sh\npwd > \"" + workingDirectoryPath + "\"\nexit 7\n"
+	if err := os.WriteFile(command, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	adapter := &Adapter{command: command, projectRoot: root}
+
+	err := adapter.AttachSession(context.Background(), "codex-session", harness.Request{})
+	if err == nil || !strings.Contains(err.Error(), "Codex") {
+		t.Fatalf("AttachSession() error = %v, want Codex exit error", err)
+	}
+	workingDirectory := strings.TrimSpace(readFile(t, workingDirectoryPath))
+	if workingDirectory != root {
+		t.Fatalf("Codex attach session working directory = %q, want %q", workingDirectory, root)
 	}
 }
 

@@ -60,6 +60,84 @@ func TestClaudeAttachInvokesInteractivePrompt(t *testing.T) {
 	}
 }
 
+func TestClaudeAttachSessionInvokesResumeWithoutRequestSettings(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		mcp  bool
+		want []string
+	}{
+		{name: "strict MCP", want: []string{"--resume", "session-1", "--strict-mcp-config"}},
+		{name: "inherited MCP", mcp: true, want: []string{"--resume", "session-1"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			argsPath := filepath.Join(root, "args")
+			command := filepath.Join(t.TempDir(), "claude")
+			script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"" + argsPath + "\"\n"
+			if err := os.WriteFile(command, []byte(script), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			adapter := New(root)
+			adapter.command = command
+
+			err := adapter.AttachSession(context.Background(), "session-1", harness.Request{
+				Model:  "ignored-model",
+				Effort: config.Effort("ignored-effort"),
+				MCP:    tt.mcp,
+			})
+			if err != nil {
+				t.Fatalf("AttachSession() error = %v", err)
+			}
+
+			got := strings.Split(strings.TrimSpace(readClaudeFile(t, argsPath)), "\n")
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("Claude attach session args = %#v, want %#v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestClaudeAttachSessionRejectsBlankSessionID(t *testing.T) {
+	adapter := New(t.TempDir())
+	for _, sessionID := range []string{"", " \t\n"} {
+		t.Run(strconv.Quote(sessionID), func(t *testing.T) {
+			err := adapter.AttachSession(context.Background(), sessionID, harness.Request{})
+			if err == nil || !strings.Contains(err.Error(), "Claude Code") {
+				t.Fatalf("AttachSession() error = %v, want Claude Code session error", err)
+			}
+		})
+	}
+}
+
+func TestClaudeAttachSessionUsesProjectRootAndReportsExitFailure(t *testing.T) {
+	root := t.TempDir()
+	workingDirectoryPath := filepath.Join(root, "working-directory")
+	command := writeClaudeTestDouble(t, fmt.Sprintf("pwd > %q\nexit 7\n", workingDirectoryPath))
+	adapter := New(root)
+	adapter.command = command
+
+	err := adapter.AttachSession(context.Background(), "session-1", harness.Request{})
+	if err == nil || !strings.Contains(err.Error(), "Claude Code") {
+		t.Fatalf("AttachSession() error = %v, want Claude Code exit error", err)
+	}
+	workingDirectory := strings.TrimSpace(readClaudeFile(t, workingDirectoryPath))
+	if workingDirectory != root {
+		t.Fatalf("Claude attach session working directory = %q, want %q", workingDirectory, root)
+	}
+}
+
+func TestClaudeAttachSessionIgnoresChildSessionGuard(t *testing.T) {
+	root := t.TempDir()
+	command := writeClaudeTestDouble(t, "exit 0\n")
+	adapter := New(root)
+	adapter.command = command
+	t.Setenv("CLAUDE_CODE_CHILD_SESSION", "child")
+
+	if err := adapter.AttachSession(context.Background(), "session-1", harness.Request{}); err != nil {
+		t.Fatalf("AttachSession() error = %v, want no child-session guard", err)
+	}
+}
+
 func TestClaudeEffortMapping(t *testing.T) {
 	tests := []struct {
 		effort config.Effort
@@ -627,6 +705,15 @@ func writeClaudeTestDouble(t *testing.T, body string) string {
 		t.Fatal(err)
 	}
 	return command
+}
+
+func readClaudeFile(t *testing.T, path string) string {
+	t.Helper()
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(contents)
 }
 
 func collectHarnessEvents(t *testing.T, stream harness.Stream) []harness.Event {

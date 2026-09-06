@@ -879,6 +879,8 @@ func (h *scriptedHarness) Resume(_ context.Context, sessionID string, request ha
 
 func (*scriptedHarness) Attach(context.Context, harness.Request) error { return nil }
 
+func (*scriptedHarness) AttachSession(context.Context, string, harness.Request) error { return nil }
+
 type scriptedHarnessStream struct {
 	events    []harness.Event
 	sessionID string
