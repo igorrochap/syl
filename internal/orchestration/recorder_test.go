@@ -371,13 +371,18 @@ func TestRunImplementPassesContextToImplementer(t *testing.T) {
 }
 
 func TestImplementRunRecorderRecordsRoleContexts(t *testing.T) {
+	originRoot := t.TempDir()
+	workRoot := t.TempDir()
 	implementContext := "Keep the existing recorder.\nPreserve metadata ordering."
 	reviewContext := "Check the metadata output."
 	recorder, err := newImplementRunRecorder(
-		t.TempDir(),
+		originRoot,
+		workRoot,
 		42,
 		"feat/record-role-context",
 		"abc123",
+		"codex",
+		"claude",
 		implementContext,
 		reviewContext,
 	)
@@ -388,6 +393,9 @@ func TestImplementRunRecorderRecordsRoleContexts(t *testing.T) {
 	metadata := readRunMetadataArtifact(t, recorder.Dir())
 	want := "Branch: feat/record-role-context\n" +
 		"Branch point: abc123\n" +
+		"Work root: " + workRoot + "\n" +
+		"Implementer harness: codex\n" +
+		"Reviewer harness: claude\n" +
 		"Implementer context:\n" +
 		"  Keep the existing recorder.\n" +
 		"  Preserve metadata ordering.\n" +
@@ -399,11 +407,15 @@ func TestImplementRunRecorderRecordsRoleContexts(t *testing.T) {
 }
 
 func TestImplementRunRecorderPreservesMetadataWithoutContexts(t *testing.T) {
+	workRoot := t.TempDir()
 	recorder, err := newImplementRunRecorder(
 		t.TempDir(),
+		workRoot,
 		42,
 		"feat/record-role-context",
 		"abc123",
+		"codex",
+		"claude",
 		"",
 		"",
 	)
@@ -411,15 +423,21 @@ func TestImplementRunRecorderPreservesMetadataWithoutContexts(t *testing.T) {
 		t.Fatalf("newImplementRunRecorder() error = %v", err)
 	}
 
-	const want = "Branch: feat/record-role-context\nBranch point: abc123\n"
+	want := "Branch: feat/record-role-context\n" +
+		"Branch point: abc123\n" +
+		"Work root: " + workRoot + "\n" +
+		"Implementer harness: codex\n" +
+		"Reviewer harness: claude\n"
 	if metadata := readRunMetadataArtifact(t, recorder.Dir()); metadata != want {
 		t.Fatalf("metadata = %q, want %q", metadata, want)
 	}
 }
 
 func TestReviewRunRecorderRecordsReviewerContext(t *testing.T) {
+	originRoot := t.TempDir()
+	workRoot := t.TempDir()
 	reviewContext := "Review only the parser.\nDo not modify files."
-	recorder, err := newReviewRunRecorder(t.TempDir(), "#42", "abc123", reviewContext)
+	recorder, err := newReviewRunRecorder(originRoot, workRoot, "#42", "abc123", "claude", reviewContext)
 	if err != nil {
 		t.Fatalf("newReviewRunRecorder() error = %v", err)
 	}
@@ -427,6 +445,8 @@ func TestReviewRunRecorderRecordsReviewerContext(t *testing.T) {
 	metadata := readRunMetadataArtifact(t, recorder.Dir())
 	want := "Ticket: #42\n" +
 		"Branch point: abc123\n" +
+		"Work root: " + workRoot + "\n" +
+		"Reviewer harness: claude\n" +
 		"Reviewer context:\n" +
 		"  Review only the parser.\n" +
 		"  Do not modify files.\n"
@@ -439,9 +459,12 @@ func TestRunRecorderKeepsMetadataKeysOutsideMultilineContext(t *testing.T) {
 	implementContext := "first line\nBranch: something\nthird line"
 	recorder, err := newImplementRunRecorder(
 		t.TempDir(),
+		t.TempDir(),
 		42,
 		"feat/record-role-context",
 		"abc123",
+		"codex",
+		"claude",
 		implementContext,
 		"",
 	)

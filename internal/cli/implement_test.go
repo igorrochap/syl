@@ -1122,7 +1122,8 @@ func TestImplementQuietAndVerboseRunsPreserveRunArtifacts(t *testing.T) {
 		if err != nil || len(runDirs) != 1 {
 			t.Fatalf("run directories = %v, err = %v; want one issue artifact directory", runDirs, err)
 		}
-		return readAllFiles(t, runDirs[0])
+		artifacts := readAllFiles(t, runDirs[0])
+		return strings.ReplaceAll(artifacts, "Work root: "+fixture.root+"\n", "Work root: <work root>\n")
 	}
 
 	quietArtifacts := run(false)
