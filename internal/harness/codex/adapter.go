@@ -59,6 +59,25 @@ func (a *Adapter) Attach(ctx context.Context, request harness.Request) error {
 	if err != nil {
 		return err
 	}
+	return a.runInteractive(ctx, args)
+}
+
+// AttachSession hands the terminal to a recorded Codex session.
+func (a *Adapter) AttachSession(
+	ctx context.Context,
+	sessionID string,
+	_ harness.Request,
+) error {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return errors.New("cannot attach to Codex session without a session id")
+	}
+	args := []string{"resume", sessionID}
+	args = a.withProjectRoot(args)
+	return a.runInteractive(ctx, args)
+}
+
+func (a *Adapter) runInteractive(ctx context.Context, args []string) error {
 	process := exec.CommandContext(ctx, a.executable(), args...)
 	if a.projectRoot != "" {
 		process.Dir = a.projectRoot

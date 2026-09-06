@@ -50,4 +50,5 @@ type Adapter interface {
 	Run(ctx context.Context, request Request) (Stream, error)
 	Resume(ctx context.Context, sessionID string, request Request) (Stream, error)
 	Attach(ctx context.Context, request Request) error
+	AttachSession(ctx context.Context, sessionID string, request Request) error
 }

@@ -155,6 +155,8 @@ func (fakeHarness) Resume(context.Context, string, harness.Request) (harness.Str
 
 func (fakeHarness) Attach(context.Context, harness.Request) error { return nil }
 
+func (fakeHarness) AttachSession(context.Context, string, harness.Request) error { return nil }
+
 type emptyHarnessStream struct{}
 
 func (emptyHarnessStream) Events() <-chan harness.Event {

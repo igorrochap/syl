@@ -269,6 +269,10 @@ func (*usageTranscriptHarness) Attach(context.Context, harness.Request) error {
 	return fmt.Errorf("unexpected harness attach")
 }
 
+func (*usageTranscriptHarness) AttachSession(context.Context, string, harness.Request) error {
+	return fmt.Errorf("unexpected harness session attach")
+}
+
 func (h *usageTranscriptHarness) appendTranscript(sessionID, messageID string, input, output, cacheWrite, cacheRead int) error {
 	return h.writeTranscript(sessionID, messageID, input, output, cacheWrite, cacheRead, false)
 }
@@ -1712,6 +1716,10 @@ func (*resumingLoopHarness) Attach(context.Context, harness.Request) error {
 	return fmt.Errorf("unexpected harness attach")
 }
 
+func (*resumingLoopHarness) AttachSession(context.Context, string, harness.Request) error {
+	return fmt.Errorf("unexpected harness session attach")
+}
+
 type failingHarnessStream struct {
 	events []harness.Event
 	err    error
@@ -1769,6 +1777,10 @@ func (h *unparseableReviewImplementHarness) Resume(_ context.Context, _ string, 
 
 func (*unparseableReviewImplementHarness) Attach(context.Context, harness.Request) error { return nil }
 
+func (*unparseableReviewImplementHarness) AttachSession(context.Context, string, harness.Request) error {
+	return nil
+}
+
 func (h *loopHarness) Run(_ context.Context, request harness.Request) (harness.Stream, error) {
 	h.requests = append(h.requests, request)
 	index := len(h.requests) - 1
@@ -1794,6 +1806,10 @@ func (*loopHarness) Resume(context.Context, string, harness.Request) (harness.St
 
 func (*loopHarness) Attach(context.Context, harness.Request) error {
 	return fmt.Errorf("unexpected harness attach")
+}
+
+func (*loopHarness) AttachSession(context.Context, string, harness.Request) error {
+	return fmt.Errorf("unexpected harness session attach")
 }
 
 type loopGHRunner struct {

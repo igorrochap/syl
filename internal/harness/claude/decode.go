@@ -47,6 +47,18 @@ func attachArgs(request harness.Request) ([]string, error) {
 	), nil
 }
 
+func attachSessionArgs(sessionID string, request harness.Request) ([]string, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return nil, errors.New("cannot attach to Claude Code session without a session id")
+	}
+	args := []string{"--resume", sessionID}
+	if !request.MCP {
+		args = append(args, "--strict-mcp-config")
+	}
+	return args, nil
+}
+
 type claudeContentBlock struct {
 	Type  string          `json:"type"`
 	Name  string          `json:"name"`

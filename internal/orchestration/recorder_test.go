@@ -482,6 +482,10 @@ func (*capturingImplementAdapter) Attach(context.Context, harness.Request) error
 	return errors.New("unexpected harness attach")
 }
 
+func (*capturingImplementAdapter) AttachSession(context.Context, string, harness.Request) error {
+	return errors.New("unexpected harness session attach")
+}
+
 func (g staticImplementGit) Run(_ context.Context, args ...string) (string, error) {
 	switch strings.Join(args, " ") {
 	case "rev-parse HEAD":

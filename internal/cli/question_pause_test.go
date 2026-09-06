@@ -236,6 +236,8 @@ func (h *questionHarness) Resume(_ context.Context, sessionID string, request ha
 
 func (*questionHarness) Attach(context.Context, harness.Request) error { return nil }
 
+func (*questionHarness) AttachSession(context.Context, string, harness.Request) error { return nil }
+
 type contextAwareQuestionHarness struct {
 	runContext            context.Context
 	cancelledBeforeResume bool
@@ -264,3 +266,7 @@ func (h *contextAwareQuestionHarness) Resume(_ context.Context, sessionID string
 }
 
 func (*contextAwareQuestionHarness) Attach(context.Context, harness.Request) error { return nil }
+
+func (*contextAwareQuestionHarness) AttachSession(context.Context, string, harness.Request) error {
+	return nil
+}

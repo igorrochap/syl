@@ -253,6 +253,10 @@ func (h *planHarness) Attach(_ context.Context, request harness.Request) error {
 	return nil
 }
 
+func (*planHarness) AttachSession(context.Context, string, harness.Request) error {
+	return fmt.Errorf("unexpected session attach")
+}
+
 type planGHRunner struct {
 	lists int
 	after string
