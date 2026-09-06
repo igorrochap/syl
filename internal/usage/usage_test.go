@@ -72,6 +72,29 @@ func TestReadRunMetadataIgnoresIndentedContextKeys(t *testing.T) {
 	}
 }
 
+func TestParseSessionLineReadsRecordedSessionLines(t *testing.T) {
+	tests := []struct {
+		line      string
+		iteration int
+		role      string
+		sessionID string
+	}{
+		{line: "iteration 1 implement: implement-session", iteration: 1, role: "implement", sessionID: "implement-session"},
+		{line: "iteration 1 review: review-session", iteration: 1, role: "review", sessionID: "review-session"},
+		{line: "iteration 0 review: standalone-review-session", iteration: 0, role: "review", sessionID: "standalone-review-session"},
+	}
+
+	for _, test := range tests {
+		invocation, ok := parseSessionLine(test.line)
+		if !ok {
+			t.Fatalf("parseSessionLine(%q) = not parsed, want parsed", test.line)
+		}
+		if invocation.iteration != test.iteration || invocation.role != test.role || invocation.sessions[0] != test.sessionID {
+			t.Fatalf("parseSessionLine(%q) = %#v, want iteration %d role %q session %q", test.line, invocation, test.iteration, test.role, test.sessionID)
+		}
+	}
+}
+
 func TestCollectClaudeReportsMissingTranscript(t *testing.T) {
 	_, err := CollectClaude(t.TempDir(), t.TempDir(), []string{"missing"}, time.Now().Add(-time.Minute), time.Now())
 	if err == nil {
