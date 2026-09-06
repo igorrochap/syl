@@ -2,6 +2,70 @@
 
 <!-- version list -->
 
+## v1.27.0 (2026-09-04)
+
+### Bug Fixes
+
+- **ui**: Preserve assistant state during tool execution
+  ([#159](https://github.com/igorrochap/syl/pull/159),
+  [`c9ae355`](https://github.com/igorrochap/syl/commit/c9ae35577169e875da6bacaefd5ae32266753104))
+
+### Code Style
+
+- **ui**: Fix indentation in activityLine struct
+  ([#159](https://github.com/igorrochap/syl/pull/159),
+  [`c9ae355`](https://github.com/igorrochap/syl/commit/c9ae35577169e875da6bacaefd5ae32266753104))
+
+- **ui**: Update primary brand color ([#159](https://github.com/igorrochap/syl/pull/159),
+  [`c9ae355`](https://github.com/igorrochap/syl/commit/c9ae35577169e875da6bacaefd5ae32266753104))
+
+### Features
+
+- **cli**: Add role configuration wizard ([#159](https://github.com/igorrochap/syl/pull/159),
+  [`c9ae355`](https://github.com/igorrochap/syl/commit/c9ae35577169e875da6bacaefd5ae32266753104))
+
+- **ui**: Add automatic separator between assistant messages
+  ([#159](https://github.com/igorrochap/syl/pull/159),
+  [`c9ae355`](https://github.com/igorrochap/syl/commit/c9ae35577169e875da6bacaefd5ae32266753104))
+
+- **ui**: Add role-based activity indicators ([#159](https://github.com/igorrochap/syl/pull/159),
+  [`c9ae355`](https://github.com/igorrochap/syl/commit/c9ae35577169e875da6bacaefd5ae32266753104))
+
+- **ui**: Implement consistent terminal renderer
+  ([#159](https://github.com/igorrochap/syl/pull/159),
+  [`c9ae355`](https://github.com/igorrochap/syl/commit/c9ae35577169e875da6bacaefd5ae32266753104))
+
+- **ui**: Improve elapsed time duration formatting
+  ([#159](https://github.com/igorrochap/syl/pull/159),
+  [`c9ae355`](https://github.com/igorrochap/syl/commit/c9ae35577169e875da6bacaefd5ae32266753104))
+
+- **ui**: Overhaul CLI rendering engine and activity presentation
+  ([#159](https://github.com/igorrochap/syl/pull/159),
+  [`c9ae355`](https://github.com/igorrochap/syl/commit/c9ae35577169e875da6bacaefd5ae32266753104))
+
+### Refactoring
+
+- **cli**: Overhaul UI rendering and stream presentation
+  ([#159](https://github.com/igorrochap/syl/pull/159),
+  [`c9ae355`](https://github.com/igorrochap/syl/commit/c9ae35577169e875da6bacaefd5ae32266753104))
+
+- **ui**: Integrate custom renderer across CLI commands
+  ([#159](https://github.com/igorrochap/syl/pull/159),
+  [`c9ae355`](https://github.com/igorrochap/syl/commit/c9ae35577169e875da6bacaefd5ae32266753104))
+
+- **ui**: Modularize prose stream rendering ([#159](https://github.com/igorrochap/syl/pull/159),
+  [`c9ae355`](https://github.com/igorrochap/syl/commit/c9ae35577169e875da6bacaefd5ae32266753104))
+
+- **ui**: Remove spinner and role labels ([#159](https://github.com/igorrochap/syl/pull/159),
+  [`c9ae355`](https://github.com/igorrochap/syl/commit/c9ae35577169e875da6bacaefd5ae32266753104))
+
+### Testing
+
+- **core**: Add error propagation tests for UI rendering
+  ([#159](https://github.com/igorrochap/syl/pull/159),
+  [`c9ae355`](https://github.com/igorrochap/syl/commit/c9ae35577169e875da6bacaefd5ae32266753104))
+
+
 ## v1.26.3 (2026-09-02)
 
 ### Bug Fixes
