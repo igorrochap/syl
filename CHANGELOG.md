@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v1.28.1 (2026-09-06)
+
+### Bug Fixes
+
+- **orchestration**: Persist sessions synchronously
+  ([#166](https://github.com/igorrochap/syl/pull/166),
+  [`c58d3f2`](https://github.com/igorrochap/syl/commit/c58d3f23f12c822b9af8a84a7bfcf71b3bf23f2a))
+
+
 ## v1.28.0 (2026-09-06)
 
 ### Features
