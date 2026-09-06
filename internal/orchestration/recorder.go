@@ -64,13 +64,23 @@ var _ RunRecorder = (*diskRunRecorder)(nil)
 
 func newImplementRunRecorder(
 	originRoot string,
+	workRoot string,
 	issueNumber int,
 	branch string,
 	branchPoint string,
+	implementerHarness string,
+	reviewerHarness string,
 	implementContext string,
 	reviewContext string,
 ) (*diskRunRecorder, error) {
-	metadata := fmt.Sprintf("Branch: %s\nBranch point: %s\n", branch, branchPoint)
+	workRoot, err := resolveRunWorkRoot(workRoot)
+	if err != nil {
+		return nil, err
+	}
+	metadata := fmt.Sprintf(
+		"Branch: %s\nBranch point: %s\nWork root: %s\nImplementer harness: %s\nReviewer harness: %s\n",
+		branch, branchPoint, workRoot, implementerHarness, reviewerHarness,
+	)
 	metadata = appendRoleContext(metadata, "Implementer", implementContext)
 	metadata = appendRoleContext(metadata, "Reviewer", reviewContext)
 	return newDiskRunRecorder(
@@ -83,18 +93,35 @@ func newImplementRunRecorder(
 
 func newReviewRunRecorder(
 	originRoot string,
+	workRoot string,
 	ticketRef string,
 	branchPoint string,
+	reviewerHarness string,
 	reviewContext string,
 ) (*diskRunRecorder, error) {
+	workRoot, err := resolveRunWorkRoot(workRoot)
+	if err != nil {
+		return nil, err
+	}
 	suffix := "review"
 	trimmedTicketRef := strings.TrimSpace(ticketRef)
 	if number, err := strconv.Atoi(strings.TrimPrefix(trimmedTicketRef, "#")); err == nil && number > 0 {
 		suffix = strconv.Itoa(number)
 	}
-	metadata := fmt.Sprintf("Ticket: %s\nBranch point: %s\n", trimmedTicketRef, branchPoint)
+	metadata := fmt.Sprintf(
+		"Ticket: %s\nBranch point: %s\nWork root: %s\nReviewer harness: %s\n",
+		trimmedTicketRef, branchPoint, workRoot, reviewerHarness,
+	)
 	metadata = appendRoleContext(metadata, "Reviewer", reviewContext)
 	return newDiskRunRecorder(originRoot, suffix, metadata, "review")
+}
+
+func resolveRunWorkRoot(workRoot string) (string, error) {
+	root, err := filepath.Abs(workRoot)
+	if err != nil {
+		return "", fmt.Errorf("resolve run work root: %w", err)
+	}
+	return filepath.Clean(root), nil
 }
 
 // Context blocks use two-space indentation so their lines remain separate from

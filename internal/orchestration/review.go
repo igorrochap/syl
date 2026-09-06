@@ -92,7 +92,15 @@ func RunReview(ctx context.Context, options ReviewOptions) error {
 		return fmt.Errorf("review harness %q is not configured", options.ProjectConfig.Roles.Review.Harness)
 	}
 	options.Output = ensureLineTrackingWriter(options.Output)
-	preparation, err := prepareReviewWithContext(ctx, options.OriginRoot, options.TicketRef, options.Context, options.Git)
+	preparation, err := prepareReviewWithContext(
+		ctx,
+		options.OriginRoot,
+		options.WorkRoot,
+		options.TicketRef,
+		options.Context,
+		string(options.ProjectConfig.Roles.Review.Harness),
+		options.Git,
+	)
 	if err != nil {
 		return err
 	}
@@ -251,10 +259,18 @@ func recordReviewUsage(params reviewUsageParams) {
 }
 
 func prepareReview(ctx context.Context, originRoot, ticketRef string, git GitRunner) (reviewPreparation, error) {
-	return prepareReviewWithContext(ctx, originRoot, ticketRef, "", git)
+	return prepareReviewWithContext(ctx, originRoot, originRoot, ticketRef, "", "", git)
 }
 
-func prepareReviewWithContext(ctx context.Context, originRoot, ticketRef, reviewContext string, git GitRunner) (reviewPreparation, error) {
+func prepareReviewWithContext(
+	ctx context.Context,
+	originRoot string,
+	workRoot string,
+	ticketRef string,
+	reviewContext string,
+	reviewerHarness string,
+	git GitRunner,
+) (reviewPreparation, error) {
 	if git == nil {
 		return reviewPreparation{}, errors.New("review: git runner is not configured")
 	}
@@ -270,7 +286,7 @@ func prepareReviewWithContext(ctx context.Context, originRoot, ticketRef, review
 	if err != nil {
 		return reviewPreparation{}, fmt.Errorf("review: %w", err)
 	}
-	recorder, err := newReviewRunRecorder(originRoot, ticketRef, branchPoint, reviewContext)
+	recorder, err := newReviewRunRecorder(originRoot, workRoot, ticketRef, branchPoint, reviewerHarness, reviewContext)
 	if err != nil {
 		return reviewPreparation{}, err
 	}

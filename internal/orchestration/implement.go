@@ -161,9 +161,12 @@ func initializeImplementRun(options ImplementOptions, setup implementSetup) (imp
 	questions := NewQuestionHandler(options.Input, options.Output, "#"+strconv.Itoa(options.Ticket.Number), notifier)
 	recorder, err := newImplementRunRecorder(
 		options.OriginRoot,
+		options.WorkRoot,
 		options.Ticket.Number,
 		setup.branch,
 		setup.branchPoint,
+		string(options.ProjectConfig.Roles.Implement.Harness),
+		string(options.ProjectConfig.Roles.Review.Harness),
 		options.Context,
 		options.ReviewContext,
 	)

@@ -57,18 +57,42 @@ func TestCollectClaudeKeepsLastSnapshotIncludesSubagentsAndSplitsWindows(t *test
 }
 
 func TestReadRunMetadataIgnoresIndentedContextKeys(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "metadata.txt")
-	contents := "Ticket: #42\n" +
-		"Branch point: abc123\n" +
-		"Reviewer context:\n" +
-		"  Branch: something\n"
-	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
-		t.Fatal(err)
+	tests := []struct {
+		name     string
+		contents string
+		wantKind string
+	}{
+		{
+			name: "implement",
+			contents: "Branch: feat/example\n" +
+				"Branch point: abc123\n" +
+				"Implementer context:\n" +
+				"  Ticket: something\n" +
+				"\tBranch: something else\n",
+			wantKind: "implement",
+		},
+		{
+			name: "review",
+			contents: "Ticket: #42\n" +
+				"Branch point: abc123\n" +
+				"Reviewer context:\n" +
+				"  Branch: something\n",
+			wantKind: "review",
+		},
 	}
 
-	metadata := readRunMetadata(path)
-	if metadata.kind != "review" {
-		t.Fatalf("metadata kind = %q, want review", metadata.kind)
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "metadata.txt")
+			if err := os.WriteFile(path, []byte(test.contents), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			metadata := readRunMetadata(path)
+			if metadata.kind != test.wantKind {
+				t.Fatalf("metadata kind = %q, want %q", metadata.kind, test.wantKind)
+			}
+		})
 	}
 }
 

@@ -398,7 +398,7 @@ Each `syl implement` run writes its artifacts under
 
 ```text
 .syl/runs/20260817T101500.000000000Z-42/
-  metadata.txt                     # branch/ticket, branch point, optional Role contexts
+  metadata.txt                     # branch/ticket, branch point, work root, Harnesses, optional Role contexts
   sessions.txt                     # harness session IDs per iteration
   iteration-01-implement.feed      # implement role, parsed event feed
   iteration-01-implement.transcript
@@ -413,11 +413,18 @@ Each `syl implement` run writes its artifacts under
 you need to audit a run; delete it when you do not.
 
 `metadata.txt` always keeps its branch or ticket line and its `Branch point`
-line. An implement run may add an `Implementer context:` line and/or a
-`Reviewer context:` line; a review run may add a `Reviewer context:` line.
-Each context line is followed by its value with two spaces of indentation on
-every line. Blank context values are omitted. The indentation keeps text such
-as `Branch: something` inside the context instead of treating it as another
+line. It then records the run environment with unindented `Work root:`,
+`Implementer harness:`, and `Reviewer harness:` lines. Implement runs include
+all three lines; standalone review runs include `Work root:` and `Reviewer
+harness:` only. `Work root:` is the absolute directory where the Harness
+adapters ran. For a run started with `--worktree`, it is the worktree path,
+not the origin root.
+
+An implement run may add an `Implementer context:` line and/or a `Reviewer
+context:` line; a review run may add a `Reviewer context:` line. Each context
+line is followed by its value with two spaces of indentation on every line.
+Blank context values are omitted. The indentation keeps text such as
+`Branch: something` inside the context instead of treating it as another
 metadata key.
 
 Artifacts always land in the origin repository's `.syl/runs/`, even for a
