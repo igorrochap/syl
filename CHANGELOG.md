@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v1.29.0 (2026-09-06)
+
+### Features
+
+- **orchestration**: Record environment metadata in run artifacts
+  ([#167](https://github.com/igorrochap/syl/pull/167),
+  [`0c80ee6`](https://github.com/igorrochap/syl/commit/0c80ee61a3fa8a65435d30468c13ac44be18416c))
+
+
 ## v1.28.1 (2026-09-06)
 
 ### Bug Fixes
