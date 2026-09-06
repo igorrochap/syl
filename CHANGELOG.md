@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v1.28.0 (2026-09-06)
+
+### Features
+
+- **harness**: Add AttachSession to adapter interface
+  ([#165](https://github.com/igorrochap/syl/pull/165),
+  [`43a1f66`](https://github.com/igorrochap/syl/commit/43a1f6607fdd502761e74cf8742c58b9f27dfd4b))
+
+
 ## v1.27.0 (2026-09-04)
 
 ### Bug Fixes
