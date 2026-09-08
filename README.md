@@ -363,6 +363,8 @@ syl review 42 --raw
 ```sh
 syl resume implement
 syl resume review
+syl resume implement 118
+syl resume review '#118' --iteration 0
 ```
 
 `syl resume` selects the newest run that recorded a session for the requested
@@ -370,6 +372,12 @@ Role. Within that run, it selects the highest iteration for that Role by
 numeric iteration number, so it also finds standalone review sessions recorded
 as `iteration 0 review`. Runs without a session for the requested Role are
 skipped.
+
+Pass an optional ticket as the second positional argument to restrict the
+selection to that issue's run directories. Both `118` and `'#118'` are
+accepted. Pass `--iteration N` to select that Role's session from the selected
+run; `--iteration 0` selects a standalone review session. The ticket filter is
+applied before the iteration is selected.
 
 The resumed Harness and Work root come from that run's `metadata.txt`, not the
 current `.syl/config.toml`. The current Role's `mcp` setting is passed to the

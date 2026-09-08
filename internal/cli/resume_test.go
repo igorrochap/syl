@@ -63,6 +63,159 @@ func TestResolveResumeTargetMatchesStandaloneReviewSession(t *testing.T) {
 	}
 }
 
+func TestResumeNarrowsByTicketAndIteration(t *testing.T) {
+	root := t.TempDir()
+	workRoot := t.TempDir()
+	writeResumeConfig(t, root)
+	selectedRun := writeResumeRun(t, root, "20260908T120000.000000000Z-118", fmt.Sprintf(
+		"Work root: %s\nImplementer harness: claude\n", workRoot,
+	), "iteration 10 implement: later-118\niteration 1 implement: requested-118\n", true, true)
+	writeResumeRun(t, root, "20260908T130000.000000000Z-118", fmt.Sprintf(
+		"Work root: %s\nReviewer harness: claude\n", workRoot,
+	), "iteration 2 review: newer-118-review\n", true, true)
+	writeResumeRun(t, root, "20260908T140000.000000000Z-119", fmt.Sprintf(
+		"Work root: %s\nImplementer harness: claude\n", workRoot,
+	), "iteration 20 implement: other-issue\n", true, true)
+
+	for _, ticket := range []string{"118", "#118"} {
+		t.Run(ticket, func(t *testing.T) {
+			adapter := &recordingResumeHarness{}
+			app := newResumeApp(root, adapter)
+			var stdout, stderr strings.Builder
+
+			if code := app.Run(context.Background(), []string{
+				"resume", "implement", ticket, "--iteration", "1",
+			}, &stdout, &stderr); code != 0 {
+				t.Fatalf("resume code = %d, stderr = %q", code, stderr.String())
+			}
+			if len(adapter.calls) != 1 {
+				t.Fatalf("AttachSession calls = %d, want 1", len(adapter.calls))
+			}
+			if adapter.calls[0].sessionID != "requested-118" {
+				t.Fatalf("session id = %q, want requested-118", adapter.calls[0].sessionID)
+			}
+			if !strings.Contains(stdout.String(), filepath.Base(selectedRun)) || !strings.Contains(stdout.String(), "iteration") || !strings.Contains(stdout.String(), "1") {
+				t.Fatalf("stdout = %q, want selected run and iteration", stdout.String())
+			}
+		})
+	}
+}
+
+func TestResumeSelectsStandaloneReviewAtExplicitIterationZero(t *testing.T) {
+	root := t.TempDir()
+	workRoot := t.TempDir()
+	writeResumeConfig(t, root)
+	runName := "20260908T150000.000000000Z-118"
+	writeResumeRun(t, root, runName, fmt.Sprintf(
+		"Work root: %s\nReviewer harness: claude\n", workRoot,
+	), "iteration 0 review: standalone-review\n", true, true)
+	adapter := &recordingResumeHarness{}
+	app := newResumeApp(root, adapter)
+	var stdout, stderr strings.Builder
+
+	if code := app.Run(context.Background(), []string{
+		"resume", "review", "#118", "--iteration", "0",
+	}, &stdout, &stderr); code != 0 {
+		t.Fatalf("resume code = %d, stderr = %q", code, stderr.String())
+	}
+	if len(adapter.calls) != 1 || adapter.calls[0].sessionID != "standalone-review" {
+		t.Fatalf("AttachSession calls = %#v, want standalone-review", adapter.calls)
+	}
+	if !strings.Contains(stdout.String(), runName) || !strings.Contains(stdout.String(), "review") || !strings.Contains(stdout.String(), "claude") || !strings.Contains(stdout.String(), "standalone-review") {
+		t.Fatalf("stdout = %q, want narrowed banner fields", stdout.String())
+	}
+}
+
+func TestResumeReportsDistinctTicketAndIterationSelectionErrors(t *testing.T) {
+	tests := []struct {
+		name        string
+		args        []string
+		makeProject func(t *testing.T, root string)
+		want        string
+	}{
+		{
+			name: "ticket has no run directory",
+			args: []string{"resume", "review", "118"},
+			makeProject: func(t *testing.T, root string) {
+				writeResumeConfig(t, root)
+				writeResumeRun(t, root, "20260908T160000.000000000Z-119", "", "", true, false)
+			},
+			want: "no run directories found for ticket #118",
+		},
+		{
+			name: "ticket has no run directory while runs are absent",
+			args: []string{"resume", "review", "118"},
+			makeProject: func(t *testing.T, root string) {
+				writeResumeConfig(t, root)
+			},
+			want: "no run directories found for ticket #118",
+		},
+		{
+			name: "ticket matches the exact issue suffix",
+			args: []string{"resume", "review", "15"},
+			makeProject: func(t *testing.T, root string) {
+				writeResumeConfig(t, root)
+				writeResumeRun(t, root, "20260908T165000.000000000Z-151", "", "iteration 0 review: review-151\n", true, false)
+			},
+			want: "no run directories found for ticket #15",
+		},
+		{
+			name: "ticket runs have no requested role",
+			args: []string{"resume", "review", "#118"},
+			makeProject: func(t *testing.T, root string) {
+				writeResumeConfig(t, root)
+				writeResumeRun(t, root, "20260908T170000.000000000Z-118", "", "iteration 1 implement: implement-session\n", true, false)
+			},
+			want: "no run for ticket #118 has a recorded review session",
+		},
+		{
+			name: "selected run has no requested iteration",
+			args: []string{"resume", "review", "#118", "--iteration", "1"},
+			makeProject: func(t *testing.T, root string) {
+				writeResumeConfig(t, root)
+				workRoot := t.TempDir()
+				writeResumeRun(t, root, "20260908T180000.000000000Z-118", fmt.Sprintf(
+					"Work root: %s\nReviewer harness: claude\n", workRoot,
+				), "iteration 0 review: review-zero\niteration 2 review: review-two\n", true, false)
+			},
+			want: "recorded review iterations: 0, 2",
+		},
+		{
+			name: "iteration is negative",
+			args: []string{"resume", "review", "--iteration", "-1"},
+			makeProject: func(t *testing.T, root string) {
+				writeResumeConfig(t, root)
+			},
+			want: "--iteration must be zero or greater",
+		},
+		{
+			name: "ticket reference is invalid",
+			args: []string{"resume", "review", "not-a-ticket"},
+			makeProject: func(t *testing.T, root string) {
+				writeResumeConfig(t, root)
+			},
+			want: "invalid resume ticket reference",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			test.makeProject(t, root)
+			adapter := &recordingResumeHarness{}
+			app := newResumeApp(root, adapter)
+			var stdout, stderr strings.Builder
+
+			if code := app.Run(context.Background(), test.args, &stdout, &stderr); code == 0 || !strings.Contains(stderr.String(), test.want) {
+				t.Fatalf("resume code = %d, stderr = %q, want %q", code, stderr.String(), test.want)
+			}
+			if len(adapter.calls) != 0 {
+				t.Fatalf("AttachSession calls = %d, want none", len(adapter.calls))
+			}
+		})
+	}
+}
+
 func TestResumeHandsOffRecordedHarnessAtRecordedRootWithCurrentMCP(t *testing.T) {
 	root := t.TempDir()
 	workRoot := t.TempDir()

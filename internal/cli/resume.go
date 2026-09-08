@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/igorrochap/syl/internal/config"
@@ -17,6 +18,8 @@ import (
 )
 
 const resumeRoles = "implement or review"
+
+var errNoResumeRunDirectories = errors.New("no run directories found")
 
 type resumeTarget struct {
 	runDir     string
@@ -33,31 +36,50 @@ type resumeMetadata struct {
 	reviewerHarness    config.Harness
 }
 
+type resumeSelection struct {
+	ticketReference string
+	iteration       int
+	hasIteration    bool
+}
+
 func (a *App) resumeCommand() *cobra.Command {
+	var iteration int
 	command := &cobra.Command{
-		Use:   "resume <role>",
+		Use:   "resume <role> [ticket]",
 		Short: "re-enter the latest recorded Role session",
 		Args:  resumeArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return a.runResumeCommand(cmd, args[0])
+			if cmd.Flags().Changed("iteration") && iteration < 0 {
+				return errors.New("--iteration must be zero or greater")
+			}
+			ticketReference := ""
+			if len(args) == 2 {
+				ticketReference = canonicalIssueReference(args[1])
+			}
+			return a.runResumeCommand(cmd, args[0], resumeSelection{
+				ticketReference: ticketReference,
+				iteration:       iteration,
+				hasIteration:    cmd.Flags().Changed("iteration"),
+			})
 		},
 	}
+	command.Flags().IntVar(&iteration, "iteration", -1, "resume the session recorded for this iteration")
 	return command
 }
 
 func resumeArgs(_ *cobra.Command, args []string) error {
-	if len(args) == 1 {
+	if len(args) >= 1 && len(args) <= 2 {
 		return nil
 	}
-	return fmt.Errorf("resume requires exactly one Role; valid Roles: %s", resumeRoles)
+	return fmt.Errorf("resume requires a Role and optional ticket; valid Roles: %s", resumeRoles)
 }
 
-func (a *App) runResumeCommand(cmd *cobra.Command, roleName string) error {
+func (a *App) runResumeCommand(cmd *cobra.Command, roleName string, selection resumeSelection) error {
 	role, roleConfig, err := loadResumeRole(a.originRoot, roleName)
 	if err != nil {
 		return err
 	}
-	target, err := resolveResumeTarget(a.originRoot, role)
+	target, err := resolveResumeTargetWithSelection(a.originRoot, role, selection)
 	if err != nil {
 		return err
 	}
@@ -108,21 +130,82 @@ func resumeRole(projectConfig config.Config, roleName string) (string, config.Ro
 }
 
 func resolveResumeTarget(originRoot, role string) (resumeTarget, error) {
-	runDirs, err := resumeRunDirectories(originRoot)
+	return resolveResumeTargetWithSelection(originRoot, role, resumeSelection{})
+}
+
+func resolveResumeTargetWithSelection(originRoot, role string, selection resumeSelection) (resumeTarget, error) {
+	runDirs, err := resumeCandidateRunDirectories(originRoot, selection)
 	if err != nil {
 		return resumeTarget{}, err
 	}
 	for _, runDir := range runDirs {
-		session, found, err := highestResumeSession(filepath.Join(runDir, "sessions.txt"), role)
+		target, found, err := resumeTargetFromRun(runDir, role, selection)
 		if err != nil {
 			return resumeTarget{}, err
 		}
-		if !found {
-			continue
+		if found {
+			return target, nil
 		}
-		return buildResumeTarget(runDir, role, session)
+	}
+	return resumeNoRoleSessionError(role, selection)
+}
+
+func resumeCandidateRunDirectories(originRoot string, selection resumeSelection) ([]string, error) {
+	ticketNumber, err := resumeTicketNumber(selection.ticketReference)
+	if err != nil {
+		return nil, err
+	}
+	runDirs, err := resumeRunDirectories(originRoot)
+	if err != nil {
+		if ticketNumber != "" && errors.Is(err, errNoResumeRunDirectories) {
+			return nil, noResumeRunsForTicket(selection.ticketReference)
+		}
+		return nil, err
+	}
+	if ticketNumber != "" {
+		runDirs = filterResumeRunDirectories(runDirs, ticketNumber)
+		if len(runDirs) == 0 {
+			return nil, noResumeRunsForTicket(selection.ticketReference)
+		}
+	}
+	return runDirs, nil
+}
+
+func resumeTargetFromRun(runDir, role string, selection resumeSelection) (resumeTarget, bool, error) {
+	records, err := resumeSessionsForRole(filepath.Join(runDir, "sessions.txt"), role)
+	if err != nil {
+		return resumeTarget{}, false, err
+	}
+	if len(records) == 0 {
+		return resumeTarget{}, false, nil
+	}
+	session, found := selectResumeSession(records, selection)
+	if !found {
+		return resumeTarget{}, false, resumeIterationError(runDir, role, selection.iteration, records)
+	}
+	target, err := buildResumeTarget(runDir, role, session)
+	if err != nil {
+		return resumeTarget{}, false, err
+	}
+	return target, true, nil
+}
+
+func resumeNoRoleSessionError(role string, selection resumeSelection) (resumeTarget, error) {
+	if selection.ticketReference != "" {
+		return resumeTarget{}, fmt.Errorf("no run for ticket %s has a recorded %s session", selection.ticketReference, role)
 	}
 	return resumeTarget{}, fmt.Errorf("no run has a recorded %s session", role)
+}
+
+func filterResumeRunDirectories(runDirs []string, ticketNumber string) []string {
+	suffix := "-" + ticketNumber
+	matching := make([]string, 0, len(runDirs))
+	for _, runDir := range runDirs {
+		if strings.HasSuffix(filepath.Base(runDir), suffix) {
+			matching = append(matching, runDir)
+		}
+	}
+	return matching
 }
 
 func resumeRunDirectories(originRoot string) ([]string, error) {
@@ -130,7 +213,7 @@ func resumeRunDirectories(originRoot string) ([]string, error) {
 	entries, err := os.ReadDir(runsDir)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return nil, fmt.Errorf("no run directories found in %s", runsDir)
+			return nil, fmt.Errorf("%w in %s", errNoResumeRunDirectories, runsDir)
 		}
 		return nil, fmt.Errorf("read run directories %s: %w", runsDir, err)
 	}
@@ -143,34 +226,89 @@ func resumeRunDirectories(originRoot string) ([]string, error) {
 		runDirs = append(runDirs, filepath.Join(runsDir, entry.Name()))
 	}
 	if len(runDirs) == 0 {
-		return nil, fmt.Errorf("no run directories found in %s", runsDir)
+		return nil, fmt.Errorf("%w in %s", errNoResumeRunDirectories, runsDir)
 	}
 	sort.Slice(runDirs, func(i, j int) bool { return runDirs[i] > runDirs[j] })
 	return runDirs, nil
 }
 
-func highestResumeSession(path, role string) (usage.SessionRecord, bool, error) {
+func resumeTicketNumber(reference string) (string, error) {
+	if strings.TrimSpace(reference) == "" {
+		return "", nil
+	}
+	canonical := canonicalIssueReference(reference)
+	number, err := strconv.Atoi(strings.TrimPrefix(canonical, "#"))
+	if err != nil || number < 1 {
+		return "", fmt.Errorf("invalid resume ticket reference %q; want N or #N", reference)
+	}
+	return strconv.Itoa(number), nil
+}
+
+func noResumeRunsForTicket(ticketReference string) error {
+	return fmt.Errorf("no run directories found for ticket %s", ticketReference)
+}
+
+func resumeSessionsForRole(path, role string) ([]usage.SessionRecord, error) {
 	records, err := usage.ReadSessionRecords(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return usage.SessionRecord{}, false, nil
+			return nil, nil
 		}
-		return usage.SessionRecord{}, false, fmt.Errorf("read sessions %s: %w", path, err)
+		return nil, fmt.Errorf("read sessions %s: %w", path, err)
+	}
+
+	matching := make([]usage.SessionRecord, 0, len(records))
+	for _, record := range records {
+		if record.Role == role {
+			matching = append(matching, record)
+		}
+	}
+	return matching, nil
+}
+
+func selectResumeSession(records []usage.SessionRecord, selection resumeSelection) (usage.SessionRecord, bool) {
+	if selection.hasIteration {
+		for _, record := range records {
+			if record.Iteration == selection.iteration {
+				return record, true
+			}
+		}
+		return usage.SessionRecord{}, false
 	}
 
 	var selected usage.SessionRecord
-	found := false
-	for _, record := range records {
-		if record.Role != role {
-			continue
-		}
-		if found && record.Iteration <= selected.Iteration {
+	for index, record := range records {
+		if index > 0 && record.Iteration <= selected.Iteration {
 			continue
 		}
 		selected = record
-		found = true
 	}
-	return selected, found, nil
+	return selected, len(records) > 0
+}
+
+func resumeIterationError(runDir, role string, iteration int, records []usage.SessionRecord) error {
+	return fmt.Errorf(
+		"run %s has no recorded %s session at iteration %d; recorded %s iterations: %s",
+		filepath.Base(runDir), role, iteration, role, recordedResumeIterations(records),
+	)
+}
+
+func recordedResumeIterations(records []usage.SessionRecord) string {
+	seen := make(map[int]struct{}, len(records))
+	iterations := make([]int, 0, len(records))
+	for _, record := range records {
+		if _, exists := seen[record.Iteration]; exists {
+			continue
+		}
+		seen[record.Iteration] = struct{}{}
+		iterations = append(iterations, record.Iteration)
+	}
+	sort.Ints(iterations)
+	values := make([]string, 0, len(iterations))
+	for _, iteration := range iterations {
+		values = append(values, strconv.Itoa(iteration))
+	}
+	return strings.Join(values, ", ")
 }
 
 func buildResumeTarget(runDir, role string, session usage.SessionRecord) (resumeTarget, error) {
