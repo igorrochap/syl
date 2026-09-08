@@ -27,7 +27,7 @@ func TestRunHelpListsAllCommands(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("Run() code = %d, want 0; stderr = %q", code, fixture.stderr.String())
 	}
-	for _, command := range []string{"init", "sync", "plan", "implement", "review", "usage", "version", "update"} {
+	for _, command := range []string{"init", "sync", "plan", "implement", "review", "resume", "usage", "version", "update"} {
 		if !strings.Contains(fixture.stdout.String(), command) {
 			t.Errorf("help output %q does not list %q", fixture.stdout.String(), command)
 		}

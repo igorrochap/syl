@@ -43,3 +43,9 @@ _Avoid_: home directory, project root
 **Work root**:
 The directory where the git runner and Harness adapters operate for the current run. Equal to the origin root unless `--worktree` is set, in which case it is the worktree path.
 _Avoid_: working directory, execution root
+
+**resume**:
+Re-enter an existing Harness session, keeping its history.
+
+**attach**:
+Start a fresh interactive Harness session. `resume` re-enters an existing session; `attach` starts a fresh one.
