@@ -24,6 +24,13 @@ type sessionInvocation struct {
 	sessions  []string
 }
 
+// SessionRecord is one parsed session entry from a run's sessions.txt file.
+type SessionRecord struct {
+	Iteration int
+	Role      string
+	SessionID string
+}
+
 type usageCluster struct {
 	role        string
 	invocations []sessionInvocation
@@ -113,6 +120,31 @@ func readSessionInvocations(path string) []sessionInvocation {
 	}
 	sortInvocations(result)
 	return result
+}
+
+// ReadSessionRecords reads the valid session entries in a sessions.txt file.
+// Invalid lines are ignored so partially written or older artifacts remain
+// readable. A missing file is returned as an error to let callers distinguish
+// it from an existing empty file.
+func ReadSessionRecords(path string) ([]SessionRecord, error) {
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+
+	var records []SessionRecord
+	for _, line := range strings.Split(string(contents), "\n") {
+		invocation, ok := parseSessionLine(line)
+		if !ok {
+			continue
+		}
+		records = append(records, SessionRecord{
+			Iteration: invocation.iteration,
+			Role:      invocation.role,
+			SessionID: invocation.sessions[0],
+		})
+	}
+	return records, nil
 }
 
 func parseSessionLine(line string) (sessionInvocation, bool) {

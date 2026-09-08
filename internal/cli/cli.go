@@ -102,6 +102,7 @@ func (a *App) Command() *cobra.Command {
 		a.planCommand(),
 		a.implementCommand(),
 		a.reviewCommand(),
+		a.resumeCommand(),
 		a.usageCommand(),
 		a.versionCommand(),
 		a.updateCommand(),
