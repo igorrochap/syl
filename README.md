@@ -20,6 +20,7 @@ coding agents.
   - [3. Plan work](#3-plan-work)
   - [4. Implement an issue](#4-implement-an-issue)
   - [5. Review working-tree changes](#5-review-working-tree-changes)
+  - [6. Resume a recorded session](#6-resume-a-recorded-session)
   - [Answer a QUESTION from a harness](#answer-a-question-from-a-harness)
 - [Configuration reference](#configuration-reference)
 - [Run artifacts](#run-artifacts)
@@ -73,6 +74,13 @@ run executes.
 The directory where the git runner and Harnesses operate for the current
 run. Equal to the origin root unless `--worktree` is set, in which case it
 is the worktree path.
+
+**resume**
+Re-enter an existing Harness session, keeping its history.
+
+**attach**
+Start a fresh interactive Harness session. `resume` re-enters an existing
+session; `attach` starts a fresh one.
 
 ## Installation
 
@@ -350,7 +358,32 @@ parsed Verdict view:
 syl review 42 --raw
 ```
 
-### 6. Inspect run usage
+### 6. Resume a recorded session
+
+```sh
+syl resume implement
+syl resume review
+syl resume implement 118
+syl resume review '#118' --iteration 0
+```
+
+`syl resume` selects the newest run that recorded a session for the requested
+Role. Within that run, it selects the highest iteration for that Role by
+numeric iteration number, so it also finds standalone review sessions recorded
+as `iteration 0 review`. Runs without a session for the requested Role are
+skipped.
+
+Pass an optional ticket as the second positional argument to restrict the
+selection to that issue's run directories. Both `118` and `'#118'` are
+accepted. Pass `--iteration N` to select that Role's session from the selected
+run; `--iteration 0` selects a standalone review session. The ticket filter is
+applied before the iteration is selected.
+
+The resumed Harness and Work root come from that run's `metadata.txt`, not the
+current `.syl/config.toml`. The current Role's `mcp` setting is passed to the
+Harness. Pre-#160 runs have no recorded Work root and cannot be resumed.
+
+### 7. Inspect run usage
 
 ```sh
 syl usage

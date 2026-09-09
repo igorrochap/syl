@@ -119,6 +119,32 @@ func TestParseSessionLineReadsRecordedSessionLines(t *testing.T) {
 	}
 }
 
+func TestReadSessionRecordsReadsValidLinesAndIgnoresMalformedLines(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sessions.txt")
+	contents := "not a session\niteration 10 implement: implement-session\niteration 0 review: review-session\n"
+	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	records, err := ReadSessionRecords(path)
+	if err != nil {
+		t.Fatalf("ReadSessionRecords() error = %v", err)
+	}
+	if len(records) != 2 {
+		t.Fatalf("records = %#v, want two valid records", records)
+	}
+	if records[0].Iteration != 10 || records[0].Role != "implement" || records[0].SessionID != "implement-session" {
+		t.Fatalf("first record = %#v, want implement session", records[0])
+	}
+	if records[1].Iteration != 0 || records[1].Role != "review" || records[1].SessionID != "review-session" {
+		t.Fatalf("second record = %#v, want review session", records[1])
+	}
+
+	if _, err := ReadSessionRecords(filepath.Join(t.TempDir(), "missing.txt")); err == nil {
+		t.Fatal("ReadSessionRecords() error = nil, want missing-file error")
+	}
+}
+
 func TestCollectClaudeReportsMissingTranscript(t *testing.T) {
 	_, err := CollectClaude(t.TempDir(), t.TempDir(), []string{"missing"}, time.Now().Add(-time.Minute), time.Now())
 	if err == nil {
