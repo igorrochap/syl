@@ -2,6 +2,22 @@
 
 <!-- version list -->
 
+## v1.30.0 (2026-09-09)
+
+### Features
+
+- **cli**: Add resume command ([#170](https://github.com/igorrochap/syl/pull/170),
+  [`3657a7a`](https://github.com/igorrochap/syl/commit/3657a7a3603a8802d5b02b24d0cc1b9dc25601f4))
+
+- **cli**: Add support for filtering resumes by ticket and iteration
+  ([#170](https://github.com/igorrochap/syl/pull/170),
+  [`3657a7a`](https://github.com/igorrochap/syl/commit/3657a7a3603a8802d5b02b24d0cc1b9dc25601f4))
+
+- **cli**: Implement resume command with filtering options
+  ([#170](https://github.com/igorrochap/syl/pull/170),
+  [`3657a7a`](https://github.com/igorrochap/syl/commit/3657a7a3603a8802d5b02b24d0cc1b9dc25601f4))
+
+
 ## v1.29.0 (2026-09-06)
 
 ### Features
