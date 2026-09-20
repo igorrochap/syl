@@ -26,6 +26,8 @@ Implement the ticket below in the current project. Use the vendored implement sk
 
 ` + questionProtocolInstruction + `
 
+At the end of this turn, self-assess your remaining context. Only if you judge that you are low on context, invoke ` + "`/handoff %s`" + ` to prepare the next iteration. Do not invoke it otherwise.
+
 Ticket: %s
 Title: %s
 
@@ -38,9 +40,18 @@ Address ONLY the reviewer's [blocking] findings listed below. Use the vendored f
 
 ` + questionProtocolInstruction + `
 
+At the end of this turn, self-assess your remaining context. Only if you judge that you are low on context, invoke ` + "`/handoff %s`" + ` to prepare the next iteration. Do not invoke it otherwise.
+
 Ticket: %s
 
 Blocking findings:
+%s`
+
+	rolloverSeedPrompt = `Before doing any work, read the Rollover handoff document at %s. It supplements the ticket and blocking findings in this prompt; it does not replace them.
+
+Title: %s
+
+Ticket body (including acceptance criteria):
 %s`
 
 	reviewPrompt = `/code-review
@@ -55,12 +66,26 @@ Blocking findings:
 %s`
 )
 
-func composeImplementPrompt(ticket tracker.Ticket, blocking []verdict.Finding, iteration int, additionalContext string) string {
+func composeImplementPrompt(
+	ticket tracker.Ticket,
+	blocking []verdict.Finding,
+	iteration int,
+	handoffPath string,
+	rolloverSeedPath string,
+	additionalContext string,
+) string {
 	var prompt string
 	if iteration == 1 {
-		prompt = fmt.Sprintf(implementPrompt, "#"+strconv.Itoa(ticket.Number), ticket.Title, ticket.Body)
+		prompt = fmt.Sprintf(implementPrompt, handoffPath, "#"+strconv.Itoa(ticket.Number), ticket.Title, ticket.Body)
 	} else {
-		prompt = fmt.Sprintf(reviseImplementPrompt, "#"+strconv.Itoa(ticket.Number), formatBlockingFindings(blocking))
+		prompt = fmt.Sprintf(reviseImplementPrompt, handoffPath, "#"+strconv.Itoa(ticket.Number), formatBlockingFindings(blocking))
+	}
+	if rolloverSeedPath != "" {
+		prompt = fmt.Sprintf(
+			"%s\n\n%s",
+			prompt,
+			fmt.Sprintf(rolloverSeedPrompt, rolloverSeedPath, ticket.Title, ticket.Body),
+		)
 	}
 	return appendPromptContext(prompt, additionalContext)
 }

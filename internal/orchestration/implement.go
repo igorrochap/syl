@@ -87,20 +87,20 @@ func RunImplement(ctx context.Context, options ImplementOptions) (returnErr erro
 	}
 	loopStarted = true
 	iterations, final, nits, err := runImplementIterations(ctx, implementIterationsParams{
-		git:               run.setup.git,
-		workRoot:          options.WorkRoot,
-		implementer:       options.Implementer,
-		reviewer:          options.Reviewer,
-		projectConfig:     projectConfig,
-		ticket:            ticket,
-		branchPoint:       run.setup.branchPoint,
-		reviewDiffRoot:    run.setup.worktreePath,
-		recorder:          run.recorder,
-		questions:         run.questions,
-		output:            options.Output,
-		additionalContext: options.Context,
-		reviewContext:     options.ReviewContext,
-		verbose:           options.Verbose,
+		git:                  run.setup.git,
+		workRoot:             options.WorkRoot,
+		implementer:          options.Implementer,
+		reviewer:             options.Reviewer,
+		projectConfig:        projectConfig,
+		ticket:               ticket,
+		branchPoint:          run.setup.branchPoint,
+		worktreeArtifactRoot: run.setup.worktreePath,
+		recorder:             run.recorder,
+		questions:            run.questions,
+		output:               options.Output,
+		additionalContext:    options.Context,
+		reviewContext:        options.ReviewContext,
+		verbose:              options.Verbose,
 	})
 	if err != nil {
 		return err
@@ -270,20 +270,20 @@ func prepareProvisionedImplement(
 }
 
 type implementIterationsParams struct {
-	git               GitRunner
-	workRoot          string
-	implementer       harness.Adapter
-	reviewer          harness.Adapter
-	projectConfig     config.Config
-	ticket            tracker.Ticket
-	branchPoint       string
-	reviewDiffRoot    string
-	recorder          RunRecorder
-	questions         *QuestionHandler
-	output            io.Writer
-	additionalContext string
-	reviewContext     string
-	verbose           bool
+	git                  GitRunner
+	workRoot             string
+	implementer          harness.Adapter
+	reviewer             harness.Adapter
+	projectConfig        config.Config
+	ticket               tracker.Ticket
+	branchPoint          string
+	worktreeArtifactRoot string
+	recorder             RunRecorder
+	questions            *QuestionHandler
+	output               io.Writer
+	additionalContext    string
+	reviewContext        string
+	verbose              bool
 }
 
 type implementReviewParams struct {
@@ -294,11 +294,21 @@ type implementReviewParams struct {
 	mode                    HarnessOutputMode
 }
 
+type implementTurnParams struct {
+	iteration        int
+	blocking         []verdict.Finding
+	previousSession  string
+	handoffPath      string
+	rolloverSeedPath string
+	mode             HarnessOutputMode
+}
+
 func runImplementIterations(ctx context.Context, params implementIterationsParams) (int, verdict.Verdict, []verdict.Finding, error) {
 	params.output = ensureLineTrackingWriter(params.output)
 	var blocking []verdict.Finding
 	var final verdict.Verdict
 	var previousImplementerSession string
+	var rolloverSeedPath string
 	var previousReviewerSession string
 	iterations := 0
 	for iteration := 1; iteration <= params.projectConfig.Loop.MaxIterations; iteration++ {
@@ -307,11 +317,28 @@ func runImplementIterations(ctx context.Context, params implementIterationsParam
 		if params.verbose {
 			mode = ParsedHarnessOutput
 		}
-		implementResult, err := runImplementTurn(ctx, params, iteration, blocking, previousImplementerSession, mode)
+		handoffPath, err := prepareIterationHandoffPath(params, iteration)
 		if err != nil {
 			return 0, verdict.Verdict{}, nil, err
 		}
-		previousImplementerSession = lastUsableSessionID(implementResult.SessionIDs)
+		implementResult, err := runImplementTurn(ctx, params, implementTurnParams{
+			iteration:        iteration,
+			blocking:         blocking,
+			previousSession:  previousImplementerSession,
+			handoffPath:      handoffPath,
+			rolloverSeedPath: rolloverSeedPath,
+			mode:             mode,
+		})
+		if err != nil {
+			return 0, verdict.Verdict{}, nil, err
+		}
+		rolloverSeedPath, previousImplementerSession, err = nextImplementerTurn(
+			handoffPath,
+			implementResult.SessionIDs,
+		)
+		if err != nil {
+			return 0, verdict.Verdict{}, nil, err
+		}
 		diffPath, err := prepareIterationReviewDiff(ctx, params, iteration)
 		if err != nil {
 			return 0, verdict.Verdict{}, nil, err
@@ -426,46 +453,87 @@ func prepareIterationReviewDiff(ctx context.Context, params implementIterationsP
 	if err != nil {
 		return "", err
 	}
-	if params.reviewDiffRoot == "" {
+	if params.worktreeArtifactRoot == "" {
 		return diffPath, nil
 	}
-	return recordWorktreeReviewDiff(params.reviewDiffRoot, params.recorder.Dir(), iteration, diff)
+	return recordWorktreeReviewDiff(params.worktreeArtifactRoot, params.recorder.Dir(), iteration, diff)
+}
+
+func prepareIterationHandoffPath(params implementIterationsParams, iteration int) (string, error) {
+	handoffPath := params.recorder.ImplementHandoffPath(iteration)
+	if params.worktreeArtifactRoot == "" {
+		return handoffPath, nil
+	}
+	path, err := worktreeRunArtifactPath(params.worktreeArtifactRoot, params.recorder.Dir(), filepath.Base(handoffPath))
+	if err != nil {
+		return "", fmt.Errorf("prepare worktree handoff path: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return "", fmt.Errorf("create worktree handoff directory: %w", err)
+	}
+	return path, nil
+}
+
+func handoffExists(handoffPath string) (bool, error) {
+	_, err := os.Stat(handoffPath)
+	if err == nil {
+		return true, nil
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	return false, fmt.Errorf("inspect implementer handoff %s: %w", handoffPath, err)
+}
+
+func nextImplementerTurn(handoffPath string, sessionIDs []string) (string, string, error) {
+	rolloverRequired, err := handoffExists(handoffPath)
+	if err != nil {
+		return "", "", err
+	}
+	if rolloverRequired {
+		return handoffPath, "", nil
+	}
+	return "", lastUsableSessionID(sessionIDs), nil
 }
 
 func runImplementTurn(
 	ctx context.Context,
 	params implementIterationsParams,
-	iteration int,
-	blocking []verdict.Finding,
-	previousSession string,
-	mode HarnessOutputMode,
+	turn implementTurnParams,
 ) (implementExecution, error) {
 	activity := "implementing"
-	if iteration > 1 {
-		activity = fmt.Sprintf("revising %d blocking finding(s)", len(blocking))
+	if turn.iteration > 1 {
+		activity = fmt.Sprintf("revising %d blocking finding(s)", len(turn.blocking))
 	}
 	renderer := ui.New(params.output, ui.DetectCaps(params.output))
 	if err := writeRoleSection(params.output, "Implementer"); err != nil {
 		return implementExecution{}, fmt.Errorf("write implement role: %w", err)
 	}
-	if err := renderer.Step(ui.Step{Label: fmt.Sprintf("iteration %d/%d — %s", iteration, params.projectConfig.Loop.MaxIterations, activity)}); err != nil {
+	if err := renderer.Step(ui.Step{Label: fmt.Sprintf("iteration %d/%d — %s", turn.iteration, params.projectConfig.Loop.MaxIterations, activity)}); err != nil {
 		return implementExecution{}, fmt.Errorf("write implement progress: %w", err)
 	}
 
 	implementRequest := harness.Request{
 		Model:  params.projectConfig.Roles.Implement.Model,
 		Effort: params.projectConfig.Roles.Implement.Effort,
-		Prompt: composeImplementPrompt(params.ticket, blocking, iteration, params.additionalContext),
-		MCP:    params.projectConfig.Roles.Implement.MCP,
+		Prompt: composeImplementPrompt(
+			params.ticket,
+			turn.blocking,
+			turn.iteration,
+			turn.handoffPath,
+			turn.rolloverSeedPath,
+			params.additionalContext,
+		),
+		MCP: params.projectConfig.Roles.Implement.MCP,
 	}
 	implementStartedAt := time.Now().UTC()
 	implementResult, err := runImplementRoleWithResumeFallback(
 		ctx,
 		params.implementer,
 		implementRequest,
-		previousSession,
+		turn.previousSession,
 		params.output,
-		mode,
+		turn.mode,
 		params.questions,
 	)
 	implementEndedAt := time.Now().UTC()
@@ -473,7 +541,7 @@ func runImplementTurn(
 		return implementExecution{}, err
 	}
 	recordRoleUsage(params.recorder, usage.CollectInvocation(usage.Invocation{
-		Iteration:  iteration,
+		Iteration:  turn.iteration,
 		Role:       "implement",
 		Harness:    string(params.projectConfig.Roles.Implement.Harness),
 		Model:      params.projectConfig.Roles.Implement.Model,
@@ -482,13 +550,13 @@ func runImplementTurn(
 		EndedAt:    implementEndedAt,
 	}, params.workRoot, ""))
 	if err := params.recorder.RecordImplementTurn(
-		iteration,
+		turn.iteration,
 		implementResult.Feed,
 		implementResult.Transcript,
 	); err != nil {
 		return implementExecution{}, err
 	}
-	if err := params.recorder.RecordSessions(iteration, "implement", implementResult.SessionIDs); err != nil {
+	if err := params.recorder.RecordSessions(turn.iteration, "implement", implementResult.SessionIDs); err != nil {
 		return implementExecution{}, fmt.Errorf("record implement sessions: %w", err)
 	}
 	if err := ensureHeadUnchanged(ctx, params.git, params.branchPoint); err != nil {
@@ -688,15 +756,10 @@ func formatImplementSummary(summary implementSummary) string {
 }
 
 func recordWorktreeReviewDiff(worktreeRoot, runDir string, iteration int, diff string) (string, error) {
-	root, err := filepath.Abs(worktreeRoot)
+	path, err := worktreeRunArtifactPath(worktreeRoot, runDir, artifactFilename(reviewDiffArtifact, iteration))
 	if err != nil {
-		return "", fmt.Errorf("resolve worktree review diff root: %w", err)
+		return "", fmt.Errorf("record worktree review diff: %w", err)
 	}
-	runName := filepath.Base(filepath.Clean(runDir))
-	if runName == "." || runName == string(filepath.Separator) || runName == "" {
-		return "", errors.New("record worktree review diff: run directory is required")
-	}
-	path := filepath.Join(root, ".syl", "runs", runName, artifactFilename(reviewDiffArtifact, iteration))
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return "", fmt.Errorf("create worktree review diff directory: %w", err)
 	}
@@ -704,4 +767,19 @@ func recordWorktreeReviewDiff(worktreeRoot, runDir string, iteration int, diff s
 		return "", fmt.Errorf("write worktree review diff: %w", err)
 	}
 	return path, nil
+}
+
+func worktreeRunArtifactPath(worktreeRoot, runDir, filename string) (string, error) {
+	root, err := filepath.Abs(worktreeRoot)
+	if err != nil {
+		return "", fmt.Errorf("resolve worktree run artifact root: %w", err)
+	}
+	runName := filepath.Base(filepath.Clean(runDir))
+	if runName == "." || runName == string(filepath.Separator) || runName == "" {
+		return "", errors.New("worktree run artifact directory is required")
+	}
+	if filename == "" || filepath.Base(filename) != filename {
+		return "", errors.New("worktree run artifact filename is required")
+	}
+	return filepath.Join(root, ".syl", "runs", runName, filename), nil
 }
