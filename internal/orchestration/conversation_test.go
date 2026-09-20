@@ -329,6 +329,7 @@ type scriptedConversationAdapter struct {
 	runs        [][]harness.Event
 	resumes     [][]harness.Event
 	runCalls    int
+	runRequests []harness.Request
 	resumeCalls []conversationResumeCall
 }
 
@@ -338,7 +339,8 @@ type conversationResumeCall struct {
 	mcp       bool
 }
 
-func (a *scriptedConversationAdapter) Run(context.Context, harness.Request) (harness.Stream, error) {
+func (a *scriptedConversationAdapter) Run(_ context.Context, request harness.Request) (harness.Stream, error) {
+	a.runRequests = append(a.runRequests, request)
 	if a.runCalls >= len(a.runs) {
 		return nil, &scriptedConversationError{message: "no scripted run remains"}
 	}
