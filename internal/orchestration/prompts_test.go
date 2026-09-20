@@ -12,7 +12,7 @@ import (
 func TestComposeImplementPromptFirstIteration(t *testing.T) {
 	ticket := tracker.Ticket{Number: 42, Title: "Concentrate prompts", Body: "Keep every byte.\n\nDo not change wording."}
 
-	got := composeImplementPrompt(ticket, nil, 1, "")
+	got := composeImplementPrompt(ticket, nil, 1, "/tmp/handoff-1.md", "", "")
 	want := `/implement
 
 Implement the ticket below in the current project. Use the vendored implement skill and leave the working tree with the requested changes for review. Do not commit or push changes.
@@ -25,6 +25,8 @@ END QUESTION
 
 The QUESTION: marker must begin at the start of its own line; the block format is otherwise unchanged.
 Ambiguity should have been resolved during planning, and trivial choices should be decided without asking. After emitting the block, stop working.
+
+At the end of this turn, self-assess your remaining context. Only if you judge that you are low on context, invoke ` + "`/handoff /tmp/handoff-1.md`" + ` to prepare the next iteration. Do not invoke it otherwise.
 
 Ticket: #42
 Title: Concentrate prompts
@@ -52,7 +54,7 @@ func TestComposeImplementPromptRevisionWithBlockingFindings(t *testing.T) {
 		{Kind: verdict.Blocking, Location: "prompts_test.go:20", Issue: "second issue"},
 	}
 
-	got := composeImplementPrompt(ticket, findings, 2, "")
+	got := composeImplementPrompt(ticket, findings, 2, "/tmp/handoff-2.md", "", "")
 	want := `/fix-review
 
 Address ONLY the reviewer's [blocking] findings listed below. Use the vendored fix-review skill. Leave the working tree with the changes for review and do not commit or push changes.
@@ -65,6 +67,8 @@ END QUESTION
 
 The QUESTION: marker must begin at the start of its own line; the block format is otherwise unchanged.
 Ambiguity should have been resolved during planning, and trivial choices should be decided without asking. After emitting the block, stop working.
+
+At the end of this turn, self-assess your remaining context. Only if you judge that you are low on context, invoke ` + "`/handoff /tmp/handoff-2.md`" + ` to prepare the next iteration. Do not invoke it otherwise.
 
 Ticket: #42
 
@@ -88,8 +92,9 @@ func TestComposeImplementPromptWhitespaceOnlyContextMatchesWithoutContext(t *tes
 		{name: "revision", iteration: 2, blocking: findings},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			withoutContext := composeImplementPrompt(ticket, test.blocking, test.iteration, "")
-			withWhitespaceContext := composeImplementPrompt(ticket, test.blocking, test.iteration, " \n\t ")
+			handoffPath := "/tmp/handoff.md"
+			withoutContext := composeImplementPrompt(ticket, test.blocking, test.iteration, handoffPath, "", "")
+			withWhitespaceContext := composeImplementPrompt(ticket, test.blocking, test.iteration, handoffPath, "", " \n\t ")
 			assertPromptEqual(t, withWhitespaceContext, withoutContext)
 		})
 	}
@@ -99,10 +104,30 @@ func TestComposeImplementPromptPreservesMultilineContext(t *testing.T) {
 	ticket := tracker.Ticket{Number: 42}
 	context := "Use the existing GitRunner seam.\nDo not add a new adapter."
 
-	got := composeImplementPrompt(ticket, nil, 1, context)
+	got := composeImplementPrompt(ticket, nil, 1, "/tmp/handoff-1.md", "", context)
 
 	if !strings.Contains(got, context) {
 		t.Fatalf("implement prompt = %q, want exact multi-line context %q", got, context)
+	}
+}
+
+func TestComposeImplementPromptSeedsFreshRolloverSession(t *testing.T) {
+	ticket := tracker.Ticket{Number: 42, Title: "Preserve context", Body: "Keep the session decisions."}
+	findings := []verdict.Finding{{Kind: verdict.Blocking, Location: "worker.go:10", Issue: "handle the error"}}
+
+	got := composeImplementPrompt(ticket, findings, 2, "/tmp/handoff-2.md", "/tmp/handoff-1.md", "")
+
+	for _, expected := range []string{
+		"Before doing any work, read the Rollover handoff document at /tmp/handoff-1.md.",
+		"Ticket: #42",
+		"Title: Preserve context",
+		"Ticket body (including acceptance criteria):\nKeep the session decisions.",
+		"Blocking findings:\n- [blocking] worker.go:10 — handle the error",
+		"/handoff /tmp/handoff-2.md",
+	} {
+		if !strings.Contains(got, expected) {
+			t.Fatalf("seeded implement prompt = %q, want %q", got, expected)
+		}
 	}
 }
 

@@ -16,6 +16,7 @@ import (
 // RunRecorder records the domain events that make up a syl run.
 type RunRecorder interface {
 	Dir() string
+	ImplementHandoffPath(iteration int) string
 	RecordImplementTurn(iteration int, feed, transcript string) error
 	RecordReviewDiff(iteration int, diff string) (string, error)
 	RecordReviewOutput(iteration int, review ReviewExecution) error
@@ -38,6 +39,7 @@ const (
 	metadataArtifact artifactKind = iota
 	implementFeedArtifact
 	implementTranscriptArtifact
+	implementHandoffArtifact
 	reviewDiffArtifact
 	reviewFeedArtifact
 	reviewTranscriptArtifact
@@ -177,6 +179,10 @@ func (r *diskRunRecorder) Dir() string {
 	return r.dir
 }
 
+func (r *diskRunRecorder) ImplementHandoffPath(iteration int) string {
+	return filepath.Join(r.dir, artifactFilename(implementHandoffArtifact, iteration))
+}
+
 func (r *diskRunRecorder) RecordImplementTurn(iteration int, feed, transcript string) error {
 	if err := r.write(implementFeedArtifact, iteration, feed); err != nil {
 		return err
@@ -264,31 +270,41 @@ func recordSessions(
 func artifactFilename(kind artifactKind, iteration int) string {
 	// Standalone reviews use iteration zero to preserve their unprefixed names.
 	if iteration == 0 {
-		switch kind {
-		case metadataArtifact:
-			return "metadata.txt"
-		case reviewDiffArtifact:
-			return "review.diff"
-		case reviewFeedArtifact:
-			return "review.feed"
-		case reviewTranscriptArtifact:
-			return "review.transcript"
-		case verdictArtifact:
-			return "verdict.txt"
-		case summaryArtifact:
-			return "summary.txt"
-		case sessionsArtifact:
-			return "sessions.txt"
-		case usageArtifact:
-			return "usage.json"
-		}
+		return standaloneArtifactFilename(kind)
 	}
+	return iterationArtifactFilename(kind, iteration)
+}
 
+func standaloneArtifactFilename(kind artifactKind) string {
+	switch kind {
+	case metadataArtifact:
+		return "metadata.txt"
+	case reviewDiffArtifact:
+		return "review.diff"
+	case reviewFeedArtifact:
+		return "review.feed"
+	case reviewTranscriptArtifact:
+		return "review.transcript"
+	case verdictArtifact:
+		return "verdict.txt"
+	case summaryArtifact:
+		return "summary.txt"
+	case sessionsArtifact:
+		return "sessions.txt"
+	case usageArtifact:
+		return "usage.json"
+	}
+	return ""
+}
+
+func iterationArtifactFilename(kind artifactKind, iteration int) string {
 	switch kind {
 	case implementFeedArtifact:
 		return fmt.Sprintf("iteration-%02d-implement.feed", iteration)
 	case implementTranscriptArtifact:
 		return fmt.Sprintf("iteration-%02d-implement.transcript", iteration)
+	case implementHandoffArtifact:
+		return fmt.Sprintf("handoff-%02d.md", iteration)
 	case reviewDiffArtifact:
 		return fmt.Sprintf("iteration-%02d-review.diff", iteration)
 	case reviewFeedArtifact:
@@ -297,9 +313,8 @@ func artifactFilename(kind artifactKind, iteration int) string {
 		return fmt.Sprintf("iteration-%02d-review.transcript", iteration)
 	case verdictArtifact:
 		return fmt.Sprintf("iteration-%02d-verdict.txt", iteration)
-	default:
-		return ""
 	}
+	return ""
 }
 
 func writeArtifact(path, contents string) error {
