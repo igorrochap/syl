@@ -2,6 +2,20 @@
 
 <!-- version list -->
 
+## v1.31.0 (2026-09-20)
+
+### Documentation
+
+- **context**: Document implementer session rollover
+  ([`0c85c1c`](https://github.com/igorrochap/syl/commit/0c85c1c9c9654545664b183646e9727c8a541925))
+
+### Features
+
+- **skill**: Update handoff functionality and scope
+  ([#175](https://github.com/igorrochap/syl/pull/175),
+  [`b2662ef`](https://github.com/igorrochap/syl/commit/b2662efdc2856d6eb55af72123269d2fe083546a))
+
+
 ## v1.30.0 (2026-09-09)
 
 ### Features
