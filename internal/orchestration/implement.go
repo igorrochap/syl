@@ -298,6 +298,7 @@ func runImplementIterations(ctx context.Context, params implementIterationsParam
 	params.output = ensureLineTrackingWriter(params.output)
 	var blocking []verdict.Finding
 	var final verdict.Verdict
+	var previousImplementerSession string
 	var previousReviewerSession string
 	iterations := 0
 	for iteration := 1; iteration <= params.projectConfig.Loop.MaxIterations; iteration++ {
@@ -306,9 +307,11 @@ func runImplementIterations(ctx context.Context, params implementIterationsParam
 		if params.verbose {
 			mode = ParsedHarnessOutput
 		}
-		if err := runImplementTurn(ctx, params, iteration, blocking, mode); err != nil {
+		implementResult, err := runImplementTurn(ctx, params, iteration, blocking, previousImplementerSession, mode)
+		if err != nil {
 			return 0, verdict.Verdict{}, nil, err
 		}
+		previousImplementerSession = lastUsableSessionID(implementResult.SessionIDs)
 		diffPath, err := prepareIterationReviewDiff(ctx, params, iteration)
 		if err != nil {
 			return 0, verdict.Verdict{}, nil, err
@@ -429,17 +432,24 @@ func prepareIterationReviewDiff(ctx context.Context, params implementIterationsP
 	return recordWorktreeReviewDiff(params.reviewDiffRoot, params.recorder.Dir(), iteration, diff)
 }
 
-func runImplementTurn(ctx context.Context, params implementIterationsParams, iteration int, blocking []verdict.Finding, mode HarnessOutputMode) error {
+func runImplementTurn(
+	ctx context.Context,
+	params implementIterationsParams,
+	iteration int,
+	blocking []verdict.Finding,
+	previousSession string,
+	mode HarnessOutputMode,
+) (implementExecution, error) {
 	activity := "implementing"
 	if iteration > 1 {
 		activity = fmt.Sprintf("revising %d blocking finding(s)", len(blocking))
 	}
 	renderer := ui.New(params.output, ui.DetectCaps(params.output))
 	if err := writeRoleSection(params.output, "Implementer"); err != nil {
-		return fmt.Errorf("write implement role: %w", err)
+		return implementExecution{}, fmt.Errorf("write implement role: %w", err)
 	}
 	if err := renderer.Step(ui.Step{Label: fmt.Sprintf("iteration %d/%d — %s", iteration, params.projectConfig.Loop.MaxIterations, activity)}); err != nil {
-		return fmt.Errorf("write implement progress: %w", err)
+		return implementExecution{}, fmt.Errorf("write implement progress: %w", err)
 	}
 
 	implementRequest := harness.Request{
@@ -449,17 +459,18 @@ func runImplementTurn(ctx context.Context, params implementIterationsParams, ite
 		MCP:    params.projectConfig.Roles.Implement.MCP,
 	}
 	implementStartedAt := time.Now().UTC()
-	implementResult, err := runImplementRole(
+	implementResult, err := runImplementRoleWithResumeFallback(
 		ctx,
 		params.implementer,
 		implementRequest,
+		previousSession,
 		params.output,
 		mode,
 		params.questions,
 	)
 	implementEndedAt := time.Now().UTC()
 	if err != nil {
-		return err
+		return implementExecution{}, err
 	}
 	recordRoleUsage(params.recorder, usage.CollectInvocation(usage.Invocation{
 		Iteration:  iteration,
@@ -475,12 +486,15 @@ func runImplementTurn(ctx context.Context, params implementIterationsParams, ite
 		implementResult.Feed,
 		implementResult.Transcript,
 	); err != nil {
-		return err
+		return implementExecution{}, err
 	}
 	if err := params.recorder.RecordSessions(iteration, "implement", implementResult.SessionIDs); err != nil {
-		return fmt.Errorf("record implement sessions: %w", err)
+		return implementExecution{}, fmt.Errorf("record implement sessions: %w", err)
 	}
-	return ensureHeadUnchanged(ctx, params.git, params.branchPoint)
+	if err := ensureHeadUnchanged(ctx, params.git, params.branchPoint); err != nil {
+		return implementExecution{}, err
+	}
+	return implementResult, nil
 }
 
 // recordRoleUsage persists usage as best-effort metadata. Usage collection or
@@ -499,6 +513,15 @@ type implementExecution struct {
 	SessionIDs []string
 }
 
+type implementExecutionOptions struct {
+	request          harness.Request
+	output           io.Writer
+	mode             HarnessOutputMode
+	questions        *QuestionHandler
+	initialSessionID string
+	start            harnessStreamStarter
+}
+
 func runImplementRole(
 	ctx context.Context,
 	adapter harness.Adapter,
@@ -507,24 +530,92 @@ func runImplementRole(
 	mode HarnessOutputMode,
 	questions *QuestionHandler,
 ) (implementExecution, error) {
-	var feed bytes.Buffer
-	visibleOutput := output
-	if mode != RawHarnessOutput {
-		visibleOutput = newLiveHarnessOutput(output, mode, "implement")
-	}
-	artifactOutput := newPlainHarnessOutput(&feed, mode)
-	result, err := runHarnessConversation(ctx, adapter, func(runContext context.Context) (harness.Stream, error) {
-		return adapter.Run(runContext, request)
-	}, conversationOptions{
+	return runImplementRoleFrom(ctx, adapter, implementExecutionOptions{
 		request:   request,
-		output:    visibleOutput,
-		artifact:  artifactOutput,
+		output:    output,
 		mode:      mode,
 		questions: questions,
+		start: func(runContext context.Context) (harness.Stream, error) {
+			return adapter.Run(runContext, request)
+		},
+	})
+}
+
+func runImplementRoleWithResumeFallback(
+	ctx context.Context,
+	adapter harness.Adapter,
+	request harness.Request,
+	sessionID string,
+	output io.Writer,
+	mode HarnessOutputMode,
+	questions *QuestionHandler,
+) (implementExecution, error) {
+	sessionID, hasSession := normalizeSessionID(sessionID)
+	if !hasSession {
+		return runImplementRole(ctx, adapter, request, output, mode, questions)
+	}
+
+	result, err := runImplementRoleFrom(ctx, adapter, implementExecutionOptions{
+		request:          request,
+		output:           output,
+		mode:             mode,
+		questions:        questions,
+		initialSessionID: sessionID,
+		start: func(runContext context.Context) (harness.Stream, error) {
+			stream, resumeErr := adapter.Resume(runContext, sessionID, request)
+			if resumeErr != nil {
+				return nil, &implementResumeError{cause: resumeErr}
+			}
+			return stream, nil
+		},
+	})
+	if err == nil {
+		return result, nil
+	}
+
+	var resumeErr *implementResumeError
+	if !errors.As(err, &resumeErr) {
+		return implementExecution{}, err
+	}
+	return runImplementRole(ctx, adapter, request, output, mode, questions)
+}
+
+type implementResumeError struct {
+	cause error
+}
+
+func (e *implementResumeError) Error() string {
+	return fmt.Sprintf("resume implementer session: %v", e.cause)
+}
+
+func (e *implementResumeError) Unwrap() error { return e.cause }
+
+func runImplementRoleFrom(
+	ctx context.Context,
+	adapter harness.Adapter,
+	options implementExecutionOptions,
+) (implementExecution, error) {
+	var feed bytes.Buffer
+	visibleOutput := options.output
+	if options.mode != RawHarnessOutput {
+		visibleOutput = newLiveHarnessOutput(options.output, options.mode, "implement")
+	}
+	artifactOutput := newPlainHarnessOutput(&feed, options.mode)
+	result, err := runHarnessConversation(ctx, adapter, options.start, conversationOptions{
+		request:   options.request,
+		output:    visibleOutput,
+		artifact:  artifactOutput,
+		mode:      options.mode,
+		questions: options.questions,
 		role:      "implement",
+		sessionID: options.initialSessionID,
 	})
 	if err != nil {
-		return implementExecution{}, fmt.Errorf("run implement harness: %w", err)
+		implementErr := fmt.Errorf("run implement harness: %w", err)
+		if options.initialSessionID != "" {
+			return implementExecution{}, &implementResumeError{cause: implementErr}
+		}
+		return implementExecution{}, implementErr
 	}
 	return implementExecution{
 		Feed:       feed.String(),
