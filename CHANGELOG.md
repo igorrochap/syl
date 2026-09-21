@@ -2,6 +2,23 @@
 
 <!-- version list -->
 
+## v1.32.0 (2026-09-21)
+
+### Features
+
+- **orchestration**: Support context rollover via handoff files
+  ([#178](https://github.com/igorrochap/syl/pull/178),
+  [`496aac5`](https://github.com/igorrochap/syl/commit/496aac5e191581fafc948b9a8434faa9a180880d))
+
+- **orchestration**: Support session resumption and context rollover
+  ([#178](https://github.com/igorrochap/syl/pull/178),
+  [`496aac5`](https://github.com/igorrochap/syl/commit/496aac5e191581fafc948b9a8434faa9a180880d))
+
+- **orchestration**: Support session resumption for implementer role
+  ([#178](https://github.com/igorrochap/syl/pull/178),
+  [`496aac5`](https://github.com/igorrochap/syl/commit/496aac5e191581fafc948b9a8434faa9a180880d))
+
+
 ## v1.31.0 (2026-09-20)
 
 ### Documentation
