@@ -328,7 +328,9 @@ func TestRunReviewExecutionRawOutputStillForwardsBothHarnessLines(t *testing.T) 
 type scriptedConversationAdapter struct {
 	runs        [][]harness.Event
 	resumes     [][]harness.Event
+	runHooks    []func(harness.Request)
 	runCalls    int
+	runRequests []harness.Request
 	resumeCalls []conversationResumeCall
 }
 
@@ -338,9 +340,13 @@ type conversationResumeCall struct {
 	mcp       bool
 }
 
-func (a *scriptedConversationAdapter) Run(context.Context, harness.Request) (harness.Stream, error) {
+func (a *scriptedConversationAdapter) Run(_ context.Context, request harness.Request) (harness.Stream, error) {
+	a.runRequests = append(a.runRequests, request)
 	if a.runCalls >= len(a.runs) {
 		return nil, &scriptedConversationError{message: "no scripted run remains"}
+	}
+	if a.runCalls < len(a.runHooks) && a.runHooks[a.runCalls] != nil {
+		a.runHooks[a.runCalls](request)
 	}
 	events := a.runs[a.runCalls]
 	a.runCalls++

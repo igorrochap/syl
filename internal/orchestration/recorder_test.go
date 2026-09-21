@@ -39,6 +39,10 @@ func (r *memoryRunRecorder) Dir() string {
 	return r.dir
 }
 
+func (r *memoryRunRecorder) ImplementHandoffPath(iteration int) string {
+	return filepath.Join(r.dir, artifactFilename(implementHandoffArtifact, iteration))
+}
+
 func (r *memoryRunRecorder) RecordImplementTurn(iteration int, feed, transcript string) error {
 	r.files[artifactFilename(implementFeedArtifact, iteration)] = feed
 	r.files[artifactFilename(implementTranscriptArtifact, iteration)] = transcript
@@ -105,16 +109,17 @@ func (r *failingSessionsRecorder) RecordSessions(iteration int, role string, ses
 
 func TestRunImplementIterationsRecordsReviseThenApproveInMemory(t *testing.T) {
 	recorder := newMemoryRunRecorder()
-	implementer := &scriptedConversationAdapter{runs: [][]harness.Event{
-		{
+	recorder.dir = t.TempDir()
+	implementer := &scriptedConversationAdapter{
+		runs: [][]harness.Event{{
 			{Type: harness.EventSession, SessionID: "implement-1"},
 			{Type: harness.EventAssistantText, Text: "first implementation"},
-		},
-		{
+		}},
+		resumes: [][]harness.Event{{
 			{Type: harness.EventSession, SessionID: "implement-2"},
 			{Type: harness.EventAssistantText, Text: "revised implementation"},
-		},
-	}}
+		}},
+	}
 	reviewer := &scriptedConversationAdapter{
 		runs: [][]harness.Event{{
 			{Type: harness.EventSession, SessionID: "review-1"},
@@ -156,6 +161,190 @@ func TestRunImplementIterationsRecordsReviseThenApproveInMemory(t *testing.T) {
 	}
 	if len(reviewer.resumeCalls) != 1 {
 		t.Fatalf("review resume calls = %d, want 1", len(reviewer.resumeCalls))
+	}
+	if implementer.runCalls != 1 {
+		t.Fatalf("implement run calls = %d, want iteration 1 to be the only fresh run", implementer.runCalls)
+	}
+	if len(implementer.resumeCalls) != 1 {
+		t.Fatalf("implement resume calls = %d, want 1", len(implementer.resumeCalls))
+	}
+	if got := implementer.resumeCalls[0].sessionID; got != "implement-1" {
+		t.Fatalf("implement resume session = %q, want %q", got, "implement-1")
+	}
+	if got := implementer.resumeCalls[0].prompt; !strings.Contains(got, "worker.go:10") || !strings.Contains(got, "handle the error") {
+		t.Fatalf("implement resume prompt = %q, want iteration blocking finding", got)
+	}
+	wantSessions := "iteration 1 implement: implement-1\n" +
+		"iteration 1 review: review-1\n" +
+		"iteration 2 implement: implement-1\n" +
+		"iteration 2 implement: implement-2\n" +
+		"iteration 2 review: review-1\n"
+	if got := recorder.files[artifactFilename(sessionsArtifact, 0)]; got != wantSessions {
+		t.Fatalf("recorded sessions = %q, want %q", got, wantSessions)
+	}
+}
+
+func TestRunImplementIterationsUsesWorktreeHandoffToStartFreshSeededSession(t *testing.T) {
+	recorder := newMemoryRunRecorder()
+	recorder.dir = t.TempDir()
+	worktreeRoot := t.TempDir()
+	handoffPath := filepath.Join(
+		worktreeRoot,
+		".syl",
+		"runs",
+		filepath.Base(recorder.dir),
+		"handoff-01.md",
+	)
+	ticket := tracker.Ticket{Number: 42, Title: "Preserve context", Body: "Keep the session decisions."}
+	implementer := &scriptedConversationAdapter{
+		runs: [][]harness.Event{
+			{{Type: harness.EventSession, SessionID: "implement-1"}},
+			{{Type: harness.EventSession, SessionID: "implement-2"}},
+		},
+		runHooks: []func(harness.Request){func(harness.Request) {
+			if err := os.WriteFile(handoffPath, []byte("decisions and explored files"), 0o644); err != nil {
+				t.Fatalf("write handoff artifact: %v", err)
+			}
+		}},
+	}
+	reviewer := &scriptedConversationAdapter{
+		runs: [][]harness.Event{{
+			{Type: harness.EventSession, SessionID: "review-1"},
+			{Type: harness.EventAssistantText, Text: "VERDICT: revise\nSUMMARY: Fix required\nFINDINGS:\n- [blocking] worker.go:10 — handle the error\n"},
+		}},
+		resumes: [][]harness.Event{{
+			{Type: harness.EventSession, SessionID: "review-1"},
+			{Type: harness.EventAssistantText, Text: "VERDICT: approve\nSUMMARY: Ready\nFINDINGS:\n"},
+		}},
+	}
+
+	iterations, final, _, err := runImplementIterations(context.Background(), implementIterationsParams{
+		git:                  staticImplementGit{branchPoint: "branch-point", diff: "diff --git a/a b/a\n"},
+		implementer:          implementer,
+		reviewer:             reviewer,
+		projectConfig:        config.Config{Loop: config.LoopConfig{MaxIterations: 2}},
+		ticket:               ticket,
+		branchPoint:          "branch-point",
+		worktreeArtifactRoot: worktreeRoot,
+		recorder:             recorder,
+		output:               io.Discard,
+	})
+	if err != nil {
+		t.Fatalf("runImplementIterations() error = %v", err)
+	}
+	if iterations != 2 || final.Status != verdict.Approve {
+		t.Fatalf("result = (%d, %q), want (2, approve)", iterations, final.Status)
+	}
+	if implementer.runCalls != 2 || len(implementer.resumeCalls) != 0 {
+		t.Fatalf("implement calls = (%d runs, %d resumes), want (2, 0)", implementer.runCalls, len(implementer.resumeCalls))
+	}
+	seededPrompt := implementer.runRequests[1].Prompt
+	for _, expected := range []string{handoffPath, ticket.Title, ticket.Body, "worker.go:10", "handle the error"} {
+		if !strings.Contains(seededPrompt, expected) {
+			t.Errorf("seeded prompt = %q, want %q", seededPrompt, expected)
+		}
+	}
+	contents, err := os.ReadFile(handoffPath)
+	if err != nil {
+		t.Fatalf("read handoff artifact: %v", err)
+	}
+	if string(contents) != "decisions and explored files" {
+		t.Fatalf("handoff artifact = %q", contents)
+	}
+}
+
+func TestRunImplementIterationsAllowsRolloverOnFinalIteration(t *testing.T) {
+	recorder := newMemoryRunRecorder()
+	recorder.dir = t.TempDir()
+	handoffPath := filepath.Join(recorder.dir, "handoff-01.md")
+	implementer := &scriptedConversationAdapter{
+		runs: [][]harness.Event{{{Type: harness.EventSession, SessionID: "implement-1"}}},
+		runHooks: []func(harness.Request){func(harness.Request) {
+			if err := os.WriteFile(handoffPath, []byte("final handoff"), 0o644); err != nil {
+				t.Fatalf("write final handoff: %v", err)
+			}
+		}},
+	}
+	reviewer := &scriptedConversationAdapter{runs: [][]harness.Event{{
+		{Type: harness.EventSession, SessionID: "review-1"},
+		{Type: harness.EventAssistantText, Text: "VERDICT: approve\nSUMMARY: Ready\nFINDINGS:\n"},
+	}}}
+
+	iterations, final, _, err := runImplementIterations(context.Background(), implementIterationsParams{
+		git:           staticImplementGit{branchPoint: "branch-point", diff: "diff --git a/a b/a\n"},
+		implementer:   implementer,
+		reviewer:      reviewer,
+		projectConfig: config.Config{Loop: config.LoopConfig{MaxIterations: 1}},
+		ticket:        tracker.Ticket{Number: 42},
+		branchPoint:   "branch-point",
+		recorder:      recorder,
+		output:        io.Discard,
+	})
+	if err != nil {
+		t.Fatalf("runImplementIterations() error = %v", err)
+	}
+	if iterations != 1 || final.Status != verdict.Approve {
+		t.Fatalf("result = (%d, %q), want (1, approve)", iterations, final.Status)
+	}
+	if _, err := os.Stat(handoffPath); err != nil {
+		t.Fatalf("stat final handoff artifact: %v", err)
+	}
+}
+
+func TestRunImplementIterationsFallsBackToFreshRunWhenImplementResumeFails(t *testing.T) {
+	recorder := newMemoryRunRecorder()
+	ticket := tracker.Ticket{Number: 42, Title: "Resume implementation", Body: "Keep context between iterations."}
+	implementer := &scriptedConversationAdapter{runs: [][]harness.Event{
+		{
+			{Type: harness.EventSession, SessionID: "implement-1"},
+			{Type: harness.EventAssistantText, Text: "first implementation"},
+		},
+		{
+			{Type: harness.EventSession, SessionID: "implement-fallback"},
+			{Type: harness.EventAssistantText, Text: "fresh revised implementation"},
+		},
+	}}
+	reviewer := &scriptedConversationAdapter{
+		runs: [][]harness.Event{{
+			{Type: harness.EventSession, SessionID: "review-1"},
+			{Type: harness.EventAssistantText, Text: "VERDICT: revise\nSUMMARY: Fix required\nFINDINGS:\n- [blocking] worker.go:10 — handle the error\n"},
+		}},
+		resumes: [][]harness.Event{{
+			{Type: harness.EventSession, SessionID: "review-1"},
+			{Type: harness.EventAssistantText, Text: "VERDICT: approve\nSUMMARY: Ready\nFINDINGS:\n"},
+		}},
+	}
+
+	iterations, final, _, err := runImplementIterations(context.Background(), implementIterationsParams{
+		git:           staticImplementGit{branchPoint: "branch-point", diff: "diff --git a/a b/a\n"},
+		implementer:   implementer,
+		reviewer:      reviewer,
+		projectConfig: config.Config{Loop: config.LoopConfig{MaxIterations: 2}},
+		ticket:        ticket,
+		branchPoint:   "branch-point",
+		recorder:      recorder,
+		output:        io.Discard,
+	})
+	if err != nil {
+		t.Fatalf("runImplementIterations() error = %v", err)
+	}
+	if iterations != 2 || final.Status != verdict.Approve {
+		t.Fatalf("result = (%d, %q), want (2, approve)", iterations, final.Status)
+	}
+	if len(implementer.resumeCalls) != 1 || implementer.resumeCalls[0].sessionID != "implement-1" {
+		t.Fatalf("implement resume calls = %#v, want one attempt for implement-1", implementer.resumeCalls)
+	}
+	if implementer.runCalls != 2 {
+		t.Fatalf("implement run calls = %d, want initial run and fallback run", implementer.runCalls)
+	}
+	wantPrompt := composeImplementPrompt(ticket, []verdict.Finding{{
+		Kind: verdict.Blocking, Location: "worker.go:10", Issue: "handle the error",
+	}}, 2, recorder.ImplementHandoffPath(2), "", "")
+	if got := implementer.resumeCalls[0].prompt; got != wantPrompt {
+		t.Fatalf("implement resume prompt = %q, want %q", got, wantPrompt)
+	}
+	if got := implementer.runRequests[1].Prompt; got != wantPrompt {
+		t.Fatalf("implement fallback prompt = %q, want %q", got, wantPrompt)
 	}
 }
 
