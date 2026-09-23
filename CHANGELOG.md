@@ -2,6 +2,21 @@
 
 <!-- version list -->
 
+## v1.34.0 (2026-09-23)
+
+### Features
+
+- **orchestration**: Track and persist run state
+  ([#190](https://github.com/igorrochap/syl/pull/190),
+  [`7c1f92d`](https://github.com/igorrochap/syl/commit/7c1f92dff97713dd8261247fea5926fd8cd2e632))
+
+### Testing
+
+- **runstate**: Add test for New state initialization
+  ([#190](https://github.com/igorrochap/syl/pull/190),
+  [`7c1f92d`](https://github.com/igorrochap/syl/commit/7c1f92dff97713dd8261247fea5926fd8cd2e632))
+
+
 ## v1.33.1 (2026-09-23)
 
 ### Bug Fixes
