@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v1.35.0 (2026-09-23)
+
+### Features
+
+- **orchestration**: Track active runs via file markers
+  ([#192](https://github.com/igorrochap/syl/pull/192),
+  [`437a4c7`](https://github.com/igorrochap/syl/commit/437a4c7c83c1cacce03bf46277210fe4a360ee50))
+
+
 ## v1.34.1 (2026-09-23)
 
 ### Bug Fixes
