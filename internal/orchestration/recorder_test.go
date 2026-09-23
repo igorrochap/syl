@@ -348,6 +348,71 @@ func TestRunImplementIterationsFallsBackToFreshRunWhenImplementResumeFails(t *te
 	}
 }
 
+func TestRunImplementIterationsStopsFailedResumeBeforeFreshRun(t *testing.T) {
+	implementer := &contextCapturingAdapter{scriptedConversationAdapter: &scriptedConversationAdapter{
+		runs: [][]harness.Event{
+			{
+				{Type: harness.EventSession, SessionID: "implement-1"},
+				{Type: harness.EventAssistantText, Text: "first implementation"},
+			},
+			{
+				{Type: harness.EventSession, SessionID: "implement-fallback"},
+				{Type: harness.EventAssistantText, Text: "fresh revised implementation"},
+			},
+		},
+		resumes: [][]harness.Event{{
+			{Type: harness.EventSession, SessionID: "implement-1"},
+			{Type: harness.EventResult, Text: "resume failed mid-stream", IsError: true},
+		}},
+	}}
+	var resumeStoppedBeforeFallback bool
+	implementer.runHooks = []func(harness.Request){nil, func(harness.Request) {
+		resumeStoppedBeforeFallback = len(implementer.resumeContexts) == 1 && implementer.resumeContexts[0].Err() != nil
+	}}
+	reviewer := &scriptedConversationAdapter{
+		runs: [][]harness.Event{{
+			{Type: harness.EventSession, SessionID: "review-1"},
+			{Type: harness.EventAssistantText, Text: "VERDICT: revise\nSUMMARY: Fix required\nFINDINGS:\n- [blocking] worker.go:10 — handle the error\n"},
+		}},
+		resumes: [][]harness.Event{{
+			{Type: harness.EventSession, SessionID: "review-1"},
+			{Type: harness.EventAssistantText, Text: "VERDICT: approve\nSUMMARY: Ready\nFINDINGS:\n"},
+		}},
+	}
+
+	_, final, _, err := runImplementIterations(context.Background(), implementIterationsParams{
+		git:           staticImplementGit{branchPoint: "branch-point", diff: "diff --git a/a b/a\n"},
+		implementer:   implementer,
+		reviewer:      reviewer,
+		projectConfig: config.Config{Loop: config.LoopConfig{MaxIterations: 2}},
+		ticket:        tracker.Ticket{Number: 42, Title: "Resume implementation"},
+		branchPoint:   "branch-point",
+		recorder:      newMemoryRunRecorder(),
+		output:        io.Discard,
+	})
+	if err != nil {
+		t.Fatalf("runImplementIterations() error = %v", err)
+	}
+	if final.Status != verdict.Approve || implementer.runCalls != 2 {
+		t.Fatalf("result = (%q, %d run calls), want approve after the fallback run", final.Status, implementer.runCalls)
+	}
+	if !resumeStoppedBeforeFallback {
+		t.Fatal("failed resume harness was still running when the fallback run started")
+	}
+}
+
+// contextCapturingAdapter records the context each resumed harness runs under,
+// so tests can observe whether syl stopped it.
+type contextCapturingAdapter struct {
+	*scriptedConversationAdapter
+	resumeContexts []context.Context
+}
+
+func (a *contextCapturingAdapter) Resume(ctx context.Context, sessionID string, request harness.Request) (harness.Stream, error) {
+	a.resumeContexts = append(a.resumeContexts, ctx)
+	return a.scriptedConversationAdapter.Resume(ctx, sessionID, request)
+}
+
 func TestRunImplementIterationsStartsVerdictOnANewLineAfterReviewProse(t *testing.T) {
 	recorder := newMemoryRunRecorder()
 	implementer := &scriptedConversationAdapter{runs: [][]harness.Event{{

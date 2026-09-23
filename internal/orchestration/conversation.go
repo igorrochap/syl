@@ -234,21 +234,21 @@ func runHarnessConversation(ctx context.Context, adapter harness.Adapter, start 
 	sessionID, _ := normalizeSessionID(options.sessionID)
 	next := start
 
+	// Returning stops every harness this conversation started, so a
+	// conversation that fails mid-stream cannot keep its harness running
+	// alongside the caller's retry or fallback.
+	conversationContext, stopConversation := context.WithCancel(ctx)
+	defer stopConversation()
+
 	for {
-		stream, err := next(ctx)
+		stream, err := next(conversationContext)
 		if err != nil {
 			return harnessTranscript{}, err
 		}
-		captureSessionEvents := true
-		if knownSession, ok := stream.(harness.SessionStream); ok {
-			knownSessionID, known := normalizeSessionID(knownSession.SessionID())
-			if known {
-				captureSessionEvents = false
-				sessionIDs = appendSessionID(sessionIDs, knownSessionID)
-				if sessionID == "" {
-					sessionID = knownSessionID
-				}
-			}
+		knownSessionID, known := knownStreamSession(stream)
+		if known {
+			sessionIDs = appendSessionID(sessionIDs, knownSessionID)
+			sessionID = firstSessionID(sessionID, knownSessionID)
 		}
 
 		result, err := consumeHarnessStreamWithArtifact(
@@ -256,29 +256,20 @@ func runHarnessConversation(ctx context.Context, adapter harness.Adapter, start 
 			options.output,
 			options.artifact,
 			options.mode,
-			captureSessionEvents,
+			!known,
 		)
 		if err != nil {
+			go releaseAbandonedStream(stream)
 			return harnessTranscript{}, err
 		}
-		if result.Transcript != "" {
-			if transcript.Len() > 0 && !strings.HasSuffix(transcript.String(), "\n") {
-				transcript.WriteString("\n")
-			}
-			transcript.WriteString(result.Transcript)
-		}
+		appendTranscript(&transcript, result.Transcript)
 		sessionIDs = append(sessionIDs, result.SessionIDs...)
-		if sessionID == "" && len(result.SessionIDs) > 0 {
-			sessionID = result.SessionIDs[0]
-		}
+		sessionID = firstSessionID(sessionID, result.SessionIDs...)
 		if !result.Blocked {
 			return harnessTranscript{Transcript: transcript.String(), SessionIDs: appendSessionID(sessionIDs, sessionID)}, nil
 		}
-		if options.questions == nil {
-			return harnessTranscript{}, errors.New("harness asked a question but no terminal question handler is configured")
-		}
-		if sessionID == "" {
-			return harnessTranscript{}, errors.New("harness asked a question before emitting a session id")
+		if err := questionAnswerable(options.questions, sessionID); err != nil {
+			return harnessTranscript{}, err
 		}
 
 		answer, err := options.questions.handle(ctx, options.role, result.Question)
@@ -291,6 +282,50 @@ func runHarnessConversation(ctx context.Context, adapter harness.Adapter, start 
 			return adapter.Resume(resumeContext, sessionID, resumeRequest)
 		}
 	}
+}
+
+// knownStreamSession reports the session a stream announced before emitting
+// events, in which case its session events need not be captured.
+func knownStreamSession(stream harness.Stream) (string, bool) {
+	knownSession, ok := stream.(harness.SessionStream)
+	if !ok {
+		return "", false
+	}
+	return normalizeSessionID(knownSession.SessionID())
+}
+
+// firstSessionID keeps the conversation's current session once one is known,
+// otherwise it adopts the first candidate.
+func firstSessionID(current string, candidates ...string) string {
+	if current != "" {
+		return current
+	}
+	for _, candidate := range candidates {
+		if candidate != "" {
+			return candidate
+		}
+	}
+	return ""
+}
+
+func appendTranscript(transcript *strings.Builder, text string) {
+	if text == "" {
+		return
+	}
+	if transcript.Len() > 0 && !strings.HasSuffix(transcript.String(), "\n") {
+		transcript.WriteString("\n")
+	}
+	transcript.WriteString(text)
+}
+
+func questionAnswerable(questions *QuestionHandler, sessionID string) error {
+	if questions == nil {
+		return errors.New("harness asked a question but no terminal question handler is configured")
+	}
+	if sessionID == "" {
+		return errors.New("harness asked a question before emitting a session id")
+	}
+	return nil
 }
 
 func consumeHarnessStream(stream harness.Stream, output io.Writer, mode HarnessOutputMode) (harnessStreamResult, error) {
@@ -574,4 +609,11 @@ func drainHarnessStream(events <-chan harness.Event, stream harness.Stream) erro
 	for range events {
 	}
 	return stream.Wait()
+}
+
+// releaseAbandonedStream reads what remains of a stopped stream so the adapter
+// can finish and reap its harness process. The stream already failed, so its
+// exit error carries nothing new.
+func releaseAbandonedStream(stream harness.Stream) {
+	_ = drainHarnessStream(stream.Events(), stream)
 }
