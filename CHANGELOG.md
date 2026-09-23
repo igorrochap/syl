@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v1.34.1 (2026-09-23)
+
+### Bug Fixes
+
+- **codex**: Improve session persistence and error handling
+  ([#191](https://github.com/igorrochap/syl/pull/191),
+  [`378aa43`](https://github.com/igorrochap/syl/commit/378aa43694e22dd764b3890e0948a93bf6e8e971))
+
+
 ## v1.34.0 (2026-09-23)
 
 ### Features
