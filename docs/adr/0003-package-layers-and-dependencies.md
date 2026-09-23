@@ -16,7 +16,7 @@ not permitted.
 | --- | --- | --- |
 | Composition | `cmd/syl` | every package under `internal/`, plus `scripts` and `skills` |
 | Command | `internal/cli` | `internal/adapters/git`, `internal/adapters/notify`, `internal/config`, `internal/harness`, `internal/initializer`, `internal/orchestration`, `internal/registry`, `internal/tracker`, `internal/ui`, `internal/updater`, `internal/usage`, `internal/version` |
-| Application | `internal/orchestration` | `internal/config`, `internal/harness`, `internal/tracker`, `internal/ui`, `internal/usage`, `internal/verdict` |
+| Application | `internal/orchestration` | `internal/config`, `internal/harness`, `internal/runmarker`, `internal/runstate`, `internal/tracker`, `internal/ui`, `internal/usage`, `internal/verdict` |
 | Application support | `internal/initializer` | `internal/config`, `internal/tui`, `internal/ui`, `scripts`, `skills` |
 | Application support | `internal/updater` | `scripts` |
 | Port | `internal/harness` | `internal/config` |
@@ -26,6 +26,7 @@ not permitted.
 | Port adapter | `internal/harness/codex` | `internal/config`, `internal/harness` |
 | Support | `internal/usage` | `internal/harness/claude/transcript` |
 | Support with no project-package edges | `internal/registry` | none |
+| Support with no project-package edges | `internal/runmarker` | none |
 | Support with no project-package edges | `internal/runstate` | none |
 | Support with no project-package edges | `internal/adapters/git`, `internal/adapters/notify`, `internal/config`, `internal/harness/claude/transcript`, `internal/tracker`, `internal/tui`, `internal/verdict`, `internal/version`, `scripts`, `skills` | none |
 | Support with no project-package edges | `internal/ui` | none |
@@ -49,6 +50,9 @@ call exceptions:
 - `internal/orchestration` imports `internal/runstate` because the Run state
   file format is shared with future read models without coupling those models
   to orchestration.
+- `internal/orchestration` imports `internal/runmarker` because orchestration
+  owns the live Run lifecycle while the marker store remains independent of
+  workflow callers.
 - Tests are not part of the architecture check. Test packages intentionally
   import concrete collaborators to exercise public seams; those imports do
   not create production dependency edges.

@@ -11,6 +11,7 @@ import (
 
 	"github.com/igorrochap/syl/internal/config"
 	"github.com/igorrochap/syl/internal/harness"
+	"github.com/igorrochap/syl/internal/runmarker"
 	"github.com/igorrochap/syl/internal/runstate"
 	"github.com/igorrochap/syl/internal/tracker"
 )
@@ -208,12 +209,21 @@ func TestRunImplementRecordsExhaustedAndCancelledStates(t *testing.T) {
 			wantStatus: runstate.Cancelled,
 			wantError:  "run review harness",
 		},
+		{
+			name:       "failed",
+			ctx:        context.Background,
+			reviewer:   &errorHarnessAdapter{err: errors.New("harness failed")},
+			wantStatus: runstate.Failed,
+			wantError:  "run review harness",
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			root := t.TempDir()
+			sylHome := t.TempDir()
 			err := RunImplement(test.ctx(), ImplementOptions{
 				OriginRoot: root, WorkRoot: root, Git: &implementRunGit{}, OriginGit: &implementRunGit{},
+				SylHome:      sylHome,
 				IssueTracker: branchSetupTracker{}, Ticket: tracker.Ticket{Number: 180},
 				ProjectConfig: config.Config{
 					Roles: config.RolesConfig{
@@ -231,6 +241,13 @@ func TestRunImplementRecordsExhaustedAndCancelledStates(t *testing.T) {
 			state := mustReadRunState(t, onlyRunStatePath(t, root))
 			if state.Status != test.wantStatus || state.EndedAt == nil {
 				t.Fatalf("state = %#v, want %s with ended time", state, test.wantStatus)
+			}
+			markers, markerErr := runmarker.List(sylHome)
+			if markerErr != nil {
+				t.Fatalf("List() after %s Run: %v", test.name, markerErr)
+			}
+			if len(markers) != 0 {
+				t.Fatalf("markers after %s Run = %#v, want none", test.name, markers)
 			}
 		})
 	}

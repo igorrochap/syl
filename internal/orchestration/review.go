@@ -57,6 +57,7 @@ const (
 type ReviewOptions struct {
 	OriginRoot           string
 	WorkRoot             string
+	SylHome              string
 	ProjectConfig        config.Config
 	IssueTracker         tracker.Tracker
 	Ticket               *tracker.Ticket
@@ -130,6 +131,7 @@ func runReviewPreparation(
 		string(options.ProjectConfig.Roles.Review.Harness),
 		options.Git,
 		options.Output,
+		options.SylHome,
 	)
 }
 
@@ -294,7 +296,7 @@ func prepareReviewWithContext(
 	git GitRunner,
 ) (reviewPreparation, error) {
 	return prepareReviewWithContextAndWarning(
-		ctx, originRoot, workRoot, ticketRef, reviewContext, reviewerHarness, git, nil,
+		ctx, originRoot, workRoot, ticketRef, reviewContext, reviewerHarness, git, nil, "",
 	)
 }
 
@@ -307,6 +309,7 @@ func prepareReviewWithContextAndWarning(
 	reviewerHarness string,
 	git GitRunner,
 	warningOutput io.Writer,
+	sylHome string,
 ) (reviewPreparation, error) {
 	if git == nil {
 		return reviewPreparation{}, errors.New("review: git runner is not configured")
@@ -324,7 +327,7 @@ func prepareReviewWithContextAndWarning(
 		return reviewPreparation{}, fmt.Errorf("review: %w", err)
 	}
 	recorder, err := newReviewRunRecorderWithState(
-		originRoot, workRoot, ticketRef, branchPoint, reviewerHarness, reviewContext, warningOutput,
+		originRoot, workRoot, ticketRef, branchPoint, reviewerHarness, reviewContext, warningOutput, sylHome,
 	)
 	if err != nil {
 		if recorder != nil {

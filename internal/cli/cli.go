@@ -188,7 +188,7 @@ func (a *App) runImplementCommand(cmd *cobra.Command, args []string, commandOpti
 		return a.cleanupProvisionedWorktree(cmd.Context(), provisionedWorktree, err)
 	}
 	return orchestration.RunImplement(cmd.Context(), orchestration.ImplementOptions{
-		OriginRoot: a.originRoot, WorkRoot: workRoot, ProjectConfig: projectConfig, IssueTracker: statusTracker, Ticket: ticket,
+		OriginRoot: a.originRoot, WorkRoot: workRoot, SylHome: a.sylHome, ProjectConfig: projectConfig, IssueTracker: statusTracker, Ticket: ticket,
 		Implementer: implementer, Reviewer: reviewer, Git: a.gitRunner(workRoot), OriginGit: a.gitRunner(a.originRoot),
 		Notifier: a.notifier(projectConfig.Notifications.Enabled), Input: cmd.InOrStdin(), Output: cmd.OutOrStdout(),
 		Context:             commandOptions.additionalContext,
@@ -364,7 +364,7 @@ func (a *App) reviewCommand() *cobra.Command {
 				return err
 			}
 			return orchestration.RunReview(cmd.Context(), orchestration.ReviewOptions{
-				OriginRoot: a.originRoot, WorkRoot: a.workRoot, ProjectConfig: projectConfig, IssueTracker: issueTracker,
+				OriginRoot: a.originRoot, WorkRoot: a.workRoot, SylHome: a.sylHome, ProjectConfig: projectConfig, IssueTracker: issueTracker,
 				Ticket: ticket, TicketRef: ticketRef, Context: additionalContext, Adapter: adapter, Input: cmd.InOrStdin(), Output: cmd.OutOrStdout(),
 				Raw: raw, Verbose: verbose, Notifier: a.notifier(projectConfig.Notifications.Enabled), Git: a.gitRunner(a.workRoot),
 				TranscriptUsage: projectConfig.Roles.Review.Harness == config.HarnessClaude,

@@ -39,6 +39,7 @@ type implementSummary struct {
 type ImplementOptions struct {
 	OriginRoot           string
 	WorkRoot             string
+	SylHome              string
 	ProjectConfig        config.Config
 	IssueTracker         tracker.Tracker
 	Ticket               tracker.Ticket
@@ -178,6 +179,7 @@ func initializeImplementRun(options ImplementOptions, setup implementSetup) (imp
 		options.ReviewContext,
 		options.ProjectConfig.Loop.MaxIterations,
 		options.Output,
+		options.SylHome,
 	)
 	if err != nil {
 		if recorder != nil {
