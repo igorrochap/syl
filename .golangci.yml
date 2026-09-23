@@ -27,6 +27,7 @@ linters:
             - "!**/internal/initializer/*.go"
             - "!**/internal/updater/*.go"
             - "!**/internal/usage/*.go"
+            - "!**/internal/registry/*.go"
             - "!**/internal/adapters/gh/*.go"
             - "!**/internal/adapters/glab/*.go"
             - "!**/internal/adapters/git/*.go"
@@ -76,6 +77,7 @@ linters:
             - github.com/igorrochap/syl/internal/harness$
             - github.com/igorrochap/syl/internal/initializer$
             - github.com/igorrochap/syl/internal/orchestration$
+            - github.com/igorrochap/syl/internal/registry$
             - github.com/igorrochap/syl/internal/tracker$
             - github.com/igorrochap/syl/internal/ui$
             - github.com/igorrochap/syl/internal/updater$
@@ -214,6 +216,7 @@ linters:
             - "**/internal/tui/*.go"
             - "**/internal/verdict/*.go"
             - "**/internal/version/*.go"
+            - "**/internal/registry/*.go"
             - "**/scripts/*.go"
             - "**/skills/*.go"
           list-mode: lax

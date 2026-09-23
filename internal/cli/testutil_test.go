@@ -20,6 +20,7 @@ var updateCLIGolden = flag.Bool("update-cli-golden", false, "rewrite CLI golden 
 
 type topSeamFixture struct {
 	root      string
+	sylHome   string
 	app       *App
 	harnesses map[string]harness.Adapter
 	stdout    bytes.Buffer
@@ -116,10 +117,12 @@ effort = "medium"
 		"codex":    fakeHarness{},
 		"opencode": fakeHarness{},
 	}
+	sylHome := t.TempDir()
 	return &topSeamFixture{
 		root:      root,
+		sylHome:   sylHome,
 		harnesses: harnesses,
-		app: New(root, root, Dependencies{
+		app: New(root, root, sylHome, Dependencies{
 			Harnesses: harnessFactories(harnesses),
 			Notifier:  fakeNotifier{},
 			GH:        fixedGH(fakeGHRunner{}),

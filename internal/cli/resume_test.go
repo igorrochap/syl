@@ -80,7 +80,7 @@ func TestResumeNarrowsByTicketAndIteration(t *testing.T) {
 	for _, ticket := range []string{"118", "#118"} {
 		t.Run(ticket, func(t *testing.T) {
 			adapter := &recordingResumeHarness{}
-			app := newResumeApp(root, adapter)
+			app := newResumeApp(t, root, adapter)
 			var stdout, stderr strings.Builder
 
 			if code := app.Run(context.Background(), []string{
@@ -110,7 +110,7 @@ func TestResumeSelectsStandaloneReviewAtExplicitIterationZero(t *testing.T) {
 		"Work root: %s\nReviewer harness: claude\n", workRoot,
 	), "iteration 0 review: standalone-review\n", true, true)
 	adapter := &recordingResumeHarness{}
-	app := newResumeApp(root, adapter)
+	app := newResumeApp(t, root, adapter)
 	var stdout, stderr strings.Builder
 
 	if code := app.Run(context.Background(), []string{
@@ -203,7 +203,7 @@ func TestResumeReportsDistinctTicketAndIterationSelectionErrors(t *testing.T) {
 			root := t.TempDir()
 			test.makeProject(t, root)
 			adapter := &recordingResumeHarness{}
-			app := newResumeApp(root, adapter)
+			app := newResumeApp(t, root, adapter)
 			var stdout, stderr strings.Builder
 
 			if code := app.Run(context.Background(), test.args, &stdout, &stderr); code == 0 || !strings.Contains(stderr.String(), test.want) {
@@ -227,7 +227,7 @@ func TestResumeHandsOffRecordedHarnessAtRecordedRootWithCurrentMCP(t *testing.T)
 
 	adapter := &recordingResumeHarness{}
 	var harnessRoots []string
-	app := New(root, root, Dependencies{
+	app := New(root, root, t.TempDir(), Dependencies{
 		Harnesses: func(gotRoot string) map[string]harness.Adapter {
 			harnessRoots = append(harnessRoots, gotRoot)
 			return map[string]harness.Adapter{"claude": adapter}
@@ -280,7 +280,7 @@ func TestResumeWarnsBeforeHandingOffIncompleteRun(t *testing.T) {
 		"Work root: %s\nReviewer harness: claude\n", workRoot,
 	), "iteration 0 review: review-session\n", true, false)
 	adapter := &recordingResumeHarness{}
-	app := newResumeApp(root, adapter)
+	app := newResumeApp(t, root, adapter)
 	var stdout, stderr strings.Builder
 
 	if code := app.Run(context.Background(), []string{"resume", "review"}, &stdout, &stderr); code != 0 {
@@ -295,7 +295,7 @@ func TestResumeRejectsUnknownRoleAndListsValidRoles(t *testing.T) {
 	root := t.TempDir()
 	writeResumeConfig(t, root)
 	adapter := &recordingResumeHarness{}
-	app := newResumeApp(root, adapter)
+	app := newResumeApp(t, root, adapter)
 
 	t.Run("missing Role", func(t *testing.T) {
 		var stdout, stderr strings.Builder
@@ -369,7 +369,7 @@ func TestResumeReportsDistinctSelectionAndArtifactErrors(t *testing.T) {
 			root := t.TempDir()
 			test.makeProject(t, root)
 			adapter := &recordingResumeHarness{}
-			app := newResumeApp(root, adapter)
+			app := newResumeApp(t, root, adapter)
 			var stdout, stderr strings.Builder
 
 			code := app.Run(context.Background(), []string{"resume", "implement"}, &stdout, &stderr)
@@ -394,7 +394,7 @@ func TestResumeTreatsAbsentAndEmptySessionsAsNoSession(t *testing.T) {
 			writeResumeConfig(t, root)
 			writeResumeRun(t, root, "20260908T200000.000000000Z-42", "", "", sessionsPresent, false)
 			adapter := &recordingResumeHarness{}
-			app := newResumeApp(root, adapter)
+			app := newResumeApp(t, root, adapter)
 			var stdout, stderr strings.Builder
 
 			code := app.Run(context.Background(), []string{"resume", "review"}, &stdout, &stderr)
@@ -429,8 +429,8 @@ func (h *recordingResumeHarness) AttachSession(_ context.Context, sessionID stri
 	return nil
 }
 
-func newResumeApp(root string, adapter harness.Adapter) *App {
-	return New(root, root, Dependencies{
+func newResumeApp(t *testing.T, root string, adapter harness.Adapter) *App {
+	return New(root, root, t.TempDir(), Dependencies{
 		Harnesses: func(string) map[string]harness.Adapter {
 			return map[string]harness.Adapter{"claude": adapter}
 		},

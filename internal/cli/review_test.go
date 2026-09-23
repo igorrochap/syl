@@ -756,7 +756,7 @@ func newReviewFixture(t *testing.T, adapter harness.Adapter) *reviewFixture {
 	t.Helper()
 	base := newTopSeamFixture(t)
 	base.harnesses = map[string]harness.Adapter{"claude": adapter}
-	base.app = New(base.root, base.root, Dependencies{
+	base.app = New(base.root, base.root, t.TempDir(), Dependencies{
 		Harnesses: harnessFactories(base.harnesses),
 		Git:       fixedGit(&reviewGitRunner{diff: "diff --git a/tracked.txt b/tracked.txt\n+reviewed\n"}),
 	})

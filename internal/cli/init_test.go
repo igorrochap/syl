@@ -42,7 +42,7 @@ func TestInitBlankDirectoryScaffoldsProject(t *testing.T) {
 		"reviewer",
 		"medium",
 	}, "\n") + "\n")
-	app := New(root, root, Dependencies{Input: input})
+	app := New(root, root, t.TempDir(), Dependencies{Input: input})
 	var stdout, stderr strings.Builder
 
 	code := app.Run(context.Background(), []string{"init"}, &stdout, &stderr)
@@ -108,6 +108,34 @@ func TestInitBlankDirectoryScaffoldsProject(t *testing.T) {
 		if !strings.Contains(string(generated), expected) {
 			t.Fatalf("generated config = %q, want %q", generated, expected)
 		}
+	}
+}
+
+func TestInitReturnsConfigLoadError(t *testing.T) {
+	root := t.TempDir()
+	input := strings.NewReader(strings.Join([]string{
+		"",
+		"github",
+		"local",
+		"configure",
+		"claude",
+		"not-a-claude-model",
+		"high",
+		"codex",
+		"gpt-5.6-luna",
+		"xhigh",
+		"opencode",
+		"reviewer",
+		"medium",
+	}, "\n") + "\n")
+	app := New(root, root, t.TempDir(), Dependencies{Input: input})
+	var stdout, stderr strings.Builder
+
+	if code := app.Run(context.Background(), []string{"init"}, &stdout, &stderr); code == 0 {
+		t.Fatalf("Run() code = 0, want config load failure; stdout = %q", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "roles.plan.model") {
+		t.Fatalf("stderr = %q, want config validation error", stderr.String())
 	}
 }
 
@@ -200,7 +228,7 @@ func TestQualityScriptContinuesAfterFailureAndWritesGitHubSummary(t *testing.T) 
 func initQualityScriptProject(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
-	app := New(root, root, Dependencies{Input: defaultInitInput()})
+	app := New(root, root, t.TempDir(), Dependencies{Input: defaultInitInput()})
 	var stdout, stderr strings.Builder
 	if code := app.Run(context.Background(), []string{"init"}, &stdout, &stderr); code != 0 {
 		t.Fatalf("init code = %d; stderr = %q", code, stderr.String())
@@ -240,7 +268,7 @@ func runQualityScriptWithEnvironment(t *testing.T, root string, environment []st
 func TestInitKeyboardTUIAcceptsDefaultsAndTogglesSelections(t *testing.T) {
 	root := t.TempDir()
 	input := strings.NewReader(" \n\n\x1b[A\n" + strings.Repeat("\n", 9))
-	app := New(root, root, Dependencies{Input: input})
+	app := New(root, root, t.TempDir(), Dependencies{Input: input})
 	var stdout, stderr strings.Builder
 
 	code := app.Run(context.Background(), []string{"init"}, &stdout, &stderr)
@@ -264,7 +292,7 @@ func TestInitAbortsWithoutChangesWhenClaudeDirectoryExists(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(root, ".claude"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	app := New(root, root, Dependencies{Input: strings.NewReader("")})
+	app := New(root, root, t.TempDir(), Dependencies{Input: strings.NewReader("")})
 	var stdout, stderr strings.Builder
 
 	code := app.Run(context.Background(), []string{"init"}, &stdout, &stderr)
@@ -283,7 +311,7 @@ func TestInitAbortsWithoutChangesWhenClaudeDirectoryExists(t *testing.T) {
 
 func TestInitCompletesInNonGitDirectoryWithoutGitignore(t *testing.T) {
 	root := t.TempDir()
-	app := New(root, root, Dependencies{Input: defaultInitInput()})
+	app := New(root, root, t.TempDir(), Dependencies{Input: defaultInitInput()})
 	var stdout, stderr strings.Builder
 
 	code := app.Run(context.Background(), []string{"init"}, &stdout, &stderr)
@@ -306,7 +334,7 @@ func TestInitDoesNotReplaceExistingQualityScript(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	app := New(root, root, Dependencies{Input: defaultInitInput()})
+	app := New(root, root, t.TempDir(), Dependencies{Input: defaultInitInput()})
 	var stdout, stderr strings.Builder
 	if code := app.Run(context.Background(), []string{"init"}, &stdout, &stderr); code != 0 {
 		t.Fatalf("init code = %d; stderr = %q", code, stderr.String())
@@ -325,7 +353,7 @@ func TestInitDoesNotReplaceExistingQualityScript(t *testing.T) {
 
 func TestInitRerunAddsMissingQualityScript(t *testing.T) {
 	root := t.TempDir()
-	first := New(root, root, Dependencies{Input: defaultInitInput()})
+	first := New(root, root, t.TempDir(), Dependencies{Input: defaultInitInput()})
 	var firstOut, firstErr strings.Builder
 	if code := first.Run(context.Background(), []string{"init"}, &firstOut, &firstErr); code != 0 {
 		t.Fatalf("initial init code = %d; stderr = %q", code, firstErr.String())
@@ -335,7 +363,7 @@ func TestInitRerunAddsMissingQualityScript(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	again := New(root, root, Dependencies{Input: initInputWithConfirmation("yes")})
+	again := New(root, root, t.TempDir(), Dependencies{Input: initInputWithConfirmation("yes")})
 	var stdout, stderr strings.Builder
 	if code := again.Run(context.Background(), []string{"init"}, &stdout, &stderr); code != 0 {
 		t.Fatalf("rerun code = %d; stderr = %q", code, stderr.String())
@@ -348,7 +376,7 @@ func TestInitRerunAddsMissingQualityScript(t *testing.T) {
 
 func TestInitRerunShowsChangesAndDoesNotModifyWithoutConfirmation(t *testing.T) {
 	root := t.TempDir()
-	first := New(root, root, Dependencies{Input: defaultInitInput()})
+	first := New(root, root, t.TempDir(), Dependencies{Input: defaultInitInput()})
 	var firstOut, firstErr strings.Builder
 	if code := first.Run(context.Background(), []string{"init"}, &firstOut, &firstErr); code != 0 {
 		t.Fatalf("initial init code = %d; stderr = %q", code, firstErr.String())
@@ -362,7 +390,7 @@ func TestInitRerunShowsChangesAndDoesNotModifyWithoutConfirmation(t *testing.T) 
 		"", "local", "github", "configure", "codex", "new-model", "low",
 		"", "", "", "", "", "", "no",
 	}, "\n") + "\n")
-	again := New(root, root, Dependencies{Input: runAgainInput})
+	again := New(root, root, t.TempDir(), Dependencies{Input: runAgainInput})
 	var stdout, stderr strings.Builder
 	code := again.Run(context.Background(), []string{"init"}, &stdout, &stderr)
 	if code != 0 {
@@ -382,7 +410,7 @@ func TestInitRerunShowsChangesAndDoesNotModifyWithoutConfirmation(t *testing.T) 
 
 func TestInitRerunConfirmsSkillOverwriteBeforeChangingIt(t *testing.T) {
 	root := t.TempDir()
-	first := New(root, root, Dependencies{Input: defaultInitInput()})
+	first := New(root, root, t.TempDir(), Dependencies{Input: defaultInitInput()})
 	var firstOut, firstErr strings.Builder
 	if code := first.Run(context.Background(), []string{"init"}, &firstOut, &firstErr); code != 0 {
 		t.Fatalf("initial init code = %d; stderr = %q", code, firstErr.String())
@@ -392,7 +420,7 @@ func TestInitRerunConfirmsSkillOverwriteBeforeChangingIt(t *testing.T) {
 	if err := os.WriteFile(skillPath, []byte("user changes"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	again := New(root, root, Dependencies{Input: initInputWithConfirmation("no")})
+	again := New(root, root, t.TempDir(), Dependencies{Input: initInputWithConfirmation("no")})
 	var stdout, stderr strings.Builder
 	code := again.Run(context.Background(), []string{"init"}, &stdout, &stderr)
 	if code != 0 {
@@ -418,7 +446,7 @@ func TestInitEnsuresRunsAreGitignoredExactlyOnce(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte("dist/\n.syl/runs/\n.syl/runs/\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	app := New(root, root, Dependencies{Input: defaultInitInput()})
+	app := New(root, root, t.TempDir(), Dependencies{Input: defaultInitInput()})
 	var stdout, stderr strings.Builder
 
 	code := app.Run(context.Background(), []string{"init"}, &stdout, &stderr)

@@ -75,7 +75,11 @@ func resumeArgs(_ *cobra.Command, args []string) error {
 }
 
 func (a *App) runResumeCommand(cmd *cobra.Command, roleName string, selection resumeSelection) error {
-	role, roleConfig, err := loadResumeRole(a.originRoot, roleName)
+	projectConfig, err := a.loadProjectConfig(cmd.ErrOrStderr())
+	if err != nil {
+		return err
+	}
+	role, roleConfig, err := resumeRole(projectConfig, roleName)
 	if err != nil {
 		return err
 	}
@@ -104,18 +108,6 @@ func (a *App) runResumeCommand(cmd *cobra.Command, roleName string, selection re
 		return fmt.Errorf("resume %s session: %w", role, err)
 	}
 	return nil
-}
-
-func loadResumeRole(originRoot, roleName string) (string, config.RoleConfig, error) {
-	projectConfig, err := config.Load(originRoot)
-	if err != nil {
-		return "", config.RoleConfig{}, err
-	}
-	role, roleConfig, err := resumeRole(projectConfig, roleName)
-	if err != nil {
-		return "", config.RoleConfig{}, err
-	}
-	return role, roleConfig, nil
 }
 
 func resumeRole(projectConfig config.Config, roleName string) (string, config.RoleConfig, error) {

@@ -15,6 +15,7 @@ import (
 	"github.com/igorrochap/syl/internal/harness"
 	"github.com/igorrochap/syl/internal/initializer"
 	"github.com/igorrochap/syl/internal/orchestration"
+	"github.com/igorrochap/syl/internal/registry"
 	"github.com/igorrochap/syl/internal/tracker"
 	"github.com/igorrochap/syl/internal/ui"
 	"github.com/igorrochap/syl/internal/updater"
@@ -35,6 +36,7 @@ type Dependencies struct {
 type App struct {
 	originRoot      string
 	workRoot        string
+	sylHome         string
 	deps            Dependencies
 	harnessAdapters map[string]harness.Adapter
 }
@@ -47,7 +49,8 @@ type implementCommandOptions struct {
 	base              string
 }
 
-func New(originRoot, workRoot string, deps Dependencies) *App {
+// New constructs an in-process CLI application with its three filesystem roots.
+func New(originRoot, workRoot, sylHome string, deps Dependencies) *App {
 	if originRoot == "" {
 		originRoot = "."
 	}
@@ -57,7 +60,7 @@ func New(originRoot, workRoot string, deps Dependencies) *App {
 	if deps.Updater == nil {
 		deps.Updater = updater.Default()
 	}
-	return &App{originRoot: originRoot, workRoot: workRoot, deps: deps}
+	return &App{originRoot: originRoot, workRoot: workRoot, sylHome: sylHome, deps: deps}
 }
 
 func (a *App) Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
@@ -166,7 +169,7 @@ func (a *App) runImplementCommand(cmd *cobra.Command, args []string, commandOpti
 	if strings.TrimSpace(commandOptions.base) != "" && !commandOptions.useWorktree {
 		return errors.New("--base requires --worktree")
 	}
-	projectConfig, issueTracker, ticket, err := a.resolveImplementTarget(cmd.Context(), args)
+	projectConfig, issueTracker, ticket, err := a.resolveImplementTarget(cmd.Context(), args, cmd.ErrOrStderr())
 	if err != nil {
 		return err
 	}
@@ -233,8 +236,8 @@ func provisionedWorktreePath(worktree *orchestration.Worktree) string {
 	return worktree.Path
 }
 
-func (a *App) resolveImplementTarget(ctx context.Context, args []string) (config.Config, tracker.Tracker, tracker.Ticket, error) {
-	projectConfig, err := config.Load(a.originRoot)
+func (a *App) resolveImplementTarget(ctx context.Context, args []string, stderr io.Writer) (config.Config, tracker.Tracker, tracker.Ticket, error) {
+	projectConfig, err := a.loadProjectConfig(stderr)
 	if err != nil {
 		return config.Config{}, nil, tracker.Ticket{}, err
 	}
@@ -333,7 +336,7 @@ func (a *App) reviewCommand() *cobra.Command {
 		Long:  "review the current working-tree changes\n\n" + orchestration.QuestionInputHelp,
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			projectConfig, err := config.Load(a.originRoot)
+			projectConfig, err := a.loadProjectConfig(cmd.ErrOrStderr())
 			if err != nil {
 				return err
 			}
@@ -406,7 +409,7 @@ func (a *App) planCommand() *cobra.Command {
 		Short: "plan work in an interactive planner session",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			projectConfig, err := config.Load(a.originRoot)
+			projectConfig, err := a.loadProjectConfig(cmd.ErrOrStderr())
 			if err != nil {
 				return err
 			}
@@ -457,7 +460,13 @@ func (a *App) initCommand() *cobra.Command {
 		Short: "scaffold a project for the syl workflow",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return initializer.Run(a.originRoot, cmd.InOrStdin(), cmd.OutOrStdout())
+			if err := initializer.Run(a.originRoot, cmd.InOrStdin(), cmd.OutOrStdout()); err != nil {
+				return err
+			}
+			if _, err := a.loadProjectConfig(cmd.ErrOrStderr()); err != nil {
+				return err
+			}
+			return nil
 		},
 	}
 }
@@ -499,12 +508,27 @@ func (a *App) stubCommand(name, description string) *cobra.Command {
 		Use:   name,
 		Short: description,
 		Args:  cobra.NoArgs,
-		RunE: func(_ *cobra.Command, _ []string) error {
-			if _, err := config.Load(a.originRoot); err != nil {
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if _, err := a.loadProjectConfig(cmd.ErrOrStderr()); err != nil {
 				return err
 			}
 			return fmt.Errorf("%s: not implemented yet", name)
 		},
+	}
+}
+
+func (a *App) loadProjectConfig(stderr io.Writer) (config.Config, error) {
+	projectConfig, err := config.Load(a.originRoot)
+	if err != nil {
+		return config.Config{}, err
+	}
+	a.registerProject(stderr)
+	return projectConfig, nil
+}
+
+func (a *App) registerProject(stderr io.Writer) {
+	if err := registry.Upsert(a.sylHome, a.originRoot); err != nil {
+		_, _ = fmt.Fprintf(stderr, "syl: warning: project registry: %v\n", err)
 	}
 }
 
