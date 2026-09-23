@@ -103,7 +103,7 @@ effort = "medium"
 	var harnessRoots []string
 	var gitRoots []string
 	var ghRoots []string
-	app := New(originRoot, workRoot, Dependencies{
+	app := New(originRoot, workRoot, t.TempDir(), Dependencies{
 		Harnesses: func(root string) map[string]harness.Adapter {
 			harnessRoots = append(harnessRoots, root)
 			return map[string]harness.Adapter{"claude": adapter}
@@ -167,7 +167,7 @@ func TestNewIssueTrackerUsesGitLabRunnerAtOriginRoot(t *testing.T) {
 	root := t.TempDir()
 	runner := fakeGLabRunner{}
 	var roots []string
-	app := New(root, t.TempDir(), Dependencies{
+	app := New(root, t.TempDir(), t.TempDir(), Dependencies{
 		GLab: func(gotRoot string) tracker.GLabRunner {
 			roots = append(roots, gotRoot)
 			return runner
@@ -225,7 +225,7 @@ func TestUsageRendersLatestAndNamedRunWithoutCrossHarnessTotal(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	app := New(root, root, Dependencies{})
+	app := New(root, root, t.TempDir(), Dependencies{})
 	var stdout, stderr strings.Builder
 	if code := app.Run(context.Background(), []string{"usage"}, &stdout, &stderr); code != 0 {
 		t.Fatalf("latest usage code = %d, stderr = %q", code, stderr.String())
@@ -296,7 +296,7 @@ func TestUsageOutputMatchesPlainAndStyledGoldens(t *testing.T) {
 			} else {
 				t.Setenv("NO_COLOR", "1")
 			}
-			app := New(root, root, Dependencies{})
+			app := New(root, root, t.TempDir(), Dependencies{})
 			var output interface {
 				io.Writer
 				String() string
@@ -439,7 +439,7 @@ func TestUsageReportsRunDirectoryWhenArtifactIsMissingAndNoTranscriptsExist(t *t
 	if err := os.MkdirAll(runDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	app := New(root, root, Dependencies{})
+	app := New(root, root, t.TempDir(), Dependencies{})
 	var stdout, stderr strings.Builder
 	if code := app.Run(context.Background(), []string{"usage", filepath.Base(runDir)}, &stdout, &stderr); code != 0 {
 		t.Fatalf("missing usage code = %d, stderr = %q", code, stderr.String())
@@ -626,7 +626,7 @@ func TestRunUpdateReportsVersionChange(t *testing.T) {
 		Updated:        true,
 	}}
 	root := t.TempDir()
-	app := New(root, root, Dependencies{Updater: update})
+	app := New(root, root, t.TempDir(), Dependencies{Updater: update})
 	var stdout, stderr strings.Builder
 
 	code := app.Run(context.Background(), []string{"update"}, &stdout, &stderr)
@@ -651,7 +651,7 @@ func TestRunUpdateReportsAlreadyUpToDate(t *testing.T) {
 		LatestVersion:  "v1.11.0",
 	}}
 	root := t.TempDir()
-	app := New(root, root, Dependencies{Updater: update})
+	app := New(root, root, t.TempDir(), Dependencies{Updater: update})
 	var stdout, stderr strings.Builder
 
 	code := app.Run(context.Background(), []string{"update"}, &stdout, &stderr)
@@ -670,7 +670,7 @@ func TestRunUpdateReportsInstallerFailure(t *testing.T) {
 
 	update := &fakeUpdater{err: fmt.Errorf("checksum verification failed for syl_Linux_amd64.tar.gz")}
 	root := t.TempDir()
-	app := New(root, root, Dependencies{Updater: update})
+	app := New(root, root, t.TempDir(), Dependencies{Updater: update})
 	var stdout, stderr strings.Builder
 
 	code := app.Run(context.Background(), []string{"update"}, &stdout, &stderr)
@@ -703,7 +703,7 @@ func TestRunVersionPrintsBuildMetadata(t *testing.T) {
 	})
 
 	root := t.TempDir()
-	app := New(root, root, Dependencies{})
+	app := New(root, root, t.TempDir(), Dependencies{})
 	var stdout, stderr strings.Builder
 
 	code := app.Run(context.Background(), []string{"version"}, &stdout, &stderr)
@@ -717,7 +717,7 @@ func TestRunVersionPrintsBuildMetadata(t *testing.T) {
 
 func TestRunSubcommandHelpIsAvailableWithoutConfig(t *testing.T) {
 	root := t.TempDir()
-	app := New(root, root, Dependencies{})
+	app := New(root, root, t.TempDir(), Dependencies{})
 	var stdout, stderr strings.Builder
 
 	code := app.Run(context.Background(), []string{"sync", "--help"}, &stdout, &stderr)
@@ -748,7 +748,7 @@ func TestRunRefusesCommandsWithoutConfig(t *testing.T) {
 	for _, command := range []string{"plan", "implement", "review"} {
 		t.Run(command, func(t *testing.T) {
 			root := t.TempDir()
-			app := New(root, root, Dependencies{})
+			app := New(root, root, t.TempDir(), Dependencies{})
 			var stdout, stderr strings.Builder
 
 			code := app.Run(context.Background(), []string{command}, &stdout, &stderr)
@@ -830,7 +830,7 @@ func TestRunRejectsUnexpectedCommandArguments(t *testing.T) {
 
 func TestRunInitCreatesConfig(t *testing.T) {
 	root := t.TempDir()
-	app := New(root, root, Dependencies{Input: defaultInitInput()})
+	app := New(root, root, t.TempDir(), Dependencies{Input: defaultInitInput()})
 	var stdout, stderr strings.Builder
 
 	code := app.Run(context.Background(), []string{"init"}, &stdout, &stderr)
@@ -893,7 +893,7 @@ func TestNewDefaultsToCurrentDirectoryWhenOriginRootIsEmpty(t *testing.T) {
 			t.Errorf("restore working directory: %v", err)
 		}
 	})
-	app := New("", "", Dependencies{Input: defaultInitInput()})
+	app := New("", "", t.TempDir(), Dependencies{Input: defaultInitInput()})
 	var stdout, stderr strings.Builder
 
 	code := app.Run(context.Background(), []string{"init"}, &stdout, &stderr)

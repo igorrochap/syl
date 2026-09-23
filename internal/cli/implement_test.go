@@ -1626,7 +1626,7 @@ func newImplementLoopFixture(t *testing.T) *implementLoopFixture {
 	return &implementLoopFixture{
 		root:      base.root,
 		harnesses: harnesses,
-		app: New(base.root, base.root, Dependencies{
+		app: New(base.root, base.root, t.TempDir(), Dependencies{
 			Harnesses: harnessFactories(harnesses),
 			Notifier:  fakeNotifier{},
 		}),

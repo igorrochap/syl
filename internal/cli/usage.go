@@ -10,7 +10,6 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/igorrochap/syl/internal/config"
 	"github.com/igorrochap/syl/internal/ui"
 	"github.com/igorrochap/syl/internal/usage"
 	"github.com/spf13/cobra"
@@ -30,7 +29,7 @@ func (a *App) usageCommand() *cobra.Command {
 			artifact, err := usage.ReadArtifact(artifactPath)
 			if err != nil {
 				if errors.Is(err, os.ErrNotExist) {
-					artifact, recomputeErr := recomputeUsage(a.originRoot, a.workRoot, runDir)
+					artifact, recomputeErr := a.recomputeUsage(cmd.ErrOrStderr(), runDir)
 					if recomputeErr != nil {
 						return recomputeErr
 					}
@@ -48,9 +47,9 @@ func (a *App) usageCommand() *cobra.Command {
 	return command
 }
 
-func recomputeUsage(originRoot, workRoot, runDir string) (usage.Artifact, error) {
+func (a *App) recomputeUsage(stderr io.Writer, runDir string) (usage.Artifact, error) {
 	roles := make(map[string]usage.RoleMetadata)
-	if projectConfig, err := config.Load(originRoot); err == nil {
+	if projectConfig, err := a.loadProjectConfig(stderr); err == nil {
 		roles["implement"] = usage.RoleMetadata{
 			Harness: string(projectConfig.Roles.Implement.Harness),
 			Model:   projectConfig.Roles.Implement.Model,
@@ -60,7 +59,7 @@ func recomputeUsage(originRoot, workRoot, runDir string) (usage.Artifact, error)
 			Model:   projectConfig.Roles.Review.Model,
 		}
 	}
-	return usage.RecomputeArtifact(runDir, workRoot, "", roles)
+	return usage.RecomputeArtifact(runDir, a.workRoot, "", roles)
 }
 
 func resolveUsageRun(originRoot string, args []string) (string, error) {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/igorrochap/syl/internal/adapters/gh"
 	"github.com/igorrochap/syl/internal/adapters/git"
@@ -22,8 +23,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "syl: determine project root: %s\n", err)
 		os.Exit(1)
 	}
-
-	app := cli.New(originRoot, originRoot, cli.Dependencies{
+	app := cli.New(originRoot, originRoot, resolveSylHome(), cli.Dependencies{
 		Input: os.Stdin,
 		GH: func(root string) tracker.GHRunner {
 			return gh.Runner{Dir: root}
@@ -40,6 +40,18 @@ func main() {
 		},
 	})
 	os.Exit(app.Run(context.Background(), os.Args[1:], os.Stdout, os.Stderr))
+}
+
+func resolveSylHome() string {
+	if configured := os.Getenv("SYL_HOME"); configured != "" {
+		return configured
+	}
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return filepath.Join(".", ".syl")
+	}
+	return filepath.Join(home, ".syl")
 }
 
 func newGLabRunner(root string) tracker.GLabRunner {
