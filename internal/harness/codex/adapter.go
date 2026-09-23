@@ -48,9 +48,10 @@ func (a *Adapter) Resume(ctx context.Context, sessionID string, request harness.
 	if strings.TrimSpace(request.Prompt) == "" {
 		return nil, errors.New("cannot resume Codex session without a prompt")
 	}
-	args := []string{"exec", "resume", "--json"}
-	args = a.withProjectRoot(args)
-	args = append(args, sessionID, request.Prompt)
+	// --cd is an option of `codex exec`, not of its `resume` subcommand, which
+	// rejects it; it must precede the subcommand.
+	args := a.withProjectRoot([]string{"exec"})
+	args = append(args, "resume", "--json", sessionID, request.Prompt)
 	return a.start(ctx, args)
 }
 
