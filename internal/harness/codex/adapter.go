@@ -45,13 +45,18 @@ func (a *Adapter) Resume(ctx context.Context, sessionID string, request harness.
 	if strings.TrimSpace(sessionID) == "" {
 		return nil, errors.New("cannot resume Codex session without a session id")
 	}
-	if strings.TrimSpace(request.Prompt) == "" {
-		return nil, errors.New("cannot resume Codex session without a prompt")
+	settings, err := a.baseArgs(request)
+	if err != nil {
+		return nil, err
 	}
 	// --cd is an option of `codex exec`, not of its `resume` subcommand, which
-	// rejects it; it must precede the subcommand.
+	// rejects it; it must precede the subcommand. The model and effort are
+	// repeated because a resumed thread otherwise falls back to Codex's default
+	// model.
 	args := a.withProjectRoot([]string{"exec"})
-	args = append(args, "resume", "--json", sessionID, request.Prompt)
+	args = append(args, "resume", "--json")
+	args = append(args, settings...)
+	args = append(args, sessionID, composePrompt(request.Prompt))
 	return a.start(ctx, args)
 }
 

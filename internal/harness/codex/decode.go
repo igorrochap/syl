@@ -59,7 +59,6 @@ type codexItem struct {
 	Type    string `json:"type"`
 	Text    string `json:"text"`
 	Command string `json:"command"`
-	Message string `json:"message"`
 }
 
 type codexDecoder struct {
@@ -71,10 +70,6 @@ func (d *codexDecoder) decodeLine(raw string) []harness.Event {
 	if err := json.Unmarshal([]byte(strings.TrimSpace(raw)), &message); err != nil {
 		return []harness.Event{{Type: harness.EventRaw, Raw: raw}}
 	}
-	if d.startedCommands == nil {
-		d.startedCommands = make(map[string]struct{})
-	}
-
 	var event harness.Event
 	switch message.Type {
 	case "thread.started":
@@ -82,25 +77,9 @@ func (d *codexDecoder) decodeLine(raw string) []harness.Event {
 			event = harness.Event{Type: harness.EventSession, SessionID: message.ThreadID}
 		}
 	case "item.started":
-		if message.Item.Type == "command_execution" && message.Item.Command != "" {
-			d.startedCommands[message.Item.ID] = struct{}{}
-			event = commandEvent(message.Item.Command)
-		}
+		event = d.decodeItemStarted(message.Item)
 	case "item.completed":
-		switch message.Item.Type {
-		case "agent_message":
-			if message.Item.Text != "" {
-				event = harness.Event{Type: harness.EventAssistantText, Text: message.Item.Text}
-			}
-		case "command_execution":
-			if _, started := d.startedCommands[message.Item.ID]; !started && message.Item.Command != "" {
-				event = commandEvent(message.Item.Command)
-			}
-		case "error":
-			if message.Item.Message != "" {
-				event = harness.Event{Type: harness.EventResult, Text: message.Item.Message, IsError: true}
-			}
-		}
+		event = d.decodeItemCompleted(message.Item)
 	case "turn.completed":
 		event = harness.Event{Type: harness.EventResult}
 	case "turn.failed":
@@ -113,6 +92,34 @@ func (d *codexDecoder) decodeLine(raw string) []harness.Event {
 	}
 	event.Raw = raw
 	return []harness.Event{event}
+}
+
+func (d *codexDecoder) decodeItemStarted(item codexItem) harness.Event {
+	if item.Type != "command_execution" || item.Command == "" {
+		return harness.Event{}
+	}
+	if d.startedCommands == nil {
+		d.startedCommands = make(map[string]struct{})
+	}
+	d.startedCommands[item.ID] = struct{}{}
+	return commandEvent(item.Command)
+}
+
+// decodeItemCompleted leaves error items undecoded: they are non-fatal
+// warnings (such as a resumed thread's model mismatch) and the turn continues.
+// Failures arrive as turn.failed or a top-level error event.
+func (d *codexDecoder) decodeItemCompleted(item codexItem) harness.Event {
+	switch item.Type {
+	case "agent_message":
+		if item.Text != "" {
+			return harness.Event{Type: harness.EventAssistantText, Text: item.Text}
+		}
+	case "command_execution":
+		if _, started := d.startedCommands[item.ID]; !started && item.Command != "" {
+			return commandEvent(item.Command)
+		}
+	}
+	return harness.Event{}
 }
 
 func commandEvent(command string) harness.Event {

@@ -146,7 +146,7 @@ func TestDecodeCodexStreamMapsSessionAssistantToolAndTerminalEvents(t *testing.T
 	}
 }
 
-func TestCodexResumeReusesSessionAndInjectsAnswer(t *testing.T) {
+func TestCodexResumeKeepsSessionModelEffortAndComposedSkillPrompt(t *testing.T) {
 	root := t.TempDir()
 	argsPath := filepath.Join(root, "args")
 	command := fakeCodexCommand(t, argsPath, []string{
@@ -157,8 +157,9 @@ func TestCodexResumeReusesSessionAndInjectsAnswer(t *testing.T) {
 	adapter := &Adapter{command: command, projectRoot: root}
 
 	stream, err := adapter.Resume(context.Background(), "codex-session", harness.Request{
-		Prompt: "Use SQLite.",
-		MCP:    false,
+		Model:  "gpt-5.6-luna",
+		Effort: config.EffortXHigh,
+		Prompt: "/fix-review\n\nAddress the blocking findings.",
 	})
 	if err != nil {
 		t.Fatalf("Resume() error = %v", err)
@@ -169,7 +170,19 @@ func TestCodexResumeReusesSessionAndInjectsAnswer(t *testing.T) {
 	}
 
 	gotArgs := strings.Split(strings.TrimSpace(readFile(t, argsPath)), "\n")
-	wantArgs := []string{"exec", "--cd", root, "resume", "--json", "codex-session", "Use SQLite."}
+	for i := range gotArgs {
+		gotArgs[i] = strings.ReplaceAll(gotArgs[i], "\x1c", "\n")
+	}
+	wantArgs := []string{
+		"exec",
+		"--cd", root,
+		"resume",
+		"--json",
+		"--model", "gpt-5.6-luna",
+		"--config", `model_reasoning_effort="xhigh"`,
+		"codex-session",
+		"$fix-review\n\nAddress the blocking findings.",
+	}
 	if !reflect.DeepEqual(gotArgs, wantArgs) {
 		t.Fatalf("Codex resume args = %#v, want %#v", gotArgs, wantArgs)
 	}
@@ -194,6 +207,30 @@ func TestCodexReviewEventsProduceVerdictWithoutSpecialParsing(t *testing.T) {
 	}
 	if review.Verdict.Status != verdict.Approve || review.Verdict.Summary != "The implementation meets the ticket." {
 		t.Fatalf("review verdict = %#v, want approve verdict", review.Verdict)
+	}
+}
+
+func TestCodexErrorItemIsAWarningThatDoesNotEndTheConversation(t *testing.T) {
+	root := t.TempDir()
+	command := fakeCodexCommand(t, filepath.Join(root, "args"), []string{
+		`{"type":"thread.started","thread_id":"review-session"}`,
+		"{\"type\":\"item.completed\",\"item\":{\"id\":\"item_0\",\"type\":\"error\",\"message\":\"This session was recorded with model `gpt-5.6-luna` but is resuming with `gpt-5.6-sol`.\"}}",
+		`{"type":"turn.started"}`,
+		`{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"VERDICT: approve\nSUMMARY: Ready.\nFINDINGS:\n"}}`,
+		`{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_tokens":0,"output_tokens":1}}`,
+	})
+	adapter := &Adapter{command: command, projectRoot: root}
+
+	review, err := orchestration.RunReviewExecution(context.Background(), adapter, harness.Request{
+		Model:  "gpt-5.6-luna",
+		Effort: config.EffortMedium,
+		Prompt: "/code-review\n\nReview the diff.",
+	}, io.Discard, orchestration.ParsedHarnessOutput, nil)
+	if err != nil {
+		t.Fatalf("RunReviewExecution() error = %v", err)
+	}
+	if review.Verdict.Status != verdict.Approve {
+		t.Fatalf("review verdict = %#v, want approve despite the warning item", review.Verdict)
 	}
 }
 
