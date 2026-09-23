@@ -329,6 +329,7 @@ type scriptedConversationAdapter struct {
 	runs        [][]harness.Event
 	resumes     [][]harness.Event
 	runHooks    []func(harness.Request)
+	resumeHooks []func(harness.Request)
 	runCalls    int
 	runRequests []harness.Request
 	resumeCalls []conversationResumeCall
@@ -358,6 +359,9 @@ func (a *scriptedConversationAdapter) Resume(_ context.Context, sessionID string
 	index := len(a.resumeCalls) - 1
 	if index >= len(a.resumes) {
 		return nil, &scriptedConversationError{message: "no scripted resume remains"}
+	}
+	if index < len(a.resumeHooks) && a.resumeHooks[index] != nil {
+		a.resumeHooks[index](request)
 	}
 	return scriptedConversationStream{events: a.resumes[index]}, nil
 }

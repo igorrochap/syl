@@ -56,10 +56,11 @@ func appendSessionID(sessionIDs []string, sessionID string) []string {
 }
 
 type QuestionHandler struct {
-	answers  *bufio.Reader
-	output   io.Writer
-	notifier Notifier
-	target   string
+	answers       *bufio.Reader
+	output        io.Writer
+	notifier      Notifier
+	target        string
+	stateObserver questionStateObserver
 }
 
 type harnessStreamResult struct {
@@ -86,8 +87,15 @@ func (h *QuestionHandler) Handle(ctx context.Context, question string) (string, 
 	return h.handle(ctx, "harness", question)
 }
 
+func (h *QuestionHandler) setStateObserver(observer questionStateObserver) {
+	h.stateObserver = observer
+}
+
 func (h *QuestionHandler) handle(ctx context.Context, role, question string) (string, error) {
 	role = questionRole(role)
+	if h.stateObserver != nil {
+		h.stateObserver.questionAsked(question)
+	}
 	if h.notifier != nil {
 		_ = h.notifier.Notify(ctx, fmt.Sprintf("syl is waiting for your answer on %s", h.target))
 	}
@@ -97,6 +105,9 @@ func (h *QuestionHandler) handle(ctx context.Context, role, question string) (st
 	answer, err := h.readAnswer()
 	if err != nil {
 		return "", err
+	}
+	if h.stateObserver != nil {
+		h.stateObserver.questionAnswered()
 	}
 	if err := h.printResume(role); err != nil {
 		return "", err

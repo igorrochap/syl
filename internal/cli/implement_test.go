@@ -1867,6 +1867,11 @@ func readAllFiles(t *testing.T, root string) string {
 		if info.IsDir() {
 			return nil
 		}
+		// Lifecycle timestamps and process metadata are intentionally run-specific;
+		// this helper compares the stable role artifacts.
+		if filepath.Base(path) == "run-state.json" {
+			return nil
+		}
 		data, err := os.ReadFile(path)
 		if err != nil {
 			return err
