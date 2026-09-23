@@ -28,6 +28,7 @@ linters:
             - "!**/internal/updater/*.go"
             - "!**/internal/usage/*.go"
             - "!**/internal/registry/*.go"
+            - "!**/internal/runmarker/*.go"
             - "!**/internal/runstate/*.go"
             - "!**/internal/adapters/gh/*.go"
             - "!**/internal/adapters/glab/*.go"
@@ -97,6 +98,7 @@ linters:
             - golang.org
             - github.com/igorrochap/syl/internal/config$
             - github.com/igorrochap/syl/internal/harness$
+            - github.com/igorrochap/syl/internal/runmarker$
             - github.com/igorrochap/syl/internal/runstate$
             - github.com/igorrochap/syl/internal/tracker$
             - github.com/igorrochap/syl/internal/ui$
@@ -219,6 +221,7 @@ linters:
             - "**/internal/verdict/*.go"
             - "**/internal/version/*.go"
             - "**/internal/registry/*.go"
+            - "**/internal/runmarker/*.go"
             - "**/internal/runstate/*.go"
             - "**/scripts/*.go"
             - "**/skills/*.go"

@@ -10,6 +10,7 @@ import (
 
 type runStateTracker struct {
 	persister        runStateProvider
+	marker           liveRunMarkerProvider
 	state            runstate.State
 	previousActivity runstate.Activity
 	finalized        bool
@@ -20,7 +21,8 @@ func newRunStateTracker(recorder RunRecorder) *runStateTracker {
 	if !ok {
 		return nil
 	}
-	return &runStateTracker{persister: persister, state: persister.runStateSnapshot()}
+	marker, _ := recorder.(liveRunMarkerProvider)
+	return &runStateTracker{persister: persister, marker: marker, state: persister.runStateSnapshot()}
 }
 
 func (r *runStateTracker) setIteration(iteration int) {
@@ -69,6 +71,9 @@ func (r *runStateTracker) finish(status runstate.Status) {
 	r.state.Question = ""
 	r.state.EndedAt = &ended
 	r.save()
+	if r.marker != nil {
+		r.marker.removeLiveRunMarker()
+	}
 	r.finalized = true
 }
 
@@ -91,6 +96,10 @@ func (r *runStateTracker) save() {
 type questionStateObserver interface {
 	questionAsked(question string)
 	questionAnswered()
+}
+
+type liveRunMarkerProvider interface {
+	removeLiveRunMarker()
 }
 
 var _ questionStateObserver = (*runStateTracker)(nil)
