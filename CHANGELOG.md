@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v1.33.1 (2026-09-23)
+
+### Bug Fixes
+
+- **codex**: Fix CLI argument ordering for resume command
+  ([#189](https://github.com/igorrochap/syl/pull/189),
+  [`9550589`](https://github.com/igorrochap/syl/commit/9550589465343e4ffc334c8826e43831d08bc9d2))
+
+
 ## v1.33.0 (2026-09-23)
 
 ### Documentation
