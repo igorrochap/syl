@@ -2,6 +2,20 @@
 
 <!-- version list -->
 
+## v1.33.0 (2026-09-23)
+
+### Documentation
+
+- **glossary**: Add terminology and architecture ADRs
+  ([`511cacc`](https://github.com/igorrochap/syl/commit/511cacca2c902f2034c2787509e5a2a446ab324d))
+
+### Features
+
+- **registry**: Implement local project registry
+  ([#188](https://github.com/igorrochap/syl/pull/188),
+  [`b1a74cf`](https://github.com/igorrochap/syl/commit/b1a74cff6ce239ad204bd0d6942ff72ecd5e2c9f))
+
+
 ## v1.32.0 (2026-09-21)
 
 ### Features
