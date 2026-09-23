@@ -9,6 +9,30 @@ import (
 	"time"
 )
 
+func TestNewInitializesState(t *testing.T) {
+	now := time.Date(2026, time.September, 23, 19, 0, 0, 0, time.FixedZone("local", -3*60*60))
+	hostname, err := os.Hostname()
+	if err != nil {
+		hostname = ""
+	}
+	want := State{
+		Status:        Running,
+		Activity:      Preparing,
+		Iteration:     1,
+		MaxIterations: 2,
+		PID:           os.Getpid(),
+		Hostname:      hostname,
+		StartedAt:     now.UTC(),
+		UpdatedAt:     now.UTC(),
+		Kind:          Implement,
+		TicketRef:     "#180",
+	}
+
+	if got := New(Implement, "#180", 1, 2, now); !reflect.DeepEqual(got, want) {
+		t.Fatalf("New() = %#v, want %#v", got, want)
+	}
+}
+
 func TestWriteAndReadRoundTrip(t *testing.T) {
 	runDir := t.TempDir()
 	started := time.Date(2026, time.September, 23, 19, 0, 0, 0, time.UTC)
