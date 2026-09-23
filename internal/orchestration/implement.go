@@ -14,6 +14,7 @@ import (
 
 	"github.com/igorrochap/syl/internal/config"
 	"github.com/igorrochap/syl/internal/harness"
+	"github.com/igorrochap/syl/internal/runstate"
 	"github.com/igorrochap/syl/internal/tracker"
 	"github.com/igorrochap/syl/internal/ui"
 	"github.com/igorrochap/syl/internal/usage"
@@ -60,11 +61,10 @@ type implementRunState struct {
 	notifier  Notifier
 	questions *QuestionHandler
 	recorder  *diskRunRecorder
+	runState  *runStateTracker
 }
 
 func RunImplement(ctx context.Context, options ImplementOptions) (returnErr error) {
-	projectConfig := options.ProjectConfig
-	ticket := options.Ticket
 	originGit := options.OriginGit
 	if originGit == nil {
 		originGit = options.Git
@@ -83,20 +83,33 @@ func RunImplement(ctx context.Context, options ImplementOptions) (returnErr erro
 	}
 	run, err := prepareImplementRun(ctx, options, originGit)
 	if err != nil {
+		if run.runState != nil {
+			run.runState.finishForError(ctx, err)
+		}
 		return err
 	}
 	loopStarted = true
+	defer func() {
+		if returnErr != nil {
+			run.runState.finishForError(ctx, returnErr)
+		}
+	}()
+	return executeImplementRun(ctx, options, run)
+}
+
+func executeImplementRun(ctx context.Context, options ImplementOptions, run implementRunState) error {
 	iterations, final, nits, err := runImplementIterations(ctx, implementIterationsParams{
 		git:                  run.setup.git,
 		workRoot:             options.WorkRoot,
 		implementer:          options.Implementer,
 		reviewer:             options.Reviewer,
-		projectConfig:        projectConfig,
-		ticket:               ticket,
+		projectConfig:        options.ProjectConfig,
+		ticket:               options.Ticket,
 		branchPoint:          run.setup.branchPoint,
 		worktreeArtifactRoot: run.setup.worktreePath,
 		recorder:             run.recorder,
 		questions:            run.questions,
+		runState:             run.runState,
 		output:               options.Output,
 		additionalContext:    options.Context,
 		reviewContext:        options.ReviewContext,
@@ -153,13 +166,7 @@ func validateImplementOptions(options ImplementOptions) error {
 }
 
 func initializeImplementRun(options ImplementOptions, setup implementSetup) (implementRunState, error) {
-	notifier := options.Notifier
-	if !options.ProjectConfig.Notifications.Enabled {
-		notifier = nil
-	}
-	notifier = withNotificationContext(notifier, options.OriginRoot, setup.git)
-	questions := NewQuestionHandler(options.Input, options.Output, "#"+strconv.Itoa(options.Ticket.Number), notifier)
-	recorder, err := newImplementRunRecorder(
+	recorder, err := newImplementRunRecorderWithState(
 		options.OriginRoot,
 		options.WorkRoot,
 		options.Ticket.Number,
@@ -169,16 +176,31 @@ func initializeImplementRun(options ImplementOptions, setup implementSetup) (imp
 		string(options.ProjectConfig.Roles.Review.Harness),
 		options.Context,
 		options.ReviewContext,
+		options.ProjectConfig.Loop.MaxIterations,
+		options.Output,
 	)
 	if err != nil {
+		if recorder != nil {
+			runState := newRunStateTracker(recorder)
+			return implementRunState{setup: setup, recorder: recorder, runState: runState}, err
+		}
 		return implementRunState{}, err
 	}
+	runState := newRunStateTracker(recorder)
+	notifier := options.Notifier
+	if !options.ProjectConfig.Notifications.Enabled {
+		notifier = nil
+	}
+	notifier = withNotificationContext(notifier, options.OriginRoot, setup.git)
+	questions := NewQuestionHandler(options.Input, options.Output, "#"+strconv.Itoa(options.Ticket.Number), notifier)
+	questions.setStateObserver(runState)
+	run := implementRunState{setup: setup, notifier: notifier, questions: questions, recorder: recorder, runState: runState}
 	if options.IdentificationBanner != nil {
 		if err := options.IdentificationBanner(recorder.Dir()); err != nil {
-			return implementRunState{}, err
+			return run, err
 		}
 	}
-	return implementRunState{setup: setup, notifier: notifier, questions: questions, recorder: recorder}, nil
+	return run, nil
 }
 
 func completeImplementRun(ctx context.Context, options ImplementOptions, run implementRunState, summary implementSummary) error {
@@ -199,8 +221,10 @@ func completeImplementRun(ctx context.Context, options ImplementOptions, run imp
 		_ = run.notifier.Notify(ctx, fmt.Sprintf("implement #%d finished: %s", options.Ticket.Number, summary.final.Status))
 	}
 	if summary.final.Status == verdict.Revise {
+		run.runState.finish(runstate.Exhausted)
 		return fmt.Errorf("implement loop reached max iterations (%d) with revise verdict", options.ProjectConfig.Loop.MaxIterations)
 	}
+	run.runState.finish(runstate.Approved)
 	return nil
 }
 
@@ -280,6 +304,7 @@ type implementIterationsParams struct {
 	worktreeArtifactRoot string
 	recorder             RunRecorder
 	questions            *QuestionHandler
+	runState             *runStateTracker
 	output               io.Writer
 	additionalContext    string
 	reviewContext        string
@@ -371,6 +396,7 @@ func runImplementIterations(ctx context.Context, params implementIterationsParam
 }
 
 func runImplementReview(ctx context.Context, params implementIterationsParams, reviewParams implementReviewParams) (ReviewExecution, error) {
+	params.runState.setActivity(runstate.Reviewing)
 	reviewRequest := harness.Request{
 		Model:  params.projectConfig.Roles.Review.Model,
 		Effort: params.projectConfig.Roles.Review.Effort,
@@ -501,6 +527,8 @@ func runImplementTurn(
 	params implementIterationsParams,
 	turn implementTurnParams,
 ) (implementExecution, error) {
+	params.runState.setIteration(turn.iteration)
+	params.runState.setActivity(runstate.Implementing)
 	activity := "implementing"
 	if turn.iteration > 1 {
 		activity = fmt.Sprintf("revising %d blocking finding(s)", len(turn.blocking))

@@ -331,10 +331,14 @@ func TestRunReviewSavesUnparseableReviewArtifacts(t *testing.T) {
 type capturingReviewAdapter struct {
 	request harness.Request
 	events  []harness.Event
+	runHook func()
 }
 
 func (a *capturingReviewAdapter) Run(_ context.Context, request harness.Request) (harness.Stream, error) {
 	a.request = request
+	if a.runHook != nil {
+		a.runHook()
+	}
 	events := a.events
 	if events == nil {
 		events = []harness.Event{

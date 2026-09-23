@@ -2,6 +2,7 @@ package orchestration
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -9,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/igorrochap/syl/internal/runstate"
 	"github.com/igorrochap/syl/internal/usage"
 	"github.com/igorrochap/syl/internal/verdict"
 )
@@ -50,10 +52,13 @@ const (
 )
 
 type diskRunRecorder struct {
-	dir         string
-	sessions    []string
-	sessionKeys map[sessionKey]struct{}
-	usage       usage.Artifact
+	dir           string
+	sessions      []string
+	sessionKeys   map[sessionKey]struct{}
+	usage         usage.Artifact
+	runState      runstate.State
+	hasRunState   bool
+	warningOutput io.Writer
 }
 
 type sessionKey struct {
@@ -75,6 +80,25 @@ func newImplementRunRecorder(
 	implementContext string,
 	reviewContext string,
 ) (*diskRunRecorder, error) {
+	return newImplementRunRecorderWithState(
+		originRoot, workRoot, issueNumber, branch, branchPoint, implementerHarness, reviewerHarness,
+		implementContext, reviewContext, 0, nil,
+	)
+}
+
+func newImplementRunRecorderWithState(
+	originRoot string,
+	workRoot string,
+	issueNumber int,
+	branch string,
+	branchPoint string,
+	implementerHarness string,
+	reviewerHarness string,
+	implementContext string,
+	reviewContext string,
+	maxIterations int,
+	warningOutput io.Writer,
+) (*diskRunRecorder, error) {
 	workRoot, err := resolveRunWorkRoot(workRoot)
 	if err != nil {
 		return nil, err
@@ -85,11 +109,20 @@ func newImplementRunRecorder(
 	)
 	metadata = appendRoleContext(metadata, "Implementer", implementContext)
 	metadata = appendRoleContext(metadata, "Reviewer", reviewContext)
-	return newDiskRunRecorder(
+	initialState := runstate.New(
+		runstate.Implement,
+		"#"+strconv.Itoa(issueNumber),
+		0,
+		maxIterations,
+		time.Now().UTC(),
+	)
+	return newDiskRunRecorderWithState(
 		originRoot,
 		strconv.Itoa(issueNumber),
 		metadata,
 		"implement",
+		&initialState,
+		warningOutput,
 	)
 }
 
@@ -100,6 +133,20 @@ func newReviewRunRecorder(
 	branchPoint string,
 	reviewerHarness string,
 	reviewContext string,
+) (*diskRunRecorder, error) {
+	return newReviewRunRecorderWithState(
+		originRoot, workRoot, ticketRef, branchPoint, reviewerHarness, reviewContext, nil,
+	)
+}
+
+func newReviewRunRecorderWithState(
+	originRoot string,
+	workRoot string,
+	ticketRef string,
+	branchPoint string,
+	reviewerHarness string,
+	reviewContext string,
+	warningOutput io.Writer,
 ) (*diskRunRecorder, error) {
 	workRoot, err := resolveRunWorkRoot(workRoot)
 	if err != nil {
@@ -115,7 +162,8 @@ func newReviewRunRecorder(
 		trimmedTicketRef, branchPoint, workRoot, reviewerHarness,
 	)
 	metadata = appendRoleContext(metadata, "Reviewer", reviewContext)
-	return newDiskRunRecorder(originRoot, suffix, metadata, "review")
+	initialState := runstate.New(runstate.Review, trimmedTicketRef, 1, 1, time.Now().UTC())
+	return newDiskRunRecorderWithState(originRoot, suffix, metadata, "review", &initialState, warningOutput)
 }
 
 func resolveRunWorkRoot(workRoot string) (string, error) {
@@ -152,6 +200,17 @@ func newDiskRunRecorder(
 	metadata string,
 	runType string,
 ) (*diskRunRecorder, error) {
+	return newDiskRunRecorderWithState(originRoot, suffix, metadata, runType, nil, nil)
+}
+
+func newDiskRunRecorderWithState(
+	originRoot string,
+	suffix string,
+	metadata string,
+	runType string,
+	initialState *runstate.State,
+	warningOutput io.Writer,
+) (*diskRunRecorder, error) {
 	dir := filepath.Join(
 		originRoot,
 		".syl",
@@ -161,18 +220,48 @@ func newDiskRunRecorder(
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("create %s run artifacts: %w", runType, err)
 	}
-	if err := writeArtifact(filepath.Join(dir, artifactFilename(metadataArtifact, 0)), metadata); err != nil {
-		return nil, err
-	}
 	recorder := &diskRunRecorder{
-		dir:         dir,
-		sessionKeys: make(map[sessionKey]struct{}),
-		usage:       usage.NewArtifact(),
+		dir:           dir,
+		sessionKeys:   make(map[sessionKey]struct{}),
+		usage:         usage.NewArtifact(),
+		warningOutput: warningOutput,
+	}
+	if initialState != nil {
+		recorder.runState = *initialState
+		recorder.hasRunState = true
+		recorder.persistRunState(*initialState)
+	}
+	if err := writeArtifact(filepath.Join(dir, artifactFilename(metadataArtifact, 0)), metadata); err != nil {
+		return recorder, err
 	}
 	if err := recorder.writeUsage(); err != nil {
-		return nil, err
+		return recorder, err
 	}
 	return recorder, nil
+}
+
+type runStateProvider interface {
+	persistRunState(state runstate.State)
+	runStateSnapshot() runstate.State
+}
+
+var _ runStateProvider = (*diskRunRecorder)(nil)
+
+func (r *diskRunRecorder) persistRunState(state runstate.State) {
+	if !r.hasRunState {
+		return
+	}
+	r.runState = state
+	if err := runstate.Write(runstate.Path(r.dir), state); err != nil {
+		if r.warningOutput == nil {
+			return
+		}
+		_, _ = fmt.Fprintf(r.warningOutput, "syl: warning: write run state: %v\n", err)
+	}
+}
+
+func (r *diskRunRecorder) runStateSnapshot() runstate.State {
+	return r.runState
 }
 
 func (r *diskRunRecorder) Dir() string {

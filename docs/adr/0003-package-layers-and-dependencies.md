@@ -26,6 +26,7 @@ not permitted.
 | Port adapter | `internal/harness/codex` | `internal/config`, `internal/harness` |
 | Support | `internal/usage` | `internal/harness/claude/transcript` |
 | Support with no project-package edges | `internal/registry` | none |
+| Support with no project-package edges | `internal/runstate` | none |
 | Support with no project-package edges | `internal/adapters/git`, `internal/adapters/notify`, `internal/config`, `internal/harness/claude/transcript`, `internal/tracker`, `internal/tui`, `internal/verdict`, `internal/version`, `scripts`, `skills` | none |
 | Support with no project-package edges | `internal/ui` | none |
 
@@ -45,6 +46,9 @@ call exceptions:
 - `internal/usage` imports the Claude transcript reader because usage
   recomputation is defined over the transcript format currently persisted by
   Claude runs.
+- `internal/orchestration` imports `internal/runstate` because the Run state
+  file format is shared with future read models without coupling those models
+  to orchestration.
 - Tests are not part of the architecture check. Test packages intentionally
   import concrete collaborators to exercise public seams; those imports do
   not create production dependency edges.

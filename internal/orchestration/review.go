@@ -14,6 +14,7 @@ import (
 
 	"github.com/igorrochap/syl/internal/config"
 	"github.com/igorrochap/syl/internal/harness"
+	"github.com/igorrochap/syl/internal/runstate"
 	"github.com/igorrochap/syl/internal/tracker"
 	"github.com/igorrochap/syl/internal/ui"
 	"github.com/igorrochap/syl/internal/usage"
@@ -76,6 +77,7 @@ type reviewPreparation struct {
 	branchPoint string
 	diffPath    string
 	recorder    RunRecorder
+	runState    *runStateTracker
 }
 
 type standaloneReviewRun struct {
@@ -84,7 +86,8 @@ type standaloneReviewRun struct {
 	endedAt   time.Time
 }
 
-func RunReview(ctx context.Context, options ReviewOptions) error {
+// RunReview runs one standalone reviewer Role against the current changes.
+func RunReview(ctx context.Context, options ReviewOptions) (returnErr error) {
 	if options.Raw && options.Verbose {
 		return errors.New("review: --raw and --verbose are mutually exclusive")
 	}
@@ -92,18 +95,16 @@ func RunReview(ctx context.Context, options ReviewOptions) error {
 		return fmt.Errorf("review harness %q is not configured", options.ProjectConfig.Roles.Review.Harness)
 	}
 	options.Output = ensureLineTrackingWriter(options.Output)
-	preparation, err := prepareReviewWithContext(
-		ctx,
-		options.OriginRoot,
-		options.WorkRoot,
-		options.TicketRef,
-		options.Context,
-		string(options.ProjectConfig.Roles.Review.Harness),
-		options.Git,
-	)
+	preparation, err := runReviewPreparation(ctx, options)
 	if err != nil {
+		preparation.runState.finishForError(ctx, err)
 		return err
 	}
+	defer func() {
+		if returnErr != nil {
+			preparation.runState.finishForError(ctx, returnErr)
+		}
+	}()
 	if options.IdentificationBanner != nil {
 		if err := options.IdentificationBanner(); err != nil {
 			return err
@@ -114,6 +115,22 @@ func RunReview(ctx context.Context, options ReviewOptions) error {
 		return handleStandaloneReviewError(options, preparation, run, err)
 	}
 	return completeStandaloneReview(ctx, options, preparation, run)
+}
+
+func runReviewPreparation(
+	ctx context.Context,
+	options ReviewOptions,
+) (reviewPreparation, error) {
+	return prepareReviewWithContextAndWarning(
+		ctx,
+		options.OriginRoot,
+		options.WorkRoot,
+		options.TicketRef,
+		options.Context,
+		string(options.ProjectConfig.Roles.Review.Harness),
+		options.Git,
+		options.Output,
+	)
 }
 
 func completeStandaloneReview(ctx context.Context, options ReviewOptions, preparation reviewPreparation, run standaloneReviewRun) error {
@@ -140,8 +157,10 @@ func completeStandaloneReview(ctx context.Context, options ReviewOptions, prepar
 		}
 	}
 	if reviewVerdict.Status == verdict.Revise {
+		preparation.runState.finish(runstate.Exhausted)
 		return ErrReviewNeedsRevision
 	}
+	preparation.runState.finish(runstate.Approved)
 	return nil
 }
 
@@ -187,6 +206,9 @@ func runStandaloneReview(ctx context.Context, options ReviewOptions, preparation
 	}
 	notifier = withNotificationContext(notifier, options.OriginRoot, options.Git)
 	questions := NewQuestionHandler(options.Input, options.Output, options.TicketRef, notifier)
+	questions.setStateObserver(preparation.runState)
+	preparation.runState.setIteration(1)
+	preparation.runState.setActivity(runstate.Reviewing)
 	mode := QuietHarnessOutput
 	if options.Verbose {
 		mode = ParsedHarnessOutput
@@ -271,6 +293,21 @@ func prepareReviewWithContext(
 	reviewerHarness string,
 	git GitRunner,
 ) (reviewPreparation, error) {
+	return prepareReviewWithContextAndWarning(
+		ctx, originRoot, workRoot, ticketRef, reviewContext, reviewerHarness, git, nil,
+	)
+}
+
+func prepareReviewWithContextAndWarning(
+	ctx context.Context,
+	originRoot string,
+	workRoot string,
+	ticketRef string,
+	reviewContext string,
+	reviewerHarness string,
+	git GitRunner,
+	warningOutput io.Writer,
+) (reviewPreparation, error) {
 	if git == nil {
 		return reviewPreparation{}, errors.New("review: git runner is not configured")
 	}
@@ -286,15 +323,22 @@ func prepareReviewWithContext(
 	if err != nil {
 		return reviewPreparation{}, fmt.Errorf("review: %w", err)
 	}
-	recorder, err := newReviewRunRecorder(originRoot, workRoot, ticketRef, branchPoint, reviewerHarness, reviewContext)
+	recorder, err := newReviewRunRecorderWithState(
+		originRoot, workRoot, ticketRef, branchPoint, reviewerHarness, reviewContext, warningOutput,
+	)
 	if err != nil {
+		if recorder != nil {
+			runState := newRunStateTracker(recorder)
+			return reviewPreparation{branchPoint: branchPoint, recorder: recorder, runState: runState}, err
+		}
 		return reviewPreparation{}, err
 	}
+	runState := newRunStateTracker(recorder)
 	diffPath, err := recorder.RecordReviewDiff(0, diff)
 	if err != nil {
-		return reviewPreparation{}, fmt.Errorf("review: %w", err)
+		return reviewPreparation{branchPoint: branchPoint, recorder: recorder, runState: runState}, fmt.Errorf("review: %w", err)
 	}
-	return reviewPreparation{branchPoint: branchPoint, diffPath: diffPath, recorder: recorder}, nil
+	return reviewPreparation{branchPoint: branchPoint, diffPath: diffPath, recorder: recorder, runState: runState}, nil
 }
 
 func runReview(ctx context.Context, adapter harness.Adapter, request harness.Request, output io.Writer, mode HarnessOutputMode, questions *QuestionHandler) (ReviewExecution, error) {
