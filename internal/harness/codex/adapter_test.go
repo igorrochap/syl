@@ -169,7 +169,7 @@ func TestCodexResumeReusesSessionAndInjectsAnswer(t *testing.T) {
 	}
 
 	gotArgs := strings.Split(strings.TrimSpace(readFile(t, argsPath)), "\n")
-	wantArgs := []string{"exec", "resume", "--json", "--cd", root, "codex-session", "Use SQLite."}
+	wantArgs := []string{"exec", "--cd", root, "resume", "--json", "codex-session", "Use SQLite."}
 	if !reflect.DeepEqual(gotArgs, wantArgs) {
 		t.Fatalf("Codex resume args = %#v, want %#v", gotArgs, wantArgs)
 	}
@@ -364,7 +364,7 @@ func fakeCodexQuestionResumeCommand(t *testing.T, argsPath string) string {
 	script.WriteString("printf '%s' \"$arg\" | tr '\\n' '\\034'\n")
 	script.WriteString("printf '\\n'\ndone > ")
 	script.WriteString(shellQuote(argsPath))
-	script.WriteString("\nif [ \"$2\" = 'resume' ]; then\n")
+	script.WriteString("\ncase \" $* \" in *' resume '*)\n")
 	for _, line := range []string{
 		`{"type":"thread.started","thread_id":"codex-session"}`,
 		`{"type":"item.completed","item":{"id":"item-2","type":"agent_message","text":"VERDICT: approve\nSUMMARY: Resumed successfully.\nFINDINGS:\n"}}`,
@@ -374,7 +374,7 @@ func fakeCodexQuestionResumeCommand(t *testing.T, argsPath string) string {
 		script.WriteString(shellQuote(line))
 		script.WriteByte('\n')
 	}
-	script.WriteString("else\n")
+	script.WriteString(";;\n*)\n")
 	for _, line := range []string{
 		`{"type":"thread.started","thread_id":"codex-session"}`,
 		`{"type":"item.completed","item":{"id":"item-1","type":"agent_message","text":"Before.\nQUESTION:\nWhich database?\nEND QUESTION"}}`,
@@ -383,7 +383,7 @@ func fakeCodexQuestionResumeCommand(t *testing.T, argsPath string) string {
 		script.WriteString(shellQuote(line))
 		script.WriteByte('\n')
 	}
-	script.WriteString("fi\n")
+	script.WriteString(";;\nesac\n")
 	if err := os.WriteFile(command, []byte(script.String()), 0o755); err != nil {
 		t.Fatal(err)
 	}
