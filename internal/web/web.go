@@ -3,10 +3,14 @@ package web
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/subtle"
 	"embed"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"html/template"
+	"io"
 	"io/fs"
 	"net"
 	"net/http"
@@ -26,6 +30,8 @@ var assets embed.FS
 // Server serves the Overview, Project pages, and their embedded assets.
 type Server struct {
 	port         int
+	sylHome      string
+	token        string
 	model        func() (readmodel.Overview, error)
 	projectModel func(string) (readmodel.ProjectPage, error)
 	templates    *template.Template
@@ -34,6 +40,10 @@ type Server struct {
 
 // New constructs a server that reads live state from sylHome for every page request.
 func New(sylHome string, port int) (*Server, error) {
+	token, err := newToken(rand.Reader)
+	if err != nil {
+		return nil, fmt.Errorf("generate ui token: %w", err)
+	}
 	templates, err := template.New("overview").Funcs(templateFunctions()).ParseFS(assets, "templates/*.html")
 	if err != nil {
 		return nil, fmt.Errorf("parse web templates: %w", err)
@@ -45,6 +55,8 @@ func New(sylHome string, port int) (*Server, error) {
 	reader := readmodel.NewReader(sylHome)
 	return &Server{
 		port:         port,
+		sylHome:      sylHome,
+		token:        token,
 		model:        reader.ReadOverview,
 		projectModel: reader.ReadProject,
 		templates:    templates,
@@ -58,6 +70,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/", s.overview)
 	mux.HandleFunc("/projects", s.project)
 	mux.HandleFunc("/projects/", s.project)
+	mux.HandleFunc("/runs/dismiss", s.dismiss)
+	mux.HandleFunc("/projects/forget", s.forget)
 	mux.Handle("/assets/", s.assets)
 	return hostGuard(s.port, mux)
 }
@@ -95,6 +109,7 @@ func (s *Server) Serve(ctx context.Context, listener net.Listener) error {
 type pageData struct {
 	Overview      readmodel.Overview
 	Port          int
+	Token         string
 	LocalHostname string
 	TotalRunCount int
 }
@@ -172,14 +187,16 @@ func (s *Server) pageData() (pageData, error) {
 	return pageData{
 		Overview:      overview,
 		Port:          s.port,
+		Token:         s.token,
 		LocalHostname: localHostname(),
 		TotalRunCount: len(overview.AwaitingAnswer) + len(overview.LiveRuns),
 	}, nil
 }
 
 type projectPageData struct {
-	Page readmodel.ProjectPage
-	Port int
+	Page  readmodel.ProjectPage
+	Port  int
+	Token string
 }
 
 func (s *Server) projectData(projectPath string) (projectPageData, error) {
@@ -187,7 +204,76 @@ func (s *Server) projectData(projectPath string) (projectPageData, error) {
 	if err != nil {
 		return projectPageData{}, err
 	}
-	return projectPageData{Page: page, Port: s.port}, nil
+	return projectPageData{Page: page, Port: s.port, Token: s.token}, nil
+}
+
+func (s *Server) dismiss(writer http.ResponseWriter, request *http.Request) {
+	if !s.authorizeMutation(writer, request) {
+		return
+	}
+	if err := request.ParseForm(); err != nil {
+		writer.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	runDir := request.FormValue("run_dir")
+	if strings.TrimSpace(runDir) == "" {
+		writer.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	if err := readmodel.Dismiss(s.sylHome, runDir); err != nil {
+		if errors.Is(err, readmodel.ErrRunMarkerNotFound) || errors.Is(err, readmodel.ErrRunNotInterrupted) {
+			writer.WriteHeader(http.StatusConflict)
+			return
+		}
+		writeServerError(writer, err)
+		return
+	}
+	s.completeMutation(writer, request)
+}
+
+func (s *Server) forget(writer http.ResponseWriter, request *http.Request) {
+	if !s.authorizeMutation(writer, request) {
+		return
+	}
+	if err := request.ParseForm(); err != nil {
+		writer.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	projectPath := request.FormValue("path")
+	if strings.TrimSpace(projectPath) == "" {
+		writer.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	if err := readmodel.Forget(s.sylHome, projectPath); err != nil {
+		writeServerError(writer, err)
+		return
+	}
+	s.completeMutation(writer, request)
+}
+
+func (s *Server) authorizeMutation(writer http.ResponseWriter, request *http.Request) bool {
+	if request.Method != http.MethodPost {
+		writer.Header().Set("Allow", http.MethodPost)
+		writer.WriteHeader(http.StatusMethodNotAllowed)
+		return false
+	}
+	if !sameOrigin(request, s.port) {
+		writer.WriteHeader(http.StatusForbidden)
+		return false
+	}
+	if !validToken(request, s.token) {
+		writer.WriteHeader(http.StatusForbidden)
+		return false
+	}
+	return true
+}
+
+func (s *Server) completeMutation(writer http.ResponseWriter, request *http.Request) {
+	if request.Header.Get("HX-Request") == "true" {
+		s.renderContent(writer)
+		return
+	}
+	http.Redirect(writer, request, "/", http.StatusSeeOther)
 }
 
 func hostGuard(port int, next http.Handler) http.Handler {
@@ -202,6 +288,67 @@ func hostGuard(port int, next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(writer, request)
 	})
+}
+
+func newToken(reader io.Reader) (string, error) {
+	bytes := make([]byte, 32)
+	if _, err := io.ReadFull(reader, bytes); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(bytes), nil
+}
+
+func validToken(request *http.Request, expected string) bool {
+	provided := request.Header.Get("X-Syl-Token")
+	if provided == "" {
+		provided = request.PostFormValue("token")
+	}
+	return subtle.ConstantTimeCompare([]byte(provided), []byte(expected)) == 1
+}
+
+func sameOrigin(request *http.Request, port int) bool {
+	origins := request.Header.Values("Origin")
+	switch len(origins) {
+	case 0:
+		return true
+	case 1:
+		break
+	default:
+		return false
+	}
+	origin, err := url.Parse(origins[0])
+	if err != nil || !validOriginURL(origin) {
+		return false
+	}
+	originPort := origin.Port()
+	if originPort == "" {
+		originPort = "80"
+	}
+	if originPort != strconv.Itoa(port) {
+		return false
+	}
+	return isLoopbackOrigin(origin)
+}
+
+func validOriginURL(origin *url.URL) bool {
+	if origin.Scheme != "http" {
+		return false
+	}
+	if origin.Path != "" {
+		return false
+	}
+	if origin.RawQuery != "" {
+		return false
+	}
+	if origin.Fragment != "" {
+		return false
+	}
+	return origin.User == nil
+}
+
+func isLoopbackOrigin(origin *url.URL) bool {
+	hostname := strings.ToLower(origin.Hostname())
+	return hostname == "127.0.0.1" || hostname == "localhost"
 }
 
 func writeServerError(writer http.ResponseWriter, err error) {

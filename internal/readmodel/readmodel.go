@@ -31,6 +31,13 @@ const (
 	HealthInvalid Health = "invalid"
 )
 
+var (
+	// ErrRunMarkerNotFound means no live-run marker points at the requested Run.
+	ErrRunMarkerNotFound = errors.New("live-run marker not found")
+	// ErrRunNotInterrupted means the requested Run is not safe to dismiss.
+	ErrRunNotInterrupted = errors.New("run is not interrupted")
+)
+
 // Overview is the complete read model for the Overview page.
 type Overview struct {
 	AwaitingAnswer []Run
@@ -76,6 +83,58 @@ type Run struct {
 // It does not write state or inspect historical Run directories.
 func ReadOverview(sylHome string) (Overview, error) {
 	return NewReader(sylHome).ReadOverview()
+}
+
+// Forget removes a Project from the registry without touching its directory.
+func Forget(sylHome, projectPath string) error {
+	return registry.Forget(sylHome, projectPath)
+}
+
+// Dismiss removes an orphaned live-run marker without touching the Run.
+func Dismiss(sylHome, runDir string) error {
+	if strings.TrimSpace(runDir) == "" {
+		return errors.New("run directory is required")
+	}
+	resolvedRunDir, err := filepath.EvalSymlinks(runDir)
+	if err != nil {
+		return fmt.Errorf("resolve Run directory: %w", err)
+	}
+
+	pointers, err := runmarker.List(sylHome)
+	if err != nil {
+		return fmt.Errorf("read live-run markers: %w", err)
+	}
+	for _, pointer := range pointers {
+		if filepath.Clean(pointer.RunDir) != filepath.Clean(resolvedRunDir) {
+			continue
+		}
+		return dismissMarker(sylHome, pointer)
+	}
+	return fmt.Errorf("%w: %s", ErrRunMarkerNotFound, runDir)
+}
+
+func dismissMarker(sylHome string, pointer runmarker.Pointer) error {
+	state, err := runstate.Read(runstate.Path(pointer.RunDir))
+	if err != nil {
+		return fmt.Errorf("read Run state: %w", err)
+	}
+	if !isInterrupted(pointer, state) {
+		return fmt.Errorf("%w: %s", ErrRunNotInterrupted, pointer.RunDir)
+	}
+	if err := runmarker.Remove(sylHome, pointer); err != nil {
+		return fmt.Errorf("remove live-run marker: %w", err)
+	}
+	return nil
+}
+
+func isInterrupted(pointer runmarker.Pointer, state runstate.State) bool {
+	if state.Status != runstate.Running {
+		return false
+	}
+	if !isLocalHost(pointer.Host, state.Hostname, currentHostname()) {
+		return false
+	}
+	return !processIsAlive(state.PID)
 }
 
 // ReadOverview reads the registry, live markers, and referenced Run state.

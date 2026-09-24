@@ -15,6 +15,49 @@ import (
 	"github.com/igorrochap/syl/internal/runstate"
 )
 
+func TestNewTokenReportsReaderError(t *testing.T) {
+	if _, err := newToken(failingReader{}); err == nil {
+		t.Fatal("newToken() succeeded with a failing reader")
+	}
+}
+
+func TestSameOriginValidatesAllOriginComponents(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		origins []string
+		want    bool
+	}{
+		{name: "absent", want: true},
+		{name: "own origin", origins: []string{"http://localhost:7777"}, want: true},
+		{name: "multiple", origins: []string{"http://localhost:7777", "http://127.0.0.1:7777"}},
+		{name: "malformed", origins: []string{"http://[::1"}},
+		{name: "wrong scheme", origins: []string{"https://localhost:7777"}},
+		{name: "path", origins: []string{"http://localhost:7777/path"}},
+		{name: "query", origins: []string{"http://localhost:7777?query"}},
+		{name: "fragment", origins: []string{"http://localhost:7777#fragment"}},
+		{name: "user info", origins: []string{"http://user@localhost:7777"}},
+		{name: "implicit port", origins: []string{"http://localhost"}},
+		{name: "wrong port", origins: []string{"http://localhost:7778"}},
+		{name: "foreign host", origins: []string{"http://example.test:7777"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:7777/", nil)
+			for _, origin := range test.origins {
+				request.Header.Add("Origin", origin)
+			}
+			if got := sameOrigin(request, 7777); got != test.want {
+				t.Fatalf("sameOrigin() = %v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
+type failingReader struct{}
+
+func (failingReader) Read([]byte) (int, error) {
+	return 0, errors.New("random source failed")
+}
+
 func TestDisplayHelpersCoverOverviewStates(t *testing.T) {
 	activityCases := []struct {
 		name string

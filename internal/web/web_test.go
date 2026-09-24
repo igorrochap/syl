@@ -10,6 +10,8 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -103,6 +105,232 @@ func TestHandlerShowsInterruptedProjectRunAndFindsNewRunsOnNextRequest(t *testin
 	}
 }
 
+func TestHandlerDismissesInterruptedRunWithoutChangingRunFiles(t *testing.T) {
+	sylHome, runDir := writeMutationFixture(t, false)
+	server, err := web.New(sylHome, 7777)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeRun := snapshotFiles(t, runDir)
+	beforeHome := snapshotFiles(t, sylHome)
+	token := tokenFromPage(t, serveOverview(t, server.Handler(), "127.0.0.1:7777"))
+
+	response := postMutation(t, server.Handler(), "/runs/dismiss", url.Values{
+		"run_dir": {runDir}, "token": {token},
+	}, "")
+	if response.Code != http.StatusSeeOther {
+		t.Fatalf("dismiss status = %d, want redirect; body = %q", response.Code, response.Body.String())
+	}
+	markers, err := runmarker.List(sylHome)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(markers) != 0 {
+		t.Fatalf("markers = %#v, want marker removed", markers)
+	}
+	if after := snapshotFiles(t, runDir); !reflect.DeepEqual(after, beforeRun) {
+		t.Fatalf("Run files changed: before %#v, after %#v", beforeRun, after)
+	}
+	if after := snapshotFiles(t, sylHome); reflect.DeepEqual(after, beforeHome) {
+		t.Fatal("syl home did not change after dismissing marker")
+	}
+	if body := serveOverview(t, server.Handler(), "localhost:7777"); strings.Contains(body, "#183") {
+		t.Fatal("dismissed Run still appears in Overview")
+	}
+}
+
+func TestHandlerRefusesDismissForLiveRun(t *testing.T) {
+	sylHome, runDir := writeMutationFixture(t, true)
+	server, err := web.New(sylHome, 7777)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeRun := snapshotFiles(t, runDir)
+	beforeHome := snapshotFiles(t, sylHome)
+	token := tokenFromPage(t, serveOverview(t, server.Handler(), "127.0.0.1:7777"))
+
+	response := postMutation(t, server.Handler(), "/runs/dismiss", url.Values{
+		"run_dir": {runDir}, "token": {token},
+	}, "")
+	if response.Code != http.StatusConflict {
+		t.Fatalf("dismiss live status = %d, want conflict", response.Code)
+	}
+	if after := snapshotFiles(t, runDir); !reflect.DeepEqual(after, beforeRun) {
+		t.Fatalf("live Run files changed: before %#v, after %#v", beforeRun, after)
+	}
+	if after := snapshotFiles(t, sylHome); !reflect.DeepEqual(after, beforeHome) {
+		t.Fatalf("syl home changed after refusing live Run: before %#v, after %#v", beforeHome, after)
+	}
+}
+
+func TestHandlerRejectsMutationWithoutTokenWrongTokenAndForeignOrigin(t *testing.T) {
+	sylHome, runDir := writeMutationFixture(t, false)
+	server, err := web.New(sylHome, 7777)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := tokenFromPage(t, serveOverview(t, server.Handler(), "127.0.0.1:7777"))
+	beforeRun := snapshotFiles(t, runDir)
+	beforeHome := snapshotFiles(t, sylHome)
+	for _, test := range []struct {
+		name   string
+		token  string
+		origin string
+	}{
+		{name: "missing token"},
+		{name: "wrong token", token: "wrong-token"},
+		{name: "foreign origin", token: token, origin: "http://evil.example:7777"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			response := postMutation(t, server.Handler(), "/runs/dismiss", url.Values{
+				"run_dir": {runDir}, "token": {test.token},
+			}, test.origin)
+			if response.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want forbidden", response.Code)
+			}
+			if after := snapshotFiles(t, runDir); !reflect.DeepEqual(after, beforeRun) {
+				t.Fatalf("Run files changed: before %#v, after %#v", beforeRun, after)
+			}
+			if after := snapshotFiles(t, sylHome); !reflect.DeepEqual(after, beforeHome) {
+				t.Fatalf("syl home changed: before %#v, after %#v", beforeHome, after)
+			}
+		})
+	}
+}
+
+func TestHandlerAcceptsItsOwnOrigin(t *testing.T) {
+	sylHome, runDir := writeMutationFixture(t, false)
+	server, err := web.New(sylHome, 7777)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := tokenFromPage(t, serveOverview(t, server.Handler(), "127.0.0.1:7777"))
+
+	response := postMutation(t, server.Handler(), "/runs/dismiss", url.Values{
+		"run_dir": {runDir}, "token": {token},
+	}, "http://localhost:7777")
+	if response.Code != http.StatusSeeOther {
+		t.Fatalf("same-origin dismiss status = %d, want redirect", response.Code)
+	}
+}
+
+func TestHandlerRejectsMalformedAndIncompleteMutations(t *testing.T) {
+	server, err := web.New(t.TempDir(), 7777)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := tokenFromPage(t, serveOverview(t, server.Handler(), "127.0.0.1:7777"))
+	for _, test := range []struct {
+		name  string
+		route string
+		body  string
+		want  int
+	}{
+		{name: "dismiss malformed form", route: "/runs/dismiss", body: "%", want: http.StatusBadRequest},
+		{name: "dismiss missing run", route: "/runs/dismiss", body: "token=", want: http.StatusBadRequest},
+		{name: "forget malformed form", route: "/projects/forget", body: "%", want: http.StatusBadRequest},
+		{name: "forget missing project", route: "/projects/forget", body: "token=", want: http.StatusBadRequest},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			response := rawMutation(t, server.Handler(), http.MethodPost, test.route, test.body, token, false)
+			if response.Code != test.want {
+				t.Fatalf("status = %d, want %d; body = %q", response.Code, test.want, response.Body.String())
+			}
+		})
+	}
+
+	response := rawMutation(t, server.Handler(), http.MethodGet, "/runs/dismiss", "", token, false)
+	if response.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("GET dismiss status = %d, want method not allowed", response.Code)
+	}
+}
+
+func TestHandlerReportsDismissStateReadFailure(t *testing.T) {
+	sylHome, runDir := writeMutationFixture(t, false)
+	if err := os.WriteFile(runstate.Path(runDir), []byte("not json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	server, err := web.New(sylHome, 7777)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := tokenFromPage(t, serveOverview(t, server.Handler(), "127.0.0.1:7777"))
+	response := rawMutation(t, server.Handler(), http.MethodPost, "/runs/dismiss", url.Values{
+		"run_dir": {runDir},
+	}.Encode(), token, false)
+	if response.Code != http.StatusInternalServerError {
+		t.Fatalf("dismiss corrupt-state status = %d, want internal server error", response.Code)
+	}
+}
+
+func TestHandlerReportsForgetPathFailure(t *testing.T) {
+	server, err := web.New(t.TempDir(), 7777)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := tokenFromPage(t, serveOverview(t, server.Handler(), "127.0.0.1:7777"))
+	response := rawMutation(t, server.Handler(), http.MethodPost, "/projects/forget", url.Values{
+		"path": {"\x00"},
+	}.Encode(), token, false)
+	if response.Code != http.StatusInternalServerError {
+		t.Fatalf("forget invalid-path status = %d, want internal server error", response.Code)
+	}
+}
+
+func TestHandlerRendersOverviewContentForHXMutation(t *testing.T) {
+	sylHome, runDir := writeMutationFixture(t, false)
+	server, err := web.New(sylHome, 7777)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := tokenFromPage(t, serveOverview(t, server.Handler(), "127.0.0.1:7777"))
+	response := rawMutation(t, server.Handler(), http.MethodPost, "/runs/dismiss", url.Values{
+		"run_dir": {runDir},
+	}.Encode(), token, true)
+	if response.Code != http.StatusOK {
+		t.Fatalf("HX dismiss status = %d, want 200; body = %q", response.Code, response.Body.String())
+	}
+}
+
+func TestHandlerForgetsProjectWithoutChangingProjectFiles(t *testing.T) {
+	sylHome := t.TempDir()
+	project := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(project, ".syl"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(project, ".syl", "config.toml"), []byte("invalid = [\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	projectFile := filepath.Join(project, "untouched.txt")
+	if err := os.WriteFile(projectFile, []byte("keep me\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeWebRegistry(t, sylHome, registry.Entry{Path: project})
+	server, err := web.New(sylHome, 7777)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeProject := snapshotFiles(t, project)
+	token := tokenFromPage(t, serveOverview(t, server.Handler(), "127.0.0.1:7777"))
+
+	response := postMutation(t, server.Handler(), "/projects/forget", url.Values{
+		"path": {project}, "token": {token},
+	}, "")
+	if response.Code != http.StatusSeeOther {
+		t.Fatalf("forget status = %d, want redirect; body = %q", response.Code, response.Body.String())
+	}
+	entries, err := registry.List(sylHome)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("registry entries = %#v, want forgotten Project removed", entries)
+	}
+	if after := snapshotFiles(t, project); !reflect.DeepEqual(after, beforeProject) {
+		t.Fatalf("Project files changed: before %#v, after %#v", beforeProject, after)
+	}
+}
+
 func TestHandlerProjectRejectsUnknownProjectAndMissingPath(t *testing.T) {
 	server, err := web.New(t.TempDir(), 7777)
 	if err != nil {
@@ -186,6 +414,38 @@ func TestHandlerRendersEmbeddedOverviewAndAssets(t *testing.T) {
 	server.Handler().ServeHTTP(styleRecorder, styleRequest)
 	if styleRecorder.Code != http.StatusOK || !strings.Contains(styleRecorder.Body.String(), "--accent:#7DD3FC") {
 		t.Fatalf("style asset status/body = %d/%q", styleRecorder.Code, styleRecorder.Body.String())
+	}
+}
+
+func TestOverviewShowsForgetOnlyForMissingProject(t *testing.T) {
+	sylHome := t.TempDir()
+	okProject := t.TempDir()
+	uninitializedProject := t.TempDir()
+	invalidProject := t.TempDir()
+	missingProject := filepath.Join(t.TempDir(), "missing")
+	if _, err := config.Init(okProject); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(invalidProject, ".syl"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(config.Path(invalidProject), []byte("invalid = [\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeWebRegistry(t, sylHome,
+		registry.Entry{Path: okProject},
+		registry.Entry{Path: uninitializedProject},
+		registry.Entry{Path: invalidProject},
+		registry.Entry{Path: missingProject},
+	)
+	server, err := web.New(sylHome, 7777)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	body := serveOverview(t, server.Handler(), "127.0.0.1:7777")
+	if got := strings.Count(body, ">Forget</button>"); got != 1 {
+		t.Fatalf("Forget buttons = %d, want only the missing Project", got)
 	}
 }
 
@@ -352,4 +612,99 @@ func serveProject(t *testing.T, handler http.Handler, projectPath, route string)
 		t.Fatalf("Project status = %d; body = %q", recorder.Code, recorder.Body.String())
 	}
 	return recorder.Body.String()
+}
+
+func writeMutationFixture(t *testing.T, live bool) (string, string) {
+	t.Helper()
+	sylHome := t.TempDir()
+	project := t.TempDir()
+	if _, err := config.Init(project); err != nil {
+		t.Fatal(err)
+	}
+	writeWebRegistry(t, sylHome, registry.Entry{Path: project})
+	runDir := filepath.Join(project, ".syl", "runs", "run-183")
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	pid := 999999
+	if live {
+		pid = os.Getpid()
+	}
+	state := runstate.State{
+		Status: runstate.Running, Activity: runstate.Implementing, PID: pid,
+		Hostname: testHostname(t), StartedAt: time.Now().UTC(), Kind: runstate.Implement, TicketRef: "#183",
+	}
+	if err := runstate.Write(runstate.Path(runDir), state); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(runDir, "metadata.txt"), []byte("Work root: /worktree\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runmarker.Create(sylHome, project, runDir, state.TicketRef, state.PID, state.Hostname); err != nil {
+		t.Fatal(err)
+	}
+	return sylHome, runDir
+}
+
+func tokenFromPage(t *testing.T, body string) string {
+	t.Helper()
+	match := regexp.MustCompile(`name="syl-token" content="([^"]+)"`).FindStringSubmatch(body)
+	if len(match) != 2 || match[1] == "" {
+		t.Fatalf("page does not contain a UI token: %q", body)
+	}
+	return match[1]
+}
+
+func postMutation(t *testing.T, handler http.Handler, route string, values url.Values, origin string) *httptest.ResponseRecorder {
+	t.Helper()
+	request := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:7777"+route, strings.NewReader(values.Encode()))
+	request.Host = "127.0.0.1:7777"
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	if origin != "" {
+		request.Header.Set("Origin", origin)
+	}
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	return recorder
+}
+
+func rawMutation(t *testing.T, handler http.Handler, method, route, body, token string, hx bool) *httptest.ResponseRecorder {
+	t.Helper()
+	request := httptest.NewRequest(method, "http://127.0.0.1:7777"+route, strings.NewReader(body))
+	request.Host = "127.0.0.1:7777"
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request.Header.Set("X-Syl-Token", token)
+	if hx {
+		request.Header.Set("HX-Request", "true")
+	}
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	return recorder
+}
+
+func snapshotFiles(t *testing.T, root string) map[string][]byte {
+	t.Helper()
+	snapshot := map[string][]byte{}
+	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			return nil
+		}
+		contents, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		relative, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		snapshot[relative] = contents
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("snapshot %s: %v", root, err)
+	}
+	return snapshot
 }
