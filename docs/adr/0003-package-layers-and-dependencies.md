@@ -30,7 +30,7 @@ not permitted.
 | Support with no project-package edges | `internal/runstate` | none |
 | Support with no project-package edges | `internal/adapters/git`, `internal/adapters/notify`, `internal/config`, `internal/harness/claude/transcript`, `internal/tracker`, `internal/tui`, `internal/verdict`, `internal/version`, `scripts`, `skills` | none |
 | Support with no project-package edges | `internal/ui` | none |
-| Application support | `internal/readmodel` | `internal/config`, `internal/registry`, `internal/runmarker`, `internal/runstate` |
+| Application support | `internal/readmodel` | `internal/config`, `internal/registry`, `internal/runmarker`, `internal/runstate`, `internal/usage` |
 | Interface adapter | `internal/web` | `internal/readmodel`, `internal/runstate` |
 
 ## Exceptions
@@ -60,6 +60,8 @@ call exceptions:
 - `internal/readmodel` imports the state support packages because it is the
   read-only boundary that derives Project health, Run activity, and liveness
   for all future presentation layers.
+- `internal/readmodel` imports `internal/usage` because the Project history
+  read model owns the read-only aggregation of persisted Run token totals.
 - `internal/web` imports `internal/readmodel` and `internal/runstate` because
   HTTP handlers render the read model and name Run kinds in the Overview.
 - Tests are not part of the architecture check. Test packages intentionally

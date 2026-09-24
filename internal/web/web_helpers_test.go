@@ -127,6 +127,75 @@ func TestDisplayStartedCoversRelativeAndAbsoluteTimes(t *testing.T) {
 	}
 }
 
+func TestHistoryDisplayHelpersCoverStatusesAndMissingValues(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		kind runstate.Kind
+		want string
+	}{
+		{name: "missing kind", want: "—"},
+		{name: "review kind", kind: runstate.Review, want: "review"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := historyKind(test.kind); got != test.want {
+				t.Fatalf("historyKind() = %q, want %q", got, test.want)
+			}
+		})
+	}
+
+	for _, test := range []struct {
+		name   string
+		status string
+		want   string
+	}{
+		{name: "running", status: "running", want: "running"},
+		{name: "interrupted", status: "Interrupted", want: "red"},
+		{name: "approved", status: "approved", want: "green"},
+		{name: "exhausted", status: "exhausted", want: "plum"},
+		{name: "completed", status: "completed", want: "completed"},
+		{name: "unknown", status: "unknown", want: "unknown"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := historyStatusClass(test.status); got != test.want {
+				t.Fatalf("historyStatusClass() = %q, want %q", got, test.want)
+			}
+		})
+	}
+
+	for _, test := range []struct {
+		name string
+		ref  string
+		want string
+	}{
+		{name: "missing", want: "—"},
+		{name: "numeric", ref: "#00182", want: "#182"},
+		{name: "standalone text", ref: "release-candidate", want: "release-candidate"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := historyTicket(test.ref); got != test.want {
+				t.Fatalf("historyTicket() = %q, want %q", got, test.want)
+			}
+		})
+	}
+
+	if got := historyTokens(readmodel.HistoryRun{}); got != "—" {
+		t.Fatalf("historyTokens(missing) = %q, want em dash", got)
+	}
+	if got := historyTokens(readmodel.HistoryRun{TokensKnown: true, TotalTokens: 2_200_000}); got != "2.2M" {
+		t.Fatalf("historyTokens(known) = %q, want 2.2M", got)
+	}
+	if got := displayDuration(readmodel.HistoryRun{}); got != "—" {
+		t.Fatalf("displayDuration(missing) = %q, want em dash", got)
+	}
+	if got := displayDuration(readmodel.HistoryRun{DurationKnown: true, Duration: 61 * time.Second}); got != "1m" {
+		t.Fatalf("displayDuration(61s) = %q, want 1m", got)
+	}
+	firstSeen := time.Date(2026, time.September, 2, 0, 0, 0, 0, time.UTC)
+	if got := displayFirstSeen(firstSeen); got != "2 Sep 2026" {
+		t.Fatalf("displayFirstSeen() = %q, want 2 Sep 2026", got)
+	}
+}
+
 func TestDisplaySummaryCoversProjectHealthAndRunCounts(t *testing.T) {
 	for _, test := range []struct {
 		name    string

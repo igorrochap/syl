@@ -44,6 +44,83 @@
 </html>
 {{end}}
 
+{{define "project"}}
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>syl ui — Project runs</title>
+<link rel="stylesheet" href="/assets/fonts.css">
+<link rel="stylesheet" href="/assets/style.css">
+</head>
+<body class="syl syl-dark">
+<header>
+<a class="wordmark" href="/">syl<span>/ui</span></a>
+<nav class="nav" aria-label="Primary"><a href="/">Overview</a></nav>
+<div class="server-state"><span class="live-dot"></span><span>127.0.0.1:{{.Port}} · refreshing every 3s</span></div>
+<button class="theme-toggle" type="button" aria-label="Switch to light theme" onclick="toggleTheme()">
+<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"></path></svg><span>Dark</span>
+</button>
+</header>
+<main>
+{{template "project-content" .}}
+</main>
+<script src="/assets/htmx.min.js"></script>
+<script>
+(function(){
+  var root=document.body;
+  window.setTheme=function(theme){
+    root.classList.toggle('syl-light',theme==='light');
+    root.classList.toggle('syl-dark',theme!=='light');
+    var button=document.querySelector('.theme-toggle');
+    if(button){button.querySelector('span').textContent=theme==='light'?'Light':'Dark';button.setAttribute('aria-label',theme==='light'?'Switch to dark theme':'Switch to light theme');}
+  };
+  window.toggleTheme=function(){var light=root.classList.contains('syl-light');var theme=light?'dark':'light';setTheme(theme);localStorage.setItem('syl-theme',theme);};
+  var saved=localStorage.getItem('syl-theme');
+  if(saved==='light'){setTheme('light');}
+}());
+</script>
+</body>
+</html>
+{{end}}
+
+{{define "project-content"}}
+<div id="project-content" hx-get="/projects/content?path={{urlquery .Page.Project.Path}}" hx-trigger="every 3s [document.visibilityState === 'visible']" hx-target="#project-content" hx-swap="outerHTML">
+<nav class="breadcrumb" aria-label="Breadcrumb"><a href="/">Overview</a><span>/</span><span>{{.Page.Project.Name}}</span></nav>
+
+<div class="project-page-heading">
+<div class="project-title"><h1>{{.Page.Project.Name}}</h1><span class="pill {{healthClass .Page.Project.Health}}">{{.Page.Project.Health}}</span></div>
+<div class="project-details"><code>{{.Page.Project.Path}}</code><span>issues: {{if .Page.Project.IssueTracker}}{{.Page.Project.IssueTracker}}{{else}}—{{end}} · reviews: {{if .Page.Project.ReviewLog}}{{.Page.Project.ReviewLog}}{{else}}—{{end}}</span><span>first seen {{firstSeen .Page.Project.FirstSeen}}</span></div>
+</div>
+
+<div class="project-tabs" role="tablist" aria-label="Project sections">
+<a class="active" href="/projects?path={{urlquery .Page.Project.Path}}" role="tab" aria-selected="true">Runs</a>
+<a href="/projects/config?path={{urlquery .Page.Project.Path}}" role="tab" aria-selected="false">Config</a>
+</div>
+
+<section class="section project-history" aria-labelledby="runs-heading">
+<h2 id="runs-heading">Runs · {{len .Page.Runs}}</h2>
+{{if .Page.Runs}}
+<div class="history-table">
+<div class="history-grid header"><span>Ticket</span><span>Kind</span><span>Status</span><span>Iterations</span><span>Verdict</span><span>Started</span><span>Duration</span><span>Tokens</span></div>
+{{range .Page.Runs}}
+<a class="history-grid row" href="/runs?path={{urlquery .RunDir}}">
+<span class="history-ticket">{{historyTicket .TicketRef}}</span><span>{{historyKind .Kind}}</span>
+<span class="history-status"><span class="status-pill {{historyStatusClass .Status}}">{{historyStatus .Status}}</span>{{if and (eq .Status "running") .Activity}}<span class="history-activity">{{.Activity}}</span>{{end}}</span>
+<span class="history-iterations">{{if gt .MaxIterations 0}}{{.Iteration}} / {{.MaxIterations}}{{else if gt .Iteration 0}}{{.Iteration}}{{else}}—{{end}}</span>
+<span class="history-verdict">{{if .Verdict}}{{.Verdict}}{{else}}—{{end}}</span><span class="history-started">{{started .StartedAt}}</span><span class="history-duration">{{duration .}}</span><span class="history-tokens">{{historyTokens .}}</span>
+</a>
+{{end}}
+</div>
+{{else}}
+<div class="empty-state">No Runs recorded for this Project.</div>
+{{end}}
+</section>
+<p class="history-note">Runs recorded before syl kept run state show as <em>completed</em> when they have a summary, and <em>unknown</em> otherwise. Tickets are shown by number only; syl ui makes no tracker calls.</p>
+</div>
+{{end}}
+
 {{define "overview-content"}}
 <div id="overview-content" hx-get="/overview/content" hx-trigger="every 3s" hx-target="#overview-content" hx-swap="outerHTML">
 <div class="page-heading"><h1>Overview</h1><span>{{.TotalRunCount}} live Runs across {{len .Overview.Projects}} Projects</span></div>

@@ -43,6 +43,9 @@ type Project struct {
 	Name             string
 	Path             string
 	Health           Health
+	IssueTracker     config.Tracker
+	ReviewLog        config.Tracker
+	FirstSeen        time.Time
 	LiveRunCount     int
 	InterruptedCount int
 }
@@ -72,13 +75,19 @@ type Run struct {
 // ReadOverview reads the registry, live markers, and referenced Run state.
 // It does not write state or inspect historical Run directories.
 func ReadOverview(sylHome string) (Overview, error) {
-	entries, err := registry.List(sylHome)
+	return NewReader(sylHome).ReadOverview()
+}
+
+// ReadOverview reads the registry, live markers, and referenced Run state.
+// It does not write state or inspect historical Run directories.
+func (reader *Reader) ReadOverview() (Overview, error) {
+	entries, err := registry.List(reader.sylHome)
 	if err != nil {
 		return Overview{}, fmt.Errorf("read registered Projects: %w", err)
 	}
 
 	projects, projectConfigs := inspectProjects(entries)
-	pointers, err := runmarker.List(sylHome)
+	pointers, err := runmarker.List(reader.sylHome)
 	if err != nil {
 		return Overview{}, fmt.Errorf("read live-run markers: %w", err)
 	}
@@ -112,7 +121,7 @@ func inspectProjects(entries []registry.Entry) ([]Project, map[string]projectRec
 	records := make(map[string]projectRecord, len(entries))
 	for _, entry := range entries {
 		path := filepath.Clean(entry.Path)
-		project, configuration, loaded := inspectProject(path)
+		project, configuration, loaded := inspectProject(path, entry)
 		projects = append(projects, project)
 		records[path] = projectRecord{
 			project:       project,
@@ -124,8 +133,8 @@ func inspectProjects(entries []registry.Entry) ([]Project, map[string]projectRec
 	return projects, records
 }
 
-func inspectProject(path string) (Project, config.Config, bool) {
-	project := Project{Name: filepath.Base(path), Path: path, Health: HealthInvalid}
+func inspectProject(path string, entry registry.Entry) (Project, config.Config, bool) {
+	project := Project{Name: filepath.Base(path), Path: path, Health: HealthInvalid, FirstSeen: entry.FirstSeen}
 	info, err := os.Stat(path)
 	if errors.Is(err, os.ErrNotExist) {
 		project.Health = HealthMissing
@@ -144,6 +153,8 @@ func inspectProject(path string) (Project, config.Config, bool) {
 		return project, config.Config{}, false
 	}
 	project.Health = HealthOK
+	project.IssueTracker = configuration.Tracker.Issues
+	project.ReviewLog = configuration.Tracker.Reviews
 	return project, configuration, true
 }
 
