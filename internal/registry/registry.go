@@ -24,6 +24,15 @@ func Path(sylHome string) string {
 	return filepath.Join(sylHome, fileName)
 }
 
+// List returns the Projects recorded in sylHome.
+func List(sylHome string) ([]Entry, error) {
+	if sylHome == "" {
+		return nil, fmt.Errorf("syl home is required")
+	}
+
+	return read(Path(sylHome))
+}
+
 // Upsert records projectRoot in the registry, preserving its first-seen time.
 // A corrupt registry is repaired with its valid entries and the current
 // Project, while the read error is returned after a successful write.

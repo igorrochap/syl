@@ -48,6 +48,28 @@ func TestUpsertNormalizesProjectAndPreservesEntryShape(t *testing.T) {
 	}
 }
 
+func TestListReadsRegisteredProjects(t *testing.T) {
+	sylHome := t.TempDir()
+	projectRoot := t.TempDir()
+	if err := os.WriteFile(registry.Path(sylHome), []byte(`[{"path":"`+projectRoot+`"}]`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	entries, err := registry.List(sylHome)
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	if len(entries) != 1 || entries[0].Path != projectRoot {
+		t.Fatalf("List() = %#v, want project %q", entries, projectRoot)
+	}
+}
+
+func TestListRequiresSylHome(t *testing.T) {
+	if _, err := registry.List(""); err == nil {
+		t.Fatal("List() with empty syl home succeeded")
+	}
+}
+
 func TestUpsertKeepsFirstSeenAndUpdatesLastSeen(t *testing.T) {
 	projectRoot := t.TempDir()
 	sylHome := t.TempDir()
