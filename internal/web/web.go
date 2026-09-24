@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -34,6 +35,7 @@ type Server struct {
 	token        string
 	model        func() (readmodel.Overview, error)
 	projectModel func(string) (readmodel.ProjectPage, error)
+	runModel     func(string) (readmodel.RunPage, error)
 	templates    *template.Template
 	assets       http.Handler
 }
@@ -59,6 +61,7 @@ func New(sylHome string, port int) (*Server, error) {
 		token:        token,
 		model:        reader.ReadOverview,
 		projectModel: reader.ReadProject,
+		runModel:     reader.ReadRun,
 		templates:    templates,
 		assets:       http.StripPrefix("/assets/", http.FileServer(http.FS(staticFiles))),
 	}, nil
@@ -70,6 +73,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/", s.overview)
 	mux.HandleFunc("/projects", s.project)
 	mux.HandleFunc("/projects/", s.project)
+	mux.HandleFunc("/runs/artifact", s.artifact)
+	mux.HandleFunc("/runs", s.run)
+	mux.HandleFunc("/runs/", s.run)
 	mux.HandleFunc("/runs/dismiss", s.dismiss)
 	mux.HandleFunc("/projects/forget", s.forget)
 	mux.Handle("/assets/", s.assets)
@@ -205,6 +211,182 @@ func (s *Server) projectData(projectPath string) (projectPageData, error) {
 		return projectPageData{}, err
 	}
 	return projectPageData{Page: page, Port: s.port, Token: s.token}, nil
+}
+
+type runPageData struct {
+	Page  readmodel.RunPage
+	Port  int
+	Token string
+}
+
+func (s *Server) run(writer http.ResponseWriter, request *http.Request) {
+	if request.URL.Path != "/runs" && request.URL.Path != "/runs/content" {
+		writer.WriteHeader(http.StatusNotFound)
+		return
+	}
+	runDir := request.URL.Query().Get("path")
+	if strings.TrimSpace(runDir) == "" {
+		writer.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	runDir, err := resolveRunDirectory(runDir)
+	if err != nil {
+		writeRunPathError(writer, err)
+		return
+	}
+	data, err := s.runData(runDir)
+	if err != nil {
+		if errors.Is(err, readmodel.ErrRunNotFound) || errors.Is(err, os.ErrNotExist) {
+			writer.WriteHeader(http.StatusNotFound)
+			return
+		}
+		writeServerError(writer, err)
+		return
+	}
+	writer.Header().Set("Content-Type", "text/html; charset=utf-8")
+	templateName := "run"
+	if request.URL.Path == "/runs/content" {
+		templateName = "run-content"
+	}
+	if err := s.templates.ExecuteTemplate(writer, templateName, data); err != nil {
+		return
+	}
+}
+
+func writeRunPathError(writer http.ResponseWriter, err error) {
+	if errors.Is(err, os.ErrNotExist) {
+		writer.WriteHeader(http.StatusNotFound)
+		return
+	}
+	writer.WriteHeader(http.StatusBadRequest)
+}
+
+func (s *Server) runData(runDir string) (runPageData, error) {
+	page, err := s.runModel(runDir)
+	if err != nil {
+		return runPageData{}, err
+	}
+	return runPageData{Page: page, Port: s.port, Token: s.token}, nil
+}
+
+func (s *Server) artifact(writer http.ResponseWriter, request *http.Request) {
+	if request.URL.Path != "/runs/artifact" {
+		writer.WriteHeader(http.StatusNotFound)
+		return
+	}
+	runDir := request.URL.Query().Get("path")
+	artifactName := request.URL.Query().Get("artifact")
+	path, err := safeArtifactPath(runDir, artifactName)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			writer.WriteHeader(http.StatusNotFound)
+			return
+		}
+		writer.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			writer.WriteHeader(http.StatusNotFound)
+			return
+		}
+		writeServerError(writer, err)
+		return
+	}
+	writer.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	_, _ = writer.Write(contents)
+}
+
+func safeArtifactPath(runDir, artifactName string) (string, error) {
+	if err := validateArtifactName(runDir, artifactName); err != nil {
+		return "", err
+	}
+	root, err := resolveRunDirectory(runDir)
+	if err != nil {
+		return "", err
+	}
+	return resolveArtifactFile(root, artifactName)
+}
+
+func validateArtifactName(runDir, artifactName string) error {
+	if strings.TrimSpace(runDir) == "" || strings.TrimSpace(artifactName) == "" {
+		return errors.New("run directory and artifact are required")
+	}
+	if isAbsoluteArtifactPath(artifactName) {
+		return errors.New("absolute artifact paths are not allowed")
+	}
+	if hasParentPathComponent(artifactName) {
+		return errors.New("artifact path traversal is not allowed")
+	}
+	return nil
+}
+
+func isAbsoluteArtifactPath(path string) bool {
+	if filepath.IsAbs(path) || filepath.VolumeName(path) != "" || strings.HasPrefix(path, "\\") {
+		return true
+	}
+	return len(path) >= 2 && path[1] == ':'
+}
+
+func resolveRunDirectory(runDir string) (string, error) {
+	root, err := filepath.EvalSymlinks(runDir)
+	if err != nil {
+		return "", err
+	}
+	rootInfo, err := os.Stat(root)
+	if err != nil {
+		return "", err
+	}
+	if !rootInfo.IsDir() {
+		return "", errors.New("run directory is not a directory")
+	}
+	if !isRunDirectory(root) {
+		return "", errors.New("path is not a Run directory")
+	}
+	return root, nil
+}
+
+func isRunDirectory(path string) bool {
+	runsDirectory := filepath.Dir(path)
+	return filepath.Base(path) != "" && filepath.Base(runsDirectory) == "runs" &&
+		filepath.Base(filepath.Dir(runsDirectory)) == ".syl"
+}
+
+func resolveArtifactFile(root, artifactName string) (string, error) {
+	candidate := filepath.Join(root, artifactName)
+	resolved, err := filepath.EvalSymlinks(candidate)
+	if err != nil {
+		return "", err
+	}
+	if !pathWithin(root, resolved) {
+		return "", errors.New("artifact resolves outside Run directory")
+	}
+	info, err := os.Stat(resolved)
+	if err != nil {
+		return "", err
+	}
+	if !info.Mode().IsRegular() {
+		return "", errors.New("artifact is not a regular file")
+	}
+	return resolved, nil
+}
+
+func hasParentPathComponent(path string) bool {
+	for _, component := range strings.FieldsFunc(path, func(r rune) bool { return r == '/' || r == '\\' }) {
+		if component == ".." {
+			return true
+		}
+	}
+	return false
+}
+
+func pathWithin(root, path string) bool {
+	relative, err := filepath.Rel(root, path)
+	if err != nil || filepath.IsAbs(relative) {
+		return false
+	}
+	return relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
 }
 
 func (s *Server) dismiss(writer http.ResponseWriter, request *http.Request) {
@@ -367,6 +549,15 @@ func templateFunctions() template.FuncMap {
 		"historyStatusClass": historyStatusClass,
 		"historyTicket":      historyTicket,
 		"historyTokens":      historyTokens,
+		"runArtifactURL":     runArtifactURL,
+		"runDuration":        displayRunDuration,
+		"runMetric":          displayRunMetric,
+		"runStatus":          displayRunStatus,
+		"verdictClass":       verdictClass,
+		"runEndTime":         displayRunEndTime,
+		"trimArtifactName":   trimArtifactName,
+		"runTime":            displayRunTime,
+		"runTokens":          displayRunTokens,
 		"iteration":          displayIteration,
 		"kind":               displayKind,
 		"rowClass":           rowClass,
@@ -377,6 +568,90 @@ func templateFunctions() template.FuncMap {
 		"firstSeen":          displayFirstSeen,
 		"urlquery":           url.QueryEscape,
 	}
+}
+
+func runArtifactURL(runDir, artifactName string) string {
+	return "/runs/artifact?path=" + url.QueryEscape(runDir) + "&artifact=" + url.QueryEscape(artifactName)
+}
+
+func displayRunStatus(run readmodel.RunDetail) string {
+	if run.Interrupted {
+		return "Interrupted"
+	}
+	if run.Status == "" {
+		return "—"
+	}
+	return run.Status
+}
+
+func displayRunTime(value time.Time) string {
+	if value.IsZero() {
+		return "—"
+	}
+	return value.Local().Format("2 Jan 2006, 15:04")
+}
+
+func displayRunEndTime(value *time.Time) string {
+	if value == nil {
+		return "—"
+	}
+	return displayRunTime(*value)
+}
+
+func trimArtifactName(name string) string {
+	extension := strings.TrimPrefix(filepath.Ext(name), ".")
+	if extension != "" {
+		return extension
+	}
+	return name
+}
+
+func displayRunDuration(run readmodel.RunDetail) string {
+	if !run.DurationKnown {
+		return "—"
+	}
+	return formatDuration(run.Duration)
+}
+
+func displayRunTokens(run readmodel.RunDetail) string {
+	if !run.TokensKnown {
+		return "—"
+	}
+	return formatTokenCount(run.TotalTokens)
+}
+
+func displayRunMetric(value int64, known bool) string {
+	if !known {
+		return "—"
+	}
+	return formatTokenCount(value)
+}
+
+func verdictClass(status any) string {
+	switch fmt.Sprint(status) {
+	case "approve":
+		return "green"
+	case "revise":
+		return "plum"
+	default:
+		return "neutral"
+	}
+}
+
+func formatDuration(duration time.Duration) string {
+	seconds := int(duration / time.Second)
+	if seconds < 1 {
+		return "0s"
+	}
+	minutes, seconds := seconds/60, seconds%60
+	hours, minutes := minutes/60, minutes%60
+	if hours > 0 {
+		return strconv.Itoa(hours) + "h " + strconv.Itoa(minutes) + "m"
+	}
+	if minutes > 0 {
+		return strconv.Itoa(minutes) + "m"
+	}
+	return strconv.Itoa(seconds) + "s"
 }
 
 func displayActivity(run readmodel.Run) string {

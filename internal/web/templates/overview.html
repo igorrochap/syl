@@ -45,6 +45,109 @@
 </html>
 {{end}}
 
+{{define "run"}}
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="syl-token" content="{{.Token}}">
+<title>syl ui — Run {{historyTicket .Page.Run.TicketRef}}</title>
+<link rel="stylesheet" href="/assets/fonts.css">
+<link rel="stylesheet" href="/assets/style.css">
+</head>
+<body class="syl syl-dark">
+<header>
+<a class="wordmark" href="/">syl<span>/ui</span></a>
+<nav class="nav" aria-label="Primary"><a href="/">Overview</a></nav>
+<div class="server-state"><span class="{{if .Page.Run.Refreshing}}live-dot{{else}}ended-dot{{end}}"></span><span>127.0.0.1:{{.Port}} · {{if .Page.Run.Refreshing}}refreshing every 3s{{else}}run ended, not refreshing{{end}}</span></div>
+<button class="theme-toggle" type="button" aria-label="Switch to light theme" onclick="toggleTheme()">
+<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"></path></svg><span>Dark</span>
+</button>
+</header>
+<main class="run-main-page">
+{{template "run-content" .}}
+</main>
+<script src="/assets/htmx.min.js"></script>
+<script>
+(function(){
+  var root=document.body;
+  window.setTheme=function(theme){
+    root.classList.toggle('syl-light',theme==='light');
+    root.classList.toggle('syl-dark',theme!=='light');
+    var button=document.querySelector('.theme-toggle');
+    if(button){button.querySelector('span').textContent=theme==='light'?'Light':'Dark';button.setAttribute('aria-label',theme==='light'?'Switch to dark theme':'Switch to light theme');}
+  };
+  window.toggleTheme=function(){var light=root.classList.contains('syl-light');var theme=light?'dark':'light';setTheme(theme);localStorage.setItem('syl-theme',theme);};
+  var saved=localStorage.getItem('syl-theme');
+  if(saved==='light'){setTheme('light');}
+  document.addEventListener('click',function(event){
+    var button=event.target.closest('[data-copy-command]');
+    if(!button){return;}
+    navigator.clipboard.writeText(button.getAttribute('data-copy-command')).then(function(){button.textContent='Copied';window.setTimeout(function(){button.textContent='Copy command';},1200);});
+  });
+}());
+</script>
+</body>
+</html>
+{{end}}
+
+{{define "run-content"}}
+<div id="run-content"{{if .Page.Run.Refreshing}} hx-get="/runs/content?path={{urlquery .Page.Run.RunDir}}" hx-trigger="every 3s [document.visibilityState === 'visible']" hx-target="#run-content" hx-swap="outerHTML"{{end}}>
+<nav class="breadcrumb" aria-label="Breadcrumb"><a href="/">Overview</a><span>/</span><a href="/projects?path={{urlquery .Page.Run.ProjectPath}}">{{.Page.Run.ProjectName}}</a><span>/</span><span>Run {{historyTicket .Page.Run.TicketRef}}</span></nav>
+
+<div class="run-page-heading">
+<div class="run-title"><h1>{{historyTicket .Page.Run.TicketRef}}</h1><span>{{if .Page.Run.Branch}}{{.Page.Run.Branch}}{{else}}—{{end}}</span></div>
+<div class="run-details"><span class="status-pill {{historyStatusClass (runStatus .Page.Run)}}">{{runStatus .Page.Run}}</span><span>{{if .Page.Run.Kind}}{{.Page.Run.Kind}}{{else}}—{{end}}</span><span>·</span><span>{{if gt .Page.Run.MaxIterations 0}}{{.Page.Run.Iteration}} of {{.Page.Run.MaxIterations}} iterations{{else if gt .Page.Run.Iteration 0}}{{.Page.Run.Iteration}} iterations{{else}}—{{end}}</span><span>·</span><span>{{runTime .Page.Run.StartedAt}} → {{runEndTime .Page.Run.EndedAt}} ({{runDuration .Page.Run}})</span><span>·</span><span>{{runTokens .Page.Run}} tokens</span></div>
+</div>
+
+<div class="run-layout">
+<div class="run-main-column">
+{{if .Page.SummaryExists}}
+<section class="section run-card" aria-labelledby="summary-heading"><h2 id="summary-heading">Summary</h2><p class="run-summary">{{if .Page.Summary}}{{.Page.Summary}}{{else}}—{{end}}</p></section>
+{{end}}
+
+<section class="section run-card" aria-labelledby="iterations-heading"><h2 id="iterations-heading">Iterations</h2>
+{{if .Page.Iterations}}
+<div class="run-timeline">
+{{range .Page.Iterations}}
+<div class="run-timeline-item">
+<div class="iteration-marker">{{.Number}}</div>
+<div class="iteration-body">
+{{if .Roles}}
+<div class="role-list">
+{{range .Roles}}
+<div class="role-row"><span class="role-name">{{.Role}}</span><span class="role-harness">{{harness .Harness .Model}}</span><span class="artifact-links">{{range .Artifacts}}<a href="{{runArtifactURL $.Page.Run.RunDir .Name}}">{{trimArtifactName .Name}}</a>{{end}}</span></div>
+{{end}}
+</div>
+{{end}}
+{{if .Activity}}<div class="run-activity">Activity: {{.Activity}}</div>{{end}}
+{{if .HasVerdict}}
+<div class="verdict-card {{verdictClass .Verdict.Status}}"><div class="verdict-heading"><span class="status-pill {{verdictClass .Verdict.Status}}">{{.Verdict.Status}}</span><span>{{.Verdict.Summary}}</span><span class="finding-counts">{{.BlockingCount}} blocking · {{.NitCount}} nits</span></div>
+{{if .FindingGroups}}<div class="finding-groups">{{range .FindingGroups}}<div class="finding-group"><h3>{{.Label}} · {{.Count}}</h3>{{range .Findings}}<div class="finding"><code>{{.Location}}</code><span>{{.Issue}}</span></div>{{end}}</div>{{end}}</div>{{else}}<span class="no-findings">No findings</span>{{end}}
+</div>
+{{end}}
+</div>
+</div>
+{{end}}
+</div>
+{{else}}<div class="empty-state">No iterations recorded yet.{{if .Page.Run.Activity}} Activity: {{.Page.Run.Activity}}{{end}}</div>{{end}}
+</section>
+
+{{if .Page.DiffStatKnown}}<section class="section run-card" aria-labelledby="diff-heading"><h2 id="diff-heading">Diff stat</h2><pre class="diff-stat">{{if .Page.DiffStat}}{{.Page.DiffStat}}{{else}}—{{end}}</pre></section>{{end}}
+</div>
+
+<aside class="run-sidebar">
+<section class="section run-card" aria-labelledby="metadata-heading"><h2 id="metadata-heading">Metadata</h2><dl class="metadata-list"><div><dt>Branch</dt><dd>{{if .Page.Metadata.Branch}}{{.Page.Metadata.Branch}}{{else}}—{{end}}</dd></div><div><dt>Branch point</dt><dd>{{if .Page.Metadata.BranchPoint}}{{.Page.Metadata.BranchPoint}}{{else}}—{{end}}</dd></div><div><dt>Work root</dt><dd>{{if .Page.Metadata.WorkRoot}}{{.Page.Metadata.WorkRoot}}{{else}}—{{end}}</dd></div><div><dt>Run directory</dt><dd>{{.Page.Metadata.RunDirectory}}</dd></div><div><dt>Sessions</dt><dd>{{if .Page.Metadata.Sessions}}{{range .Page.Metadata.Sessions}}it {{.Iteration}} {{.Role}}: {{.SessionID}}<br>{{end}}{{else}}—{{end}}</dd></div></dl></section>
+
+<section class="section run-card" aria-labelledby="usage-heading"><h2 id="usage-heading">Usage</h2>{{if .Page.Usage}}<div class="usage-grid"><span class="usage-heading">Role</span><span class="usage-heading right">Input</span><span class="usage-heading right">Output</span><span class="usage-heading right">Cached</span>{{range .Page.Usage}}<span class="usage-role">{{.Role}}</span><span class="metric">{{runMetric .InputTokens .Known}}</span><span class="metric">{{runMetric .OutputTokens .Known}}</span><span class="metric">{{runMetric .CachedTokens .Known}}</span>{{end}}</div>{{else}}<div class="empty-state">—</div>{{end}}</section>
+
+<section class="section run-card" aria-labelledby="resume-heading"><h2 id="resume-heading">Resume in a terminal</h2>{{if .Page.Resume}}{{range .Page.Resume}}<code class="resume-command">{{.Command}}</code>{{end}}<button class="copy-button" type="button" data-copy-command="{{range $index, $command := .Page.Resume}}{{if $index}}&#10;{{end}}{{$command.Command}}{{end}}">Copy command</button>{{else}}<div class="empty-state">No recorded sessions.</div>{{end}}</section>
+</aside>
+</div>
+</div>
+{{end}}
+
 {{define "project"}}
 <!doctype html>
 <html lang="en">

@@ -73,6 +73,143 @@ func TestHandlerRendersProjectHistoryAndConfigMetadata(t *testing.T) {
 	}
 }
 
+func TestHandlerRendersRunPageAndRawArtifacts(t *testing.T) {
+	project := t.TempDir()
+	runDir := filepath.Join(project, ".syl", "runs", "20260920T195033.518469000Z-173")
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ended := time.Date(2026, time.September, 20, 20, 31, 0, 0, time.UTC)
+	if err := runstate.Write(runstate.Path(runDir), runstate.State{
+		Status: runstate.Approved, Iteration: 1, MaxIterations: 3,
+		StartedAt: time.Date(2026, time.September, 20, 19, 50, 0, 0, time.UTC), EndedAt: &ended,
+		Kind: runstate.Implement, TicketRef: "#173",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	writeWebArtifact(t, runDir, "metadata.txt", "Branch: feat/implementer-context-rollover\nBranch point: 30de5905ca30\nWork root: /worktree\nImplementer harness: codex\nReviewer harness: claude\n")
+	writeWebArtifact(t, runDir, "sessions.txt", "iteration 1 implement: implement-session\niteration 1 review: review-session\n")
+	writeWebArtifact(t, runDir, "summary.txt", "Iterations: 1\nFinal verdict: approve\nSummary: Ready for review\nDiff stat:\n file.go | 2 ++\n")
+	writeWebArtifact(t, runDir, "iteration-01-implement.feed", "feed is plain text")
+	writeWebArtifact(t, runDir, "iteration-01-verdict.txt", "VERDICT: approve\nSUMMARY: Ready for review\nFINDINGS:\n- [nit] file.go:1 — Consider a helper\n- [blocking] file.go:2 — Fix this\n")
+	if err := usage.WriteArtifact(filepath.Join(runDir, "usage.json"), usage.Artifact{Entries: []usage.Entry{
+		{Iteration: 1, Role: "implement", Harness: "codex", Model: "gpt-5.6", Tracked: true, Metrics: &usage.Metrics{InputTokens: 2000, OutputTokens: 80, TotalTokens: 2080}},
+		{Iteration: 1, Role: "review", Harness: "claude", Model: "claude-sonnet", Tracked: true, Metrics: &usage.Metrics{InputTokens: 100, OutputTokens: 30, TotalTokens: 130}},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	server, err := web.New(t.TempDir(), 7777)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := serveRun(t, server.Handler(), runDir, "/runs")
+	content := serveRun(t, server.Handler(), runDir, "/runs/content")
+	if !strings.Contains(content, `id="run-content"`) {
+		t.Fatalf("Run content does not contain its root element: %s", content)
+	}
+	for _, expected := range []string{
+		"#173", "feat/implementer-context-rollover", "approved", "implement", "1 of 3 iterations",
+		"Summary", "Ready for review", "Iterations", "Blocking · 1", "Nit · 1", "Diff stat",
+		"Branch point", "30de5905ca30", "Usage", "implement", "review", "syl resume implement #173", "syl resume review #173",
+	} {
+		if !strings.Contains(body, expected) {
+			t.Fatalf("Run body does not contain %q: %s", expected, body)
+		}
+	}
+	if strings.Contains(body, "hx-trigger=\"every 3s") {
+		t.Fatal("ended Run page contains a polling trigger")
+	}
+	writeWebArtifact(t, runDir, "summary.txt", "Iterations: 1\nFinal verdict: approve\nDiff stat:\n file.go | 2 ++\n")
+	emptySummaryBody := serveRun(t, server.Handler(), runDir, "/runs")
+	if !strings.Contains(emptySummaryBody, `aria-labelledby="summary-heading"`) || !strings.Contains(emptySummaryBody, `class="run-summary">—</p>`) {
+		t.Fatalf("Run body does not show an empty summary section: %s", emptySummaryBody)
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "/runs/artifact?path="+url.QueryEscape(runDir)+"&artifact=iteration-01-implement.feed", nil)
+	request.Host = "127.0.0.1:7777"
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || recorder.Header().Get("Content-Type") != "text/plain; charset=utf-8" || recorder.Body.String() != "feed is plain text" {
+		t.Fatalf("artifact response = %d/%q/%q", recorder.Code, recorder.Header().Get("Content-Type"), recorder.Body.String())
+	}
+}
+
+func TestHandlerRejectsInvalidRunRequests(t *testing.T) {
+	server, err := web.New(t.TempDir(), 7777)
+	if err != nil {
+		t.Fatal(err)
+	}
+	missingRun := filepath.Join(t.TempDir(), "missing-run")
+	tests := []struct {
+		path string
+		want int
+	}{
+		{path: "/runs/unknown", want: http.StatusNotFound},
+		{path: "/runs", want: http.StatusBadRequest},
+		{path: "/runs?path=" + url.QueryEscape(missingRun), want: http.StatusNotFound},
+	}
+	for _, test := range tests {
+		request := httptest.NewRequest(http.MethodGet, test.path, nil)
+		request.Host = "127.0.0.1:7777"
+		recorder := httptest.NewRecorder()
+		server.Handler().ServeHTTP(recorder, request)
+		if recorder.Code != test.want {
+			t.Fatalf("Run request %q status = %d, want %d", test.path, recorder.Code, test.want)
+		}
+	}
+}
+
+func TestHandlerPollsOnlyRunningRunAndRefusesUnsafeArtifacts(t *testing.T) {
+	project := t.TempDir()
+	runDir := filepath.Join(project, ".syl", "runs", "running-173")
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := runstate.Write(runstate.Path(runDir), runstate.State{
+		Status: runstate.Running, Activity: runstate.Reviewing, Iteration: 1, MaxIterations: 3,
+		PID: os.Getpid(), Hostname: testHostname(t), StartedAt: time.Now().UTC(), Kind: runstate.Implement, TicketRef: "#173",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	writeWebArtifact(t, runDir, "metadata.txt", "Branch: feat/example\n")
+	writeWebArtifact(t, runDir, "iteration-01-review.feed", "review")
+	outside := filepath.Join(t.TempDir(), "outside.txt")
+	writeWebArtifact(t, filepath.Dir(outside), filepath.Base(outside), "secret")
+	if err := os.Symlink(outside, filepath.Join(runDir, "outside-link")); err != nil {
+		t.Fatal(err)
+	}
+
+	server, err := web.New(t.TempDir(), 7777)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := serveRun(t, server.Handler(), runDir, "/runs")
+	if !strings.Contains(body, "hx-trigger=\"every 3s [document.visibilityState === 'visible']\"") || !strings.Contains(body, "Activity: reviewing") {
+		t.Fatalf("running Run body = %s, want polling and activity", body)
+	}
+
+	for _, artifact := range []string{"../../config.toml", "/tmp/config.toml", "outside-link"} {
+		request := httptest.NewRequest(http.MethodGet, "/runs/artifact?path="+url.QueryEscape(runDir)+"&artifact="+url.QueryEscape(artifact), nil)
+		request.Host = "127.0.0.1:7777"
+		recorder := httptest.NewRecorder()
+		server.Handler().ServeHTTP(recorder, request)
+		if recorder.Code == http.StatusOK || strings.Contains(recorder.Body.String(), "secret") {
+			t.Fatalf("unsafe artifact %q response = %d/%q", artifact, recorder.Code, recorder.Body.String())
+		}
+	}
+
+	for _, route := range []string{"/runs", "/runs/content"} {
+		request := httptest.NewRequest(http.MethodGet, route+"?path="+url.QueryEscape(filepath.Dir(outside)), nil)
+		request.Host = "127.0.0.1:7777"
+		recorder := httptest.NewRecorder()
+		server.Handler().ServeHTTP(recorder, request)
+		if recorder.Code == http.StatusOK {
+			t.Fatalf("unsafe Run path on %s returned OK: %q", route, recorder.Body.String())
+		}
+	}
+}
+
 func TestHandlerShowsInterruptedProjectRunAndFindsNewRunsOnNextRequest(t *testing.T) {
 	sylHome := t.TempDir()
 	project := t.TempDir()
@@ -612,6 +749,26 @@ func serveProject(t *testing.T, handler http.Handler, projectPath, route string)
 		t.Fatalf("Project status = %d; body = %q", recorder.Code, recorder.Body.String())
 	}
 	return recorder.Body.String()
+}
+
+func serveRun(t *testing.T, handler http.Handler, runDir, route string) string {
+	t.Helper()
+	requestURL := "http://127.0.0.1:7777" + route + "?path=" + url.QueryEscape(runDir)
+	request := httptest.NewRequest(http.MethodGet, requestURL, nil)
+	request.Host = "127.0.0.1:7777"
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("Run status = %d; body = %q", recorder.Code, recorder.Body.String())
+	}
+	return recorder.Body.String()
+}
+
+func writeWebArtifact(t *testing.T, directory, name, contents string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(directory, name), []byte(contents), 0o644); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func writeMutationFixture(t *testing.T, live bool) (string, string) {
