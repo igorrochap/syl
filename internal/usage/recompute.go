@@ -131,7 +131,13 @@ func ReadSessionRecords(path string) ([]SessionRecord, error) {
 	if err != nil {
 		return nil, err
 	}
+	return ParseSessionRecords(contents), nil
+}
 
+// ParseSessionRecords reads valid session entries from sessions.txt contents.
+// Invalid lines are ignored so partially written or older artifacts remain
+// readable.
+func ParseSessionRecords(contents []byte) []SessionRecord {
 	var records []SessionRecord
 	for _, line := range strings.Split(string(contents), "\n") {
 		invocation, ok := parseSessionLine(line)
@@ -144,7 +150,7 @@ func ReadSessionRecords(path string) ([]SessionRecord, error) {
 			SessionID: invocation.sessions[0],
 		})
 	}
-	return records, nil
+	return records
 }
 
 func parseSessionLine(line string) (sessionInvocation, bool) {

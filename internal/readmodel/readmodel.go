@@ -310,6 +310,10 @@ type runMetadata struct {
 	workRoot           string
 	implementerHarness string
 	reviewerHarness    string
+	branch             string
+	branchPoint        string
+	ticketRef          string
+	kind               runstate.Kind
 }
 
 func readMetadata(path string) runMetadata {

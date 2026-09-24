@@ -93,6 +93,128 @@ func TestReaderReadsProjectRunHistoryNewestFirst(t *testing.T) {
 	}
 }
 
+func TestReaderReadsRunDetailsFromRecordedArtifacts(t *testing.T) {
+	project := t.TempDir()
+	if _, err := config.Init(project); err != nil {
+		t.Fatal(err)
+	}
+	runDir := filepath.Join(project, ".syl", "runs", "20260920T195033.518469000Z-173")
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ended := time.Date(2026, time.September, 20, 20, 31, 0, 0, time.UTC)
+	if err := runstate.Write(runstate.Path(runDir), runstate.State{
+		Status: runstate.Approved, Iteration: 1, MaxIterations: 3,
+		StartedAt: time.Date(2026, time.September, 20, 19, 50, 0, 0, time.UTC), EndedAt: &ended,
+		Kind: runstate.Implement, TicketRef: "#173",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	writeRunArtifact(t, runDir, "metadata.txt", "Branch: feat/implementer-context-rollover\nBranch point: 30de5905ca30\nWork root: /worktree\nImplementer harness: codex\nReviewer harness: claude\n")
+	writeRunArtifact(t, runDir, "sessions.txt", "iteration 1 implement: implement-session\niteration 1 review: review-session\n")
+	writeRunArtifact(t, runDir, "summary.txt", "Iterations: 1\nFinal verdict: approve\nSummary: Ready for review\nDiff stat:\n file.go | 2 ++\n")
+	writeRunArtifact(t, runDir, "iteration-01-implement.feed", "implement feed")
+	writeRunArtifact(t, runDir, "iteration-01-implement.transcript", "implement transcript")
+	writeRunArtifact(t, runDir, "iteration-01-review.diff", "diff")
+	writeRunArtifact(t, runDir, "iteration-01-review.feed", "review feed")
+	writeRunArtifact(t, runDir, "iteration-01-review.transcript", "review transcript")
+	writeRunArtifact(t, runDir, "iteration-01-verdict.txt", "VERDICT: approve\nSUMMARY: Ready for review\nFINDINGS:\n- [nit] file.go:1 — Consider a smaller helper\n- [blocking] file.go:2 — Fix this before merging\n")
+	if err := usage.WriteArtifact(filepath.Join(runDir, "usage.json"), usage.Artifact{Entries: []usage.Entry{
+		{Iteration: 1, Role: "implement", Harness: "codex", Model: "gpt-5.6", Tracked: true, Metrics: &usage.Metrics{
+			InputTokens: 2000, CachedInputTokens: 1000, CacheWriteInputTokens: 20, OutputTokens: 80, TotalTokens: 2080,
+		}},
+		{Iteration: 1, Role: "review", Harness: "claude", Model: "claude-sonnet", Tracked: true, Metrics: &usage.Metrics{
+			InputTokens: 100, CacheReadTokens: 40, CacheWriteTokens: 10, OutputTokens: 30, TotalTokens: 130,
+		}},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	page, err := readmodel.NewReader(t.TempDir()).ReadRun(runDir)
+	if err != nil {
+		t.Fatalf("ReadRun() error = %v", err)
+	}
+	if page.Run.TicketRef != "#173" || page.Run.Branch != "feat/implementer-context-rollover" || page.Run.Status != "approved" {
+		t.Fatalf("Run = %#v, want ticket, branch, and status", page.Run)
+	}
+	if page.Run.Duration != 41*time.Minute || page.Run.TotalTokens != 2210 || !page.Run.TokensKnown {
+		t.Fatalf("Run timing/tokens = %#v, want duration and total tokens", page.Run)
+	}
+	if page.Metadata.BranchPoint != "30de5905ca30" || page.Metadata.WorkRoot != "/worktree" || len(page.Metadata.Sessions) != 2 {
+		t.Fatalf("Metadata = %#v, want branch point, work root, and sessions", page.Metadata)
+	}
+	if page.Summary != "Ready for review" || page.DiffStat != "file.go | 2 ++" {
+		t.Fatalf("summary/diff stat = %q/%q", page.Summary, page.DiffStat)
+	}
+	if len(page.Iterations) != 1 || len(page.Iterations[0].Roles) != 2 || len(page.Iterations[0].Roles[1].Artifacts) != 3 {
+		t.Fatalf("Iterations = %#v, want two roles and three review artifacts", page.Iterations)
+	}
+	iteration := page.Iterations[0]
+	if !iteration.HasVerdict || len(iteration.FindingGroups) != 2 || iteration.FindingGroups[0].Count != 1 || iteration.FindingGroups[1].Count != 1 {
+		t.Fatalf("verdict groups = %#v, want one finding in each severity", iteration)
+	}
+	if len(page.Usage) != 2 || page.Usage[0].Role != "implement" || page.Usage[0].CachedTokens != 1020 {
+		t.Fatalf("Usage = %#v, want per-role cached totals", page.Usage)
+	}
+	if len(page.Resume) != 2 || page.Resume[0].Command != "syl resume implement #173" || page.Resume[1].Command != "syl resume review #173" {
+		t.Fatalf("Resume = %#v, want implement and review commands", page.Resume)
+	}
+}
+
+func TestReaderShowsCurrentActivityAndInterruptedRun(t *testing.T) {
+	runDir := filepath.Join(t.TempDir(), ".syl", "runs", "running-173")
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := runstate.Write(runstate.Path(runDir), runstate.State{
+		Status: runstate.Running, Activity: runstate.Reviewing, Iteration: 2, MaxIterations: 3,
+		PID: 999999, Hostname: hostname(t), Kind: runstate.Implement, TicketRef: "#173",
+		StartedAt: time.Now().Add(-time.Minute),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	writeRunArtifact(t, runDir, "metadata.txt", "Branch: feat/example\n")
+	writeRunArtifact(t, runDir, "iteration-01-verdict.txt", "VERDICT: revise\nSUMMARY: Needs work\nFINDINGS:\n")
+
+	page, err := readmodel.NewReader(t.TempDir()).ReadRun(runDir)
+	if err != nil {
+		t.Fatalf("ReadRun() error = %v", err)
+	}
+	if !page.Run.Interrupted || page.Run.Status != "Interrupted" || page.Run.Refreshing {
+		t.Fatalf("Run = %#v, want interrupted and not refreshing", page.Run)
+	}
+	if page.Run.Activity != "reviewing" || len(page.Iterations) != 2 || page.Iterations[1].Activity != "reviewing" {
+		t.Fatalf("activity iterations = %#v, want current review activity", page.Iterations)
+	}
+}
+
+func TestReaderReadsLegacyRunValues(t *testing.T) {
+	runDir := filepath.Join(t.TempDir(), ".syl", "runs", "20260920T195033.518469000Z-173")
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeRunArtifact(t, runDir, "metadata.txt", "Branch: feat/legacy\nBranch point: abc123\nWork root: /legacy\n")
+	writeRunArtifact(t, runDir, "summary.txt", "Iterations: 2\nFinal verdict: approve\nSummary: Legacy summary\nDiff stat:\n old.go | 1 +\n")
+
+	page, err := readmodel.NewReader(t.TempDir()).ReadRun(runDir)
+	if err != nil {
+		t.Fatalf("ReadRun() error = %v", err)
+	}
+	if page.Run.Status != "completed" || page.Run.TicketRef != "#173" || page.Run.Kind != runstate.Implement {
+		t.Fatalf("legacy Run = %#v, want completed implement Run", page.Run)
+	}
+	if page.Run.StartedAt.IsZero() || page.Run.EndedAt != nil || page.Run.DurationKnown {
+		t.Fatalf("legacy timing = %#v, want timestamp only", page.Run)
+	}
+}
+
+func writeRunArtifact(t *testing.T, runDir, name, contents string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(runDir, name), []byte(contents), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestReaderMemoizesFinalAndLegacyRunsButRefreshesRunningState(t *testing.T) {
 	sylHome := t.TempDir()
 	project := t.TempDir()
