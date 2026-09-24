@@ -139,6 +139,11 @@ func Read(path string) (State, error) {
 	if err != nil {
 		return State{}, err
 	}
+	return Parse(path, contents)
+}
+
+// Parse decodes and validates a Run state from contents.
+func Parse(path string, contents []byte) (State, error) {
 	var state State
 	if err := json.Unmarshal(contents, &state); err != nil {
 		return State{}, fmt.Errorf("decode run state %s: %w", path, err)

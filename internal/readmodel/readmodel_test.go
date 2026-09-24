@@ -13,7 +13,175 @@ import (
 	"github.com/igorrochap/syl/internal/registry"
 	"github.com/igorrochap/syl/internal/runmarker"
 	"github.com/igorrochap/syl/internal/runstate"
+	"github.com/igorrochap/syl/internal/usage"
 )
+
+func TestReaderReadsProjectRunHistoryNewestFirst(t *testing.T) {
+	sylHome := t.TempDir()
+	project := t.TempDir()
+	if _, err := config.Init(project); err != nil {
+		t.Fatal(err)
+	}
+	writeRegistryEntry(t, sylHome, registry.Entry{
+		Path: project, FirstSeen: time.Date(2026, time.September, 2, 0, 0, 0, 0, time.UTC),
+	})
+
+	writeHistoryRun(t, project, "20260924T120000.000000000Z-running", runstate.State{
+		Status: runstate.Running, Activity: runstate.Implementing, Iteration: 2, MaxIterations: 3,
+		PID: os.Getpid(), Hostname: hostname(t), StartedAt: time.Date(2026, time.September, 24, 12, 0, 0, 0, time.UTC),
+		Kind: runstate.Implement, TicketRef: "#184",
+	}, "Implementer harness: codex\n", usage.Artifact{Entries: []usage.Entry{{
+		Tracked: true, Metrics: &usage.Metrics{TotalTokens: 900000},
+	}}})
+
+	ended := time.Date(2026, time.September, 24, 11, 30, 0, 0, time.UTC)
+	writeHistoryRun(t, project, "20260924T110000.000000000Z-approved", runstate.State{
+		Status: runstate.Approved, Iteration: 1, MaxIterations: 3, EndedAt: &ended,
+		StartedAt: time.Date(2026, time.September, 24, 11, 0, 0, 0, time.UTC),
+		Kind:      runstate.Implement, TicketRef: "#183",
+	}, "Implementer harness: codex\n", usage.Artifact{Entries: []usage.Entry{{
+		Tracked: true, Metrics: &usage.Metrics{TotalTokens: 2200000},
+	}}})
+	if err := os.WriteFile(filepath.Join(project, ".syl", "runs", "20260924T110000.000000000Z-approved", "summary.txt"), []byte("Final verdict: approve\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	writeHistoryRun(t, project, "20260924T100000.000000000Z-review", runstate.State{
+		Status: runstate.Approved, Iteration: 1, MaxIterations: 1, EndedAt: &ended,
+		StartedAt: time.Date(2026, time.September, 24, 10, 0, 0, 0, time.UTC),
+		Kind:      runstate.Review, TicketRef: "release-candidate",
+	}, "Ticket: release-candidate\nReviewer harness: claude\n", usage.Artifact{})
+
+	writeLegacyHistoryRun(t, project, "20260924T090000.000000000Z-182", "Branch: feat/legacy\n", "Iterations: 2\nFinal verdict: approve\n", nil)
+	writeLegacyHistoryRun(t, project, "20260924T080000.000000000Z-181", "Branch: feat/unknown\n", "", []byte("not usage json"))
+	writeLegacyHistoryRun(t, project, "20260924T070000.000000000Z-180", "", "", nil)
+
+	page, err := readmodel.NewReader(sylHome).ReadProject(project)
+	if err != nil {
+		t.Fatalf("ReadProject() error = %v", err)
+	}
+	if page.Project.Health != readmodel.HealthOK || page.Project.IssueTracker != config.TrackerGitHub || page.Project.ReviewLog != config.TrackerLocal {
+		t.Fatalf("Project = %#v, want config and healthy project", page.Project)
+	}
+	if len(page.Runs) != 6 {
+		t.Fatalf("Runs = %d, want 6", len(page.Runs))
+	}
+	if got := page.Runs[0].TicketRef; got != "#184" {
+		t.Fatalf("newest Run ticket = %q, want #184", got)
+	}
+	if page.Runs[0].Status != "running" || page.Runs[0].Activity != "implementing" || page.Runs[0].Iteration != 2 || page.Runs[0].TotalTokens != 900000 {
+		t.Fatalf("running Run = %#v, want live state and usage", page.Runs[0])
+	}
+	if !page.Runs[0].DurationKnown {
+		t.Fatal("running Run duration is unknown")
+	}
+	if page.Runs[1].Status != "approved" || page.Runs[1].Verdict != "approve" || page.Runs[1].TotalTokens != 2200000 {
+		t.Fatalf("approved Run = %#v, want final state, verdict, and usage", page.Runs[1])
+	}
+	if page.Runs[2].Kind != runstate.Review || page.Runs[2].TicketRef != "release-candidate" {
+		t.Fatalf("standalone review = %#v, want non-numeric reference", page.Runs[2])
+	}
+	if page.Runs[3].Status != "completed" || page.Runs[3].TicketRef != "#182" || page.Runs[3].Iteration != 2 || page.Runs[3].Verdict != "approve" {
+		t.Fatalf("legacy completed Run = %#v, want derived values", page.Runs[3])
+	}
+	if page.Runs[4].Status != "unknown" || page.Runs[4].TokensKnown {
+		t.Fatalf("legacy unknown Run = %#v, want unknown status and missing tokens", page.Runs[4])
+	}
+	if page.Runs[5].TicketRef != "" || page.Runs[5].Kind != "" || page.Runs[5].Status != "unknown" {
+		t.Fatalf("incomplete Run = %#v, want missing values", page.Runs[5])
+	}
+}
+
+func TestReaderMemoizesFinalAndLegacyRunsButRefreshesRunningState(t *testing.T) {
+	sylHome := t.TempDir()
+	project := t.TempDir()
+	if _, err := config.Init(project); err != nil {
+		t.Fatal(err)
+	}
+	writeRegistryEntry(t, sylHome, registry.Entry{Path: project})
+
+	finalRun := filepath.Join(project, ".syl", "runs", "20260924T120000.000000000Z-final")
+	runningRun := filepath.Join(project, ".syl", "runs", "20260924T110000.000000000Z-running")
+	started := time.Date(2026, time.September, 24, 11, 0, 0, 0, time.UTC)
+	writeHistoryRun(t, project, filepath.Base(finalRun), runstate.State{
+		Status: runstate.Approved, Iteration: 1, MaxIterations: 1, StartedAt: started,
+		Kind: runstate.Implement, TicketRef: "#1",
+	}, "Branch: final\n", usage.Artifact{Entries: []usage.Entry{{Tracked: true, Metrics: &usage.Metrics{TotalTokens: 10}}}})
+	writeHistoryRun(t, project, filepath.Base(runningRun), runstate.State{
+		Status: runstate.Running, Activity: runstate.Implementing, PID: os.Getpid(), Hostname: hostname(t),
+		StartedAt: started, Kind: runstate.Implement, TicketRef: "#2",
+	}, "Branch: running\n", usage.Artifact{Entries: []usage.Entry{{Tracked: true, Metrics: &usage.Metrics{TotalTokens: 20}}}})
+
+	files := &countingFileSystem{}
+	reader := readmodel.NewReaderWithFileSystem(sylHome, files)
+	if _, err := reader.ReadProject(project); err != nil {
+		t.Fatal(err)
+	}
+	if err := usage.WriteArtifact(filepath.Join(runningRun, "usage.json"), usage.Artifact{Entries: []usage.Entry{{Tracked: true, Metrics: &usage.Metrics{TotalTokens: 30}}}}); err != nil {
+		t.Fatal(err)
+	}
+	page, err := reader.ReadProject(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if files.stateReads != 3 {
+		t.Fatalf("run-state reads = %d, want final once and running twice", files.stateReads)
+	}
+	if files.usageReads != 3 {
+		t.Fatalf("usage reads = %d, want final once and running twice", files.usageReads)
+	}
+	if page.Runs[1].TotalTokens != 30 {
+		t.Fatalf("running Run = %#v, want refreshed usage", page.Runs[1])
+	}
+
+	if err := os.WriteFile(runstate.Path(finalRun), []byte("invalid"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	page, err = reader.ReadProject(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	final := page.Runs[0]
+	if final.Status != "approved" || final.TotalTokens != 10 {
+		t.Fatalf("memoized final Run = %#v, want original values", final)
+	}
+}
+
+func TestReaderShowsHistoryForInvalidAndUninitializedProjects(t *testing.T) {
+	sylHome := t.TempDir()
+	invalidProject := t.TempDir()
+	uninitializedProject := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(invalidProject, ".syl"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(config.Path(invalidProject), []byte("invalid = ["), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeRegistryEntry(t, sylHome, registry.Entry{Path: invalidProject}, registry.Entry{Path: uninitializedProject})
+	for _, project := range []string{invalidProject, uninitializedProject} {
+		writeLegacyHistoryRun(t, project, "20260924T120000.000000000Z-1", "Branch: feat/history\n", "Final verdict: approve\n", nil)
+	}
+
+	reader := readmodel.NewReader(sylHome)
+	for _, test := range []struct {
+		name   string
+		path   string
+		health readmodel.Health
+	}{
+		{name: "invalid", path: invalidProject, health: readmodel.HealthInvalid},
+		{name: "uninitialized", path: uninitializedProject, health: readmodel.HealthUninitialized},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			page, err := reader.ReadProject(test.path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if page.Project.Health != test.health || len(page.Runs) != 1 {
+				t.Fatalf("page = %#v, want %s with one Run", page, test.health)
+			}
+		})
+	}
+}
 
 func TestOverviewReadsProjectHealthAndLiveRuns(t *testing.T) {
 	sylHome := t.TempDir()
@@ -160,6 +328,81 @@ func createMarker(t *testing.T, sylHome, project, runDir, ticket string, pid int
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = marker.Remove() })
+}
+
+func writeRegistryEntry(t *testing.T, sylHome string, entries ...registry.Entry) {
+	t.Helper()
+	contents, err := json.Marshal(entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(sylHome, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(registry.Path(sylHome), contents, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeHistoryRun(t *testing.T, project, name string, state runstate.State, metadata string, artifact usage.Artifact) {
+	t.Helper()
+	runDir := filepath.Join(project, ".syl", "runs", name)
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := runstate.Write(runstate.Path(runDir), state); err != nil {
+		t.Fatal(err)
+	}
+	if metadata != "" {
+		if err := os.WriteFile(filepath.Join(runDir, "metadata.txt"), []byte(metadata), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := usage.WriteArtifact(filepath.Join(runDir, "usage.json"), artifact); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeLegacyHistoryRun(t *testing.T, project, name, metadata, summary string, usageContents []byte) {
+	t.Helper()
+	runDir := filepath.Join(project, ".syl", "runs", name)
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if metadata != "" {
+		if err := os.WriteFile(filepath.Join(runDir, "metadata.txt"), []byte(metadata), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if summary != "" {
+		if err := os.WriteFile(filepath.Join(runDir, "summary.txt"), []byte(summary), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if usageContents != nil {
+		if err := os.WriteFile(filepath.Join(runDir, "usage.json"), usageContents, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+type countingFileSystem struct {
+	stateReads int
+	usageReads int
+}
+
+func (files *countingFileSystem) ReadDir(name string) ([]os.DirEntry, error) {
+	return os.ReadDir(name)
+}
+
+func (files *countingFileSystem) ReadFile(name string) ([]byte, error) {
+	if filepath.Base(name) == "run-state.json" {
+		files.stateReads++
+	}
+	if filepath.Base(name) == "usage.json" {
+		files.usageReads++
+	}
+	return os.ReadFile(name)
 }
 
 func assertProjectHealth(t *testing.T, projects []readmodel.Project, path string, want readmodel.Health) {

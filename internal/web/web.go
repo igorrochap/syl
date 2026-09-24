@@ -23,12 +23,13 @@ import (
 //go:embed templates/*.html static/*
 var assets embed.FS
 
-// Server serves the Overview and its embedded assets.
+// Server serves the Overview, Project pages, and their embedded assets.
 type Server struct {
-	port      int
-	model     func() (readmodel.Overview, error)
-	templates *template.Template
-	assets    http.Handler
+	port         int
+	model        func() (readmodel.Overview, error)
+	projectModel func(string) (readmodel.ProjectPage, error)
+	templates    *template.Template
+	assets       http.Handler
 }
 
 // New constructs a server that reads live state from sylHome for every page request.
@@ -41,11 +42,13 @@ func New(sylHome string, port int) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("prepare web assets: %w", err)
 	}
+	reader := readmodel.NewReader(sylHome)
 	return &Server{
-		port:      port,
-		model:     func() (readmodel.Overview, error) { return readmodel.ReadOverview(sylHome) },
-		templates: templates,
-		assets:    http.StripPrefix("/assets/", http.FileServer(http.FS(staticFiles))),
+		port:         port,
+		model:        reader.ReadOverview,
+		projectModel: reader.ReadProject,
+		templates:    templates,
+		assets:       http.StripPrefix("/assets/", http.FileServer(http.FS(staticFiles))),
 	}, nil
 }
 
@@ -53,6 +56,8 @@ func New(sylHome string, port int) (*Server, error) {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.overview)
+	mux.HandleFunc("/projects", s.project)
+	mux.HandleFunc("/projects/", s.project)
 	mux.Handle("/assets/", s.assets)
 	return hostGuard(s.port, mux)
 }
@@ -106,6 +111,35 @@ func (s *Server) overview(writer http.ResponseWriter, request *http.Request) {
 	s.renderContent(writer)
 }
 
+func (s *Server) project(writer http.ResponseWriter, request *http.Request) {
+	if request.URL.Path != "/projects" && request.URL.Path != "/projects/content" {
+		writer.WriteHeader(http.StatusNotFound)
+		return
+	}
+	projectPath := request.URL.Query().Get("path")
+	if strings.TrimSpace(projectPath) == "" {
+		writer.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	data, err := s.projectData(projectPath)
+	if err != nil {
+		if errors.Is(err, readmodel.ErrProjectNotFound) {
+			writer.WriteHeader(http.StatusNotFound)
+			return
+		}
+		writeServerError(writer, err)
+		return
+	}
+	writer.Header().Set("Content-Type", "text/html; charset=utf-8")
+	templateName := "project"
+	if request.URL.Path == "/projects/content" {
+		templateName = "project-content"
+	}
+	if err := s.templates.ExecuteTemplate(writer, templateName, data); err != nil {
+		return
+	}
+}
+
 func (s *Server) renderPage(writer http.ResponseWriter) {
 	data, err := s.pageData()
 	if err != nil {
@@ -143,6 +177,19 @@ func (s *Server) pageData() (pageData, error) {
 	}, nil
 }
 
+type projectPageData struct {
+	Page readmodel.ProjectPage
+	Port int
+}
+
+func (s *Server) projectData(projectPath string) (projectPageData, error) {
+	page, err := s.projectModel(projectPath)
+	if err != nil {
+		return projectPageData{}, err
+	}
+	return projectPageData{Page: page, Port: s.port}, nil
+}
+
 func hostGuard(port int, next http.Handler) http.Handler {
 	allowedHosts := map[string]struct{}{
 		"127.0.0.1:" + strconv.Itoa(port): {},
@@ -164,17 +211,24 @@ func writeServerError(writer http.ResponseWriter, err error) {
 
 func templateFunctions() template.FuncMap {
 	return template.FuncMap{
-		"activity":      displayActivity,
-		"activityClass": activityClass,
-		"healthClass":   healthClass,
-		"harness":       displayHarness,
-		"iteration":     displayIteration,
-		"kind":          displayKind,
-		"rowClass":      rowClass,
-		"started":       displayStarted,
-		"summary":       displaySummary,
-		"ticket":        displayTicket,
-		"urlquery":      url.QueryEscape,
+		"activity":           displayActivity,
+		"activityClass":      activityClass,
+		"healthClass":        healthClass,
+		"harness":            displayHarness,
+		"historyKind":        historyKind,
+		"historyStatus":      historyStatus,
+		"historyStatusClass": historyStatusClass,
+		"historyTicket":      historyTicket,
+		"historyTokens":      historyTokens,
+		"iteration":          displayIteration,
+		"kind":               displayKind,
+		"rowClass":           rowClass,
+		"started":            displayStarted,
+		"summary":            displaySummary,
+		"ticket":             displayTicket,
+		"duration":           displayDuration,
+		"firstSeen":          displayFirstSeen,
+		"urlquery":           url.QueryEscape,
 	}
 }
 
@@ -299,6 +353,92 @@ func displayTicket(ticketReference string) string {
 		return "—"
 	}
 	return ticketReference
+}
+
+func historyKind(kind runstate.Kind) string {
+	if kind == "" {
+		return "—"
+	}
+	return string(kind)
+}
+
+func historyStatus(status string) string {
+	return status
+}
+
+func historyStatusClass(status string) string {
+	switch status {
+	case "running":
+		return "running"
+	case "Interrupted", "failed":
+		return "red"
+	case "approved":
+		return "green"
+	case "exhausted":
+		return "plum"
+	case "unknown":
+		return "unknown"
+	case "completed":
+		return "completed"
+	default:
+		return "neutral"
+	}
+}
+
+func historyTicket(ticketReference string) string {
+	trimmed := strings.TrimSpace(ticketReference)
+	if trimmed == "" {
+		return "—"
+	}
+	number := strings.TrimPrefix(trimmed, "#")
+	if parsed, err := strconv.Atoi(number); err == nil && parsed > 0 {
+		return "#" + strconv.Itoa(parsed)
+	}
+	return trimmed
+}
+
+func historyTokens(run readmodel.HistoryRun) string {
+	if !run.TokensKnown {
+		return "—"
+	}
+	return formatTokenCount(run.TotalTokens)
+}
+
+func displayDuration(run readmodel.HistoryRun) string {
+	if !run.DurationKnown {
+		return "—"
+	}
+	seconds := int(run.Duration / time.Second)
+	if seconds < 1 {
+		return "0s"
+	}
+	minutes, seconds := seconds/60, seconds%60
+	hours, minutes := minutes/60, minutes%60
+	if hours > 0 {
+		return strconv.Itoa(hours) + "h " + strconv.Itoa(minutes) + "m"
+	}
+	if minutes > 0 {
+		return strconv.Itoa(minutes) + "m"
+	}
+	return strconv.Itoa(seconds) + "s"
+}
+
+func displayFirstSeen(firstSeen time.Time) string {
+	if firstSeen.IsZero() {
+		return "—"
+	}
+	return firstSeen.UTC().Format("2 Jan 2006")
+}
+
+func formatTokenCount(tokens int64) string {
+	switch {
+	case tokens >= 1_000_000:
+		return fmt.Sprintf("%.1fM", float64(tokens)/1_000_000)
+	case tokens >= 1_000:
+		return fmt.Sprintf("%.1fk", float64(tokens)/1_000)
+	default:
+		return strconv.FormatInt(tokens, 10)
+	}
 }
 
 func localHostname() string {

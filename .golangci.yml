@@ -122,6 +122,7 @@ linters:
             - github.com/igorrochap/syl/internal/registry$
             - github.com/igorrochap/syl/internal/runmarker$
             - github.com/igorrochap/syl/internal/runstate$
+            - github.com/igorrochap/syl/internal/usage$
           deny:
             - pkg: github.com/igorrochap/syl
               desc: the read model owns reads and must not depend on presentation packages

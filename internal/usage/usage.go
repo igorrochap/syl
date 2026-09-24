@@ -122,6 +122,11 @@ func ReadArtifact(path string) (Artifact, error) {
 	if err != nil {
 		return Artifact{}, err
 	}
+	return ParseArtifact(path, contents)
+}
+
+// ParseArtifact decodes and validates a usage artifact from contents.
+func ParseArtifact(path string, contents []byte) (Artifact, error) {
 	var artifact Artifact
 	if err := json.Unmarshal(contents, &artifact); err != nil {
 		return Artifact{}, fmt.Errorf("decode usage artifact %s: %w", path, err)
