@@ -30,6 +30,8 @@ linters:
             - "!**/internal/registry/*.go"
             - "!**/internal/runmarker/*.go"
             - "!**/internal/runstate/*.go"
+            - "!**/internal/readmodel/*.go"
+            - "!**/internal/web/*.go"
             - "!**/internal/adapters/gh/*.go"
             - "!**/internal/adapters/glab/*.go"
             - "!**/internal/adapters/git/*.go"
@@ -85,6 +87,7 @@ linters:
             - github.com/igorrochap/syl/internal/updater$
             - github.com/igorrochap/syl/internal/usage$
             - github.com/igorrochap/syl/internal/version$
+            - github.com/igorrochap/syl/internal/web$
           deny:
             - pkg: github.com/igorrochap/syl
               desc: command packages may depend on application packages and ports, not concrete harness adapters
@@ -107,6 +110,34 @@ linters:
           deny:
             - pkg: github.com/igorrochap/syl
               desc: orchestration depends on ports and support packages, not command or adapter packages
+        readmodel:
+          files:
+            - "**/internal/readmodel/*.go"
+          list-mode: lax
+          allow:
+            - $gostd
+            - github.com
+            - golang.org
+            - github.com/igorrochap/syl/internal/config$
+            - github.com/igorrochap/syl/internal/registry$
+            - github.com/igorrochap/syl/internal/runmarker$
+            - github.com/igorrochap/syl/internal/runstate$
+          deny:
+            - pkg: github.com/igorrochap/syl
+              desc: the read model owns reads and must not depend on presentation packages
+        web:
+          files:
+            - "**/internal/web/*.go"
+          list-mode: lax
+          allow:
+            - $gostd
+            - github.com
+            - golang.org
+            - github.com/igorrochap/syl/internal/readmodel$
+            - github.com/igorrochap/syl/internal/runstate$
+          deny:
+            - pkg: github.com/igorrochap/syl
+              desc: the web adapter renders the read model without depending on command or workflow packages
         harness:
           files:
             - "**/internal/harness/*.go"

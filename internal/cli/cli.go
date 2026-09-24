@@ -6,6 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
+	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
 
@@ -20,17 +23,20 @@ import (
 	"github.com/igorrochap/syl/internal/ui"
 	"github.com/igorrochap/syl/internal/updater"
 	"github.com/igorrochap/syl/internal/version"
+	"github.com/igorrochap/syl/internal/web"
 	"github.com/spf13/cobra"
 )
 
 type Dependencies struct {
-	Input     io.Reader
-	Harnesses func(root string) map[string]harness.Adapter
-	Notifier  orchestration.Notifier
-	GH        func(root string) tracker.GHRunner
-	GLab      func(root string) tracker.GLabRunner
-	Git       func(root string) orchestration.GitRunner
-	Updater   updater.Runner
+	Input         io.Reader
+	Harnesses     func(root string) map[string]harness.Adapter
+	Notifier      orchestration.Notifier
+	GH            func(root string) tracker.GHRunner
+	GLab          func(root string) tracker.GLabRunner
+	Git           func(root string) orchestration.GitRunner
+	Updater       updater.Runner
+	BrowserOpener func(url string) error
+	Listen        func(network, address string) (net.Listener, error)
 }
 
 type App struct {
@@ -107,10 +113,61 @@ func (a *App) Command() *cobra.Command {
 		a.reviewCommand(),
 		a.resumeCommand(),
 		a.usageCommand(),
+		a.uiCommand(),
 		a.versionCommand(),
 		a.updateCommand(),
 	)
 	return root
+}
+
+func (a *App) uiCommand() *cobra.Command {
+	var port int
+	var noOpen bool
+	command := &cobra.Command{
+		Use:   "ui",
+		Short: "serve the local Overview web panel",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if port < 1 || port > 65535 {
+				return fmt.Errorf("ui port must be between 1 and 65535, got %d", port)
+			}
+			listener, err := a.uiListener(port)
+			if err != nil {
+				return fmt.Errorf("start ui on port %d: %w", port, err)
+			}
+			server, err := web.New(a.sylHome, port)
+			if err != nil {
+				_ = listener.Close()
+				return err
+			}
+			if !noOpen {
+				if err := a.openBrowser(fmt.Sprintf("http://127.0.0.1:%d/", port)); err != nil {
+					_ = listener.Close()
+					return fmt.Errorf("open ui in browser: %w", err)
+				}
+			}
+			contextToCancel, stop := signal.NotifyContext(cmd.Context(), os.Interrupt)
+			defer stop()
+			return server.Serve(contextToCancel, listener)
+		},
+	}
+	command.Flags().IntVar(&port, "port", 7777, "listen on this loopback port")
+	command.Flags().BoolVar(&noOpen, "no-open", false, "do not open the Overview in a browser")
+	return command
+}
+
+func (a *App) uiListener(port int) (net.Listener, error) {
+	if a.deps.Listen != nil {
+		return a.deps.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	}
+	return net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+}
+
+func (a *App) openBrowser(url string) error {
+	if a.deps.BrowserOpener != nil {
+		return a.deps.BrowserOpener(url)
+	}
+	return openBrowser(url)
 }
 
 func (a *App) syncCommand() *cobra.Command {

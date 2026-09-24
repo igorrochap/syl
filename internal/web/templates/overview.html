@@ -1,0 +1,102 @@
+{{define "overview"}}
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>syl ui — Overview</title>
+<link rel="stylesheet" href="/assets/fonts.css">
+<link rel="stylesheet" href="/assets/style.css">
+</head>
+<body class="syl syl-dark">
+<header>
+<a class="wordmark" href="/">syl<span>/ui</span></a>
+<nav class="nav" aria-label="Primary"><a href="/">Overview</a></nav>
+<div class="server-state"><span class="live-dot"></span><span>127.0.0.1:{{.Port}} · refreshing every 3s</span></div>
+<button class="theme-toggle" type="button" aria-label="Switch to light theme" onclick="toggleTheme()">
+<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"></path></svg><span>Dark</span>
+</button>
+</header>
+<main>
+{{template "overview-content" .}}
+</main>
+<script src="/assets/htmx.min.js"></script>
+<script>
+(function(){
+  var root=document.body;
+  window.setTheme=function(theme){
+    root.classList.toggle('syl-light',theme==='light');
+    root.classList.toggle('syl-dark',theme!=='light');
+    var button=document.querySelector('.theme-toggle');
+    if(button){button.querySelector('span').textContent=theme==='light'?'Light':'Dark';button.setAttribute('aria-label',theme==='light'?'Switch to dark theme':'Switch to light theme');}
+  };
+  window.toggleTheme=function(){var light=root.classList.contains('syl-light');var theme=light?'dark':'light';setTheme(theme);localStorage.setItem('syl-theme',theme);};
+  var saved=localStorage.getItem('syl-theme');
+  if(saved==='light'){setTheme('light');}
+  document.addEventListener('click',function(event){
+    var button=event.target.closest('[data-copy-path]');
+    if(!button){return;}
+    navigator.clipboard.writeText(button.getAttribute('data-copy-path')).then(function(){button.textContent='Copied';window.setTimeout(function(){button.textContent='Copy path';},1200);});
+  });
+}());
+</script>
+</body>
+</html>
+{{end}}
+
+{{define "overview-content"}}
+<div id="overview-content" hx-get="/overview/content" hx-trigger="every 3s" hx-target="#overview-content" hx-swap="outerHTML">
+<div class="page-heading"><h1>Overview</h1><span>{{.TotalRunCount}} live Runs across {{len .Overview.Projects}} Projects</span></div>
+
+{{if .Overview.AwaitingAnswer}}
+<section class="section waiting">
+<h2>Waiting for your answer · {{len .Overview.AwaitingAnswer}}</h2>
+{{range .Overview.AwaitingAnswer}}
+<div class="waiting-card">
+<div class="run-meta"><span class="pill pill-amber">awaiting-answer</span><a href="/projects?path={{urlquery .ProjectPath}}">{{.ProjectName}}</a><code>{{ticket .TicketRef}}</code><span class="muted">{{kind .Kind}} · iteration {{iteration .Iteration .MaxIterations}}</span><span class="ago">{{started .StartedAt}}</span></div>
+<blockquote class="question">{{.Question}}</blockquote>
+<div class="run-footer"><span>Answer in the terminal running this Run. Work root:</span><code class="work-root">{{.WorkRoot}}</code><button class="copy-button" type="button" data-copy-path="{{.WorkRoot}}">Copy path</button></div>
+</div>
+{{end}}
+</section>
+{{end}}
+
+<section class="section">
+<h2>Live Runs · {{len .Overview.LiveRuns}}</h2>
+{{if .Overview.LiveRuns}}
+<div class="run-table">
+<div class="run-grid header"><span>Project</span><span>Ticket</span><span>Activity</span><span>Iteration</span><span>Harness</span><span>Started</span><span></span></div>
+{{range .Overview.LiveRuns}}
+<div class="run-grid row {{rowClass .}}">
+<a class="project" href="/projects?path={{urlquery .ProjectPath}}">{{.ProjectName}}</a>
+<a class="ticket" href="/runs?path={{urlquery .RunDir}}">{{ticket .TicketRef}}</a>
+<span><span class="activity {{activityClass .}}"><span class="activity-dot"></span>{{activity .}}</span>{{if .Interrupted}}<span class="last-seen">last seen {{.Activity}} · pid {{.PID}} gone</span>{{else if .Hostname}}{{if ne .Hostname $.LocalHostname}}<span class="last-seen">host {{.Hostname}}</span>{{end}}{{end}}</span>
+<span class="iteration">{{iteration .Iteration .MaxIterations}}</span>
+<span class="harness">{{harness .Harness .Model}}</span>
+<span class="started">{{started .StartedAt}}</span><span></span>
+</div>
+{{end}}
+</div>
+{{else}}
+<div class="empty-state">No live Runs.</div>
+{{end}}
+</section>
+
+<section class="section">
+<h2>Projects · {{len .Overview.Projects}}</h2>
+{{if .Overview.Projects}}
+<div class="project-grid">
+{{range .Overview.Projects}}
+<a class="project-card {{if eq .Health "missing"}}missing{{end}}" href="/projects?path={{urlquery .Path}}">
+<div class="project-heading"><strong>{{.Name}}</strong><span class="pill {{healthClass .Health}}">{{.Health}}</span></div>
+<span class="project-path">{{.Path}}</span>
+<span class="project-summary">{{summary .}}</span>
+</a>
+{{end}}
+</div>
+{{else}}
+<div class="empty-state">No Projects registered yet. Projects appear here after any <code>syl</code> command runs in them.</div>
+{{end}}
+</section>
+</div>
+{{end}}
