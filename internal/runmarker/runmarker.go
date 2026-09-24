@@ -75,6 +75,19 @@ func (m *Marker) Remove() error {
 	return nil
 }
 
+// Remove deletes the marker for pointer. Removing an already absent marker succeeds.
+func Remove(sylHome string, pointer Pointer) error {
+	if sylHome == "" {
+		return errors.New("syl home is required")
+	}
+	markerPath := filepath.Join(
+		sylHome,
+		activeDirectory,
+		markerFileName(filepath.Base(pointer.RunDir), filepath.Clean(pointer.ProjectPath)),
+	)
+	return (&Marker{path: markerPath}).Remove()
+}
+
 // List returns the pointers recorded in sylHome/active.
 func List(sylHome string) ([]Pointer, error) {
 	if sylHome == "" {

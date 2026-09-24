@@ -162,6 +162,106 @@ func TestUpsertReportsSylHomeWriteFailure(t *testing.T) {
 	}
 }
 
+func TestForgetRemovesOnlyTheRequestedProjectAtomically(t *testing.T) {
+	sylHome := t.TempDir()
+	firstProject := t.TempDir()
+	secondProject := t.TempDir()
+	if err := registry.Upsert(sylHome, firstProject); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Upsert(sylHome, secondProject); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := registry.Forget(sylHome, firstProject); err != nil {
+		t.Fatalf("Forget() error = %v", err)
+	}
+
+	entries, err := registry.List(sylHome)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolvedSecondProject, err := filepath.EvalSymlinks(secondProject)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Path != resolvedSecondProject {
+		t.Fatalf("entries = %#v, want only %q", entries, resolvedSecondProject)
+	}
+	temporaryPaths, err := filepath.Glob(filepath.Join(sylHome, ".projects.json-*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(temporaryPaths) != 0 {
+		t.Fatalf("temporary registry paths = %#v, want none", temporaryPaths)
+	}
+}
+
+func TestForgetCanRemoveMissingProject(t *testing.T) {
+	sylHome := t.TempDir()
+	missingProject := filepath.Join(t.TempDir(), "missing")
+	if err := os.WriteFile(registry.Path(sylHome), []byte(`[{"path":"`+missingProject+`"}]`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := registry.Forget(sylHome, missingProject); err != nil {
+		t.Fatalf("Forget() error = %v", err)
+	}
+	entries, err := registry.List(sylHome)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("entries = %#v, want empty registry", entries)
+	}
+}
+
+func TestForgetValidatesArguments(t *testing.T) {
+	if err := registry.Forget("", t.TempDir()); err == nil {
+		t.Fatal("Forget() with empty syl home succeeded")
+	}
+	if err := registry.Forget(t.TempDir(), ""); err == nil {
+		t.Fatal("Forget() with empty project path succeeded")
+	}
+	if err := registry.Forget(t.TempDir(), "bad\x00path"); err == nil {
+		t.Fatal("Forget() with an invalid project path succeeded")
+	}
+}
+
+func TestForgetKeepsRegistryWhenProjectIsNotRegistered(t *testing.T) {
+	sylHome := t.TempDir()
+	registeredProject := t.TempDir()
+	otherProject := t.TempDir()
+	if err := registry.Upsert(sylHome, registeredProject); err != nil {
+		t.Fatal(err)
+	}
+
+	before, err := os.ReadFile(registry.Path(sylHome))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Forget(sylHome, otherProject); err != nil {
+		t.Fatalf("Forget() error = %v", err)
+	}
+	after, err := os.ReadFile(registry.Path(sylHome))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Fatalf("registry changed from %q to %q", before, after)
+	}
+}
+
+func TestForgetReportsUnreadableRegistry(t *testing.T) {
+	sylHome := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(sylHome, []byte("file"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Forget(sylHome, t.TempDir()); err == nil {
+		t.Fatal("Forget() with an unreadable registry succeeded")
+	}
+}
+
 func readEntries(t *testing.T, path string) []map[string]json.RawMessage {
 	t.Helper()
 	contents, err := os.ReadFile(path)

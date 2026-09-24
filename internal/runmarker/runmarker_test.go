@@ -209,6 +209,40 @@ func TestListReturnsEmptyWhenActiveDirectoryDoesNotExist(t *testing.T) {
 	}
 }
 
+func TestRemoveDeletesPointerMarker(t *testing.T) {
+	sylHome := t.TempDir()
+	project := t.TempDir()
+	runDir := filepath.Join(project, ".syl", "runs", "run-1")
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Create(sylHome, project, runDir, "#183", 1, "host"); err != nil {
+		t.Fatal(err)
+	}
+
+	pointers, err := List(sylHome)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pointers) != 1 {
+		t.Fatalf("List() = %#v, want one pointer", pointers)
+	}
+	pointer := pointers[0]
+	if err := Remove(sylHome, pointer); err != nil {
+		t.Fatalf("Remove() error = %v", err)
+	}
+	pointers, err = List(sylHome)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pointers) != 0 {
+		t.Fatalf("List() after Remove = %#v, want empty", pointers)
+	}
+	if err := Remove("", pointer); err == nil {
+		t.Fatal("Remove() with empty syl home succeeded")
+	}
+}
+
 func TestListReportsInvalidHomeAndMarker(t *testing.T) {
 	if _, err := List(""); err == nil {
 		t.Fatal("List() with empty syl home succeeded")

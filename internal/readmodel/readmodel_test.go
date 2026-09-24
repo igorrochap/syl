@@ -2,6 +2,7 @@ package readmodel_test
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -283,6 +284,160 @@ func TestOverviewShowsUnknownRunWhenStateCannotBeRead(t *testing.T) {
 	}
 	if string(contents) != "before" {
 		t.Fatalf("run-state.json = %q, want unchanged", contents)
+	}
+}
+
+func TestDismissRemovesOnlyInterruptedMarkerAndLeavesRunUntouched(t *testing.T) {
+	sylHome := t.TempDir()
+	project := t.TempDir()
+	runDir := filepath.Join(project, ".syl", "runs", "interrupted")
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	state := runstate.State{
+		Status: runstate.Running, Activity: runstate.Implementing, PID: 999999,
+		Hostname: hostname(t), StartedAt: time.Now().UTC(), Kind: runstate.Implement, TicketRef: "#183",
+	}
+	if err := runstate.Write(runstate.Path(runDir), state); err != nil {
+		t.Fatal(err)
+	}
+	beforeState, err := os.ReadFile(runstate.Path(runDir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runmarker.Create(sylHome, project, runDir, state.TicketRef, state.PID, state.Hostname); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := readmodel.Dismiss(sylHome, runDir); err != nil {
+		t.Fatalf("Dismiss() error = %v", err)
+	}
+	markers, err := runmarker.List(sylHome)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(markers) != 0 {
+		t.Fatalf("markers = %#v, want empty", markers)
+	}
+	afterState, err := os.ReadFile(runstate.Path(runDir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(afterState) != string(beforeState) {
+		t.Fatalf("run-state.json changed from %q to %q", beforeState, afterState)
+	}
+}
+
+func TestDismissRefusesLiveRunAndKeepsMarker(t *testing.T) {
+	sylHome := t.TempDir()
+	project := t.TempDir()
+	runDir := filepath.Join(project, ".syl", "runs", "live")
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	state := runstate.State{
+		Status: runstate.Running, Activity: runstate.Implementing, PID: os.Getpid(),
+		Hostname: hostname(t), StartedAt: time.Now().UTC(), Kind: runstate.Implement, TicketRef: "#183",
+	}
+	if err := runstate.Write(runstate.Path(runDir), state); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runmarker.Create(sylHome, project, runDir, state.TicketRef, state.PID, state.Hostname); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := readmodel.Dismiss(sylHome, runDir); !errors.Is(err, readmodel.ErrRunNotInterrupted) {
+		t.Fatalf("Dismiss() error = %v, want ErrRunNotInterrupted", err)
+	}
+	markers, err := runmarker.List(sylHome)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(markers) != 1 {
+		t.Fatalf("markers = %#v, want live marker preserved", markers)
+	}
+}
+
+func TestForgetDelegatesToRegistry(t *testing.T) {
+	sylHome := t.TempDir()
+	project := t.TempDir()
+	writeRegistry(t, sylHome, project)
+
+	if err := readmodel.Forget(sylHome, project); err != nil {
+		t.Fatalf("Forget() error = %v", err)
+	}
+	entries, err := registry.List(sylHome)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("registry entries = %#v, want empty", entries)
+	}
+}
+
+func TestDismissReportsInvalidAndUnknownRuns(t *testing.T) {
+	sylHome := t.TempDir()
+	if err := readmodel.Dismiss(sylHome, " "); err == nil {
+		t.Fatal("Dismiss() with blank Run directory succeeded")
+	}
+	if err := readmodel.Dismiss(sylHome, filepath.Join(t.TempDir(), "missing")); err == nil {
+		t.Fatal("Dismiss() with missing Run directory succeeded")
+	}
+	runDir := t.TempDir()
+	if err := readmodel.Dismiss(sylHome, runDir); !errors.Is(err, readmodel.ErrRunMarkerNotFound) {
+		t.Fatalf("Dismiss() error = %v, want ErrRunMarkerNotFound", err)
+	}
+	if err := readmodel.Dismiss("", runDir); err == nil {
+		t.Fatal("Dismiss() with invalid syl home succeeded")
+	}
+}
+
+func TestDismissReportsUnreadableRunState(t *testing.T) {
+	sylHome := t.TempDir()
+	project := t.TempDir()
+	runDir := filepath.Join(project, ".syl", "runs", "corrupt")
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(runstate.Path(runDir), []byte("not json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	createMarker(t, sylHome, project, runDir, "#183", 999999, hostname(t))
+
+	if err := readmodel.Dismiss(sylHome, runDir); err == nil {
+		t.Fatal("Dismiss() with corrupt Run state succeeded")
+	}
+}
+
+func TestDismissRefusesFinishedAndRemoteRuns(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		status     runstate.Status
+		markerHost string
+	}{
+		{name: "finished", status: runstate.Approved, markerHost: hostname(t)},
+		{name: "remote", status: runstate.Running, markerHost: "remote-host"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			sylHome := t.TempDir()
+			project := t.TempDir()
+			runDir := filepath.Join(project, ".syl", "runs", test.name)
+			if err := os.MkdirAll(runDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			state := runstate.State{
+				Status: test.status, Activity: runstate.Implementing, PID: 999999,
+				Hostname: hostname(t), StartedAt: time.Now().UTC(), Kind: runstate.Implement,
+			}
+			if err := runstate.Write(runstate.Path(runDir), state); err != nil {
+				t.Fatal(err)
+			}
+			createMarker(t, sylHome, project, runDir, "#183", state.PID, test.markerHost)
+
+			if err := readmodel.Dismiss(sylHome, runDir); !errors.Is(err, readmodel.ErrRunNotInterrupted) {
+				t.Fatalf("Dismiss() error = %v, want ErrRunNotInterrupted", err)
+			}
+		})
 	}
 }
 

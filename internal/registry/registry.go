@@ -73,6 +73,54 @@ func Upsert(sylHome, projectRoot string) error {
 	return readErr
 }
 
+// Forget removes projectRoot from the registry without touching the Project.
+// The registry replacement is atomic when an entry is removed.
+func Forget(sylHome, projectRoot string) error {
+	if sylHome == "" {
+		return fmt.Errorf("syl home is required")
+	}
+	if projectRoot == "" {
+		return fmt.Errorf("project path is required")
+	}
+
+	projectPath, err := normalizeForgetPath(projectRoot)
+	if err != nil {
+		return err
+	}
+
+	registryPath := Path(sylHome)
+	entries, readErr := read(registryPath)
+	if readErr != nil && entries == nil {
+		return readErr
+	}
+
+	remaining := entries[:0]
+	removed := false
+	for _, entry := range entries {
+		if pathsMatch(entry.Path, projectPath) {
+			removed = true
+			continue
+		}
+		remaining = append(remaining, entry)
+	}
+	if !removed {
+		return readErr
+	}
+
+	if err := write(sylHome, registryPath, remaining); err != nil {
+		return err
+	}
+	return readErr
+}
+
+func pathsMatch(entryPath, projectPath string) bool {
+	if entryPath == projectPath {
+		return true
+	}
+	normalizedEntryPath, err := normalizeForgetPath(entryPath)
+	return err == nil && normalizedEntryPath == projectPath
+}
+
 func normalizeProjectPath(projectRoot string) (string, error) {
 	absolutePath, err := filepath.Abs(projectRoot)
 	if err != nil {
@@ -83,6 +131,21 @@ func normalizeProjectPath(projectRoot string) (string, error) {
 		return "", fmt.Errorf("resolve Project path %s: %w", absolutePath, err)
 	}
 	return filepath.Clean(resolvedPath), nil
+}
+
+func normalizeForgetPath(projectRoot string) (string, error) {
+	absolutePath, err := filepath.Abs(projectRoot)
+	if err != nil {
+		return "", fmt.Errorf("make Project path absolute: %w", err)
+	}
+	resolvedPath, err := filepath.EvalSymlinks(absolutePath)
+	if err == nil {
+		return filepath.Clean(resolvedPath), nil
+	}
+	if !os.IsNotExist(err) {
+		return "", fmt.Errorf("resolve Project path %s: %w", absolutePath, err)
+	}
+	return filepath.Clean(absolutePath), nil
 }
 
 func read(path string) ([]Entry, error) {
