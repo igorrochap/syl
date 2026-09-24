@@ -180,8 +180,11 @@ func applyRunMetadataLine(metadata *runMetadata, line string) {
 	if !ok {
 		return
 	}
-	value = strings.TrimSpace(value)
-	switch strings.ToLower(strings.TrimSpace(key)) {
+	applyRunMetadataField(metadata, strings.ToLower(strings.TrimSpace(key)), strings.TrimSpace(value))
+}
+
+func applyRunMetadataField(metadata *runMetadata, key, value string) {
+	switch key {
 	case "branch":
 		metadata.branch = value
 		metadata.kind = runstate.Implement
@@ -251,19 +254,44 @@ func (reader *Reader) buildRunDetail(runDir string, metadata runMetadata, summar
 		Status:      legacyRunStatus(summaryExists),
 		StartedAt:   parseRunDirectoryTimestamp(filepath.Base(runDir)),
 	}
+	detail = applyLegacyRunTicket(detail, runDir)
+	state, ok := reader.readRunState(runDir)
+	if !ok {
+		return detail
+	}
+	return applyRunState(detail, state, runDir)
+}
+
+func applyLegacyRunTicket(detail RunDetail, runDir string) RunDetail {
 	if detail.Kind == runstate.Implement && detail.TicketRef == "" {
 		if number := legacyTicketNumber(filepath.Base(runDir)); number != "" {
 			detail.TicketRef = "#" + number
 		}
 	}
+	return detail
+}
+
+func (reader *Reader) readRunState(runDir string) (runstate.State, bool) {
 	contents, err := reader.files.ReadFile(runstate.Path(runDir))
 	if err != nil {
-		return detail
+		return runstate.State{}, false
 	}
 	state, err := runstate.Parse(runstate.Path(runDir), contents)
 	if err != nil {
-		return detail
+		return runstate.State{}, false
 	}
+	return state, true
+}
+
+func applyRunState(detail RunDetail, state runstate.State, runDir string) RunDetail {
+	applyRunStateValues(&detail, state, runDir)
+	applyRunStateTiming(&detail, state)
+	applyRunStateStatus(&detail, state)
+	detail.Refreshing = state.Status == runstate.Running && !detail.Interrupted
+	return detail
+}
+
+func applyRunStateValues(detail *RunDetail, state runstate.State, runDir string) {
 	if state.TicketRef != "" {
 		detail.TicketRef = state.TicketRef
 	}
@@ -278,6 +306,9 @@ func (reader *Reader) buildRunDetail(runDir string, metadata runMetadata, summar
 	if detail.StartedAt.IsZero() {
 		detail.StartedAt = parseRunDirectoryTimestamp(filepath.Base(runDir))
 	}
+}
+
+func applyRunStateTiming(detail *RunDetail, state runstate.State) {
 	if state.EndedAt != nil {
 		endedAt := *state.EndedAt
 		detail.EndedAt = &endedAt
@@ -285,14 +316,15 @@ func (reader *Reader) buildRunDetail(runDir string, metadata runMetadata, summar
 	} else if state.Status == runstate.Running {
 		detail.Duration, detail.DurationKnown = historyDuration(detail.StartedAt, nil)
 	}
+}
+
+func applyRunStateStatus(detail *RunDetail, state runstate.State) {
 	if state.Status == runstate.Running && isLocalHost("", state.Hostname, currentHostname()) {
 		detail.Interrupted = !processIsAlive(state.PID)
 	}
 	if detail.Interrupted {
 		detail.Status = "Interrupted"
 	}
-	detail.Refreshing = state.Status == runstate.Running && !detail.Interrupted
-	return detail
 }
 
 func legacyRunStatus(summaryExists bool) string {
@@ -317,63 +349,102 @@ func (reader *Reader) buildIterations(
 	artifact usage.Artifact,
 	metadata runMetadata,
 ) []Iteration {
-	iterations := make(map[int]map[string]map[string]bool)
-	verdictNames := make(map[int]string)
-	addIteration := func(number int) {
-		if number <= 0 {
-			return
-		}
-		if iterations[number] == nil {
-			iterations[number] = make(map[string]map[string]bool)
-		}
+	index := collectIterationEntries(entries)
+	for _, session := range sessions {
+		index.addRole(session.Iteration, session.Role)
 	}
-	addRole := func(number int, role string) {
-		addIteration(number)
-		if role == "" {
-			return
-		}
-		if iterations[number][role] == nil {
-			iterations[number][role] = make(map[string]bool)
-		}
+	for _, entry := range artifact.Entries {
+		index.addRole(normalizeIteration(entry.Iteration), entry.Role)
 	}
+	index.addDetail(detail)
+	index.addSummary(reader.readOptional(filepath.Join(runDir, "summary.txt")))
+	index.addLegacyReview(metadata)
+	return reader.buildIterationResults(index, runDir, detail, artifact, metadata)
+}
+
+type iterationIndex struct {
+	iterations   map[int]map[string]map[string]bool
+	verdictNames map[int]string
+}
+
+func newIterationIndex() iterationIndex {
+	return iterationIndex{
+		iterations:   make(map[int]map[string]map[string]bool),
+		verdictNames: make(map[int]string),
+	}
+}
+
+func collectIterationEntries(entries []os.DirEntry) iterationIndex {
+	index := newIterationIndex()
 	for _, entry := range entries {
 		if entry.IsDir() {
 			continue
 		}
 		iteration, role, artifactName, ok := parseRunArtifact(entry.Name())
 		if ok {
-			addRole(iteration, role)
-			iterations[iteration][role][artifactName] = true
+			index.addRole(iteration, role)
+			index.iterations[iteration][role][artifactName] = true
 			continue
 		}
 		if parsedIteration, ok := parseRunVerdict(entry.Name()); ok {
-			addIteration(parsedIteration)
-			verdictNames[parsedIteration] = entry.Name()
+			index.addIteration(parsedIteration)
+			index.verdictNames[parsedIteration] = entry.Name()
 		}
 	}
-	for _, session := range sessions {
-		addRole(session.Iteration, session.Role)
-	}
-	for _, entry := range artifact.Entries {
-		addRole(normalizeIteration(entry.Iteration), entry.Role)
-	}
-	if detail.Iteration > 0 {
-		addIteration(detail.Iteration)
-		if role := activityRole(detail.Activity); role != "" {
-			addRole(detail.Iteration, role)
-		}
-	}
-	if summary, ok := reader.readOptional(filepath.Join(runDir, "summary.txt")); ok {
-		if number := summaryIterations(string(summary)); number > 0 {
-			addIteration(number)
-		}
-	}
-	if metadata.kind == runstate.Review && len(iterations) == 0 {
-		addIteration(1)
-	}
+	return index
+}
 
-	result := make([]Iteration, 0, len(iterations))
-	for number, roles := range iterations {
+func (index *iterationIndex) addIteration(number int) {
+	if number <= 0 {
+		return
+	}
+	if index.iterations[number] == nil {
+		index.iterations[number] = make(map[string]map[string]bool)
+	}
+}
+
+func (index *iterationIndex) addRole(number int, role string) {
+	index.addIteration(number)
+	if role == "" {
+		return
+	}
+	if index.iterations[number][role] == nil {
+		index.iterations[number][role] = make(map[string]bool)
+	}
+}
+
+func (index *iterationIndex) addDetail(detail RunDetail) {
+	if detail.Iteration <= 0 {
+		return
+	}
+	index.addIteration(detail.Iteration)
+	role := activityRole(detail.Activity)
+	if role == "" {
+		return
+	}
+	index.addRole(detail.Iteration, role)
+}
+
+func (index *iterationIndex) addSummary(summary []byte, exists bool) {
+	if !exists {
+		return
+	}
+	number := summaryIterations(string(summary))
+	if number <= 0 {
+		return
+	}
+	index.addIteration(number)
+}
+
+func (index *iterationIndex) addLegacyReview(metadata runMetadata) {
+	if metadata.kind == runstate.Review && len(index.iterations) == 0 {
+		index.addIteration(1)
+	}
+}
+
+func (reader *Reader) buildIterationResults(index iterationIndex, runDir string, detail RunDetail, artifact usage.Artifact, metadata runMetadata) []Iteration {
+	result := make([]Iteration, 0, len(index.iterations))
+	for number, roles := range index.iterations {
 		item := Iteration{Number: number}
 		if detail.Iteration == number && detail.Activity != "" {
 			item.Activity = detail.Activity
@@ -382,7 +453,7 @@ func (reader *Reader) buildIterations(
 		for _, role := range roleNames {
 			item.Roles = append(item.Roles, buildRoleRun(number, role, roles[role], artifact, metadata, detail.ProjectPath))
 		}
-		if verdictName := verdictNames[number]; verdictName != "" {
+		if verdictName := index.verdictNames[number]; verdictName != "" {
 			item = reader.addVerdict(runDir, item, verdictName)
 		}
 		result = append(result, item)
@@ -502,6 +573,13 @@ func findingsOfKind(findings []verdict.Finding, kind verdict.FindingKind) []verd
 }
 
 func buildRoleUsage(artifact usage.Artifact, iterations []Iteration, metadata runMetadata) []RoleUsage {
+	roles := roleUsageFromIterations(iterations)
+	mergeUsageEntries(roles, artifact.Entries)
+	completeRoleUsage(roles, metadata)
+	return sortedRoleUsage(roles)
+}
+
+func roleUsageFromIterations(iterations []Iteration) map[string]RoleUsage {
 	roles := make(map[string]RoleUsage)
 	for _, iteration := range iterations {
 		for _, role := range iteration.Roles {
@@ -510,7 +588,11 @@ func buildRoleUsage(artifact usage.Artifact, iterations []Iteration, metadata ru
 			}
 		}
 	}
-	for _, entry := range artifact.Entries {
+	return roles
+}
+
+func mergeUsageEntries(roles map[string]RoleUsage, entries []usage.Entry) {
+	for _, entry := range entries {
 		current := roles[entry.Role]
 		if current.Role == "" {
 			current = RoleUsage{Role: entry.Role, Harness: entry.Harness, Model: entry.Model}
@@ -530,12 +612,18 @@ func buildRoleUsage(artifact usage.Artifact, iterations []Iteration, metadata ru
 		}
 		roles[entry.Role] = current
 	}
+}
+
+func completeRoleUsage(roles map[string]RoleUsage, metadata runMetadata) {
 	for role, current := range roles {
 		if current.Harness == "" {
 			current.Harness = harnessForRole(metadata, role)
 		}
 		roles[role] = current
 	}
+}
+
+func sortedRoleUsage(roles map[string]RoleUsage) []RoleUsage {
 	result := make([]RoleUsage, 0, len(roles))
 	for _, current := range roles {
 		result = append(result, current)
@@ -620,14 +708,24 @@ func activityRole(activity string) string {
 
 func parseRunArtifact(name string) (int, string, string, bool) {
 	if strings.HasPrefix(name, "review.") {
-		if name == "review.diff" || name == "review.feed" || name == "review.transcript" {
-			return 1, "review", name, true
-		}
-		return 0, "", "", false
+		return parseReviewArtifact(name)
 	}
 	if !strings.HasPrefix(name, "iteration-") {
 		return 0, "", "", false
 	}
+	return parseIterationArtifact(name)
+}
+
+func parseReviewArtifact(name string) (int, string, string, bool) {
+	switch name {
+	case "review.diff", "review.feed", "review.transcript":
+		return 1, "review", name, true
+	default:
+		return 0, "", "", false
+	}
+}
+
+func parseIterationArtifact(name string) (int, string, string, bool) {
 	withoutPrefix := strings.TrimPrefix(name, "iteration-")
 	dash := strings.IndexByte(withoutPrefix, '-')
 	if dash < 1 {
@@ -643,14 +741,27 @@ func parseRunArtifact(name string) (int, string, string, bool) {
 		return 0, "", "", false
 	}
 	role := roleAndExtension[:dot]
-	if role != "implement" && role != "review" {
+	if !isRunRole(role) {
 		return 0, "", "", false
 	}
 	extension := roleAndExtension[dot+1:]
-	if extension != "diff" && extension != "feed" && extension != "transcript" {
+	if !isRunArtifactExtension(extension) {
 		return 0, "", "", false
 	}
 	return iteration, role, name, true
+}
+
+func isRunRole(role string) bool {
+	return role == "implement" || role == "review"
+}
+
+func isRunArtifactExtension(extension string) bool {
+	switch extension {
+	case "diff", "feed", "transcript":
+		return true
+	default:
+		return false
+	}
 }
 
 func parseRunVerdict(name string) (int, bool) {
