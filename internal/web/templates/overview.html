@@ -242,7 +242,7 @@
 <header>
 <a class="wordmark" href="/">syl<span>/ui</span></a>
 <nav class="nav" aria-label="Primary"><a href="/">Overview</a></nav>
-<div class="server-state"><span class="live-dot"></span><span>127.0.0.1:{{.Port}} · config loaded</span></div>
+<div class="server-state"><span class="live-dot"></span><span>127.0.0.1:{{.Port}} · refreshing every 3s</span></div>
 <button class="theme-toggle" type="button" aria-label="Switch to light theme" onclick="toggleTheme()">
 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"></path></svg><span>Dark</span>
 </button>
@@ -265,6 +265,9 @@
   document.addEventListener('click',function(event){
     var remove=event.target.closest('[data-remove-copy]');
     if(remove){remove.closest('.config-copy-tag').remove();return;}
+    var copy=event.target.closest('[data-copy-path]');
+    if(!copy){return;}
+    navigator.clipboard.writeText(copy.getAttribute('data-copy-path')).then(function(){copy.textContent='Copied';window.setTimeout(function(){copy.textContent='Copy path';},1200);});
   });
   document.addEventListener('keydown',function(event){
     var input=event.target.closest('[data-copy-input]');
@@ -336,12 +339,12 @@
 {{end}}
 
 {{define "project-config-content"}}
-<div id="config-content">
+<div id="config-content" hx-get="/projects/config/content?path={{urlquery .Page.Project.Path}}" hx-trigger="every 3s [document.visibilityState === 'visible']" hx-target="#config-content" hx-swap="outerHTML">
 <nav class="breadcrumb" aria-label="Breadcrumb"><a href="/">Overview</a><span>/</span><a href="/projects?path={{urlquery .Page.Project.Path}}">{{.Page.Project.Name}}</a><span>/</span><span>Config</span></nav>
 
 <div class="project-page-heading">
 <div class="project-title"><h1>{{.Page.Project.Name}}</h1><span class="pill {{healthClass .Page.Project.Health}}">{{.Page.Project.Health}}</span></div>
-<div class="project-details"><code>{{.Page.Project.Path}}</code><span>issues: {{.Values.TrackerIssues}} · reviews: {{.Values.TrackerReviews}}</span><span>first seen {{firstSeen .Page.Project.FirstSeen}}</span></div>
+<div class="project-details"><code>{{.Page.Project.Path}}</code>{{if and (not .Invalid) (not .Uninitialized)}}<span>issues: {{.Values.TrackerIssues}} · reviews: {{.Values.TrackerReviews}}</span><span>first seen {{firstSeen .Page.Project.FirstSeen}}</span>{{end}}</div>
 </div>
 
 <div class="project-tabs" role="tablist" aria-label="Project sections">
@@ -349,9 +352,15 @@
 <a class="active" href="/projects/config?path={{urlquery .Page.Project.Path}}" role="tab" aria-selected="true">Config</a>
 </div>
 
-{{if .Conflict}}
+{{if .Invalid}}
+<section class="config-invalid-alert" role="alert"><h2>This config fails to load</h2><code class="config-invalid-error">{{.Invalid.Error}}</code><p>syl ui only edits a config it can parse. Fix the file in your editor. This page picks up the change on its next refresh. Run history is unaffected.</p><div class="config-invalid-path"><code>{{.Invalid.Path}}</code><button class="config-copy-path" type="button" data-copy-path="{{.Invalid.Path}}">Copy path</button></div></section>
+<section class="config-source-card" aria-label="Read-only config.toml"><div class="config-source-heading"><span>config.toml</span><span>read-only</span></div><div class="config-source">{{range .Invalid.Lines}}<div class="config-source-line{{if .Marked}} marked{{end}}"><span class="config-source-number">{{.Number}}</span><pre>{{.Text}}</pre></div>{{end}}</div></section>
+{{else if .Uninitialized}}
+<section class="config-uninitialized" role="alert"><h2>Config is not initialized</h2><p>No <code>.syl/config.toml</code> exists for this Project.</p><p>Run this command from the Project directory:</p><code class="config-init-command">syl init</code></section>
+{{else if .Conflict}}
 <div class="config-conflict" role="alert"><div><strong>config.toml changed on disk after you opened this form</strong><span>Something else, probably your editor, saved <code>.syl/config.toml</code>. Your changes were not saved, so nothing was overwritten. Reload to see the current file, then make your changes again.</span></div><a class="config-primary-button" href="/projects/config?path={{urlquery .Page.Project.Path}}">Reload config</a></div>
 {{end}}
+{{if and (not .Invalid) (not .Uninitialized)}}
 {{if gt .Page.Project.LiveRunCount 0}}
 <div class="config-live-banner" role="status"><span class="live-dot"></span><span><strong>{{.Page.Project.LiveRunCount}} {{if eq .Page.Project.LiveRunCount 1}}Run is{{else}}Runs are{{end}} live in this project.</strong> Changes apply to the next Run; live Runs keep the config they started with.</span></div>
 {{end}}
@@ -400,6 +409,7 @@
 </form>
 
 <footer class="config-footer"><span>Saving rewrites <code>.syl/config.toml</code> from syl's template. Comments you added by hand are not kept.</span>{{if .Errors}}<span class="config-error-count">{{len .Errors}} {{if eq (len .Errors) 1}}field{{else}}fields{{end}} to fix</span>{{end}}<a class="config-secondary-button" href="/projects/config?path={{urlquery .Page.Project.Path}}">Discard changes</a><button class="config-primary-button" type="submit" form="config-form" data-save-config {{if .Errors}}disabled{{end}}>Save config</button></footer>
+{{end}}
 </div>
 {{end}}
 

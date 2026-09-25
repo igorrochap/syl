@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"os"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/igorrochap/syl/internal/config"
@@ -51,6 +52,30 @@ func TestLoadAndSaveRoundTripsConfig(t *testing.T) {
 	}
 	if updated.Version == snapshot.Version {
 		t.Fatal("saved config kept the old version")
+	}
+}
+
+func TestLoadPreservesInvalidConfigField(t *testing.T) {
+	project := t.TempDir()
+	if _, err := config.Init(project); err != nil {
+		t.Fatal(err)
+	}
+	contents, err := os.ReadFile(config.Path(project))
+	if err != nil {
+		t.Fatal(err)
+	}
+	contents = []byte(strings.Replace(string(contents), `effort = "xhigh"`, `effort = "ultra"`, 1))
+	if err := os.WriteFile(config.Path(project), contents, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = configedit.Load(project)
+	var loadError configedit.LoadError
+	if !errors.As(err, &loadError) || loadError.Key != "roles.implement.effort" {
+		t.Fatalf("Load() error = %#v, want structured effort key", err)
+	}
+	if loadError.Error() != `roles.implement.effort: invalid value "ultra"; want low, medium, high, or xhigh` {
+		t.Fatalf("Load() error = %q, want exact config error", loadError)
 	}
 }
 

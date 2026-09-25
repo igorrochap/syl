@@ -203,7 +203,7 @@ func Load(projectRoot string) (Config, error) {
 			unknown = append(unknown, key.String())
 		}
 		sort.Strings(unknown)
-		return Config{}, fmt.Errorf("unknown config key %q", unknown[0])
+		return Config{}, FieldError{Field: unknown[0], Message: fmt.Sprintf("unknown config key %q", unknown[0])}
 	}
 
 	return validate(raw, metadata)
@@ -385,7 +385,10 @@ func validate(raw rawConfig, metadata toml.MetaData) (Config, error) {
 		maxIterations = raw.Loop.MaxIterations
 	}
 	if maxIterations < 1 {
-		return Config{}, fmt.Errorf("loop.max_iterations must be positive; got %d", maxIterations)
+		return Config{}, FieldError{
+			Field:   "loop.max_iterations",
+			Message: fmt.Sprintf("loop.max_iterations must be positive; got %d", maxIterations),
+		}
 	}
 
 	notificationsEnabled := true
@@ -397,7 +400,7 @@ func validate(raw rawConfig, metadata toml.MetaData) (Config, error) {
 	if metadata.IsDefined("worktree", "root") {
 		worktreeRoot = strings.TrimSpace(raw.Worktree.Root)
 		if worktreeRoot == "" {
-			return Config{}, errors.New("worktree.root: is required")
+			return Config{}, FieldError{Field: "worktree.root", Message: "worktree.root: is required"}
 		}
 	}
 
@@ -478,7 +481,10 @@ func parseTrackerConfig(raw rawTracker) (TrackerConfig, error) {
 		return TrackerConfig{}, err
 	}
 	if reviews.IsRemote() && reviews != issues {
-		return TrackerConfig{}, fmt.Errorf("tracker.reviews = %q and tracker.issues = %q are incompatible; a remote review log needs a matching remote issue tracker", reviews, issues)
+		return TrackerConfig{}, FieldError{
+			Field:   "tracker.reviews",
+			Message: fmt.Sprintf("tracker.reviews = %q and tracker.issues = %q are incompatible; a remote review log needs a matching remote issue tracker", reviews, issues),
+		}
 	}
 	return TrackerConfig{Issues: issues, Reviews: reviews}, nil
 }
@@ -510,10 +516,13 @@ func parseRole(prefix string, raw rawRole, defaultMCP bool) (RoleConfig, error) 
 		return RoleConfig{}, err
 	}
 	if strings.TrimSpace(raw.Model) == "" {
-		return RoleConfig{}, fmt.Errorf("%s.model: is required", prefix)
+		return RoleConfig{}, FieldError{Field: prefix + ".model", Message: prefix + ".model: is required"}
 	}
 	if harness == HarnessClaude && !strings.HasPrefix(raw.Model, "claude-") {
-		return RoleConfig{}, fmt.Errorf(`%s.model: invalid value %q; want a model starting with "claude-"`, prefix, raw.Model)
+		return RoleConfig{}, FieldError{
+			Field:   prefix + ".model",
+			Message: fmt.Sprintf(`%s.model: invalid value %q; want a model starting with "claude-"`, prefix, raw.Model),
+		}
 	}
 
 	effort, err := parseEnum(prefix+".effort", raw.Effort,
@@ -536,7 +545,7 @@ func parseOptionalBool(key string, value any, defaultValue bool) (bool, error) {
 	}
 	enabled, ok := value.(bool)
 	if !ok {
-		return false, fmt.Errorf("%s: invalid value %q; want true or false", key, fmt.Sprint(value))
+		return false, FieldError{Field: key, Message: fmt.Sprintf("%s: invalid value %q; want true or false", key, fmt.Sprint(value))}
 	}
 	return enabled, nil
 }
@@ -544,12 +553,12 @@ func parseOptionalBool(key string, value any, defaultValue bool) (bool, error) {
 func parseEnum[T ~string](key, value string, valid []T, want string) (T, error) {
 	var zero T
 	if strings.TrimSpace(value) == "" {
-		return zero, fmt.Errorf("%s: is required", key)
+		return zero, FieldError{Field: key, Message: key + ": is required"}
 	}
 	for _, candidate := range valid {
 		if T(value) == candidate {
 			return candidate, nil
 		}
 	}
-	return zero, fmt.Errorf("%s: invalid value %q; want %s", key, value, want)
+	return zero, FieldError{Field: key, Message: fmt.Sprintf("%s: invalid value %q; want %s", key, value, want)}
 }

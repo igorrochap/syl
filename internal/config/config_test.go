@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -421,6 +422,10 @@ mcp = "sometimes"
 			}
 			if !strings.Contains(err.Error(), tt.wantKey) {
 				t.Fatalf("Load() error = %q, want key %q", err, tt.wantKey)
+			}
+			var fieldError FieldError
+			if !errors.As(err, &fieldError) || fieldError.Field != tt.wantKey {
+				t.Fatalf("Load() error = %T, want FieldError for %q", err, tt.wantKey)
 			}
 			if strings.Contains(tt.wantKey, "tracker.") {
 				for _, trackerName := range []string{"github", "local", "gitlab"} {

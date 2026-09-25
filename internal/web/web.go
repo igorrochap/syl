@@ -218,8 +218,22 @@ type configPageData struct {
 	TrackerOptions []string
 	HarnessOptions []string
 	EffortOptions  []string
+	Invalid        *invalidConfigData
+	Uninitialized  bool
 	Port           int
 	Token          string
+}
+
+type invalidConfigData struct {
+	Path  string
+	Error string
+	Lines []configSourceLine
+}
+
+type configSourceLine struct {
+	Number int
+	Text   string
+	Marked bool
 }
 
 func (s *Server) projectData(projectPath string) (projectPageData, error) {
@@ -235,20 +249,57 @@ func (s *Server) configData(projectPath string) (configPageData, error) {
 	if err != nil {
 		return configPageData{}, err
 	}
-	snapshot, err := configedit.Load(projectPath)
-	if err != nil {
-		return configPageData{}, err
-	}
-	return configPageData{
+	data := configPageData{
 		Page:           page,
-		Values:         snapshot.Values,
-		Version:        snapshot.Version,
 		TrackerOptions: configedit.TrackerOptions(),
 		HarnessOptions: configedit.HarnessOptions(),
 		EffortOptions:  configedit.EffortOptions(),
 		Port:           s.port,
 		Token:          s.token,
-	}, nil
+	}
+	if page.Project.Health == readmodel.HealthUninitialized {
+		data.Uninitialized = true
+		return data, nil
+	}
+
+	snapshot, err := configedit.Load(projectPath)
+	if err == nil {
+		data.Values = snapshot.Values
+		data.Version = snapshot.Version
+		if data.Page.Project.Health != readmodel.HealthOK {
+			data.Page.Project.Health = readmodel.HealthOK
+		}
+		return data, nil
+	}
+	if page.Project.Health == readmodel.HealthMissing {
+		return configPageData{}, err
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		data.Page.Project.Health = readmodel.HealthUninitialized
+		data.Uninitialized = true
+		return data, nil
+	}
+	var loadErr configedit.LoadError
+	if !errors.As(err, &loadErr) {
+		return configPageData{}, err
+	}
+
+	configPath := projectConfigPath(projectPath)
+	contents, readErr := os.ReadFile(configPath)
+	if readErr != nil {
+		return configPageData{}, readErr
+	}
+	data.Page.Project.Health = readmodel.HealthInvalid
+	data.Invalid = &invalidConfigData{
+		Path:  configPath,
+		Error: loadErr.Error(),
+		Lines: configSourceLines(contents, loadErr.Key),
+	}
+	return data, nil
+}
+
+func projectConfigPath(projectPath string) string {
+	return filepath.Join(projectPath, ".syl", "config.toml")
 }
 
 func (s *Server) configPage(writer http.ResponseWriter, request *http.Request) {
@@ -741,6 +792,49 @@ func boolText(value bool) string {
 		return "true"
 	}
 	return "false"
+}
+
+func configSourceLines(contents []byte, key string) []configSourceLine {
+	lines := strings.Split(string(contents), "\n")
+	if len(lines) > 1 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+	if len(lines) == 0 {
+		lines = []string{""}
+	}
+
+	table := ""
+	result := make([]configSourceLine, 0, len(lines))
+	for index, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
+			table = strings.TrimSpace(trimmed[1 : len(trimmed)-1])
+		}
+		result = append(result, configSourceLine{
+			Number: index + 1,
+			Text:   line,
+			Marked: configSourceLineMatchesKey(trimmed, table, key),
+		})
+	}
+	return result
+}
+
+func configSourceLineMatchesKey(line, table, key string) bool {
+	if key == "" || strings.HasPrefix(line, "#") {
+		return false
+	}
+	separator := strings.Index(line, "=")
+	if separator < 0 {
+		return false
+	}
+	name := strings.Trim(strings.TrimSpace(line[:separator]), `"`)
+	if name == "" {
+		return false
+	}
+	if !strings.Contains(name, ".") && table != "" {
+		name = table + "." + name
+	}
+	return name == key
 }
 
 func runArtifactURL(runDir, artifactName string) string {

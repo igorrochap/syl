@@ -53,6 +53,23 @@ type Snapshot struct {
 // value in that field.
 type FieldErrors map[string]string
 
+// LoadError preserves the config key associated with a load failure when one
+// exists. Syntax and filesystem failures leave Key empty.
+type LoadError struct {
+	Key string
+	Err error
+}
+
+// Error returns the exact error message produced while loading the config.
+func (err LoadError) Error() string {
+	return err.Err.Error()
+}
+
+// Unwrap preserves errors.Is and errors.As behavior for the underlying load error.
+func (err LoadError) Unwrap() error {
+	return err.Err
+}
+
 // Error returns the first validation message in a stable order.
 func (errors FieldErrors) Error() string {
 	if len(errors) == 0 {
@@ -70,13 +87,21 @@ func (errors FieldErrors) Error() string {
 func Load(projectRoot string) (Snapshot, error) {
 	contents, err := os.ReadFile(config.Path(projectRoot))
 	if err != nil {
-		return Snapshot{}, fmt.Errorf("read config for edit: %w", err)
+		return Snapshot{}, LoadError{Err: fmt.Errorf("read config for edit: %w", err)}
 	}
 	loaded, err := config.Load(projectRoot)
 	if err != nil {
-		return Snapshot{}, err
+		return Snapshot{}, loadError(err)
 	}
 	return Snapshot{Values: valuesFromConfig(loaded), Version: version(contents)}, nil
+}
+
+func loadError(err error) LoadError {
+	var fieldError config.FieldError
+	if errors.As(err, &fieldError) {
+		return LoadError{Key: fieldError.Field, Err: err}
+	}
+	return LoadError{Err: err}
 }
 
 // Parse converts submitted form values into editable config values.

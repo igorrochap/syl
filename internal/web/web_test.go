@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"html"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -243,8 +244,8 @@ func TestHandlerConfigRoutesCoverContentFeedbackAndBadRequests(t *testing.T) {
 	}
 
 	invalidResponse := serveProjectResponse(t, handler, invalidProject, "/projects/config")
-	if invalidResponse.Code != http.StatusInternalServerError {
-		t.Fatalf("invalid config page status = %d, want internal server error", invalidResponse.Code)
+	if invalidResponse.Code != http.StatusOK || !strings.Contains(invalidResponse.Body.String(), "This config fails to load") {
+		t.Fatalf("invalid config page = %d/%q, want read-only invalid view", invalidResponse.Code, invalidResponse.Body.String())
 	}
 
 	page := serveProject(t, handler, project, "/projects/config")
@@ -286,6 +287,143 @@ func TestHandlerConfigRoutesCoverContentFeedbackAndBadRequests(t *testing.T) {
 	unknownSave := rawMutation(t, handler, http.MethodPost, configSaveRoute(filepath.Join(t.TempDir(), "unknown")), "", token, false)
 	if unknownSave.Code != http.StatusNotFound {
 		t.Fatalf("unknown config save status = %d, want not found", unknownSave.Code)
+	}
+}
+
+func TestHandlerRendersInvalidConfigAsReadOnlySource(t *testing.T) {
+	sylHome := t.TempDir()
+	project := t.TempDir()
+	if _, err := config.Init(project); err != nil {
+		t.Fatal(err)
+	}
+	contents, err := os.ReadFile(config.Path(project))
+	if err != nil {
+		t.Fatal(err)
+	}
+	contents = []byte(strings.Replace(string(contents), `effort = "xhigh"`, `effort = "ultra"`, 1))
+	if err := os.WriteFile(config.Path(project), contents, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeWebRegistry(t, sylHome, registry.Entry{Path: project})
+	server, err := web.New(sylHome, 7777)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	body := serveProject(t, server.Handler(), project, "/projects/config")
+	wantError := `roles.implement.effort: invalid value "ultra"; want low, medium, high, or xhigh`
+	bodyText := html.UnescapeString(body)
+	for _, expected := range []string{
+		wantError,
+		config.Path(project),
+		`data-copy-path="` + config.Path(project) + `"`,
+		`class="config-source-line marked"`,
+		`hx-get="/projects/config/content?path=`,
+		`href="/projects?path=`,
+	} {
+		if !strings.Contains(bodyText, expected) {
+			t.Fatalf("invalid config body does not contain %q: %s", expected, body)
+		}
+	}
+	if strings.Contains(body, "<form") || strings.Contains(body, "<textarea") || strings.Contains(body, "contenteditable") {
+		t.Fatalf("invalid config rendered a raw editor control: %s", body)
+	}
+}
+
+func TestHandlerRendersMalformedConfigWithoutMarkedLine(t *testing.T) {
+	sylHome := t.TempDir()
+	project := t.TempDir()
+	if err := os.MkdirAll(filepath.Dir(config.Path(project)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	contents := "[tracker\nissues = \"local\"\n"
+	if err := os.WriteFile(config.Path(project), []byte(contents), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, loadErr := config.Load(project)
+	if loadErr == nil {
+		t.Fatal("config.Load() succeeded for malformed TOML")
+	}
+	writeWebRegistry(t, sylHome, registry.Entry{Path: project})
+	server, err := web.New(sylHome, 7777)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	body := serveProject(t, server.Handler(), project, "/projects/config")
+	if !strings.Contains(html.UnescapeString(body), loadErr.Error()) {
+		t.Fatalf("malformed config body does not contain exact load error %q: %s", loadErr, body)
+	}
+	if strings.Contains(body, `class="config-source-line marked"`) {
+		t.Fatalf("malformed config marked a source line: %s", body)
+	}
+}
+
+func TestHandlerEscapesInvalidConfigSourceAndLoadsFormAfterFix(t *testing.T) {
+	sylHome := t.TempDir()
+	project := t.TempDir()
+	if _, err := config.Init(project); err != nil {
+		t.Fatal(err)
+	}
+	valid, err := os.ReadFile(config.Path(project))
+	if err != nil {
+		t.Fatal(err)
+	}
+	invalid := []byte(strings.Replace(string(valid), `effort = "xhigh"`, `effort = "<script>"`, 1))
+	if err := os.WriteFile(config.Path(project), invalid, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeWebRegistry(t, sylHome, registry.Entry{Path: project})
+	server, err := web.New(sylHome, 7777)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	body := serveProject(t, server.Handler(), project, "/projects/config")
+	if !strings.Contains(body, "&lt;script&gt;") || strings.Contains(body, `effort = "<script>"`) {
+		t.Fatalf("invalid config source was not escaped as text: %s", body)
+	}
+
+	if err := os.WriteFile(config.Path(project), valid, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	content := serveProjectResponse(t, server.Handler(), project, "/projects/config/content")
+	if content.Code != http.StatusOK || !strings.Contains(content.Body.String(), `name="roles.implement.effort"`) || strings.Contains(content.Body.String(), "This config fails to load") {
+		t.Fatalf("fixed config content = %d/%q, want structured form", content.Code, content.Body.String())
+	}
+}
+
+func TestHandlerShowsUninitializedConfigAndKeepsRunHistoryAvailable(t *testing.T) {
+	sylHome := t.TempDir()
+	project := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(project, ".syl", "runs", "run-187"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := runstate.Write(runstate.Path(filepath.Join(project, ".syl", "runs", "run-187")), runstate.State{
+		Status: runstate.Approved, TicketRef: "#187", Kind: runstate.Implement,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	writeWebRegistry(t, sylHome, registry.Entry{Path: project})
+	server, err := web.New(sylHome, 7777)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	body := serveProject(t, server.Handler(), project, "/projects/config")
+	for _, expected := range []string{
+		"No <code>.syl/config.toml</code> exists",
+		"syl init",
+		"href=\"/projects?path=",
+		"Runs",
+	} {
+		if !strings.Contains(body, expected) {
+			t.Fatalf("uninitialized config body does not contain %q: %s", expected, body)
+		}
+	}
+	runs := serveProject(t, server.Handler(), project, "/projects")
+	if !strings.Contains(runs, "#187") {
+		t.Fatalf("uninitialized project runs body does not contain history: %s", runs)
 	}
 }
 
