@@ -4,7 +4,9 @@ import (
 	"errors"
 	"net/url"
 	"os"
+	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/igorrochap/syl/internal/config"
@@ -51,6 +53,56 @@ func TestLoadAndSaveRoundTripsConfig(t *testing.T) {
 	}
 	if updated.Version == snapshot.Version {
 		t.Fatal("saved config kept the old version")
+	}
+}
+
+func TestLoadPreservesInvalidConfigField(t *testing.T) {
+	project := t.TempDir()
+	if _, err := config.Init(project); err != nil {
+		t.Fatal(err)
+	}
+	contents, err := os.ReadFile(config.Path(project))
+	if err != nil {
+		t.Fatal(err)
+	}
+	contents = []byte(strings.Replace(string(contents), `effort = "xhigh"`, `effort = "ultra"`, 1))
+	if err := os.WriteFile(config.Path(project), contents, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = configedit.Load(project)
+	var loadError configedit.LoadError
+	if !errors.As(err, &loadError) || loadError.Key != "roles.implement.effort" {
+		t.Fatalf("Load() error = %#v, want structured effort key", err)
+	}
+	if loadError.Error() != `roles.implement.effort: invalid value "ultra"; want low, medium, high, or xhigh` {
+		t.Fatalf("Load() error = %q, want exact config error", loadError)
+	}
+	var fieldError config.FieldError
+	if !errors.As(err, &fieldError) || fieldError.Field != loadError.Key {
+		t.Fatalf("Load() error = %T, want underlying FieldError", err)
+	}
+}
+
+func TestLoadPreservesUnkeyedAndFilesystemErrors(t *testing.T) {
+	missingProject := t.TempDir()
+	_, err := configedit.Load(missingProject)
+	var missingError configedit.LoadError
+	if !errors.As(err, &missingError) || !errors.Is(err, os.ErrNotExist) || missingError.Key != "" {
+		t.Fatalf("missing config error = %#v, want unkeyed filesystem LoadError", err)
+	}
+
+	malformedProject := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(malformedProject, ".syl"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(config.Path(malformedProject), []byte("[tracker\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err = configedit.Load(malformedProject)
+	var malformedError configedit.LoadError
+	if !errors.As(err, &malformedError) || malformedError.Key != "" || !strings.Contains(malformedError.Error(), "malformed TOML") {
+		t.Fatalf("malformed config error = %#v, want unkeyed syntax LoadError", err)
 	}
 }
 

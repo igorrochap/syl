@@ -318,27 +318,27 @@ func TestReaderCountsLiveRunsForProject(t *testing.T) {
 
 	liveRun := createRun(t, project, "live", runstate.State{
 		Status: runstate.Running, PID: os.Getpid(), Hostname: host, StartedAt: time.Now(), Kind: runstate.Implement,
-	}, "/worktrees/live", "codex", "claude")
+	}, "/worktrees/live")
 	createMarker(t, sylHome, project, liveRun, "#live", os.Getpid(), host)
 
 	finishedRun := createRun(t, project, "finished", runstate.State{
 		Status: runstate.Approved, StartedAt: time.Now(), Kind: runstate.Implement,
-	}, "/worktrees/finished", "codex", "claude")
+	}, "/worktrees/finished")
 	createMarker(t, sylHome, project, finishedRun, "#finished", 999999, host)
 
 	staleRun := createRun(t, project, "stale", runstate.State{
 		Status: runstate.Running, PID: 999999, Hostname: host, StartedAt: time.Now(), Kind: runstate.Implement,
-	}, "/worktrees/stale", "codex", "claude")
+	}, "/worktrees/stale")
 	createMarker(t, sylHome, project, staleRun, "#stale", 999999, host)
 
 	remoteRun := createRun(t, project, "remote", runstate.State{
 		Status: runstate.Running, PID: 999999, Hostname: "other-host", StartedAt: time.Now(), Kind: runstate.Implement,
-	}, "/worktrees/remote", "codex", "claude")
+	}, "/worktrees/remote")
 	createMarker(t, sylHome, project, remoteRun, "#remote", 999999, "other-host")
 
 	otherRun := createRun(t, otherProject, "other", runstate.State{
 		Status: runstate.Running, PID: os.Getpid(), Hostname: host, StartedAt: time.Now(), Kind: runstate.Implement,
-	}, "/worktrees/other", "codex", "claude")
+	}, "/worktrees/other")
 	createMarker(t, sylHome, otherProject, otherRun, "#other", os.Getpid(), host)
 
 	missingStateRun := filepath.Join(project, ".syl", "runs", "missing-state")
@@ -392,21 +392,21 @@ func TestOverviewReadsProjectHealthAndLiveRuns(t *testing.T) {
 		Question: "Which option?", PID: os.Getpid(), Hostname: hostname(t),
 		StartedAt: time.Date(2026, time.September, 23, 10, 0, 0, 0, time.UTC),
 		Kind:      runstate.Implement, TicketRef: "#181",
-	}, "/worktrees/awaiting", "codex", "claude")
+	}, "/worktrees/awaiting")
 	createMarker(t, sylHome, okProject, awaitingRun, "#181", os.Getpid(), hostname(t))
 
 	interruptedRun := createRun(t, okProject, "interrupted", runstate.State{
 		Status: runstate.Running, Activity: runstate.Implementing, Iteration: 1, MaxIterations: 3,
 		PID: 999999, Hostname: hostname(t), StartedAt: time.Date(2026, time.September, 23, 9, 0, 0, 0, time.UTC),
 		Kind: runstate.Implement, TicketRef: "#182",
-	}, "/worktrees/interrupted", "codex", "claude")
+	}, "/worktrees/interrupted")
 	createMarker(t, sylHome, okProject, interruptedRun, "#182", 999999, hostname(t))
 
 	remoteRun := createRun(t, okProject, "remote", runstate.State{
 		Status: runstate.Running, Activity: runstate.Reviewing, Iteration: 2, MaxIterations: 3,
 		PID: 1, Hostname: "other-host", StartedAt: time.Date(2026, time.September, 23, 8, 0, 0, 0, time.UTC),
 		Kind: runstate.Implement, TicketRef: "#183",
-	}, "/worktrees/remote", "codex", "claude")
+	}, "/worktrees/remote")
 	createMarker(t, sylHome, okProject, remoteRun, "#183", 1, "other-host")
 
 	overview, err := readmodel.ReadOverview(sylHome)
@@ -642,7 +642,7 @@ func writeRegistry(t *testing.T, sylHome string, paths ...string) {
 	}
 }
 
-func createRun(t *testing.T, project, name string, state runstate.State, workRoot, implementerHarness, reviewerHarness string) string {
+func createRun(t *testing.T, project, name string, state runstate.State, workRoot string) string {
 	t.Helper()
 	runDir := filepath.Join(project, ".syl", "runs", name)
 	if err := os.MkdirAll(runDir, 0o755); err != nil {
@@ -653,8 +653,6 @@ func createRun(t *testing.T, project, name string, state runstate.State, workRoo
 	}
 	contents := strings.Join([]string{
 		"Work root: " + workRoot,
-		"Implementer harness: " + implementerHarness,
-		"Reviewer harness: " + reviewerHarness,
 	}, "\n")
 	if err := os.WriteFile(filepath.Join(runDir, "metadata.txt"), []byte(contents), 0o644); err != nil {
 		t.Fatal(err)
