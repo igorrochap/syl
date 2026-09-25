@@ -29,6 +29,69 @@ func TestTrackerIsRemote(t *testing.T) {
 	}
 }
 
+func TestAcceptedValuesAndFieldError(t *testing.T) {
+	if got, want := Trackers(), []Tracker{TrackerGitHub, TrackerLocal, TrackerGitLab}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("Trackers() = %#v, want %#v", got, want)
+	}
+	if got, want := Harnesses(), []Harness{HarnessClaude, HarnessCodex, HarnessOpenCode}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("Harnesses() = %#v, want %#v", got, want)
+	}
+	if got, want := Efforts(), []Effort{EffortLow, EffortMedium, EffortHigh, EffortXHigh}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("Efforts() = %#v, want %#v", got, want)
+	}
+	if got := (FieldError{Field: "loop.max_iterations", Message: "must be positive"}).Error(); got != "must be positive" {
+		t.Fatalf("FieldError.Error() = %q, want message", got)
+	}
+}
+
+func TestValidationErrorsMatchesLoadRules(t *testing.T) {
+	valid := defaultConfigValue()
+	if got := ValidationErrors(valid); len(got) != 0 {
+		t.Fatalf("ValidationErrors(valid) = %#v, want no errors", got)
+	}
+
+	invalid := valid
+	invalid.Tracker.Issues = Tracker("jira")
+	invalid.Tracker.Reviews = Tracker("github")
+	invalid.Roles.Plan = RoleConfig{Harness: Harness("gemini"), Effort: Effort("extreme")}
+	invalid.Roles.Implement = RoleConfig{Harness: HarnessClaude, Model: "gpt-5", Effort: EffortLow}
+	invalid.Roles.Review = RoleConfig{Harness: HarnessCodex, Model: "reviewer", Effort: Effort("extreme")}
+	invalid.Loop.MaxIterations = 0
+	invalid.Worktree.Root = "  "
+
+	got := ValidationErrors(invalid)
+	want := map[string]string{
+		"tracker.issues":        `tracker.issues: invalid value "jira"; want github, local, or gitlab`,
+		"roles.plan.harness":    `roles.plan.harness: invalid value "gemini"; want claude, codex, or opencode`,
+		"roles.plan.model":      "roles.plan.model: is required",
+		"roles.plan.effort":     `roles.plan.effort: invalid value "extreme"; want low, medium, high, or xhigh`,
+		"roles.implement.model": `roles.implement.model: invalid value "gpt-5"; want a model starting with "claude-"`,
+		"roles.review.effort":   `roles.review.effort: invalid value "extreme"; want low, medium, high, or xhigh`,
+		"loop.max_iterations":   "loop.max_iterations must be positive; got 0",
+		"worktree.root":         "worktree.root: is required",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("ValidationErrors() returned %d errors, want %d: %#v", len(got), len(want), got)
+	}
+	for _, fieldError := range got {
+		if fieldError.Message != want[fieldError.Field] {
+			t.Errorf("ValidationErrors()[%q] = %q, want %q", fieldError.Field, fieldError.Message, want[fieldError.Field])
+		}
+		delete(want, fieldError.Field)
+	}
+	if len(want) != 0 {
+		t.Fatalf("ValidationErrors() omitted fields: %#v", want)
+	}
+
+	remoteMismatch := valid
+	remoteMismatch.Tracker.Issues = TrackerLocal
+	remoteMismatch.Tracker.Reviews = TrackerGitHub
+	got = ValidationErrors(remoteMismatch)
+	if len(got) != 1 || got[0].Field != "tracker.reviews" || !strings.Contains(got[0].Message, "incompatible") {
+		t.Fatalf("ValidationErrors(remote mismatch) = %#v, want tracker.reviews incompatibility", got)
+	}
+}
+
 func TestLoadAcceptsGitLabForIssuesAndRemoteReviews(t *testing.T) {
 	root := t.TempDir()
 	writeConfig(t, root, strings.Replace(
@@ -424,6 +487,81 @@ func TestLoadReportsMalformedTOML(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "malformed TOML") {
 		t.Fatalf("Load() error = %q, want malformed TOML", err)
+	}
+}
+
+func TestOverwriteWriteNeverExposesPartialConfig(t *testing.T) {
+	root := t.TempDir()
+	if _, err := Init(root); err != nil {
+		t.Fatal(err)
+	}
+	first, err := Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second := first
+	second.Loop.MaxIterations = first.Loop.MaxIterations + 1
+
+	started := make(chan struct{})
+	done := make(chan struct{})
+	writeErrors := make(chan error, 1)
+	go func() {
+		close(started)
+		for index := 0; index < 100; index++ {
+			value := first
+			if index%2 == 1 {
+				value = second
+			}
+			if _, err := Write(root, value, OverwriteExisting); err != nil {
+				writeErrors <- err
+				return
+			}
+		}
+		close(done)
+	}()
+	<-started
+	for {
+		contents, err := os.ReadFile(Path(root))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(contents) == 0 {
+			t.Fatal("atomic overwrite exposed an empty config")
+		}
+		if _, err := Load(root); err != nil {
+			t.Fatalf("atomic overwrite exposed invalid config: %v", err)
+		}
+		select {
+		case err := <-writeErrors:
+			t.Fatal(err)
+		case <-done:
+			return
+		default:
+		}
+	}
+}
+
+func TestWriteRejectsExistingConfigWithoutOverwrite(t *testing.T) {
+	root := t.TempDir()
+	if _, err := Init(root); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Write(root, defaultConfigValue(), NoOverwrite); err == nil || !strings.Contains(err.Error(), "config already exists") {
+		t.Fatalf("Write(NoOverwrite) error = %v, want existing-config error", err)
+	}
+}
+
+func TestOverwriteWriteReportsReplacementError(t *testing.T) {
+	root := t.TempDir()
+	path := Path(root)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(path, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Write(root, defaultConfigValue(), OverwriteExisting); err == nil || !strings.Contains(err.Error(), "replace config") {
+		t.Fatalf("Write(OverwriteExisting) error = %v, want replacement error", err)
 	}
 }
 

@@ -306,6 +306,70 @@ func TestReaderShowsHistoryForInvalidAndUninitializedProjects(t *testing.T) {
 	}
 }
 
+func TestReaderCountsLiveRunsForProject(t *testing.T) {
+	sylHome := t.TempDir()
+	project := t.TempDir()
+	otherProject := t.TempDir()
+	if _, err := config.Init(project); err != nil {
+		t.Fatal(err)
+	}
+	writeRegistryEntry(t, sylHome, registry.Entry{Path: project})
+	host := hostname(t)
+
+	liveRun := createRun(t, project, "live", runstate.State{
+		Status: runstate.Running, PID: os.Getpid(), Hostname: host, StartedAt: time.Now(), Kind: runstate.Implement,
+	}, "/worktrees/live", "codex", "claude")
+	createMarker(t, sylHome, project, liveRun, "#live", os.Getpid(), host)
+
+	finishedRun := createRun(t, project, "finished", runstate.State{
+		Status: runstate.Approved, StartedAt: time.Now(), Kind: runstate.Implement,
+	}, "/worktrees/finished", "codex", "claude")
+	createMarker(t, sylHome, project, finishedRun, "#finished", 999999, host)
+
+	staleRun := createRun(t, project, "stale", runstate.State{
+		Status: runstate.Running, PID: 999999, Hostname: host, StartedAt: time.Now(), Kind: runstate.Implement,
+	}, "/worktrees/stale", "codex", "claude")
+	createMarker(t, sylHome, project, staleRun, "#stale", 999999, host)
+
+	remoteRun := createRun(t, project, "remote", runstate.State{
+		Status: runstate.Running, PID: 999999, Hostname: "other-host", StartedAt: time.Now(), Kind: runstate.Implement,
+	}, "/worktrees/remote", "codex", "claude")
+	createMarker(t, sylHome, project, remoteRun, "#remote", 999999, "other-host")
+
+	otherRun := createRun(t, otherProject, "other", runstate.State{
+		Status: runstate.Running, PID: os.Getpid(), Hostname: host, StartedAt: time.Now(), Kind: runstate.Implement,
+	}, "/worktrees/other", "codex", "claude")
+	createMarker(t, sylHome, otherProject, otherRun, "#other", os.Getpid(), host)
+
+	missingStateRun := filepath.Join(project, ".syl", "runs", "missing-state")
+	if err := os.MkdirAll(missingStateRun, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	createMarker(t, sylHome, project, missingStateRun, "#missing-state", os.Getpid(), host)
+
+	page, err := readmodel.NewReader(sylHome).ReadProject(project)
+	if err != nil {
+		t.Fatalf("ReadProject() error = %v", err)
+	}
+	if page.Project.LiveRunCount != 2 {
+		t.Fatalf("LiveRunCount = %d, want live and remote Runs", page.Project.LiveRunCount)
+	}
+}
+
+func TestReaderHandlesMissingProjectWhenCountingLiveRuns(t *testing.T) {
+	sylHome := t.TempDir()
+	missingProject := filepath.Join(t.TempDir(), "missing")
+	writeRegistryEntry(t, sylHome, registry.Entry{Path: missingProject})
+
+	page, err := readmodel.NewReader(sylHome).ReadProject(missingProject)
+	if err != nil {
+		t.Fatalf("ReadProject() error = %v", err)
+	}
+	if page.Project.Health != readmodel.HealthMissing || page.Project.LiveRunCount != 0 {
+		t.Fatalf("Project = %#v, want missing project with no live Runs", page.Project)
+	}
+}
+
 func TestOverviewReadsProjectHealthAndLiveRuns(t *testing.T) {
 	sylHome := t.TempDir()
 	okProject := t.TempDir()

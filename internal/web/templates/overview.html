@@ -226,6 +226,183 @@
 </div>
 {{end}}
 
+{{define "project-config"}}
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="syl-token" content="{{.Token}}">
+<title>syl ui — Project config</title>
+<link rel="stylesheet" href="/assets/fonts.css">
+<link rel="stylesheet" href="/assets/style.css">
+<link rel="stylesheet" href="/assets/config.css">
+</head>
+<body class="syl syl-dark">
+<header>
+<a class="wordmark" href="/">syl<span>/ui</span></a>
+<nav class="nav" aria-label="Primary"><a href="/">Overview</a></nav>
+<div class="server-state"><span class="live-dot"></span><span>127.0.0.1:{{.Port}} · config loaded</span></div>
+<button class="theme-toggle" type="button" aria-label="Switch to light theme" onclick="toggleTheme()">
+<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"></path></svg><span>Dark</span>
+</button>
+</header>
+<main class="config-main">
+{{template "project-config-content" .}}
+</main>
+<script src="/assets/htmx.min.js"></script>
+<script>
+(function(){
+  var root=document.body;
+  window.setTheme=function(theme){
+    root.classList.toggle('syl-light',theme==='light');
+    root.classList.toggle('syl-dark',theme!=='light');
+    var button=document.querySelector('.theme-toggle');
+    if(button){button.querySelector('span').textContent=theme==='light'?'Light':'Dark';button.setAttribute('aria-label',theme==='light'?'Switch to dark theme':'Switch to light theme');}
+  };
+  window.toggleTheme=function(){var light=root.classList.contains('syl-light');var theme=light?'dark':'light';setTheme(theme);localStorage.setItem('syl-theme',theme);};
+  if(localStorage.getItem('syl-theme')==='light'){setTheme('light');}
+  document.addEventListener('click',function(event){
+    var remove=event.target.closest('[data-remove-copy]');
+    if(remove){remove.closest('.config-copy-tag').remove();return;}
+  });
+  document.addEventListener('keydown',function(event){
+    var input=event.target.closest('[data-copy-input]');
+    if(!input || event.key!=='Enter'){return;}
+    event.preventDefault();
+    var value=input.value.trim();
+    if(!value){return;}
+    var tag=document.createElement('span');tag.className='config-copy-tag';
+    tag.textContent=value;
+    var hidden=document.createElement('input');hidden.type='hidden';hidden.name='worktree.copy';hidden.value=value;
+    var remove=document.createElement('button');remove.type='button';remove.setAttribute('aria-label','Remove '+value);remove.setAttribute('data-remove-copy','');remove.textContent='×';
+    tag.append(hidden,remove);input.parentElement.insertBefore(tag,input);input.value='';
+  });
+  function updateSaveState(){
+    var errors=document.querySelectorAll('[data-config-error-for]');
+    var hasErrors=false;
+    for(var index=0;index<errors.length;index++){if(!errors[index].hidden){hasErrors=true;break;}}
+    var save=document.querySelector('[data-save-config]');
+    if(save){save.disabled=hasErrors;}
+  }
+  function updateConfigField(field){
+    var fieldName=field.getAttribute('data-config-field');
+    var errors=document.querySelectorAll('[data-config-error-for]');
+    for(var index=0;index<errors.length;index++){
+      if(errors[index].getAttribute('data-config-error-for')===fieldName){errors[index].hidden=true;}
+    }
+    field.removeAttribute('aria-invalid');
+    updateSaveState();
+  }
+  function syncMCPValue(checkbox){
+    var control=checkbox.closest('[data-mcp-role]');
+    if(!control){return;}
+    var hidden=control.querySelector('[data-mcp-value]');
+    var ignored=control.querySelector('[data-mcp-ignored-checkbox]');
+    hidden.value=checkbox.checked?'true':'false';
+    if(ignored){ignored.checked=checkbox.checked;}
+  }
+  function updateMCPControl(select){
+    var control=document.querySelector('[data-mcp-role="'+select.getAttribute('data-mcp-harness')+'"]');
+    if(!control){return;}
+    var ignored=select.value==='codex';
+    var activeLabel=control.querySelector('[data-mcp-active]');
+    var ignoredLabel=control.querySelector('[data-mcp-ignored]');
+    var activeCheckbox=control.querySelector('[data-mcp-checkbox]');
+    var ignoredCheckbox=control.querySelector('[data-mcp-ignored-checkbox]');
+    var hidden=control.querySelector('[data-mcp-value]');
+    activeLabel.hidden=ignored;
+    ignoredLabel.hidden=!ignored;
+    activeCheckbox.disabled=ignored;
+    activeCheckbox.checked=hidden.value==='true';
+    ignoredCheckbox.checked=activeCheckbox.checked;
+  }
+  document.addEventListener('input',function(event){
+    var field=event.target.closest('[data-config-field]');
+    if(field){updateConfigField(field);}
+  });
+  document.addEventListener('change',function(event){
+    var field=event.target.closest('[data-config-field]');
+    if(field){updateConfigField(field);}
+    var harness=event.target.closest('[data-mcp-harness]');
+    if(harness){updateMCPControl(harness);}
+    var checkbox=event.target.closest('[data-mcp-checkbox]');
+    if(checkbox){syncMCPValue(checkbox);}
+  });
+}());
+</script>
+</body>
+</html>
+{{end}}
+
+{{define "project-config-content"}}
+<div id="config-content">
+<nav class="breadcrumb" aria-label="Breadcrumb"><a href="/">Overview</a><span>/</span><a href="/projects?path={{urlquery .Page.Project.Path}}">{{.Page.Project.Name}}</a><span>/</span><span>Config</span></nav>
+
+<div class="project-page-heading">
+<div class="project-title"><h1>{{.Page.Project.Name}}</h1><span class="pill {{healthClass .Page.Project.Health}}">{{.Page.Project.Health}}</span></div>
+<div class="project-details"><code>{{.Page.Project.Path}}</code><span>issues: {{.Values.TrackerIssues}} · reviews: {{.Values.TrackerReviews}}</span><span>first seen {{firstSeen .Page.Project.FirstSeen}}</span></div>
+</div>
+
+<div class="project-tabs" role="tablist" aria-label="Project sections">
+<a href="/projects?path={{urlquery .Page.Project.Path}}" role="tab" aria-selected="false">Runs</a>
+<a class="active" href="/projects/config?path={{urlquery .Page.Project.Path}}" role="tab" aria-selected="true">Config</a>
+</div>
+
+{{if .Conflict}}
+<div class="config-conflict" role="alert"><div><strong>config.toml changed on disk after you opened this form</strong><span>Something else, probably your editor, saved <code>.syl/config.toml</code>. Your changes were not saved, so nothing was overwritten. Reload to see the current file, then make your changes again.</span></div><a class="config-primary-button" href="/projects/config?path={{urlquery .Page.Project.Path}}">Reload config</a></div>
+{{end}}
+{{if gt .Page.Project.LiveRunCount 0}}
+<div class="config-live-banner" role="status"><span class="live-dot"></span><span><strong>{{.Page.Project.LiveRunCount}} {{if eq .Page.Project.LiveRunCount 1}}Run is{{else}}Runs are{{end}} live in this project.</strong> Changes apply to the next Run; live Runs keep the config they started with.</span></div>
+{{end}}
+
+<form id="config-form" class="config-form" method="post" action="/projects/config/save?path={{urlquery .Page.Project.Path}}" hx-post="/projects/config/save?path={{urlquery .Page.Project.Path}}" hx-target="#config-content" hx-swap="outerHTML" hx-headers='{"X-Syl-Token":"{{.Token}}"}'>
+<input type="hidden" name="token" value="{{.Token}}"><input type="hidden" name="version" value="{{.Version}}">
+
+<fieldset class="config-card"><legend>Tracker</legend><div class="config-grid tracker-grid">
+<label>Issues<select name="tracker.issues" data-config-field="tracker.issues">
+{{range .TrackerOptions}}<option value="{{.}}" {{if eq . $.Values.TrackerIssues}}selected{{end}}>{{.}}</option>{{end}}
+</select>{{with index .Errors "tracker.issues"}}<span class="config-error" data-config-error-for="tracker.issues">{{.}}</span>{{end}}</label>
+<label>Reviews<select name="tracker.reviews" data-config-field="tracker.reviews">
+{{range .TrackerOptions}}<option value="{{.}}" {{if eq . $.Values.TrackerReviews}}selected{{end}}>{{.}}</option>{{end}}
+</select>{{with index .Errors "tracker.reviews"}}<span class="config-error" data-config-error-for="tracker.reviews">{{.}}</span>{{end}}</label>
+</div></fieldset>
+
+<fieldset class="config-card"><legend>Roles</legend><div class="roles-grid">
+<div class="role-card"><h3>Plan</h3>
+<label>Harness<select name="roles.plan.harness" data-config-field="roles.plan.harness" data-mcp-harness="plan">{{range $.HarnessOptions}}<option value="{{.}}" {{if eq . $.Values.Plan.Harness}}selected{{end}}>{{.}}</option>{{end}}</select>{{with index $.Errors "roles.plan.harness"}}<span class="config-error" data-config-error-for="roles.plan.harness">{{.}}</span>{{end}}</label>
+<label>Model<input name="roles.plan.model" value="{{.Values.Plan.Model}}" data-config-field="roles.plan.model">{{with index $.Errors "roles.plan.model"}}<span class="config-error" data-config-error-for="roles.plan.model">{{.}}</span>{{end}}</label>
+<label>Effort<select name="roles.plan.effort" data-config-field="roles.plan.effort">{{range $.EffortOptions}}<option value="{{.}}" {{if eq . $.Values.Plan.Effort}}selected{{end}}>{{.}}</option>{{end}}</select>{{with index $.Errors "roles.plan.effort"}}<span class="config-error" data-config-error-for="roles.plan.effort">{{.}}</span>{{end}}</label>
+<div class="config-mcp-control" data-mcp-role="plan"><input type="hidden" name="roles.plan.mcp" value="{{boolText .Values.Plan.MCP}}" data-mcp-value><label class="config-checkbox" data-mcp-active {{if eq .Values.Plan.Harness "codex"}}hidden{{end}}><input type="checkbox" data-mcp-checkbox {{if .Values.Plan.MCP}}checked{{end}}>Inherit MCP servers</label><label class="config-checkbox ignored" data-mcp-ignored {{if ne .Values.Plan.Harness "codex"}}hidden{{end}}><input type="checkbox" data-mcp-ignored-checkbox {{if .Values.Plan.MCP}}checked{{end}} disabled>Inherit MCP servers <span>(Codex ignores this)</span></label></div>
+</div>
+<div class="role-card"><h3>Implement</h3>
+<label>Harness<select name="roles.implement.harness" data-config-field="roles.implement.harness" data-mcp-harness="implement">{{range $.HarnessOptions}}<option value="{{.}}" {{if eq . $.Values.Implement.Harness}}selected{{end}}>{{.}}</option>{{end}}</select>{{with index $.Errors "roles.implement.harness"}}<span class="config-error" data-config-error-for="roles.implement.harness">{{.}}</span>{{end}}</label>
+<label>Model<input name="roles.implement.model" value="{{.Values.Implement.Model}}" data-config-field="roles.implement.model">{{with index $.Errors "roles.implement.model"}}<span class="config-error" data-config-error-for="roles.implement.model">{{.}}</span>{{end}}</label>
+<label>Effort<select name="roles.implement.effort" data-config-field="roles.implement.effort">{{range $.EffortOptions}}<option value="{{.}}" {{if eq . $.Values.Implement.Effort}}selected{{end}}>{{.}}</option>{{end}}</select>{{with index $.Errors "roles.implement.effort"}}<span class="config-error" data-config-error-for="roles.implement.effort">{{.}}</span>{{end}}</label>
+<div class="config-mcp-control" data-mcp-role="implement"><input type="hidden" name="roles.implement.mcp" value="{{boolText .Values.Implement.MCP}}" data-mcp-value><label class="config-checkbox" data-mcp-active {{if eq .Values.Implement.Harness "codex"}}hidden{{end}}><input type="checkbox" data-mcp-checkbox {{if .Values.Implement.MCP}}checked{{end}}>Inherit MCP servers</label><label class="config-checkbox ignored" data-mcp-ignored {{if ne .Values.Implement.Harness "codex"}}hidden{{end}}><input type="checkbox" data-mcp-ignored-checkbox {{if .Values.Implement.MCP}}checked{{end}} disabled>Inherit MCP servers <span>(Codex ignores this)</span></label></div>
+</div>
+<div class="role-card"><h3>Review</h3>
+<label>Harness<select name="roles.review.harness" data-config-field="roles.review.harness" data-mcp-harness="review">{{range $.HarnessOptions}}<option value="{{.}}" {{if eq . $.Values.Review.Harness}}selected{{end}}>{{.}}</option>{{end}}</select>{{with index $.Errors "roles.review.harness"}}<span class="config-error" data-config-error-for="roles.review.harness">{{.}}</span>{{end}}</label>
+<label>Model<input name="roles.review.model" value="{{.Values.Review.Model}}" data-config-field="roles.review.model">{{with index $.Errors "roles.review.model"}}<span class="config-error" data-config-error-for="roles.review.model">{{.}}</span>{{end}}</label>
+<label>Effort<select name="roles.review.effort" data-config-field="roles.review.effort">{{range $.EffortOptions}}<option value="{{.}}" {{if eq . $.Values.Review.Effort}}selected{{end}}>{{.}}</option>{{end}}</select>{{with index $.Errors "roles.review.effort"}}<span class="config-error" data-config-error-for="roles.review.effort">{{.}}</span>{{end}}</label>
+<div class="config-mcp-control" data-mcp-role="review"><input type="hidden" name="roles.review.mcp" value="{{boolText .Values.Review.MCP}}" data-mcp-value><label class="config-checkbox" data-mcp-active {{if eq .Values.Review.Harness "codex"}}hidden{{end}}><input type="checkbox" data-mcp-checkbox {{if .Values.Review.MCP}}checked{{end}}>Inherit MCP servers</label><label class="config-checkbox ignored" data-mcp-ignored {{if ne .Values.Review.Harness "codex"}}hidden{{end}}><input type="checkbox" data-mcp-ignored-checkbox {{if .Values.Review.MCP}}checked{{end}} disabled>Inherit MCP servers <span>(Codex ignores this)</span></label></div>
+</div>
+</div></fieldset>
+
+<div class="config-pair"><fieldset class="config-card"><legend>Loop</legend><label class="narrow">Max iterations<input type="number" name="loop.max_iterations" value="{{.Values.MaxIterations}}" data-config-field="loop.max_iterations" {{with index .Errors "loop.max_iterations"}}aria-invalid="true" aria-describedby="max-iterations-error"{{end}}></label>{{with index .Errors "loop.max_iterations"}}<span class="config-error" id="max-iterations-error" data-config-error-for="loop.max_iterations">{{.}}</span>{{end}}</fieldset>
+<fieldset class="config-card"><legend>Notifications</legend><label class="config-checkbox notification"><input type="checkbox" name="notifications.enabled" value="true" {{if .Values.NotificationsEnabled}}checked{{end}}>Send OS notifications when a Run needs you or ends</label></fieldset></div>
+
+<fieldset class="config-card"><legend>Worktree</legend><div class="config-grid worktree-grid">
+<label>Root<input name="worktree.root" value="{{.Values.WorktreeRoot}}" data-config-field="worktree.root">{{with index .Errors "worktree.root"}}<span class="config-error" data-config-error-for="worktree.root">{{.}}</span>{{end}}</label>
+<label>Setup command<input name="worktree.setup" value="{{.Values.WorktreeSetup}}" placeholder="e.g. npm ci"><span class="config-help">Runs as a shell command in every fresh worktree.</span></label>
+<div class="config-copy-field"><span id="copy-label">Copy into worktree</span><div class="config-copy" role="group" aria-labelledby="copy-label">{{range .Values.WorktreeCopy}}<span class="config-copy-tag">{{.}}<input type="hidden" name="worktree.copy" value="{{.}}"><button type="button" data-remove-copy aria-label="Remove {{.}}">×</button></span>{{end}}<input type="text" name="worktree.copy" data-copy-input aria-label="Add a path to copy" placeholder="add path"></div></div>
+</div></fieldset>
+</form>
+
+<footer class="config-footer"><span>Saving rewrites <code>.syl/config.toml</code> from syl's template. Comments you added by hand are not kept.</span>{{if .Errors}}<span class="config-error-count">{{len .Errors}} {{if eq (len .Errors) 1}}field{{else}}fields{{end}} to fix</span>{{end}}<a class="config-secondary-button" href="/projects/config?path={{urlquery .Page.Project.Path}}">Discard changes</a><button class="config-primary-button" type="submit" form="config-form" data-save-config {{if .Errors}}disabled{{end}}>Save config</button></footer>
+</div>
+{{end}}
+
 {{define "overview-content"}}
 <div id="overview-content" data-syl-token="{{.Token}}" hx-get="/overview/content" hx-trigger="every 3s" hx-target="#overview-content" hx-swap="outerHTML">
 <div class="page-heading"><h1>Overview</h1><span>{{.TotalRunCount}} live Runs across {{len .Overview.Projects}} Projects</span></div>
