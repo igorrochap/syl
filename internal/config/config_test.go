@@ -464,6 +464,42 @@ func TestLoadRejectsInvalidHarnessAndEffortForEveryRole(t *testing.T) {
 	}
 }
 
+func TestLoadRejectsMissingRoleValuesAndInvalidLoop(t *testing.T) {
+	tests := []struct {
+		name    string
+		before  string
+		after   string
+		wantKey string
+	}{
+		{name: "missing model", before: `model = "gpt-5.6-luna"`, after: `model = ""`, wantKey: "roles.implement.model"},
+		{name: "missing effort", before: `effort = "xhigh"`, after: `effort = ""`, wantKey: "roles.implement.effort"},
+		{name: "invalid loop", before: "max_iterations = 3", after: "max_iterations = 0", wantKey: "loop.max_iterations"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			if _, err := Init(root); err != nil {
+				t.Fatal(err)
+			}
+			contents, err := os.ReadFile(Path(root))
+			if err != nil {
+				t.Fatal(err)
+			}
+			contents = []byte(strings.Replace(string(contents), tt.before, tt.after, 1))
+			if err := os.WriteFile(Path(root), contents, 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			_, err = Load(root)
+			var fieldError FieldError
+			if !errors.As(err, &fieldError) || fieldError.Field != tt.wantKey {
+				t.Fatalf("Load() error = %#v, want FieldError for %q", err, tt.wantKey)
+			}
+		})
+	}
+}
+
 func TestLoadRejectsUnknownKeys(t *testing.T) {
 	root := t.TempDir()
 	writeConfig(t, root, `

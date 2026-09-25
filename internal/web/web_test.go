@@ -359,6 +359,27 @@ func TestHandlerRendersMalformedConfigWithoutMarkedLine(t *testing.T) {
 	}
 }
 
+func TestHandlerRendersEmptyInvalidConfigSourceWithLineNumber(t *testing.T) {
+	sylHome := t.TempDir()
+	project := t.TempDir()
+	if err := os.MkdirAll(filepath.Dir(config.Path(project)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(config.Path(project), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeWebRegistry(t, sylHome, registry.Entry{Path: project})
+	server, err := web.New(sylHome, 7777)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	body := serveProject(t, server.Handler(), project, "/projects/config")
+	if !strings.Contains(body, `class="config-source-line"><span class="config-source-number">1</span><pre></pre>`) {
+		t.Fatalf("empty invalid config source = %s, want numbered empty line", body)
+	}
+}
+
 func TestHandlerEscapesInvalidConfigSourceAndLoadsFormAfterFix(t *testing.T) {
 	sylHome := t.TempDir()
 	project := t.TempDir()
