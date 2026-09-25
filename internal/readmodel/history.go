@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/igorrochap/syl/internal/registry"
+	"github.com/igorrochap/syl/internal/runmarker"
 	"github.com/igorrochap/syl/internal/runstate"
 	"github.com/igorrochap/syl/internal/usage"
 )
@@ -100,6 +101,11 @@ func (reader *Reader) ReadProject(projectPath string) (ProjectPage, error) {
 	}
 
 	project, _, _ := inspectProject(path, entry)
+	liveRunCount, err := reader.readLiveRunCount(path)
+	if err != nil {
+		return ProjectPage{}, err
+	}
+	project.LiveRunCount = liveRunCount
 	page := ProjectPage{Project: project}
 	if project.Health == HealthMissing {
 		return page, nil
@@ -109,6 +115,33 @@ func (reader *Reader) ReadProject(projectPath string) (ProjectPage, error) {
 		return ProjectPage{}, err
 	}
 	return page, nil
+}
+
+func (reader *Reader) readLiveRunCount(projectPath string) (int, error) {
+	pointers, err := runmarker.List(reader.sylHome)
+	if err != nil {
+		return 0, fmt.Errorf("read live-run markers: %w", err)
+	}
+	canonicalProjectPath, err := filepath.EvalSymlinks(projectPath)
+	if err != nil {
+		canonicalProjectPath = projectPath
+	}
+	localHost := currentHostname()
+	count := 0
+	for _, pointer := range pointers {
+		if filepath.Clean(pointer.ProjectPath) != filepath.Clean(canonicalProjectPath) {
+			continue
+		}
+		state, err := runstate.Read(runstate.Path(pointer.RunDir))
+		if err != nil || state.Status != runstate.Running {
+			continue
+		}
+		if isLocalHost(pointer.Host, state.Hostname, localHost) && !processIsAlive(state.PID) {
+			continue
+		}
+		count++
+	}
+	return count, nil
 }
 
 // ReadProject reads one registered Project and only that Project's Run history.

@@ -4,6 +4,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -32,6 +33,12 @@ const (
 	EffortMedium Effort = "medium"
 	EffortHigh   Effort = "high"
 	EffortXHigh  Effort = "xhigh"
+)
+
+var (
+	acceptedTrackers  = []Tracker{TrackerGitHub, TrackerLocal, TrackerGitLab}
+	acceptedHarnesses = []Harness{HarnessClaude, HarnessCodex, HarnessOpenCode}
+	acceptedEfforts   = []Effort{EffortLow, EffortMedium, EffortHigh, EffortXHigh}
 )
 
 const (
@@ -104,6 +111,18 @@ type WorktreeConfig struct {
 	Copy  []string
 }
 
+// FieldError describes one configuration validation failure. Message is the
+// same text returned by Load for the corresponding invalid value.
+type FieldError struct {
+	Field   string
+	Message string
+}
+
+// Error implements error for callers that need to return one field failure.
+func (e FieldError) Error() string {
+	return e.Message
+}
+
 type rawConfig struct {
 	Tracker       rawTracker       `toml:"tracker"`
 	Roles         rawRoles         `toml:"roles"`
@@ -148,6 +167,21 @@ func Path(projectRoot string) string {
 	return filepath.Join(projectRoot, configRelativePath)
 }
 
+// Trackers returns the tracker values accepted by Load.
+func Trackers() []Tracker {
+	return append([]Tracker(nil), acceptedTrackers...)
+}
+
+// Harnesses returns the harness values accepted by Load.
+func Harnesses() []Harness {
+	return append([]Harness(nil), acceptedHarnesses...)
+}
+
+// Efforts returns the effort values accepted by Load.
+func Efforts() []Effort {
+	return append([]Effort(nil), acceptedEfforts...)
+}
+
 func Load(projectRoot string) (Config, error) {
 	path := Path(projectRoot)
 	contents, err := os.ReadFile(path)
@@ -186,16 +220,17 @@ func Write(projectRoot string, cfg Config, mode WriteMode) (string, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return "", fmt.Errorf("create .syl directory: %w", err)
 	}
-
-	flags := os.O_WRONLY | os.O_CREATE
 	if mode == OverwriteExisting {
-		flags |= os.O_TRUNC
-	} else {
-		flags |= os.O_EXCL
+		if err := writeExisting(path, Render(cfg)); err != nil {
+			return "", err
+		}
+		return path, nil
 	}
+
+	flags := os.O_WRONLY | os.O_CREATE | os.O_EXCL
 	file, err := os.OpenFile(path, flags, 0o644)
 	if err != nil {
-		if errors.Is(err, os.ErrExist) && mode == NoOverwrite {
+		if errors.Is(err, os.ErrExist) {
 			return "", fmt.Errorf("config already exists at %s", path)
 		}
 		return "", fmt.Errorf("create config %s: %w", path, err)
@@ -205,6 +240,48 @@ func Write(projectRoot string, cfg Config, mode WriteMode) (string, error) {
 		return "", fmt.Errorf("write config %s: %w", path, err)
 	}
 	return path, nil
+}
+
+func writeExisting(path, contents string) error {
+	fileMode := os.FileMode(0o644)
+	if info, err := os.Stat(path); err == nil {
+		fileMode = info.Mode().Perm()
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("stat config %s: %w", path, err)
+	}
+
+	temporary, err := os.CreateTemp(filepath.Dir(path), ".config.toml-*")
+	if err != nil {
+		return fmt.Errorf("create temporary config: %w", err)
+	}
+	temporaryPath := temporary.Name()
+	keepTemporary := false
+	defer func() {
+		if !keepTemporary {
+			_ = os.Remove(temporaryPath)
+		}
+	}()
+
+	if err := temporary.Chmod(fileMode); err != nil {
+		_ = temporary.Close()
+		return fmt.Errorf("set temporary config permissions: %w", err)
+	}
+	if _, err := io.WriteString(temporary, contents); err != nil {
+		_ = temporary.Close()
+		return fmt.Errorf("write temporary config: %w", err)
+	}
+	if err := temporary.Sync(); err != nil {
+		_ = temporary.Close()
+		return fmt.Errorf("sync temporary config: %w", err)
+	}
+	if err := temporary.Close(); err != nil {
+		return fmt.Errorf("close temporary config: %w", err)
+	}
+	if err := os.Rename(temporaryPath, path); err != nil {
+		return fmt.Errorf("replace config %s: %w", path, err)
+	}
+	keepTemporary = true
+	return nil
 }
 
 // Render formats a validated configuration as a committable TOML file.
@@ -333,6 +410,64 @@ func validate(raw rawConfig, metadata toml.MetaData) (Config, error) {
 	}, nil
 }
 
+// ValidationErrors validates a complete configuration and returns every
+// field failure in the order Load checks the schema.
+func ValidationErrors(cfg Config) []FieldError {
+	errors := make([]FieldError, 0)
+	issues, issuesErr := parseTracker("tracker.issues", string(cfg.Tracker.Issues))
+	if issuesErr != nil {
+		errors = append(errors, fieldError("tracker.issues", issuesErr))
+	}
+	reviews, reviewsErr := parseTracker("tracker.reviews", string(cfg.Tracker.Reviews))
+	if reviewsErr != nil {
+		errors = append(errors, fieldError("tracker.reviews", reviewsErr))
+	}
+	if issuesErr == nil && reviewsErr == nil && reviews.IsRemote() && reviews != issues {
+		errors = append(errors, FieldError{
+			Field:   "tracker.reviews",
+			Message: fmt.Sprintf("tracker.reviews = %q and tracker.issues = %q are incompatible; a remote review log needs a matching remote issue tracker", reviews, issues),
+		})
+	}
+
+	errors = append(errors, validateRoleConfig("roles.plan", cfg.Roles.Plan)...)
+	errors = append(errors, validateRoleConfig("roles.implement", cfg.Roles.Implement)...)
+	errors = append(errors, validateRoleConfig("roles.review", cfg.Roles.Review)...)
+	if cfg.Loop.MaxIterations < 1 {
+		errors = append(errors, FieldError{
+			Field:   "loop.max_iterations",
+			Message: fmt.Sprintf("loop.max_iterations must be positive; got %d", cfg.Loop.MaxIterations),
+		})
+	}
+	if strings.TrimSpace(cfg.Worktree.Root) == "" {
+		errors = append(errors, FieldError{Field: "worktree.root", Message: "worktree.root: is required"})
+	}
+	return errors
+}
+
+func fieldError(field string, err error) FieldError {
+	return FieldError{Field: field, Message: err.Error()}
+}
+
+func validateRoleConfig(prefix string, role RoleConfig) []FieldError {
+	errors := make([]FieldError, 0, 3)
+	harness, harnessErr := parseEnum(prefix+".harness", string(role.Harness), acceptedHarnesses, "claude, codex, or opencode")
+	if harnessErr != nil {
+		errors = append(errors, fieldError(prefix+".harness", harnessErr))
+	}
+	if strings.TrimSpace(role.Model) == "" {
+		errors = append(errors, FieldError{Field: prefix + ".model", Message: prefix + ".model: is required"})
+	} else if harnessErr == nil && harness == HarnessClaude && !strings.HasPrefix(role.Model, "claude-") {
+		errors = append(errors, FieldError{
+			Field:   prefix + ".model",
+			Message: fmt.Sprintf(`%s.model: invalid value %q; want a model starting with "claude-"`, prefix, role.Model),
+		})
+	}
+	if _, effortErr := parseEnum(prefix+".effort", string(role.Effort), acceptedEfforts, "low, medium, high, or xhigh"); effortErr != nil {
+		errors = append(errors, fieldError(prefix+".effort", effortErr))
+	}
+	return errors
+}
+
 func parseTrackerConfig(raw rawTracker) (TrackerConfig, error) {
 	issues, err := parseTracker("tracker.issues", raw.Issues)
 	if err != nil {
@@ -365,12 +500,12 @@ func parseRolesConfig(raw rawRoles) (RolesConfig, error) {
 }
 
 func parseTracker(key, value string) (Tracker, error) {
-	return parseEnum(key, value, []Tracker{TrackerGitHub, TrackerLocal, TrackerGitLab}, "github, local, or gitlab")
+	return parseEnum(key, value, acceptedTrackers, "github, local, or gitlab")
 }
 
 func parseRole(prefix string, raw rawRole, defaultMCP bool) (RoleConfig, error) {
 	harness, err := parseEnum(prefix+".harness", raw.Harness,
-		[]Harness{HarnessClaude, HarnessCodex, HarnessOpenCode}, "claude, codex, or opencode")
+		acceptedHarnesses, "claude, codex, or opencode")
 	if err != nil {
 		return RoleConfig{}, err
 	}
@@ -382,7 +517,7 @@ func parseRole(prefix string, raw rawRole, defaultMCP bool) (RoleConfig, error) 
 	}
 
 	effort, err := parseEnum(prefix+".effort", raw.Effort,
-		[]Effort{EffortLow, EffortMedium, EffortHigh, EffortXHigh}, "low, medium, high, or xhigh")
+		acceptedEfforts, "low, medium, high, or xhigh")
 	if err != nil {
 		return RoleConfig{}, err
 	}

@@ -31,6 +31,7 @@ linters:
             - "!**/internal/runmarker/*.go"
             - "!**/internal/runstate/*.go"
             - "!**/internal/readmodel/*.go"
+            - "!**/internal/configedit/*.go"
             - "!**/internal/web/*.go"
             - "!**/internal/adapters/gh/*.go"
             - "!**/internal/adapters/glab/*.go"
@@ -127,6 +128,18 @@ linters:
           deny:
             - pkg: github.com/igorrochap/syl
               desc: the read model owns reads and must not depend on presentation packages
+        configedit:
+          files:
+            - "**/internal/configedit/*.go"
+          list-mode: lax
+          allow:
+            - $gostd
+            - github.com
+            - golang.org
+            - github.com/igorrochap/syl/internal/config$
+          deny:
+            - pkg: github.com/igorrochap/syl
+              desc: config editing owns validation and persistence but not HTTP presentation
         web:
           files:
             - "**/internal/web/*.go"
@@ -137,6 +150,7 @@ linters:
             - golang.org
             - github.com/igorrochap/syl/internal/readmodel$
             - github.com/igorrochap/syl/internal/runstate$
+            - github.com/igorrochap/syl/internal/configedit$
           deny:
             - pkg: github.com/igorrochap/syl
               desc: the web adapter renders the read model without depending on command or workflow packages

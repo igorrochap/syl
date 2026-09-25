@@ -31,7 +31,8 @@ not permitted.
 | Support with no project-package edges | `internal/adapters/git`, `internal/adapters/notify`, `internal/config`, `internal/harness/claude/transcript`, `internal/tracker`, `internal/tui`, `internal/verdict`, `internal/version`, `scripts`, `skills` | none |
 | Support with no project-package edges | `internal/ui` | none |
 | Application support | `internal/readmodel` | `internal/config`, `internal/registry`, `internal/runmarker`, `internal/runstate`, `internal/usage`, `internal/verdict` |
-| Interface adapter | `internal/web` | `internal/readmodel`, `internal/runstate` |
+| Application support | `internal/configedit` | `internal/config` |
+| Interface adapter | `internal/web` | `internal/configedit`, `internal/readmodel`, `internal/runstate` |
 
 ## Exceptions
 
@@ -66,6 +67,9 @@ call exceptions:
   read-only parsing and grouping of persisted review verdicts.
 - `internal/web` imports `internal/readmodel` and `internal/runstate` because
   HTTP handlers render the read model and name Run kinds in the Overview.
+- `internal/configedit` owns the HTTP-independent config form model,
+  validation, optimistic version check, and save operation; `internal/web`
+  imports it only to adapt those operations to HTTP.
 - Tests are not part of the architecture check. Test packages intentionally
   import concrete collaborators to exercise public seams; those imports do
   not create production dependency edges.

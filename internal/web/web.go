@@ -21,6 +21,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/igorrochap/syl/internal/configedit"
 	"github.com/igorrochap/syl/internal/readmodel"
 	"github.com/igorrochap/syl/internal/runstate"
 )
@@ -73,6 +74,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/", s.overview)
 	mux.HandleFunc("/projects", s.project)
 	mux.HandleFunc("/projects/", s.project)
+	mux.HandleFunc("/projects/config", s.configPage)
+	mux.HandleFunc("/projects/config/content", s.configPage)
+	mux.HandleFunc("/projects/config/save", s.saveConfig)
 	mux.HandleFunc("/runs/artifact", s.artifact)
 	mux.HandleFunc("/runs", s.run)
 	mux.HandleFunc("/runs/", s.run)
@@ -205,12 +209,173 @@ type projectPageData struct {
 	Token string
 }
 
+type configPageData struct {
+	Page           readmodel.ProjectPage
+	Values         configedit.Values
+	Version        string
+	Errors         configedit.FieldErrors
+	Conflict       bool
+	TrackerOptions []string
+	HarnessOptions []string
+	EffortOptions  []string
+	Port           int
+	Token          string
+}
+
 func (s *Server) projectData(projectPath string) (projectPageData, error) {
 	page, err := s.projectModel(projectPath)
 	if err != nil {
 		return projectPageData{}, err
 	}
 	return projectPageData{Page: page, Port: s.port, Token: s.token}, nil
+}
+
+func (s *Server) configData(projectPath string) (configPageData, error) {
+	page, err := s.projectModel(projectPath)
+	if err != nil {
+		return configPageData{}, err
+	}
+	snapshot, err := configedit.Load(projectPath)
+	if err != nil {
+		return configPageData{}, err
+	}
+	return configPageData{
+		Page:           page,
+		Values:         snapshot.Values,
+		Version:        snapshot.Version,
+		TrackerOptions: configedit.TrackerOptions(),
+		HarnessOptions: configedit.HarnessOptions(),
+		EffortOptions:  configedit.EffortOptions(),
+		Port:           s.port,
+		Token:          s.token,
+	}, nil
+}
+
+func (s *Server) configPage(writer http.ResponseWriter, request *http.Request) {
+	if request.URL.Path != "/projects/config" && request.URL.Path != "/projects/config/content" {
+		writer.WriteHeader(http.StatusNotFound)
+		return
+	}
+	projectPath := request.URL.Query().Get("path")
+	if strings.TrimSpace(projectPath) == "" {
+		writer.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	data, err := s.configData(projectPath)
+	if err != nil {
+		if errors.Is(err, readmodel.ErrProjectNotFound) || errors.Is(err, os.ErrNotExist) {
+			writer.WriteHeader(http.StatusNotFound)
+			return
+		}
+		writeServerError(writer, err)
+		return
+	}
+	writer.Header().Set("Content-Type", "text/html; charset=utf-8")
+	templateName := "project-config"
+	if request.URL.Path == "/projects/config/content" {
+		templateName = "project-config-content"
+	}
+	if err := s.templates.ExecuteTemplate(writer, templateName, data); err != nil {
+		return
+	}
+}
+
+func (s *Server) saveConfig(writer http.ResponseWriter, request *http.Request) {
+	if !s.authorizeMutation(writer, request) {
+		return
+	}
+	if err := request.ParseForm(); err != nil {
+		writer.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	projectPath := request.URL.Query().Get("path")
+	if strings.TrimSpace(projectPath) == "" {
+		writer.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	page, ok := s.configSavePage(writer, projectPath)
+	if !ok {
+		return
+	}
+	values, fieldErrors := configedit.Parse(request.Form)
+	version := request.Form.Get("version")
+	if len(fieldErrors) > 0 {
+		s.renderConfigFeedback(writer, request, s.feedbackData(page, values, version, fieldErrors, false), http.StatusUnprocessableEntity)
+		return
+	}
+	if s.renderConfigSaveError(writer, request, projectPath, page, version, values) {
+		return
+	}
+	if request.Header.Get("HX-Request") == "true" {
+		s.renderConfigContent(writer, projectPath)
+		return
+	}
+	http.Redirect(writer, request, "/projects/config?path="+url.QueryEscape(projectPath), http.StatusSeeOther)
+}
+
+func (s *Server) configSavePage(writer http.ResponseWriter, projectPath string) (readmodel.ProjectPage, bool) {
+	page, err := s.projectModel(projectPath)
+	if err == nil {
+		return page, true
+	}
+	if errors.Is(err, readmodel.ErrProjectNotFound) {
+		writer.WriteHeader(http.StatusNotFound)
+		return readmodel.ProjectPage{}, false
+	}
+	writeServerError(writer, err)
+	return readmodel.ProjectPage{}, false
+}
+
+func (s *Server) feedbackData(page readmodel.ProjectPage, values configedit.Values, version string, fieldErrors configedit.FieldErrors, conflict bool) configPageData {
+	return configPageData{
+		Page: page, Values: values, Version: version, Errors: fieldErrors, Conflict: conflict,
+		TrackerOptions: configedit.TrackerOptions(), HarnessOptions: configedit.HarnessOptions(), EffortOptions: configedit.EffortOptions(),
+		Port: s.port, Token: s.token,
+	}
+}
+
+func (s *Server) renderConfigSaveError(writer http.ResponseWriter, request *http.Request, projectPath string, page readmodel.ProjectPage, version string, values configedit.Values) bool {
+	err := configedit.Save(projectPath, version, values)
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, configedit.ErrConflict) {
+		s.renderConfigFeedback(writer, request, s.feedbackData(page, values, version, nil, true), http.StatusConflict)
+		return true
+	}
+	var fieldErrors configedit.FieldErrors
+	if errors.As(err, &fieldErrors) {
+		s.renderConfigFeedback(writer, request, s.feedbackData(page, values, version, fieldErrors, false), http.StatusUnprocessableEntity)
+		return true
+	}
+	writeServerError(writer, err)
+	return true
+}
+
+func (s *Server) renderConfigContent(writer http.ResponseWriter, projectPath string) {
+	data, err := s.configData(projectPath)
+	if err != nil {
+		writeServerError(writer, err)
+		return
+	}
+	writer.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := s.templates.ExecuteTemplate(writer, "project-config-content", data); err != nil {
+		return
+	}
+}
+
+func (s *Server) renderConfigFeedback(writer http.ResponseWriter, request *http.Request, data configPageData, status int) {
+	writer.Header().Set("Content-Type", "text/html; charset=utf-8")
+	writer.WriteHeader(status)
+	if request.Header.Get("HX-Request") != "true" {
+		if err := s.templates.ExecuteTemplate(writer, "project-config", data); err != nil {
+			return
+		}
+		return
+	}
+	if err := s.templates.ExecuteTemplate(writer, "project-config-content", data); err != nil {
+		return
+	}
 }
 
 type runPageData struct {
@@ -566,8 +731,16 @@ func templateFunctions() template.FuncMap {
 		"ticket":             displayTicket,
 		"duration":           displayDuration,
 		"firstSeen":          displayFirstSeen,
+		"boolText":           boolText,
 		"urlquery":           url.QueryEscape,
 	}
+}
+
+func boolText(value bool) string {
+	if value {
+		return "true"
+	}
+	return "false"
 }
 
 func runArtifactURL(runDir, artifactName string) string {

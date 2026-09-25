@@ -12,18 +12,282 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/igorrochap/syl/internal/config"
+	"github.com/igorrochap/syl/internal/configedit"
 	"github.com/igorrochap/syl/internal/registry"
 	"github.com/igorrochap/syl/internal/runmarker"
 	"github.com/igorrochap/syl/internal/runstate"
 	"github.com/igorrochap/syl/internal/usage"
 	"github.com/igorrochap/syl/internal/web"
 )
+
+func TestHandlerRendersStructuredConfigForm(t *testing.T) {
+	sylHome := t.TempDir()
+	project := t.TempDir()
+	if _, err := config.Init(project); err != nil {
+		t.Fatal(err)
+	}
+	writeWebRegistry(t, sylHome, registry.Entry{Path: project})
+	server, err := web.New(sylHome, 7777)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := serveProject(t, server.Handler(), project, "/projects/config")
+	for _, field := range []string{
+		`name="tracker.issues"`, `name="tracker.reviews"`,
+		`name="roles.plan.harness"`, `name="roles.plan.model"`, `name="roles.plan.effort"`, `name="roles.plan.mcp"`,
+		`name="roles.implement.harness"`, `name="roles.implement.model"`, `name="roles.implement.effort"`, `name="roles.implement.mcp"`,
+		`name="roles.review.harness"`, `name="roles.review.model"`, `name="roles.review.effort"`, `name="roles.review.mcp"`,
+		`name="loop.max_iterations"`, `name="notifications.enabled"`, `name="worktree.root"`, `name="worktree.setup"`,
+		`name="worktree.copy"`, "Saving rewrites", "Comments you added by hand are not kept.", "Codex ignores this",
+		`data-mcp-harness="implement"`, `data-mcp-role="implement"`, `data-mcp-value`,
+		"document.addEventListener('change'", "updateSaveState", "save.disabled=hasErrors",
+	} {
+		if !strings.Contains(body, field) {
+			t.Fatalf("config form does not contain %q: %s", field, body)
+		}
+	}
+	if strings.Contains(body, "Changes apply to the next Run") {
+		t.Fatal("config form shows a live-Run banner without a live Run")
+	}
+	for _, option := range append(append(configedit.TrackerOptions(), configedit.HarnessOptions()...), configedit.EffortOptions()...) {
+		if !strings.Contains(body, `value="`+option+`"`) {
+			t.Fatalf("config form does not contain option %q", option)
+		}
+	}
+}
+
+func TestHandlerShowsLiveRunBannerOnConfigForm(t *testing.T) {
+	sylHome := t.TempDir()
+	project := t.TempDir()
+	if _, err := config.Init(project); err != nil {
+		t.Fatal(err)
+	}
+	writeWebRegistry(t, sylHome, registry.Entry{Path: project})
+	runDir := filepath.Join(project, ".syl", "runs", "live-config")
+	writeWebRun(t, project, filepath.Base(runDir), runstate.State{
+		Status: runstate.Running, PID: os.Getpid(), Hostname: testHostname(t), Kind: runstate.Implement,
+		StartedAt: time.Now().UTC(),
+	})
+	if _, err := runmarker.Create(sylHome, project, runDir, "#186", os.Getpid(), testHostname(t)); err != nil {
+		t.Fatal(err)
+	}
+	server, err := web.New(sylHome, 7777)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := serveProject(t, server.Handler(), project, "/projects/config")
+	if !strings.Contains(body, "1 Run is live in this project") || !strings.Contains(body, "Changes apply to the next Run") {
+		t.Fatalf("config form = %s, want live-Run banner", body)
+	}
+}
+
+func TestHandlerSavesValidConfigAndLoadsItBack(t *testing.T) {
+	sylHome := t.TempDir()
+	project := t.TempDir()
+	if _, err := config.Init(project); err != nil {
+		t.Fatal(err)
+	}
+	writeWebRegistry(t, sylHome, registry.Entry{Path: project})
+	server, err := web.New(sylHome, 7777)
+	if err != nil {
+		t.Fatal(err)
+	}
+	page := serveProject(t, server.Handler(), project, "/projects/config")
+	form := configForm(t, project, tokenFromPage(t, page))
+	form.Set("loop.max_iterations", "6")
+	response := postMutation(t, server.Handler(), configSaveRoute(project), form, "http://localhost:7777")
+	if response.Code != http.StatusSeeOther {
+		t.Fatalf("save status = %d; body = %q", response.Code, response.Body.String())
+	}
+	loaded, err := config.Load(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Loop.MaxIterations != 6 {
+		t.Fatalf("loaded max_iterations = %d, want 6", loaded.Loop.MaxIterations)
+	}
+}
+
+func TestHandlerShowsValidationErrorWithoutWriting(t *testing.T) {
+	sylHome := t.TempDir()
+	project := t.TempDir()
+	if _, err := config.Init(project); err != nil {
+		t.Fatal(err)
+	}
+	writeWebRegistry(t, sylHome, registry.Entry{Path: project})
+	server, err := web.New(sylHome, 7777)
+	if err != nil {
+		t.Fatal(err)
+	}
+	page := serveProject(t, server.Handler(), project, "/projects/config")
+	form := configForm(t, project, tokenFromPage(t, page))
+	form.Set("loop.max_iterations", "0")
+	before, err := os.ReadFile(config.Path(project))
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := postMutation(t, server.Handler(), configSaveRoute(project), form, "")
+	if response.Code != http.StatusUnprocessableEntity || !strings.Contains(response.Body.String(), "loop.max_iterations must be positive; got 0") {
+		t.Fatalf("validation response = %d/%q", response.Code, response.Body.String())
+	}
+	after, err := os.ReadFile(config.Path(project))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(after, before) {
+		t.Fatal("invalid config save changed the file")
+	}
+}
+
+func TestHandlerRefusesConfigConflictAndKeepsDiskChange(t *testing.T) {
+	sylHome := t.TempDir()
+	project := t.TempDir()
+	if _, err := config.Init(project); err != nil {
+		t.Fatal(err)
+	}
+	writeWebRegistry(t, sylHome, registry.Entry{Path: project})
+	server, err := web.New(sylHome, 7777)
+	if err != nil {
+		t.Fatal(err)
+	}
+	page := serveProject(t, server.Handler(), project, "/projects/config")
+	form := configForm(t, project, tokenFromPage(t, page))
+	external, err := os.ReadFile(config.Path(project))
+	if err != nil {
+		t.Fatal(err)
+	}
+	external = append(external, []byte("\n# changed by editor\n")...)
+	if err := os.WriteFile(config.Path(project), external, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	form.Set("loop.max_iterations", "9")
+	response := postMutation(t, server.Handler(), configSaveRoute(project), form, "")
+	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "changed on disk") || !strings.Contains(response.Body.String(), "Reload config") {
+		t.Fatalf("conflict response = %d/%q", response.Code, response.Body.String())
+	}
+	loaded, err := config.Load(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Loop.MaxIterations != 3 || !strings.Contains(string(external), "changed by editor") {
+		t.Fatal("conflicting save did not preserve the on-disk change")
+	}
+}
+
+func TestHandlerProtectsConfigSaveWithTokenAndOrigin(t *testing.T) {
+	sylHome := t.TempDir()
+	project := t.TempDir()
+	if _, err := config.Init(project); err != nil {
+		t.Fatal(err)
+	}
+	writeWebRegistry(t, sylHome, registry.Entry{Path: project})
+	server, err := web.New(sylHome, 7777)
+	if err != nil {
+		t.Fatal(err)
+	}
+	page := serveProject(t, server.Handler(), project, "/projects/config")
+	token := tokenFromPage(t, page)
+	form := configForm(t, project, token)
+	form.Del("token")
+	if response := postMutation(t, server.Handler(), configSaveRoute(project), form, ""); response.Code != http.StatusForbidden {
+		t.Fatalf("missing token status = %d, want forbidden", response.Code)
+	}
+	form.Set("token", token)
+	if response := postMutation(t, server.Handler(), configSaveRoute(project), form, "http://evil.example:7777"); response.Code != http.StatusForbidden {
+		t.Fatalf("foreign origin status = %d, want forbidden", response.Code)
+	}
+}
+
+func TestHandlerConfigRoutesCoverContentFeedbackAndBadRequests(t *testing.T) {
+	sylHome := t.TempDir()
+	project := t.TempDir()
+	invalidProject := t.TempDir()
+	if _, err := config.Init(project); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(invalidProject, ".syl"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(config.Path(invalidProject), []byte("[tracker\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeWebRegistry(t, sylHome, registry.Entry{Path: project}, registry.Entry{Path: invalidProject})
+	server, err := web.New(sylHome, 7777)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := server.Handler()
+
+	missingPath := httptest.NewRecorder()
+	handler.ServeHTTP(missingPath, httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7777/projects/config", nil))
+	if missingPath.Code != http.StatusBadRequest {
+		t.Fatalf("config page without path status = %d, want bad request", missingPath.Code)
+	}
+
+	unknownProject := httptest.NewRecorder()
+	handler.ServeHTTP(unknownProject, httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7777/projects/config?path="+url.QueryEscape(filepath.Join(t.TempDir(), "unknown")), nil))
+	if unknownProject.Code != http.StatusNotFound {
+		t.Fatalf("unknown config project status = %d, want not found", unknownProject.Code)
+	}
+
+	content := serveProject(t, handler, project, "/projects/config/content")
+	if !strings.Contains(content, `name="loop.max_iterations"`) {
+		t.Fatalf("config content does not contain form fields: %s", content)
+	}
+
+	invalidResponse := serveProjectResponse(t, handler, invalidProject, "/projects/config")
+	if invalidResponse.Code != http.StatusInternalServerError {
+		t.Fatalf("invalid config page status = %d, want internal server error", invalidResponse.Code)
+	}
+
+	page := serveProject(t, handler, project, "/projects/config")
+	token := tokenFromPage(t, page)
+	form := configForm(t, project, token)
+	validHX := rawMutation(t, handler, http.MethodPost, configSaveRoute(project), form.Encode(), token, true)
+	if validHX.Code != http.StatusOK || !strings.Contains(validHX.Body.String(), `name="loop.max_iterations"`) {
+		t.Fatalf("HTMX config save = %d/%q, want rendered config content", validHX.Code, validHX.Body.String())
+	}
+
+	form = configForm(t, project, token)
+	form.Set("loop.max_iterations", "0")
+	invalidHX := rawMutation(t, handler, http.MethodPost, configSaveRoute(project), form.Encode(), token, true)
+	if invalidHX.Code != http.StatusUnprocessableEntity || !strings.Contains(invalidHX.Body.String(), "loop.max_iterations must be positive; got 0") {
+		t.Fatalf("HTMX validation response = %d/%q", invalidHX.Code, invalidHX.Body.String())
+	}
+
+	form = configForm(t, project, token)
+	current, err := os.ReadFile(config.Path(project))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(config.Path(project), append(current, []byte("\n# changed during request\n")...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	conflictHX := rawMutation(t, handler, http.MethodPost, configSaveRoute(project), form.Encode(), token, true)
+	if conflictHX.Code != http.StatusConflict || !strings.Contains(conflictHX.Body.String(), "Reload config") {
+		t.Fatalf("HTMX conflict response = %d/%q", conflictHX.Code, conflictHX.Body.String())
+	}
+
+	missingSavePath := rawMutation(t, handler, http.MethodPost, "/projects/config/save", "", token, false)
+	if missingSavePath.Code != http.StatusBadRequest {
+		t.Fatalf("config save without path status = %d, want bad request", missingSavePath.Code)
+	}
+	malformedForm := rawMutation(t, handler, http.MethodPost, configSaveRoute(project), "%zz", token, false)
+	if malformedForm.Code != http.StatusBadRequest {
+		t.Fatalf("malformed config form status = %d, want bad request", malformedForm.Code)
+	}
+	unknownSave := rawMutation(t, handler, http.MethodPost, configSaveRoute(filepath.Join(t.TempDir(), "unknown")), "", token, false)
+	if unknownSave.Code != http.StatusNotFound {
+		t.Fatalf("unknown config save status = %d, want not found", unknownSave.Code)
+	}
+}
 
 func TestHandlerRendersProjectHistoryAndConfigMetadata(t *testing.T) {
 	sylHome := t.TempDir()
@@ -740,15 +1004,61 @@ func writeWebRun(t *testing.T, project, name string, state runstate.State) {
 
 func serveProject(t *testing.T, handler http.Handler, projectPath, route string) string {
 	t.Helper()
+	recorder := serveProjectResponse(t, handler, projectPath, route)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("Project status = %d; body = %q", recorder.Code, recorder.Body.String())
+	}
+	return recorder.Body.String()
+}
+
+func serveProjectResponse(t *testing.T, handler http.Handler, projectPath, route string) *httptest.ResponseRecorder {
+	t.Helper()
 	requestURL := "http://127.0.0.1:7777" + route + "?path=" + url.QueryEscape(projectPath)
 	request := httptest.NewRequest(http.MethodGet, requestURL, nil)
 	request.Host = "127.0.0.1:7777"
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, request)
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("Project status = %d; body = %q", recorder.Code, recorder.Body.String())
+	return recorder
+}
+
+func configSaveRoute(projectPath string) string {
+	return "/projects/config/save?path=" + url.QueryEscape(projectPath)
+}
+
+func configForm(t *testing.T, projectPath, token string) url.Values {
+	t.Helper()
+	snapshot, err := configedit.Load(projectPath)
+	if err != nil {
+		t.Fatal(err)
 	}
-	return recorder.Body.String()
+	form := url.Values{}
+	form.Set("token", token)
+	form.Set("version", snapshot.Version)
+	form.Set("tracker.issues", snapshot.Values.TrackerIssues)
+	form.Set("tracker.reviews", snapshot.Values.TrackerReviews)
+	setRoleForm(form, "plan", snapshot.Values.Plan)
+	setRoleForm(form, "implement", snapshot.Values.Implement)
+	setRoleForm(form, "review", snapshot.Values.Review)
+	form.Set("loop.max_iterations", strconv.Itoa(snapshot.Values.MaxIterations))
+	if snapshot.Values.NotificationsEnabled {
+		form.Set("notifications.enabled", "true")
+	}
+	form.Set("worktree.root", snapshot.Values.WorktreeRoot)
+	form.Set("worktree.setup", snapshot.Values.WorktreeSetup)
+	for _, path := range snapshot.Values.WorktreeCopy {
+		form.Add("worktree.copy", path)
+	}
+	return form
+}
+
+func setRoleForm(form url.Values, name string, values configedit.RoleValues) {
+	prefix := "roles." + name + "."
+	form.Set(prefix+"harness", values.Harness)
+	form.Set(prefix+"model", values.Model)
+	form.Set(prefix+"effort", values.Effort)
+	if values.MCP {
+		form.Set(prefix+"mcp", "true")
+	}
 }
 
 func serveRun(t *testing.T, handler http.Handler, runDir, route string) string {
