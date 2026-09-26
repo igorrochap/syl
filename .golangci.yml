@@ -82,6 +82,7 @@ linters:
             - github.com/igorrochap/syl/internal/harness$
             - github.com/igorrochap/syl/internal/initializer$
             - github.com/igorrochap/syl/internal/orchestration$
+            - github.com/igorrochap/syl/internal/readmodel$
             - github.com/igorrochap/syl/internal/registry$
             - github.com/igorrochap/syl/internal/tracker$
             - github.com/igorrochap/syl/internal/ui$

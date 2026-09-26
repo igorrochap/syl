@@ -15,7 +15,7 @@ not permitted.
 | Layer | Package | May import |
 | --- | --- | --- |
 | Composition | `cmd/syl` | every package under `internal/`, plus `scripts` and `skills` |
-| Command | `internal/cli` | `internal/adapters/git`, `internal/adapters/notify`, `internal/config`, `internal/harness`, `internal/initializer`, `internal/orchestration`, `internal/registry`, `internal/tracker`, `internal/ui`, `internal/updater`, `internal/usage`, `internal/version`, `internal/web` |
+| Command | `internal/cli` | `internal/adapters/git`, `internal/adapters/notify`, `internal/config`, `internal/harness`, `internal/initializer`, `internal/orchestration`, `internal/readmodel`, `internal/registry`, `internal/tracker`, `internal/ui`, `internal/updater`, `internal/usage`, `internal/version`, `internal/web` |
 | Application | `internal/orchestration` | `internal/config`, `internal/harness`, `internal/runmarker`, `internal/runstate`, `internal/tracker`, `internal/ui`, `internal/usage`, `internal/verdict` |
 | Application support | `internal/initializer` | `internal/config`, `internal/tui`, `internal/ui`, `scripts`, `skills` |
 | Application support | `internal/updater` | `scripts` |
@@ -44,6 +44,8 @@ call exceptions:
 - `internal/cli` imports `internal/adapters/git` and
   `internal/adapters/notify` because the in-process CLI owns the defaults for
   those collaborators while still allowing callers to inject replacements.
+- `internal/cli` imports `internal/readmodel` because the foreground `ui`
+  command prints a startup snapshot before the web server begins serving.
 - `internal/initializer` and `internal/updater` import `scripts` and
   `skills` because those packages hold the canonical embedded assets they
   install or execute.

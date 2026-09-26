@@ -152,14 +152,14 @@ func (r *Renderer) Banner(value Banner) error {
 	maxLabelWidth := bannerLabelWidth(value.Rows)
 	lines := []outputLine{{text: value.Title, style: r.style.title}}
 	for _, row := range value.Rows {
-		label := strings.TrimSpace(row.Label) + ":"
-		padding := strings.Repeat(" ", maxLabelWidth-lipgloss.Width(label))
-		lines = append(lines, outputLine{
-			text:  "  " + label + padding + "  " + row.Value,
-			style: r.style.label,
-		})
+		lines = append(lines, r.bannerRow(row, maxLabelWidth))
 	}
 	return r.writeLines(lines)
+}
+
+// BannerRow writes one row using the alignment of the complete Banner rows.
+func (r *Renderer) BannerRow(row Field, rows []Field) error {
+	return r.writeLines([]outputLine{r.bannerRow(row, bannerLabelWidth(rows))})
 }
 
 // Text writes one or more ordinary user-facing lines with the renderer's label style.
@@ -377,6 +377,15 @@ func bannerLabelWidth(rows []Field) int {
 		}
 	}
 	return maxWidth
+}
+
+func (r *Renderer) bannerRow(row Field, maxLabelWidth int) outputLine {
+	label := strings.TrimSpace(row.Label) + ":"
+	padding := strings.Repeat(" ", maxLabelWidth-lipgloss.Width(label))
+	return outputLine{
+		text:  "  " + label + padding + "  " + row.Value,
+		style: r.style.label,
+	}
 }
 
 func tableKeyWidth(rows []Row) int {

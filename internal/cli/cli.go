@@ -18,6 +18,7 @@ import (
 	"github.com/igorrochap/syl/internal/harness"
 	"github.com/igorrochap/syl/internal/initializer"
 	"github.com/igorrochap/syl/internal/orchestration"
+	"github.com/igorrochap/syl/internal/readmodel"
 	"github.com/igorrochap/syl/internal/registry"
 	"github.com/igorrochap/syl/internal/tracker"
 	"github.com/igorrochap/syl/internal/ui"
@@ -128,32 +129,115 @@ func (a *App) uiCommand() *cobra.Command {
 		Short: "serve the local Overview web panel",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if port < 1 || port > 65535 {
-				return fmt.Errorf("ui port must be between 1 and 65535, got %d", port)
-			}
-			listener, err := a.uiListener(port)
-			if err != nil {
-				return fmt.Errorf("start ui on port %d: %w", port, err)
-			}
-			server, err := web.New(a.sylHome, port)
-			if err != nil {
-				_ = listener.Close()
-				return err
-			}
-			if !noOpen {
-				if err := a.openBrowser(fmt.Sprintf("http://127.0.0.1:%d/", port)); err != nil {
-					_ = listener.Close()
-					return fmt.Errorf("open ui in browser: %w", err)
-				}
-			}
-			contextToCancel, stop := signal.NotifyContext(cmd.Context(), os.Interrupt)
-			defer stop()
-			return server.Serve(contextToCancel, listener)
+			return a.runUICommand(cmd, port, noOpen)
 		},
 	}
 	command.Flags().IntVar(&port, "port", 7777, "listen on this loopback port")
 	command.Flags().BoolVar(&noOpen, "no-open", false, "do not open the Overview in a browser")
 	return command
+}
+
+func (a *App) runUICommand(cmd *cobra.Command, port int, noOpen bool) error {
+	listener, server, err := a.newUIServer(port)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = listener.Close() }()
+
+	renderer := ui.New(cmd.OutOrStdout(), ui.DetectCaps(cmd.OutOrStdout()))
+	startupRows, err := a.renderUIStartup(renderer, port, noOpen)
+	if err != nil {
+		return fmt.Errorf("write ui banner: %w", err)
+	}
+	if err := a.renderUIBrowserStatus(renderer, port, noOpen, startupRows); err != nil {
+		return fmt.Errorf("write ui browser status: %w", err)
+	}
+	if err := renderer.Text("Press Ctrl-C to stop."); err != nil {
+		return fmt.Errorf("write ui stop instruction: %w", err)
+	}
+	return a.serveUI(cmd.Context(), server, listener, renderer)
+}
+
+func (a *App) newUIServer(port int) (net.Listener, *web.Server, error) {
+	if port < 1 || port > 65535 {
+		return nil, nil, fmt.Errorf("ui port must be between 1 and 65535, got %d", port)
+	}
+	listener, err := a.uiListener(port)
+	if err != nil {
+		return nil, nil, fmt.Errorf("start ui on port %d: %w", port, err)
+	}
+	server, err := web.New(a.sylHome, port)
+	if err != nil {
+		_ = listener.Close()
+		return nil, nil, err
+	}
+	return listener, server, nil
+}
+
+func (a *App) renderUIStartup(renderer *ui.Renderer, port int, noOpen bool) ([]ui.Field, error) {
+	overview, projectsAvailable, liveRunsAvailable := readUIOverview(a.sylHome)
+	return renderUIStartupBanner(renderer, port, a.sylHome, overview, projectsAvailable, liveRunsAvailable, noOpen)
+}
+
+func readUIOverview(sylHome string) (readmodel.Overview, bool, bool) {
+	overview, err := readmodel.ReadOverview(sylHome)
+	if err == nil {
+		return overview, true, true
+	}
+	if overview.Projects != nil {
+		return overview, true, false
+	}
+	return overview, false, false
+}
+
+func (a *App) renderUIBrowserStatus(renderer *ui.Renderer, port int, noOpen bool, startupRows []ui.Field) error {
+	if noOpen {
+		return nil
+	}
+	status := "opened"
+	if err := a.openBrowser(fmt.Sprintf("http://127.0.0.1:%d/", port)); err != nil {
+		status = fmt.Sprintf("could not open (%s); open the URL above", err)
+	}
+	browserRow := ui.Field{Label: "browser", Value: status}
+	rows := append(append([]ui.Field{}, startupRows...), browserRow)
+	return renderer.BannerRow(browserRow, rows)
+}
+
+func (a *App) serveUI(ctx context.Context, server *web.Server, listener net.Listener, renderer *ui.Renderer) error {
+	contextToCancel, stop := signal.NotifyContext(ctx, os.Interrupt)
+	defer stop()
+	if err := server.Serve(contextToCancel, listener); err != nil {
+		return err
+	}
+	return renderer.Text("syl ui stopped.")
+}
+
+func renderUIStartupBanner(renderer *ui.Renderer, port int, sylHome string, overview readmodel.Overview, projectsAvailable, liveRunsAvailable, noOpen bool) ([]ui.Field, error) {
+	projects := "unavailable"
+	liveRuns := "unavailable"
+	if projectsAvailable {
+		projects = fmt.Sprintf("%d", len(overview.Projects))
+	}
+	if liveRunsAvailable {
+		liveRunCount := len(overview.LiveRuns) + len(overview.AwaitingAnswer)
+		liveRuns = fmt.Sprintf("%d", liveRunCount)
+		if len(overview.AwaitingAnswer) > 0 {
+			liveRuns += fmt.Sprintf(" (%d awaiting answer)", len(overview.AwaitingAnswer))
+		}
+	}
+	rows := []ui.Field{
+		{Label: "syl home", Value: sylHome},
+		{Label: "projects", Value: projects},
+		{Label: "live runs", Value: liveRuns},
+	}
+	if noOpen {
+		rows = append(rows, ui.Field{Label: "browser", Value: "not opened (--no-open)"})
+	}
+	err := renderer.Banner(ui.Banner{
+		Title: fmt.Sprintf("syl ui — http://127.0.0.1:%d/", port),
+		Rows:  rows,
+	})
+	return rows, err
 }
 
 func (a *App) uiListener(port int) (net.Listener, error) {
