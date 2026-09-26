@@ -148,7 +148,7 @@ func (reader *Reader) ReadOverview() (Overview, error) {
 	projects, projectConfigs := inspectProjects(entries)
 	pointers, err := runmarker.List(reader.sylHome)
 	if err != nil {
-		return Overview{}, fmt.Errorf("read live-run markers: %w", err)
+		return Overview{Projects: projects}, fmt.Errorf("read live-run markers: %w", err)
 	}
 
 	localHost := currentHostname()
