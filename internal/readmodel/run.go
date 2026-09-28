@@ -12,6 +12,7 @@ import (
 
 	"github.com/igorrochap/syl/internal/config"
 	"github.com/igorrochap/syl/internal/runstate"
+	"github.com/igorrochap/syl/internal/sylhome"
 	"github.com/igorrochap/syl/internal/usage"
 	"github.com/igorrochap/syl/internal/verdict"
 )
@@ -152,7 +153,7 @@ func (reader *Reader) ReadRun(runDir string) (RunPage, error) {
 }
 
 // ReadRun reads one Run directory using a fresh operating-system reader.
-func ReadRun(sylHome, runDir string) (RunPage, error) {
+func ReadRun(sylHome sylhome.Dir, runDir string) (RunPage, error) {
 	return NewReader(sylHome).ReadRun(runDir)
 }
 

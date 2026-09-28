@@ -1626,7 +1626,7 @@ func newImplementLoopFixture(t *testing.T) *implementLoopFixture {
 	return &implementLoopFixture{
 		root:      base.root,
 		harnesses: harnesses,
-		app: New(base.root, base.root, t.TempDir(), Dependencies{
+		app: New(base.root, base.root, testSylHome(t, t.TempDir()), Dependencies{
 			Harnesses: harnessFactories(harnesses),
 			Notifier:  fakeNotifier{},
 		}),

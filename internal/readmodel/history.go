@@ -11,9 +11,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/igorrochap/syl/internal/registry"
-	"github.com/igorrochap/syl/internal/runmarker"
 	"github.com/igorrochap/syl/internal/runstate"
+	"github.com/igorrochap/syl/internal/sylhome"
 	"github.com/igorrochap/syl/internal/usage"
 )
 
@@ -40,7 +39,7 @@ func (osFileSystem) ReadFile(name string) ([]byte, error) {
 
 // Reader builds UI read models and retains immutable Run history in memory.
 type Reader struct {
-	sylHome string
+	sylHome sylhome.Dir
 	files   FileSystem
 
 	mu      sync.Mutex
@@ -48,12 +47,12 @@ type Reader struct {
 }
 
 // NewReader constructs a reader backed by the operating system filesystem.
-func NewReader(sylHome string) *Reader {
+func NewReader(sylHome sylhome.Dir) *Reader {
 	return NewReaderWithFileSystem(sylHome, osFileSystem{})
 }
 
 // NewReaderWithFileSystem constructs a reader with an injected history filesystem.
-func NewReaderWithFileSystem(sylHome string, files FileSystem) *Reader {
+func NewReaderWithFileSystem(sylHome sylhome.Dir, files FileSystem) *Reader {
 	if files == nil {
 		files = osFileSystem{}
 	}
@@ -89,7 +88,7 @@ type HistoryRun struct {
 
 // ReadProject reads one registered Project and only that Project's Run history.
 func (reader *Reader) ReadProject(projectPath string) (ProjectPage, error) {
-	entries, err := registry.List(reader.sylHome)
+	entries, err := reader.sylHome.Projects()
 	if err != nil {
 		return ProjectPage{}, fmt.Errorf("read registered Projects: %w", err)
 	}
@@ -118,7 +117,7 @@ func (reader *Reader) ReadProject(projectPath string) (ProjectPage, error) {
 }
 
 func (reader *Reader) readLiveRunCount(projectPath string) (int, error) {
-	pointers, err := runmarker.List(reader.sylHome)
+	runs, err := reader.sylHome.LiveRuns()
 	if err != nil {
 		return 0, fmt.Errorf("read live-run markers: %w", err)
 	}
@@ -128,15 +127,15 @@ func (reader *Reader) readLiveRunCount(projectPath string) (int, error) {
 	}
 	localHost := currentHostname()
 	count := 0
-	for _, pointer := range pointers {
-		if filepath.Clean(pointer.ProjectPath) != filepath.Clean(canonicalProjectPath) {
+	for _, run := range runs {
+		if filepath.Clean(run.ProjectPath) != filepath.Clean(canonicalProjectPath) {
 			continue
 		}
-		state, err := runstate.Read(runstate.Path(pointer.RunDir))
+		state, err := runstate.Read(runstate.Path(run.RunDir))
 		if err != nil || state.Status != runstate.Running {
 			continue
 		}
-		if isLocalHost(pointer.Host, state.Hostname, localHost) && !processIsAlive(state.PID) {
+		if isLocalHost(run.Host, state.Hostname, localHost) && !processIsAlive(state.PID) {
 			continue
 		}
 		count++
@@ -145,7 +144,7 @@ func (reader *Reader) readLiveRunCount(projectPath string) (int, error) {
 }
 
 // ReadProject reads one registered Project and only that Project's Run history.
-func ReadProject(sylHome, projectPath string) (ProjectPage, error) {
+func ReadProject(sylHome sylhome.Dir, projectPath string) (ProjectPage, error) {
 	return NewReader(sylHome).ReadProject(projectPath)
 }
 
@@ -164,13 +163,13 @@ type historyMetadata struct {
 	kind      runstate.Kind
 }
 
-func registeredProject(entries []registry.Entry, path string) (registry.Entry, bool) {
+func registeredProject(entries []sylhome.RegisteredProject, path string) (sylhome.RegisteredProject, bool) {
 	for _, entry := range entries {
 		if filepath.Clean(entry.Path) == path {
 			return entry, true
 		}
 	}
-	return registry.Entry{}, false
+	return sylhome.RegisteredProject{}, false
 }
 
 func (reader *Reader) readProjectHistory(projectPath string) ([]HistoryRun, error) {

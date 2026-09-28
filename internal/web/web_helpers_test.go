@@ -13,6 +13,7 @@ import (
 
 	"github.com/igorrochap/syl/internal/readmodel"
 	"github.com/igorrochap/syl/internal/runstate"
+	"github.com/igorrochap/syl/internal/sylhome"
 )
 
 func TestNewTokenReportsReaderError(t *testing.T) {
@@ -261,7 +262,7 @@ func TestDisplaySummaryCoversProjectHealthAndRunCounts(t *testing.T) {
 }
 
 func TestHandlerRendersContentAndNotFound(t *testing.T) {
-	server, err := New(t.TempDir(), 7777)
+	server, err := New(testSylHome(t), 7777)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -285,7 +286,7 @@ func TestHandlerRendersContentAndNotFound(t *testing.T) {
 }
 
 func TestHandlerRendersReadModelErrors(t *testing.T) {
-	server, err := New(t.TempDir(), 7777)
+	server, err := New(testSylHome(t), 7777)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -305,7 +306,7 @@ func TestHandlerRendersReadModelErrors(t *testing.T) {
 }
 
 func TestServeRejectsMissingListenerAndReturnsServeError(t *testing.T) {
-	server, err := New(t.TempDir(), 7777)
+	server, err := New(testSylHome(t), 7777)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -320,7 +321,7 @@ func TestServeRejectsMissingListenerAndReturnsServeError(t *testing.T) {
 }
 
 func TestServeReportsShutdownError(t *testing.T) {
-	server, err := New(t.TempDir(), 7777)
+	server, err := New(testSylHome(t), 7777)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -368,6 +369,15 @@ func (listener *closeErrorListener) Close() error {
 }
 
 func (*closeErrorListener) Addr() net.Addr { return testAddress("127.0.0.1:7777") }
+
+func testSylHome(t *testing.T) sylhome.Dir {
+	t.Helper()
+	dir, err := sylhome.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
 
 type testAddress string
 

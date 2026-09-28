@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/igorrochap/syl/internal/runmarker"
 	"github.com/igorrochap/syl/internal/runstate"
+	"github.com/igorrochap/syl/internal/sylhome"
 	"github.com/igorrochap/syl/internal/usage"
 	"github.com/igorrochap/syl/internal/verdict"
 )
@@ -60,7 +60,7 @@ type diskRunRecorder struct {
 	runState      runstate.State
 	hasRunState   bool
 	warningOutput io.Writer
-	marker        *runmarker.Marker
+	marker        *sylhome.LiveRun
 }
 
 type sessionKey struct {
@@ -84,7 +84,7 @@ func newImplementRunRecorder(
 ) (*diskRunRecorder, error) {
 	return newImplementRunRecorderWithState(
 		originRoot, workRoot, issueNumber, branch, branchPoint, implementerHarness, reviewerHarness,
-		implementContext, reviewContext, 0, nil, "",
+		implementContext, reviewContext, 0, nil, sylhome.Dir{},
 	)
 }
 
@@ -100,7 +100,7 @@ func newImplementRunRecorderWithState(
 	reviewContext string,
 	maxIterations int,
 	warningOutput io.Writer,
-	sylHome string,
+	sylHome sylhome.Dir,
 ) (*diskRunRecorder, error) {
 	workRoot, err := resolveRunWorkRoot(workRoot)
 	if err != nil {
@@ -142,7 +142,7 @@ func newReviewRunRecorder(
 	reviewContext string,
 ) (*diskRunRecorder, error) {
 	return newReviewRunRecorderWithState(
-		originRoot, workRoot, ticketRef, branchPoint, reviewerHarness, reviewContext, nil, "",
+		originRoot, workRoot, ticketRef, branchPoint, reviewerHarness, reviewContext, nil, sylhome.Dir{},
 	)
 }
 
@@ -154,7 +154,7 @@ func newReviewRunRecorderWithState(
 	reviewerHarness string,
 	reviewContext string,
 	warningOutput io.Writer,
-	sylHome string,
+	sylHome sylhome.Dir,
 ) (*diskRunRecorder, error) {
 	workRoot, err := resolveRunWorkRoot(workRoot)
 	if err != nil {
@@ -276,23 +276,29 @@ func (r *diskRunRecorder) runStateSnapshot() runstate.State {
 	return r.runState
 }
 
-func (r *diskRunRecorder) createLiveRunMarker(sylHome, projectRoot string, state runstate.State) {
-	if sylHome == "" || !r.hasRunState || !runStateFileExists(r.dir) {
+func (r *diskRunRecorder) createLiveRunMarker(sylHome sylhome.Dir, projectRoot string, state runstate.State) {
+	if sylHome.String() == "" || !r.hasRunState || !runStateFileExists(r.dir) {
 		return
 	}
-	marker, err := runmarker.Create(sylHome, projectRoot, r.dir, state.TicketRef, state.PID, state.Hostname)
+	marker, err := sylHome.MarkLive(sylhome.LiveRun{
+		ProjectPath: projectRoot,
+		RunDir:      r.dir,
+		TicketRef:   state.TicketRef,
+		Host:        state.Hostname,
+		PID:         state.PID,
+	})
 	if err != nil {
 		r.warn("create live-run marker", err)
 		return
 	}
-	r.marker = marker
+	r.marker = &marker
 }
 
 func (r *diskRunRecorder) removeLiveRunMarker() {
 	if r.marker == nil {
 		return
 	}
-	if err := r.marker.Remove(); err != nil {
+	if err := r.marker.Unmark(); err != nil {
 		r.warn("remove live-run marker", err)
 		return
 	}

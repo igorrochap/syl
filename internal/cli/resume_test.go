@@ -227,7 +227,7 @@ func TestResumeHandsOffRecordedHarnessAtRecordedRootWithCurrentMCP(t *testing.T)
 
 	adapter := &recordingResumeHarness{}
 	var harnessRoots []string
-	app := New(root, root, t.TempDir(), Dependencies{
+	app := New(root, root, testSylHome(t, t.TempDir()), Dependencies{
 		Harnesses: func(gotRoot string) map[string]harness.Adapter {
 			harnessRoots = append(harnessRoots, gotRoot)
 			return map[string]harness.Adapter{"claude": adapter}
@@ -430,7 +430,7 @@ func (h *recordingResumeHarness) AttachSession(_ context.Context, sessionID stri
 }
 
 func newResumeApp(t *testing.T, root string, adapter harness.Adapter) *App {
-	return New(root, root, t.TempDir(), Dependencies{
+	return New(root, root, testSylHome(t, t.TempDir()), Dependencies{
 		Harnesses: func(string) map[string]harness.Adapter {
 			return map[string]harness.Adapter{"claude": adapter}
 		},

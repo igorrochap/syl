@@ -24,6 +24,7 @@ import (
 	"github.com/igorrochap/syl/internal/configedit"
 	"github.com/igorrochap/syl/internal/readmodel"
 	"github.com/igorrochap/syl/internal/runstate"
+	"github.com/igorrochap/syl/internal/sylhome"
 )
 
 //go:embed templates/*.html static/*
@@ -32,7 +33,7 @@ var assets embed.FS
 // Server serves the Overview, Project pages, and their embedded assets.
 type Server struct {
 	port         int
-	sylHome      string
+	sylHome      sylhome.Dir
 	token        string
 	model        func() (readmodel.Overview, error)
 	projectModel func(string) (readmodel.ProjectPage, error)
@@ -42,7 +43,7 @@ type Server struct {
 }
 
 // New constructs a server that reads live state from sylHome for every page request.
-func New(sylHome string, port int) (*Server, error) {
+func New(sylHome sylhome.Dir, port int) (*Server, error) {
 	token, err := newToken(rand.Reader)
 	if err != nil {
 		return nil, fmt.Errorf("generate ui token: %w", err)
@@ -642,7 +643,7 @@ func (s *Server) forget(writer http.ResponseWriter, request *http.Request) {
 		writer.WriteHeader(http.StatusBadRequest)
 		return
 	}
-	if err := readmodel.Forget(s.sylHome, projectPath); err != nil {
+	if err := s.sylHome.ForgetProject(projectPath); err != nil {
 		writeServerError(writer, err)
 		return
 	}

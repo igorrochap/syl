@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/igorrochap/syl/internal/registry"
 	"github.com/igorrochap/syl/internal/updater"
 )
 
@@ -63,7 +62,7 @@ func TestProjectRegistryResolvesProjectSymlink(t *testing.T) {
 	if err := os.Symlink(fixture.root, projectLink); err != nil {
 		t.Fatal(err)
 	}
-	app := New(projectLink, projectLink, fixture.sylHome, fixture.app.deps)
+	app := New(projectLink, projectLink, testSylHome(t, fixture.sylHome), fixture.app.deps)
 
 	if code := app.Run(context.Background(), []string{"plan", "add registry"}, &fixture.stdout, &fixture.stderr); code != 0 {
 		t.Fatalf("plan code = %d, stderr = %q", code, fixture.stderr.String())
@@ -78,7 +77,7 @@ func TestProjectRegistryResolvesProjectSymlink(t *testing.T) {
 func TestInitRegistersNewProject(t *testing.T) {
 	root := t.TempDir()
 	sylHome := t.TempDir()
-	app := New(root, root, sylHome, Dependencies{Input: defaultInitInput()})
+	app := New(root, root, testSylHome(t, sylHome), Dependencies{Input: defaultInitInput()})
 	var stdout, stderr strings.Builder
 
 	if code := app.Run(context.Background(), []string{"init"}, &stdout, &stderr); code != 0 {
@@ -101,7 +100,7 @@ func TestNonConfigCommandsLeaveProjectRegistryUntouched(t *testing.T) {
 			t.Fatalf("%v code = %d, stderr = %q", args, code, fixture.stderr.String())
 		}
 	}
-	if _, err := os.Stat(registry.Path(fixture.sylHome)); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(fixture.sylHome, "projects.json")); !os.IsNotExist(err) {
 		t.Fatalf("registry stat error = %v, want no registry", err)
 	}
 }
@@ -115,13 +114,13 @@ func TestConfigLoadFailureDoesNotRegisterProject(t *testing.T) {
 		t.Fatal(err)
 	}
 	sylHome := t.TempDir()
-	app := New(root, root, sylHome, Dependencies{})
+	app := New(root, root, testSylHome(t, sylHome), Dependencies{})
 	var stdout, stderr strings.Builder
 
 	if code := app.Run(context.Background(), []string{"plan", "add registry"}, &stdout, &stderr); code == 0 {
 		t.Fatal("plan code = 0, want config failure")
 	}
-	if _, err := os.Stat(registry.Path(sylHome)); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(sylHome, "projects.json")); !os.IsNotExist(err) {
 		t.Fatalf("registry stat error = %v, want no registry", err)
 	}
 }
@@ -129,13 +128,13 @@ func TestConfigLoadFailureDoesNotRegisterProject(t *testing.T) {
 func TestResumeConfigLoadFailureDoesNotRegisterProject(t *testing.T) {
 	root := t.TempDir()
 	sylHome := t.TempDir()
-	app := New(root, root, sylHome, Dependencies{})
+	app := New(root, root, testSylHome(t, sylHome), Dependencies{})
 	var stdout, stderr strings.Builder
 
 	if code := app.Run(context.Background(), []string{"resume", "implement"}, &stdout, &stderr); code == 0 {
 		t.Fatal("resume code = 0, want config failure")
 	}
-	if _, err := os.Stat(registry.Path(sylHome)); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(sylHome, "projects.json")); !os.IsNotExist(err) {
 		t.Fatalf("registry stat error = %v, want no registry", err)
 	}
 }
@@ -146,7 +145,7 @@ func TestProjectRegistryWriteFailureWarnsWithoutChangingCommandResult(t *testing
 	if err := os.WriteFile(badSylHome, []byte("file"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	fixture.app = New(fixture.root, fixture.root, badSylHome, fixture.app.deps)
+	fixture.app = New(fixture.root, fixture.root, testSylHome(t, badSylHome), fixture.app.deps)
 	fixture.harnesses["claude"] = &planHarness{}
 
 	if code := fixture.app.Run(context.Background(), []string{"plan", "add registry"}, &fixture.stdout, &fixture.stderr); code != 0 {
@@ -162,7 +161,7 @@ func TestProjectRegistryWriteFailureWarnsWithoutChangingCommandResult(t *testing
 
 func TestProjectRegistryReadFailureWarnsWithoutChangingCommandResult(t *testing.T) {
 	fixture := newPlanFixture(t)
-	if err := os.WriteFile(registry.Path(fixture.sylHome), []byte("not json\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(fixture.sylHome, "projects.json"), []byte("not json\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	fixture.harnesses["claude"] = &planHarness{}
@@ -190,7 +189,7 @@ type projectEntry struct {
 
 func readProjectEntries(t *testing.T, sylHome string) []projectEntry {
 	t.Helper()
-	contents, err := os.ReadFile(registry.Path(sylHome))
+	contents, err := os.ReadFile(filepath.Join(sylHome, "projects.json"))
 	if err != nil {
 		t.Fatal(err)
 	}

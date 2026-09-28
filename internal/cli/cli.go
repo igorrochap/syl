@@ -19,7 +19,7 @@ import (
 	"github.com/igorrochap/syl/internal/initializer"
 	"github.com/igorrochap/syl/internal/orchestration"
 	"github.com/igorrochap/syl/internal/readmodel"
-	"github.com/igorrochap/syl/internal/registry"
+	"github.com/igorrochap/syl/internal/sylhome"
 	"github.com/igorrochap/syl/internal/tracker"
 	"github.com/igorrochap/syl/internal/ui"
 	"github.com/igorrochap/syl/internal/updater"
@@ -43,7 +43,7 @@ type Dependencies struct {
 type App struct {
 	originRoot      string
 	workRoot        string
-	sylHome         string
+	sylHome         sylhome.Dir
 	deps            Dependencies
 	harnessAdapters map[string]harness.Adapter
 }
@@ -57,7 +57,7 @@ type implementCommandOptions struct {
 }
 
 // New constructs an in-process CLI application with its three filesystem roots.
-func New(originRoot, workRoot, sylHome string, deps Dependencies) *App {
+func New(originRoot, workRoot string, sylHome sylhome.Dir, deps Dependencies) *App {
 	if originRoot == "" {
 		originRoot = "."
 	}
@@ -176,10 +176,10 @@ func (a *App) newUIServer(port int) (net.Listener, *web.Server, error) {
 
 func (a *App) renderUIStartup(renderer *ui.Renderer, port int, noOpen bool) ([]ui.Field, error) {
 	overview, projectsAvailable, liveRunsAvailable := readUIOverview(a.sylHome)
-	return renderUIStartupBanner(renderer, port, a.sylHome, overview, projectsAvailable, liveRunsAvailable, noOpen)
+	return renderUIStartupBanner(renderer, port, a.sylHome.String(), overview, projectsAvailable, liveRunsAvailable, noOpen)
 }
 
-func readUIOverview(sylHome string) (readmodel.Overview, bool, bool) {
+func readUIOverview(sylHome sylhome.Dir) (readmodel.Overview, bool, bool) {
 	overview, err := readmodel.ReadOverview(sylHome)
 	if err == nil {
 		return overview, true, true
@@ -668,7 +668,7 @@ func (a *App) loadProjectConfig(stderr io.Writer) (config.Config, error) {
 }
 
 func (a *App) registerProject(stderr io.Writer) {
-	if err := registry.Upsert(a.sylHome, a.originRoot); err != nil {
+	if err := a.sylHome.RegisterProject(a.originRoot); err != nil {
 		_, _ = fmt.Fprintf(stderr, "syl: warning: project registry: %v\n", err)
 	}
 }

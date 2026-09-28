@@ -11,7 +11,6 @@ import (
 
 	"github.com/igorrochap/syl/internal/config"
 	"github.com/igorrochap/syl/internal/harness"
-	"github.com/igorrochap/syl/internal/runmarker"
 	"github.com/igorrochap/syl/internal/runstate"
 	"github.com/igorrochap/syl/internal/tracker"
 )
@@ -223,7 +222,7 @@ func TestRunImplementRecordsExhaustedAndCancelledStates(t *testing.T) {
 			sylHome := t.TempDir()
 			err := RunImplement(test.ctx(), ImplementOptions{
 				OriginRoot: root, WorkRoot: root, Git: &implementRunGit{}, OriginGit: &implementRunGit{},
-				SylHome:      sylHome,
+				SylHome:      testSylHome(t, sylHome),
 				IssueTracker: branchSetupTracker{}, Ticket: tracker.Ticket{Number: 180},
 				ProjectConfig: config.Config{
 					Roles: config.RolesConfig{
@@ -242,7 +241,7 @@ func TestRunImplementRecordsExhaustedAndCancelledStates(t *testing.T) {
 			if state.Status != test.wantStatus || state.EndedAt == nil {
 				t.Fatalf("state = %#v, want %s with ended time", state, test.wantStatus)
 			}
-			markers, markerErr := runmarker.List(sylHome)
+			markers, markerErr := testSylHome(t, sylHome).LiveRuns()
 			if markerErr != nil {
 				t.Fatalf("List() after %s Run: %v", test.name, markerErr)
 			}

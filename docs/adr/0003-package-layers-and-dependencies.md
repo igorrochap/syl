@@ -15,8 +15,8 @@ not permitted.
 | Layer | Package | May import |
 | --- | --- | --- |
 | Composition | `cmd/syl` | every package under `internal/`, plus `scripts` and `skills` |
-| Command | `internal/cli` | `internal/adapters/git`, `internal/adapters/notify`, `internal/config`, `internal/harness`, `internal/initializer`, `internal/orchestration`, `internal/readmodel`, `internal/registry`, `internal/tracker`, `internal/ui`, `internal/updater`, `internal/usage`, `internal/version`, `internal/web` |
-| Application | `internal/orchestration` | `internal/config`, `internal/harness`, `internal/runmarker`, `internal/runstate`, `internal/tracker`, `internal/ui`, `internal/usage`, `internal/verdict` |
+| Command | `internal/cli` | `internal/adapters/git`, `internal/adapters/notify`, `internal/config`, `internal/harness`, `internal/initializer`, `internal/orchestration`, `internal/readmodel`, `internal/sylhome`, `internal/tracker`, `internal/ui`, `internal/updater`, `internal/usage`, `internal/version`, `internal/web` |
+| Application | `internal/orchestration` | `internal/config`, `internal/harness`, `internal/runstate`, `internal/sylhome`, `internal/tracker`, `internal/ui`, `internal/usage`, `internal/verdict` |
 | Application support | `internal/initializer` | `internal/config`, `internal/tui`, `internal/ui`, `scripts`, `skills` |
 | Application support | `internal/updater` | `scripts` |
 | Port | `internal/harness` | `internal/config` |
@@ -25,13 +25,14 @@ not permitted.
 | Port adapter | `internal/harness/claude` | `internal/config`, `internal/harness`, `internal/harness/claude/transcript` |
 | Port adapter | `internal/harness/codex` | `internal/config`, `internal/harness` |
 | Support | `internal/usage` | `internal/harness/claude/transcript` |
-| Support | `internal/config`, `internal/registry`, `internal/runmarker`, `internal/runstate` | `internal/atomicfile` |
+| Support | `internal/config`, `internal/runstate` | `internal/atomicfile` |
+| Support | `internal/sylhome` | `internal/atomicfile` |
 | Support with no project-package edges | `internal/atomicfile` | none |
 | Support with no project-package edges | `internal/adapters/git`, `internal/adapters/notify`, `internal/harness/claude/transcript`, `internal/tracker`, `internal/tui`, `internal/verdict`, `internal/version`, `scripts`, `skills` | none |
 | Support with no project-package edges | `internal/ui` | none |
-| Application support | `internal/readmodel` | `internal/config`, `internal/registry`, `internal/runmarker`, `internal/runstate`, `internal/usage`, `internal/verdict` |
+| Application support | `internal/readmodel` | `internal/config`, `internal/runstate`, `internal/sylhome`, `internal/usage`, `internal/verdict` |
 | Application support | `internal/configedit` | `internal/config` |
-| Interface adapter | `internal/web` | `internal/configedit`, `internal/readmodel`, `internal/runstate` |
+| Interface adapter | `internal/web` | `internal/configedit`, `internal/readmodel`, `internal/runstate`, `internal/sylhome` |
 
 ## Exceptions
 
@@ -54,9 +55,9 @@ call exceptions:
 - `internal/orchestration` imports `internal/runstate` because the Run state
   file format is shared with future read models without coupling those models
   to orchestration.
-- `internal/orchestration` imports `internal/runmarker` because orchestration
-  owns the live Run lifecycle while the marker store remains independent of
-  workflow callers.
+- `internal/orchestration` imports `internal/sylhome` because orchestration
+  owns the live Run lifecycle while syl home owns the marker and registry
+  storage.
 - `internal/cli` imports `internal/web` because the command layer owns the
   foreground process and injects the browser and listener seams.
 - `internal/readmodel` imports the state support packages because it is the
