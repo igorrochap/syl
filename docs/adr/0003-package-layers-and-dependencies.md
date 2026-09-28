@@ -25,10 +25,9 @@ not permitted.
 | Port adapter | `internal/harness/claude` | `internal/config`, `internal/harness`, `internal/harness/claude/transcript` |
 | Port adapter | `internal/harness/codex` | `internal/config`, `internal/harness` |
 | Support | `internal/usage` | `internal/harness/claude/transcript` |
-| Support with no project-package edges | `internal/registry` | none |
-| Support with no project-package edges | `internal/runmarker` | none |
-| Support with no project-package edges | `internal/runstate` | none |
-| Support with no project-package edges | `internal/adapters/git`, `internal/adapters/notify`, `internal/config`, `internal/harness/claude/transcript`, `internal/tracker`, `internal/tui`, `internal/verdict`, `internal/version`, `scripts`, `skills` | none |
+| Support | `internal/config`, `internal/registry`, `internal/runmarker`, `internal/runstate` | `internal/atomicfile` |
+| Support with no project-package edges | `internal/atomicfile` | none |
+| Support with no project-package edges | `internal/adapters/git`, `internal/adapters/notify`, `internal/harness/claude/transcript`, `internal/tracker`, `internal/tui`, `internal/verdict`, `internal/version`, `scripts`, `skills` | none |
 | Support with no project-package edges | `internal/ui` | none |
 | Application support | `internal/readmodel` | `internal/config`, `internal/registry`, `internal/runmarker`, `internal/runstate`, `internal/usage`, `internal/verdict` |
 | Application support | `internal/configedit` | `internal/config` |

@@ -30,6 +30,7 @@ linters:
             - "!**/internal/registry/*.go"
             - "!**/internal/runmarker/*.go"
             - "!**/internal/runstate/*.go"
+            - "!**/internal/atomicfile/*.go"
             - "!**/internal/readmodel/*.go"
             - "!**/internal/configedit/*.go"
             - "!**/internal/web/*.go"
@@ -263,14 +264,11 @@ linters:
             - "**/internal/adapters/git/*.go"
             - "**/internal/adapters/notify/*.go"
             - "**/internal/harness/claude/transcript/*.go"
-            - "**/internal/config/*.go"
             - "**/internal/tracker/*.go"
             - "**/internal/tui/*.go"
             - "**/internal/verdict/*.go"
             - "**/internal/version/*.go"
-            - "**/internal/registry/*.go"
-            - "**/internal/runmarker/*.go"
-            - "**/internal/runstate/*.go"
+            - "**/internal/atomicfile/*.go"
             - "**/scripts/*.go"
             - "**/skills/*.go"
           list-mode: lax
@@ -281,6 +279,21 @@ linters:
           deny:
             - pkg: github.com/igorrochap/syl
               desc: support packages do not depend on other project packages
+        atomicfile-users:
+          files:
+            - "**/internal/config/*.go"
+            - "**/internal/registry/*.go"
+            - "**/internal/runmarker/*.go"
+            - "**/internal/runstate/*.go"
+          list-mode: lax
+          allow:
+            - $gostd
+            - github.com
+            - golang.org
+            - github.com/igorrochap/syl/internal/atomicfile$
+          deny:
+            - pkg: github.com/igorrochap/syl
+              desc: support writers may depend only on the atomic file module
         ui:
           files:
             - "**/internal/ui/*.go"

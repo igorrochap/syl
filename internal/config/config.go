@@ -4,7 +4,6 @@ package config
 import (
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -12,6 +11,8 @@ import (
 	"strings"
 
 	"github.com/BurntSushi/toml"
+
+	"github.com/igorrochap/syl/internal/atomicfile"
 )
 
 const configRelativePath = ".syl/config.toml"
@@ -250,37 +251,9 @@ func writeExisting(path, contents string) error {
 		return fmt.Errorf("stat config %s: %w", path, err)
 	}
 
-	temporary, err := os.CreateTemp(filepath.Dir(path), ".config.toml-*")
-	if err != nil {
-		return fmt.Errorf("create temporary config: %w", err)
-	}
-	temporaryPath := temporary.Name()
-	keepTemporary := false
-	defer func() {
-		if !keepTemporary {
-			_ = os.Remove(temporaryPath)
-		}
-	}()
-
-	if err := temporary.Chmod(fileMode); err != nil {
-		_ = temporary.Close()
-		return fmt.Errorf("set temporary config permissions: %w", err)
-	}
-	if _, err := io.WriteString(temporary, contents); err != nil {
-		_ = temporary.Close()
-		return fmt.Errorf("write temporary config: %w", err)
-	}
-	if err := temporary.Sync(); err != nil {
-		_ = temporary.Close()
-		return fmt.Errorf("sync temporary config: %w", err)
-	}
-	if err := temporary.Close(); err != nil {
-		return fmt.Errorf("close temporary config: %w", err)
-	}
-	if err := os.Rename(temporaryPath, path); err != nil {
+	if err := atomicfile.Write(path, []byte(contents), fileMode); err != nil {
 		return fmt.Errorf("replace config %s: %w", path, err)
 	}
-	keepTemporary = true
 	return nil
 }
 
