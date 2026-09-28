@@ -15,6 +15,7 @@ import (
 	"github.com/igorrochap/syl/internal/config"
 	"github.com/igorrochap/syl/internal/harness"
 	"github.com/igorrochap/syl/internal/runstate"
+	"github.com/igorrochap/syl/internal/sylhome"
 	"github.com/igorrochap/syl/internal/tracker"
 	"github.com/igorrochap/syl/internal/ui"
 	"github.com/igorrochap/syl/internal/usage"
@@ -57,7 +58,7 @@ const (
 type ReviewOptions struct {
 	OriginRoot           string
 	WorkRoot             string
-	SylHome              string
+	SylHome              sylhome.Dir
 	ProjectConfig        config.Config
 	IssueTracker         tracker.Tracker
 	Ticket               *tracker.Ticket
@@ -296,7 +297,7 @@ func prepareReviewWithContext(
 	git GitRunner,
 ) (reviewPreparation, error) {
 	return prepareReviewWithContextAndWarning(
-		ctx, originRoot, workRoot, ticketRef, reviewContext, reviewerHarness, git, nil, "",
+		ctx, originRoot, workRoot, ticketRef, reviewContext, reviewerHarness, git, nil, sylhome.Dir{},
 	)
 }
 
@@ -309,7 +310,7 @@ func prepareReviewWithContextAndWarning(
 	reviewerHarness string,
 	git GitRunner,
 	warningOutput io.Writer,
-	sylHome string,
+	sylHome sylhome.Dir,
 ) (reviewPreparation, error) {
 	if git == nil {
 		return reviewPreparation{}, errors.New("review: git runner is not configured")

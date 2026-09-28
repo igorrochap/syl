@@ -14,6 +14,7 @@ import (
 	"github.com/igorrochap/syl/internal/harness/claude"
 	"github.com/igorrochap/syl/internal/harness/codex"
 	"github.com/igorrochap/syl/internal/orchestration"
+	"github.com/igorrochap/syl/internal/sylhome"
 	"github.com/igorrochap/syl/internal/tracker"
 )
 
@@ -23,7 +24,12 @@ func main() {
 		fmt.Fprintf(os.Stderr, "syl: determine project root: %s\n", err)
 		os.Exit(1)
 	}
-	app := cli.New(originRoot, originRoot, resolveSylHome(), cli.Dependencies{
+	sylHome, err := sylhome.Open(resolveSylHome())
+	if err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "syl: open syl home: %s\n", err)
+		os.Exit(1)
+	}
+	app := cli.New(originRoot, originRoot, sylHome, cli.Dependencies{
 		Input: os.Stdin,
 		GH: func(root string) tracker.GHRunner {
 			return gh.Runner{Dir: root}

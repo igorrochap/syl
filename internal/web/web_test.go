@@ -21,9 +21,8 @@ import (
 
 	"github.com/igorrochap/syl/internal/config"
 	"github.com/igorrochap/syl/internal/configedit"
-	"github.com/igorrochap/syl/internal/registry"
-	"github.com/igorrochap/syl/internal/runmarker"
 	"github.com/igorrochap/syl/internal/runstate"
+	"github.com/igorrochap/syl/internal/sylhome"
 	"github.com/igorrochap/syl/internal/usage"
 	"github.com/igorrochap/syl/internal/web"
 )
@@ -34,8 +33,8 @@ func TestHandlerRendersStructuredConfigForm(t *testing.T) {
 	if _, err := config.Init(project); err != nil {
 		t.Fatal(err)
 	}
-	writeWebRegistry(t, sylHome, registry.Entry{Path: project})
-	server, err := web.New(sylHome, 7777)
+	writeWebRegistry(t, sylHome, sylhome.RegisteredProject{Path: project})
+	server, err := newServer(t, sylHome)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,16 +69,14 @@ func TestHandlerShowsLiveRunBannerOnConfigForm(t *testing.T) {
 	if _, err := config.Init(project); err != nil {
 		t.Fatal(err)
 	}
-	writeWebRegistry(t, sylHome, registry.Entry{Path: project})
+	writeWebRegistry(t, sylHome, sylhome.RegisteredProject{Path: project})
 	runDir := filepath.Join(project, ".syl", "runs", "live-config")
 	writeWebRun(t, project, filepath.Base(runDir), runstate.State{
 		Status: runstate.Running, PID: os.Getpid(), Hostname: testHostname(t), Kind: runstate.Implement,
 		StartedAt: time.Now().UTC(),
 	})
-	if _, err := runmarker.Create(sylHome, project, runDir, "#186", os.Getpid(), testHostname(t)); err != nil {
-		t.Fatal(err)
-	}
-	server, err := web.New(sylHome, 7777)
+	createLiveRun(t, sylHome, project, runDir, "#186", os.Getpid(), testHostname(t))
+	server, err := newServer(t, sylHome)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,8 +92,8 @@ func TestHandlerSavesValidConfigAndLoadsItBack(t *testing.T) {
 	if _, err := config.Init(project); err != nil {
 		t.Fatal(err)
 	}
-	writeWebRegistry(t, sylHome, registry.Entry{Path: project})
-	server, err := web.New(sylHome, 7777)
+	writeWebRegistry(t, sylHome, sylhome.RegisteredProject{Path: project})
+	server, err := newServer(t, sylHome)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,8 +119,8 @@ func TestHandlerShowsValidationErrorWithoutWriting(t *testing.T) {
 	if _, err := config.Init(project); err != nil {
 		t.Fatal(err)
 	}
-	writeWebRegistry(t, sylHome, registry.Entry{Path: project})
-	server, err := web.New(sylHome, 7777)
+	writeWebRegistry(t, sylHome, sylhome.RegisteredProject{Path: project})
+	server, err := newServer(t, sylHome)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,8 +150,8 @@ func TestHandlerRefusesConfigConflictAndKeepsDiskChange(t *testing.T) {
 	if _, err := config.Init(project); err != nil {
 		t.Fatal(err)
 	}
-	writeWebRegistry(t, sylHome, registry.Entry{Path: project})
-	server, err := web.New(sylHome, 7777)
+	writeWebRegistry(t, sylHome, sylhome.RegisteredProject{Path: project})
+	server, err := newServer(t, sylHome)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -188,8 +185,8 @@ func TestHandlerProtectsConfigSaveWithTokenAndOrigin(t *testing.T) {
 	if _, err := config.Init(project); err != nil {
 		t.Fatal(err)
 	}
-	writeWebRegistry(t, sylHome, registry.Entry{Path: project})
-	server, err := web.New(sylHome, 7777)
+	writeWebRegistry(t, sylHome, sylhome.RegisteredProject{Path: project})
+	server, err := newServer(t, sylHome)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -219,8 +216,8 @@ func TestHandlerConfigRoutesCoverContentFeedbackAndBadRequests(t *testing.T) {
 	if err := os.WriteFile(config.Path(invalidProject), []byte("[tracker\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	writeWebRegistry(t, sylHome, registry.Entry{Path: project}, registry.Entry{Path: invalidProject})
-	server, err := web.New(sylHome, 7777)
+	writeWebRegistry(t, sylHome, sylhome.RegisteredProject{Path: project}, sylhome.RegisteredProject{Path: invalidProject})
+	server, err := newServer(t, sylHome)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -304,8 +301,8 @@ func TestHandlerRendersInvalidConfigAsReadOnlySource(t *testing.T) {
 	if err := os.WriteFile(config.Path(project), contents, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	writeWebRegistry(t, sylHome, registry.Entry{Path: project})
-	server, err := web.New(sylHome, 7777)
+	writeWebRegistry(t, sylHome, sylhome.RegisteredProject{Path: project})
+	server, err := newServer(t, sylHome)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -344,8 +341,8 @@ func TestHandlerRendersMalformedConfigWithoutMarkedLine(t *testing.T) {
 	if loadErr == nil {
 		t.Fatal("config.Load() succeeded for malformed TOML")
 	}
-	writeWebRegistry(t, sylHome, registry.Entry{Path: project})
-	server, err := web.New(sylHome, 7777)
+	writeWebRegistry(t, sylHome, sylhome.RegisteredProject{Path: project})
+	server, err := newServer(t, sylHome)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -368,8 +365,8 @@ func TestHandlerRendersEmptyInvalidConfigSourceWithLineNumber(t *testing.T) {
 	if err := os.WriteFile(config.Path(project), nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	writeWebRegistry(t, sylHome, registry.Entry{Path: project})
-	server, err := web.New(sylHome, 7777)
+	writeWebRegistry(t, sylHome, sylhome.RegisteredProject{Path: project})
+	server, err := newServer(t, sylHome)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -394,8 +391,8 @@ func TestHandlerEscapesInvalidConfigSourceAndLoadsFormAfterFix(t *testing.T) {
 	if err := os.WriteFile(config.Path(project), invalid, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	writeWebRegistry(t, sylHome, registry.Entry{Path: project})
-	server, err := web.New(sylHome, 7777)
+	writeWebRegistry(t, sylHome, sylhome.RegisteredProject{Path: project})
+	server, err := newServer(t, sylHome)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -425,8 +422,8 @@ func TestHandlerShowsUninitializedConfigAndKeepsRunHistoryAvailable(t *testing.T
 	}); err != nil {
 		t.Fatal(err)
 	}
-	writeWebRegistry(t, sylHome, registry.Entry{Path: project})
-	server, err := web.New(sylHome, 7777)
+	writeWebRegistry(t, sylHome, sylhome.RegisteredProject{Path: project})
+	server, err := newServer(t, sylHome)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -455,7 +452,7 @@ func TestHandlerRendersProjectHistoryAndConfigMetadata(t *testing.T) {
 		t.Fatal(err)
 	}
 	firstSeen := time.Date(2026, time.September, 2, 0, 0, 0, 0, time.UTC)
-	writeWebRegistry(t, sylHome, registry.Entry{Path: project, FirstSeen: firstSeen})
+	writeWebRegistry(t, sylHome, sylhome.RegisteredProject{Path: project, FirstSeen: firstSeen})
 	runDir := filepath.Join(project, ".syl", "runs", "20260924T120000.000000000Z-184")
 	if err := os.MkdirAll(runDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -480,7 +477,7 @@ func TestHandlerRendersProjectHistoryAndConfigMetadata(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	server, err := web.New(sylHome, 7777)
+	server, err := newServer(t, sylHome)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -522,7 +519,7 @@ func TestHandlerRendersRunPageAndRawArtifacts(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	server, err := web.New(t.TempDir(), 7777)
+	server, err := newServer(t, t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -559,7 +556,7 @@ func TestHandlerRendersRunPageAndRawArtifacts(t *testing.T) {
 }
 
 func TestHandlerRejectsInvalidRunRequests(t *testing.T) {
-	server, err := web.New(t.TempDir(), 7777)
+	server, err := newServer(t, t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -603,7 +600,7 @@ func TestHandlerPollsOnlyRunningRunAndRefusesUnsafeArtifacts(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	server, err := web.New(t.TempDir(), 7777)
+	server, err := newServer(t, t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -639,12 +636,12 @@ func TestHandlerShowsInterruptedProjectRunAndFindsNewRunsOnNextRequest(t *testin
 	if _, err := config.Init(project); err != nil {
 		t.Fatal(err)
 	}
-	writeWebRegistry(t, sylHome, registry.Entry{Path: project})
+	writeWebRegistry(t, sylHome, sylhome.RegisteredProject{Path: project})
 	writeWebRun(t, project, "20260924T120000.000000000Z-1", runstate.State{
 		Status: runstate.Running, Activity: runstate.Reviewing, Iteration: 1, MaxIterations: 3,
 		PID: 999999, Hostname: testHostname(t), StartedAt: time.Now().UTC(), Kind: runstate.Implement, TicketRef: "#1",
 	})
-	server, err := web.New(sylHome, 7777)
+	server, err := newServer(t, sylHome)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -667,7 +664,7 @@ func TestHandlerShowsInterruptedProjectRunAndFindsNewRunsOnNextRequest(t *testin
 
 func TestHandlerDismissesInterruptedRunWithoutChangingRunFiles(t *testing.T) {
 	sylHome, runDir := writeMutationFixture(t, false)
-	server, err := web.New(sylHome, 7777)
+	server, err := newServer(t, sylHome)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -681,7 +678,7 @@ func TestHandlerDismissesInterruptedRunWithoutChangingRunFiles(t *testing.T) {
 	if response.Code != http.StatusSeeOther {
 		t.Fatalf("dismiss status = %d, want redirect; body = %q", response.Code, response.Body.String())
 	}
-	markers, err := runmarker.List(sylHome)
+	markers, err := openSylHome(t, sylHome).LiveRuns()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -701,7 +698,7 @@ func TestHandlerDismissesInterruptedRunWithoutChangingRunFiles(t *testing.T) {
 
 func TestHandlerRefusesDismissForLiveRun(t *testing.T) {
 	sylHome, runDir := writeMutationFixture(t, true)
-	server, err := web.New(sylHome, 7777)
+	server, err := newServer(t, sylHome)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -725,7 +722,7 @@ func TestHandlerRefusesDismissForLiveRun(t *testing.T) {
 
 func TestHandlerRejectsMutationWithoutTokenWrongTokenAndForeignOrigin(t *testing.T) {
 	sylHome, runDir := writeMutationFixture(t, false)
-	server, err := web.New(sylHome, 7777)
+	server, err := newServer(t, sylHome)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -760,7 +757,7 @@ func TestHandlerRejectsMutationWithoutTokenWrongTokenAndForeignOrigin(t *testing
 
 func TestHandlerAcceptsItsOwnOrigin(t *testing.T) {
 	sylHome, runDir := writeMutationFixture(t, false)
-	server, err := web.New(sylHome, 7777)
+	server, err := newServer(t, sylHome)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -775,7 +772,7 @@ func TestHandlerAcceptsItsOwnOrigin(t *testing.T) {
 }
 
 func TestHandlerRejectsMalformedAndIncompleteMutations(t *testing.T) {
-	server, err := web.New(t.TempDir(), 7777)
+	server, err := newServer(t, t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -810,7 +807,7 @@ func TestHandlerReportsDismissStateReadFailure(t *testing.T) {
 	if err := os.WriteFile(runstate.Path(runDir), []byte("not json"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	server, err := web.New(sylHome, 7777)
+	server, err := newServer(t, sylHome)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -824,7 +821,7 @@ func TestHandlerReportsDismissStateReadFailure(t *testing.T) {
 }
 
 func TestHandlerReportsForgetPathFailure(t *testing.T) {
-	server, err := web.New(t.TempDir(), 7777)
+	server, err := newServer(t, t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -839,7 +836,7 @@ func TestHandlerReportsForgetPathFailure(t *testing.T) {
 
 func TestHandlerRendersOverviewContentForHXMutation(t *testing.T) {
 	sylHome, runDir := writeMutationFixture(t, false)
-	server, err := web.New(sylHome, 7777)
+	server, err := newServer(t, sylHome)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -865,8 +862,8 @@ func TestHandlerForgetsProjectWithoutChangingProjectFiles(t *testing.T) {
 	if err := os.WriteFile(projectFile, []byte("keep me\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	writeWebRegistry(t, sylHome, registry.Entry{Path: project})
-	server, err := web.New(sylHome, 7777)
+	writeWebRegistry(t, sylHome, sylhome.RegisteredProject{Path: project})
+	server, err := newServer(t, sylHome)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -879,7 +876,7 @@ func TestHandlerForgetsProjectWithoutChangingProjectFiles(t *testing.T) {
 	if response.Code != http.StatusSeeOther {
 		t.Fatalf("forget status = %d, want redirect; body = %q", response.Code, response.Body.String())
 	}
-	entries, err := registry.List(sylHome)
+	entries, err := openSylHome(t, sylHome).Projects()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -892,7 +889,7 @@ func TestHandlerForgetsProjectWithoutChangingProjectFiles(t *testing.T) {
 }
 
 func TestHandlerProjectRejectsUnknownProjectAndMissingPath(t *testing.T) {
-	server, err := web.New(t.TempDir(), 7777)
+	server, err := newServer(t, t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -917,7 +914,7 @@ func TestHandlerProjectRejectsUnknownProjectAndMissingPath(t *testing.T) {
 }
 
 func TestHandlerRejectsUntrustedHostWithoutPageContent(t *testing.T) {
-	server, err := web.New(t.TempDir(), 7777)
+	server, err := newServer(t, t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -936,7 +933,7 @@ func TestHandlerRejectsUntrustedHostWithoutPageContent(t *testing.T) {
 }
 
 func TestHandlerRendersEmbeddedOverviewAndAssets(t *testing.T) {
-	server, err := web.New(t.TempDir(), 7777)
+	server, err := newServer(t, t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -993,12 +990,12 @@ func TestOverviewShowsForgetOnlyForMissingProject(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeWebRegistry(t, sylHome,
-		registry.Entry{Path: okProject},
-		registry.Entry{Path: uninitializedProject},
-		registry.Entry{Path: invalidProject},
-		registry.Entry{Path: missingProject},
+		sylhome.RegisteredProject{Path: okProject},
+		sylhome.RegisteredProject{Path: uninitializedProject},
+		sylhome.RegisteredProject{Path: invalidProject},
+		sylhome.RegisteredProject{Path: missingProject},
 	)
-	server, err := web.New(sylHome, 7777)
+	server, err := newServer(t, sylHome)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1015,11 +1012,11 @@ func TestHandlerRendersAwaitingAndInterruptedRuns(t *testing.T) {
 	if _, err := config.Init(project); err != nil {
 		t.Fatal(err)
 	}
-	contents, err := json.Marshal([]registry.Entry{{Path: project}})
+	contents, err := json.Marshal([]sylhome.RegisteredProject{{Path: project}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(registry.Path(sylHome), contents, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(sylHome, "projects.json"), contents, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	runDir := filepath.Join(project, ".syl", "runs", "overview")
@@ -1037,12 +1034,18 @@ func TestHandlerRendersAwaitingAndInterruptedRuns(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(runDir, "metadata.txt"), []byte("Work root: /tmp/worktree\nImplementer harness: codex\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	marker, err := runmarker.Create(sylHome, project, runDir, "#181", os.Getpid(), testHostname(t))
+	marker, err := openSylHome(t, sylHome).MarkLive(sylhome.LiveRun{
+		ProjectPath: project,
+		RunDir:      runDir,
+		TicketRef:   "#181",
+		Host:        testHostname(t),
+		PID:         os.Getpid(),
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = marker.Remove() })
-	server, err := web.New(sylHome, 7777)
+	t.Cleanup(func() { _ = marker.Unmark() })
+	server, err := newServer(t, sylHome)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1069,7 +1072,7 @@ func TestHandlerRendersAwaitingAndInterruptedRuns(t *testing.T) {
 }
 
 func TestServeStopsWhenContextIsCancelled(t *testing.T) {
-	server, err := web.New(t.TempDir(), 7777)
+	server, err := newServer(t, t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1139,13 +1142,13 @@ func testHostname(t *testing.T) string {
 	return host
 }
 
-func writeWebRegistry(t *testing.T, sylHome string, entries ...registry.Entry) {
+func writeWebRegistry(t *testing.T, sylHome string, entries ...sylhome.RegisteredProject) {
 	t.Helper()
 	contents, err := json.Marshal(entries)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(registry.Path(sylHome), contents, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(sylHome, "projects.json"), contents, 0o644); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -1247,7 +1250,7 @@ func writeMutationFixture(t *testing.T, live bool) (string, string) {
 	if _, err := config.Init(project); err != nil {
 		t.Fatal(err)
 	}
-	writeWebRegistry(t, sylHome, registry.Entry{Path: project})
+	writeWebRegistry(t, sylHome, sylhome.RegisteredProject{Path: project})
 	runDir := filepath.Join(project, ".syl", "runs", "run-183")
 	if err := os.MkdirAll(runDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -1266,10 +1269,37 @@ func writeMutationFixture(t *testing.T, live bool) (string, string) {
 	if err := os.WriteFile(filepath.Join(runDir, "metadata.txt"), []byte("Work root: /worktree\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := runmarker.Create(sylHome, project, runDir, state.TicketRef, state.PID, state.Hostname); err != nil {
+	createLiveRun(t, sylHome, project, runDir, state.TicketRef, state.PID, state.Hostname)
+	return sylHome, runDir
+}
+
+func newServer(t *testing.T, path string) (*web.Server, error) {
+	t.Helper()
+	return web.New(openSylHome(t, path), 7777)
+}
+
+func openSylHome(t *testing.T, path string) sylhome.Dir {
+	t.Helper()
+	dir, err := sylhome.Open(path)
+	if err != nil {
 		t.Fatal(err)
 	}
-	return sylHome, runDir
+	return dir
+}
+
+func createLiveRun(t *testing.T, sylHome, project, runDir, ticket string, pid int, host string) {
+	t.Helper()
+	run, err := openSylHome(t, sylHome).MarkLive(sylhome.LiveRun{
+		ProjectPath: project,
+		RunDir:      runDir,
+		TicketRef:   ticket,
+		Host:        host,
+		PID:         pid,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = run.Unmark() })
 }
 
 func tokenFromPage(t *testing.T, body string) string {

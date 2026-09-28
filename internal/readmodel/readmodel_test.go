@@ -11,9 +11,8 @@ import (
 
 	"github.com/igorrochap/syl/internal/config"
 	"github.com/igorrochap/syl/internal/readmodel"
-	"github.com/igorrochap/syl/internal/registry"
-	"github.com/igorrochap/syl/internal/runmarker"
 	"github.com/igorrochap/syl/internal/runstate"
+	"github.com/igorrochap/syl/internal/sylhome"
 	"github.com/igorrochap/syl/internal/usage"
 )
 
@@ -23,7 +22,7 @@ func TestReaderReadsProjectRunHistoryNewestFirst(t *testing.T) {
 	if _, err := config.Init(project); err != nil {
 		t.Fatal(err)
 	}
-	writeRegistryEntry(t, sylHome, registry.Entry{
+	writeRegistryEntry(t, sylHome, sylhome.RegisteredProject{
 		Path: project, FirstSeen: time.Date(2026, time.September, 2, 0, 0, 0, 0, time.UTC),
 	})
 
@@ -57,7 +56,7 @@ func TestReaderReadsProjectRunHistoryNewestFirst(t *testing.T) {
 	writeLegacyHistoryRun(t, project, "20260924T080000.000000000Z-181", "Branch: feat/unknown\n", "", []byte("not usage json"))
 	writeLegacyHistoryRun(t, project, "20260924T070000.000000000Z-180", "", "", nil)
 
-	page, err := readmodel.NewReader(sylHome).ReadProject(project)
+	page, err := newReader(t, sylHome).ReadProject(project)
 	if err != nil {
 		t.Fatalf("ReadProject() error = %v", err)
 	}
@@ -130,7 +129,7 @@ func TestReaderReadsRunDetailsFromRecordedArtifacts(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	page, err := readmodel.NewReader(t.TempDir()).ReadRun(runDir)
+	page, err := newReader(t, t.TempDir()).ReadRun(runDir)
 	if err != nil {
 		t.Fatalf("ReadRun() error = %v", err)
 	}
@@ -176,7 +175,7 @@ func TestReaderShowsCurrentActivityAndInterruptedRun(t *testing.T) {
 	writeRunArtifact(t, runDir, "metadata.txt", "Branch: feat/example\n")
 	writeRunArtifact(t, runDir, "iteration-01-verdict.txt", "VERDICT: revise\nSUMMARY: Needs work\nFINDINGS:\n")
 
-	page, err := readmodel.NewReader(t.TempDir()).ReadRun(runDir)
+	page, err := newReader(t, t.TempDir()).ReadRun(runDir)
 	if err != nil {
 		t.Fatalf("ReadRun() error = %v", err)
 	}
@@ -196,7 +195,7 @@ func TestReaderReadsLegacyRunValues(t *testing.T) {
 	writeRunArtifact(t, runDir, "metadata.txt", "Branch: feat/legacy\nBranch point: abc123\nWork root: /legacy\n")
 	writeRunArtifact(t, runDir, "summary.txt", "Iterations: 2\nFinal verdict: approve\nSummary: Legacy summary\nDiff stat:\n old.go | 1 +\n")
 
-	page, err := readmodel.NewReader(t.TempDir()).ReadRun(runDir)
+	page, err := newReader(t, t.TempDir()).ReadRun(runDir)
 	if err != nil {
 		t.Fatalf("ReadRun() error = %v", err)
 	}
@@ -221,7 +220,7 @@ func TestReaderMemoizesFinalAndLegacyRunsButRefreshesRunningState(t *testing.T) 
 	if _, err := config.Init(project); err != nil {
 		t.Fatal(err)
 	}
-	writeRegistryEntry(t, sylHome, registry.Entry{Path: project})
+	writeRegistryEntry(t, sylHome, sylhome.RegisteredProject{Path: project})
 
 	finalRun := filepath.Join(project, ".syl", "runs", "20260924T120000.000000000Z-final")
 	runningRun := filepath.Join(project, ".syl", "runs", "20260924T110000.000000000Z-running")
@@ -236,7 +235,7 @@ func TestReaderMemoizesFinalAndLegacyRunsButRefreshesRunningState(t *testing.T) 
 	}, "Branch: running\n", usage.Artifact{Entries: []usage.Entry{{Tracked: true, Metrics: &usage.Metrics{TotalTokens: 20}}}})
 
 	files := &countingFileSystem{}
-	reader := readmodel.NewReaderWithFileSystem(sylHome, files)
+	reader := newReaderWithFileSystem(t, sylHome, files)
 	if _, err := reader.ReadProject(project); err != nil {
 		t.Fatal(err)
 	}
@@ -280,12 +279,12 @@ func TestReaderShowsHistoryForInvalidAndUninitializedProjects(t *testing.T) {
 	if err := os.WriteFile(config.Path(invalidProject), []byte("invalid = ["), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	writeRegistryEntry(t, sylHome, registry.Entry{Path: invalidProject}, registry.Entry{Path: uninitializedProject})
+	writeRegistryEntry(t, sylHome, sylhome.RegisteredProject{Path: invalidProject}, sylhome.RegisteredProject{Path: uninitializedProject})
 	for _, project := range []string{invalidProject, uninitializedProject} {
 		writeLegacyHistoryRun(t, project, "20260924T120000.000000000Z-1", "Branch: feat/history\n", "Final verdict: approve\n", nil)
 	}
 
-	reader := readmodel.NewReader(sylHome)
+	reader := newReader(t, sylHome)
 	for _, test := range []struct {
 		name   string
 		path   string
@@ -313,7 +312,7 @@ func TestReaderCountsLiveRunsForProject(t *testing.T) {
 	if _, err := config.Init(project); err != nil {
 		t.Fatal(err)
 	}
-	writeRegistryEntry(t, sylHome, registry.Entry{Path: project})
+	writeRegistryEntry(t, sylHome, sylhome.RegisteredProject{Path: project})
 	host := hostname(t)
 
 	liveRun := createRun(t, project, "live", runstate.State{
@@ -347,7 +346,7 @@ func TestReaderCountsLiveRunsForProject(t *testing.T) {
 	}
 	createMarker(t, sylHome, project, missingStateRun, "#missing-state", os.Getpid(), host)
 
-	page, err := readmodel.NewReader(sylHome).ReadProject(project)
+	page, err := newReader(t, sylHome).ReadProject(project)
 	if err != nil {
 		t.Fatalf("ReadProject() error = %v", err)
 	}
@@ -359,9 +358,9 @@ func TestReaderCountsLiveRunsForProject(t *testing.T) {
 func TestReaderHandlesMissingProjectWhenCountingLiveRuns(t *testing.T) {
 	sylHome := t.TempDir()
 	missingProject := filepath.Join(t.TempDir(), "missing")
-	writeRegistryEntry(t, sylHome, registry.Entry{Path: missingProject})
+	writeRegistryEntry(t, sylHome, sylhome.RegisteredProject{Path: missingProject})
 
-	page, err := readmodel.NewReader(sylHome).ReadProject(missingProject)
+	page, err := newReader(t, sylHome).ReadProject(missingProject)
 	if err != nil {
 		t.Fatalf("ReadProject() error = %v", err)
 	}
@@ -409,7 +408,7 @@ func TestOverviewReadsProjectHealthAndLiveRuns(t *testing.T) {
 	}, "/worktrees/remote")
 	createMarker(t, sylHome, okProject, remoteRun, "#183", 1, "other-host")
 
-	overview, err := readmodel.ReadOverview(sylHome)
+	overview, err := readOverview(t, sylHome)
 	if err != nil {
 		t.Fatalf("ReadOverview() error = %v", err)
 	}
@@ -457,7 +456,7 @@ func TestOverviewShowsUnknownRunWhenStateCannotBeRead(t *testing.T) {
 	}
 	createMarker(t, sylHome, project, runDir, "#184", os.Getpid(), hostname(t))
 
-	overview, err := readmodel.ReadOverview(sylHome)
+	overview, err := readOverview(t, sylHome)
 	if err != nil {
 		t.Fatalf("ReadOverview() error = %v", err)
 	}
@@ -491,14 +490,12 @@ func TestDismissRemovesOnlyInterruptedMarkerAndLeavesRunUntouched(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := runmarker.Create(sylHome, project, runDir, state.TicketRef, state.PID, state.Hostname); err != nil {
-		t.Fatal(err)
-	}
+	createMarker(t, sylHome, project, runDir, state.TicketRef, state.PID, state.Hostname)
 
-	if err := readmodel.Dismiss(sylHome, runDir); err != nil {
+	if err := dismiss(t, sylHome, runDir); err != nil {
 		t.Fatalf("Dismiss() error = %v", err)
 	}
-	markers, err := runmarker.List(sylHome)
+	markers, err := liveRuns(t, sylHome)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -528,14 +525,12 @@ func TestDismissRefusesLiveRunAndKeepsMarker(t *testing.T) {
 	if err := runstate.Write(runstate.Path(runDir), state); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := runmarker.Create(sylHome, project, runDir, state.TicketRef, state.PID, state.Hostname); err != nil {
-		t.Fatal(err)
-	}
+	createMarker(t, sylHome, project, runDir, state.TicketRef, state.PID, state.Hostname)
 
-	if err := readmodel.Dismiss(sylHome, runDir); !errors.Is(err, readmodel.ErrRunNotInterrupted) {
+	if err := dismiss(t, sylHome, runDir); !errors.Is(err, readmodel.ErrRunNotInterrupted) {
 		t.Fatalf("Dismiss() error = %v, want ErrRunNotInterrupted", err)
 	}
-	markers, err := runmarker.List(sylHome)
+	markers, err := liveRuns(t, sylHome)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -549,10 +544,10 @@ func TestForgetDelegatesToRegistry(t *testing.T) {
 	project := t.TempDir()
 	writeRegistry(t, sylHome, project)
 
-	if err := readmodel.Forget(sylHome, project); err != nil {
+	if err := openSylHome(t, sylHome).ForgetProject(project); err != nil {
 		t.Fatalf("Forget() error = %v", err)
 	}
-	entries, err := registry.List(sylHome)
+	entries, err := openSylHome(t, sylHome).Projects()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -563,18 +558,15 @@ func TestForgetDelegatesToRegistry(t *testing.T) {
 
 func TestDismissReportsInvalidAndUnknownRuns(t *testing.T) {
 	sylHome := t.TempDir()
-	if err := readmodel.Dismiss(sylHome, " "); err == nil {
+	if err := dismiss(t, sylHome, " "); err == nil {
 		t.Fatal("Dismiss() with blank Run directory succeeded")
 	}
-	if err := readmodel.Dismiss(sylHome, filepath.Join(t.TempDir(), "missing")); err == nil {
+	if err := dismiss(t, sylHome, filepath.Join(t.TempDir(), "missing")); err == nil {
 		t.Fatal("Dismiss() with missing Run directory succeeded")
 	}
 	runDir := t.TempDir()
-	if err := readmodel.Dismiss(sylHome, runDir); !errors.Is(err, readmodel.ErrRunMarkerNotFound) {
+	if err := dismiss(t, sylHome, runDir); !errors.Is(err, readmodel.ErrRunMarkerNotFound) {
 		t.Fatalf("Dismiss() error = %v, want ErrRunMarkerNotFound", err)
-	}
-	if err := readmodel.Dismiss("", runDir); err == nil {
-		t.Fatal("Dismiss() with invalid syl home succeeded")
 	}
 }
 
@@ -590,7 +582,7 @@ func TestDismissReportsUnreadableRunState(t *testing.T) {
 	}
 	createMarker(t, sylHome, project, runDir, "#183", 999999, hostname(t))
 
-	if err := readmodel.Dismiss(sylHome, runDir); err == nil {
+	if err := dismiss(t, sylHome, runDir); err == nil {
 		t.Fatal("Dismiss() with corrupt Run state succeeded")
 	}
 }
@@ -620,7 +612,7 @@ func TestDismissRefusesFinishedAndRemoteRuns(t *testing.T) {
 			}
 			createMarker(t, sylHome, project, runDir, "#183", state.PID, test.markerHost)
 
-			if err := readmodel.Dismiss(sylHome, runDir); !errors.Is(err, readmodel.ErrRunNotInterrupted) {
+			if err := dismiss(t, sylHome, runDir); !errors.Is(err, readmodel.ErrRunNotInterrupted) {
 				t.Fatalf("Dismiss() error = %v, want ErrRunNotInterrupted", err)
 			}
 		})
@@ -629,15 +621,15 @@ func TestDismissRefusesFinishedAndRemoteRuns(t *testing.T) {
 
 func writeRegistry(t *testing.T, sylHome string, paths ...string) {
 	t.Helper()
-	entries := make([]registry.Entry, 0, len(paths))
+	entries := make([]sylhome.RegisteredProject, 0, len(paths))
 	for _, path := range paths {
-		entries = append(entries, registry.Entry{Path: path})
+		entries = append(entries, sylhome.RegisteredProject{Path: path})
 	}
 	contents, err := json.Marshal(entries)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(registry.Path(sylHome), contents, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(sylHome, "projects.json"), contents, 0o644); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -662,14 +654,21 @@ func createRun(t *testing.T, project, name string, state runstate.State, workRoo
 
 func createMarker(t *testing.T, sylHome, project, runDir, ticket string, pid int, host string) {
 	t.Helper()
-	marker, err := runmarker.Create(sylHome, project, runDir, ticket, pid, host)
+	dir := openSylHome(t, sylHome)
+	marker, err := dir.MarkLive(sylhome.LiveRun{
+		ProjectPath: project,
+		RunDir:      runDir,
+		TicketRef:   ticket,
+		Host:        host,
+		PID:         pid,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = marker.Remove() })
+	t.Cleanup(func() { _ = marker.Unmark() })
 }
 
-func writeRegistryEntry(t *testing.T, sylHome string, entries ...registry.Entry) {
+func writeRegistryEntry(t *testing.T, sylHome string, entries ...sylhome.RegisteredProject) {
 	t.Helper()
 	contents, err := json.Marshal(entries)
 	if err != nil {
@@ -678,9 +677,43 @@ func writeRegistryEntry(t *testing.T, sylHome string, entries ...registry.Entry)
 	if err := os.MkdirAll(sylHome, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(registry.Path(sylHome), contents, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(sylHome, "projects.json"), contents, 0o644); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func openSylHome(t *testing.T, path string) sylhome.Dir {
+	t.Helper()
+	dir, err := sylhome.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+func newReader(t *testing.T, path string) *readmodel.Reader {
+	t.Helper()
+	return readmodel.NewReader(openSylHome(t, path))
+}
+
+func newReaderWithFileSystem(t *testing.T, path string, files readmodel.FileSystem) *readmodel.Reader {
+	t.Helper()
+	return readmodel.NewReaderWithFileSystem(openSylHome(t, path), files)
+}
+
+func readOverview(t *testing.T, path string) (readmodel.Overview, error) {
+	t.Helper()
+	return readmodel.ReadOverview(openSylHome(t, path))
+}
+
+func dismiss(t *testing.T, path, runDir string) error {
+	t.Helper()
+	return readmodel.Dismiss(openSylHome(t, path), runDir)
+}
+
+func liveRuns(t *testing.T, path string) ([]sylhome.LiveRun, error) {
+	t.Helper()
+	return openSylHome(t, path).LiveRuns()
 }
 
 func writeHistoryRun(t *testing.T, project, name string, state runstate.State, metadata string, artifact usage.Artifact) {

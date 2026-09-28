@@ -15,6 +15,7 @@ import (
 	"github.com/igorrochap/syl/internal/config"
 	"github.com/igorrochap/syl/internal/harness"
 	"github.com/igorrochap/syl/internal/runstate"
+	"github.com/igorrochap/syl/internal/sylhome"
 	"github.com/igorrochap/syl/internal/tracker"
 	"github.com/igorrochap/syl/internal/ui"
 	"github.com/igorrochap/syl/internal/usage"
@@ -39,7 +40,7 @@ type implementSummary struct {
 type ImplementOptions struct {
 	OriginRoot           string
 	WorkRoot             string
-	SylHome              string
+	SylHome              sylhome.Dir
 	ProjectConfig        config.Config
 	IssueTracker         tracker.Tracker
 	Ticket               tracker.Ticket

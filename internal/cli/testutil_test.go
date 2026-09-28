@@ -13,6 +13,7 @@ import (
 	"github.com/creack/pty"
 	"github.com/igorrochap/syl/internal/harness"
 	"github.com/igorrochap/syl/internal/orchestration"
+	"github.com/igorrochap/syl/internal/sylhome"
 	"github.com/igorrochap/syl/internal/tracker"
 )
 
@@ -122,7 +123,7 @@ effort = "medium"
 		root:      root,
 		sylHome:   sylHome,
 		harnesses: harnesses,
-		app: New(root, root, sylHome, Dependencies{
+		app: New(root, root, testSylHome(t, sylHome), Dependencies{
 			Harnesses: harnessFactories(harnesses),
 			Notifier:  fakeNotifier{},
 			GH:        fixedGH(fakeGHRunner{}),
@@ -140,6 +141,15 @@ func fixedGH(runner tracker.GHRunner) func(string) tracker.GHRunner {
 
 func fixedGLab(runner tracker.GLabRunner) func(string) tracker.GLabRunner {
 	return func(string) tracker.GLabRunner { return runner }
+}
+
+func testSylHome(t *testing.T, path string) sylhome.Dir {
+	t.Helper()
+	dir, err := sylhome.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return dir
 }
 
 func fixedGit(runner orchestration.GitRunner) func(string) orchestration.GitRunner {

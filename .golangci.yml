@@ -27,8 +27,7 @@ linters:
             - "!**/internal/initializer/*.go"
             - "!**/internal/updater/*.go"
             - "!**/internal/usage/*.go"
-            - "!**/internal/registry/*.go"
-            - "!**/internal/runmarker/*.go"
+            - "!**/internal/sylhome/*.go"
             - "!**/internal/runstate/*.go"
             - "!**/internal/atomicfile/*.go"
             - "!**/internal/readmodel/*.go"
@@ -84,7 +83,7 @@ linters:
             - github.com/igorrochap/syl/internal/initializer$
             - github.com/igorrochap/syl/internal/orchestration$
             - github.com/igorrochap/syl/internal/readmodel$
-            - github.com/igorrochap/syl/internal/registry$
+            - github.com/igorrochap/syl/internal/sylhome$
             - github.com/igorrochap/syl/internal/tracker$
             - github.com/igorrochap/syl/internal/ui$
             - github.com/igorrochap/syl/internal/updater$
@@ -104,8 +103,8 @@ linters:
             - golang.org
             - github.com/igorrochap/syl/internal/config$
             - github.com/igorrochap/syl/internal/harness$
-            - github.com/igorrochap/syl/internal/runmarker$
             - github.com/igorrochap/syl/internal/runstate$
+            - github.com/igorrochap/syl/internal/sylhome$
             - github.com/igorrochap/syl/internal/tracker$
             - github.com/igorrochap/syl/internal/ui$
             - github.com/igorrochap/syl/internal/usage$
@@ -122,8 +121,7 @@ linters:
             - github.com
             - golang.org
             - github.com/igorrochap/syl/internal/config$
-            - github.com/igorrochap/syl/internal/registry$
-            - github.com/igorrochap/syl/internal/runmarker$
+            - github.com/igorrochap/syl/internal/sylhome$
             - github.com/igorrochap/syl/internal/runstate$
             - github.com/igorrochap/syl/internal/usage$
             - github.com/igorrochap/syl/internal/verdict$
@@ -152,6 +150,7 @@ linters:
             - golang.org
             - github.com/igorrochap/syl/internal/readmodel$
             - github.com/igorrochap/syl/internal/runstate$
+            - github.com/igorrochap/syl/internal/sylhome$
             - github.com/igorrochap/syl/internal/configedit$
           deny:
             - pkg: github.com/igorrochap/syl
@@ -282,8 +281,7 @@ linters:
         atomicfile-users:
           files:
             - "**/internal/config/*.go"
-            - "**/internal/registry/*.go"
-            - "**/internal/runmarker/*.go"
+            - "**/internal/sylhome/*.go"
             - "**/internal/runstate/*.go"
           list-mode: lax
           allow:

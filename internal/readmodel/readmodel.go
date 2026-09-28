@@ -12,9 +12,8 @@ import (
 	"time"
 
 	"github.com/igorrochap/syl/internal/config"
-	"github.com/igorrochap/syl/internal/registry"
-	"github.com/igorrochap/syl/internal/runmarker"
 	"github.com/igorrochap/syl/internal/runstate"
+	"github.com/igorrochap/syl/internal/sylhome"
 )
 
 // Health describes whether a registered Project can be used right now.
@@ -81,17 +80,12 @@ type Run struct {
 
 // ReadOverview reads the registry, live markers, and referenced Run state.
 // It does not write state or inspect historical Run directories.
-func ReadOverview(sylHome string) (Overview, error) {
+func ReadOverview(sylHome sylhome.Dir) (Overview, error) {
 	return NewReader(sylHome).ReadOverview()
 }
 
-// Forget removes a Project from the registry without touching its directory.
-func Forget(sylHome, projectPath string) error {
-	return registry.Forget(sylHome, projectPath)
-}
-
 // Dismiss removes an orphaned live-run marker without touching the Run.
-func Dismiss(sylHome, runDir string) error {
+func Dismiss(sylHome sylhome.Dir, runDir string) error {
 	if strings.TrimSpace(runDir) == "" {
 		return errors.New("run directory is required")
 	}
@@ -100,38 +94,38 @@ func Dismiss(sylHome, runDir string) error {
 		return fmt.Errorf("resolve Run directory: %w", err)
 	}
 
-	pointers, err := runmarker.List(sylHome)
+	runs, err := sylHome.LiveRuns()
 	if err != nil {
 		return fmt.Errorf("read live-run markers: %w", err)
 	}
-	for _, pointer := range pointers {
-		if filepath.Clean(pointer.RunDir) != filepath.Clean(resolvedRunDir) {
+	for _, run := range runs {
+		if filepath.Clean(run.RunDir) != filepath.Clean(resolvedRunDir) {
 			continue
 		}
-		return dismissMarker(sylHome, pointer)
+		return dismissMarker(run)
 	}
 	return fmt.Errorf("%w: %s", ErrRunMarkerNotFound, runDir)
 }
 
-func dismissMarker(sylHome string, pointer runmarker.Pointer) error {
-	state, err := runstate.Read(runstate.Path(pointer.RunDir))
+func dismissMarker(run sylhome.LiveRun) error {
+	state, err := runstate.Read(runstate.Path(run.RunDir))
 	if err != nil {
 		return fmt.Errorf("read Run state: %w", err)
 	}
-	if !isInterrupted(pointer, state) {
-		return fmt.Errorf("%w: %s", ErrRunNotInterrupted, pointer.RunDir)
+	if !isInterrupted(run, state) {
+		return fmt.Errorf("%w: %s", ErrRunNotInterrupted, run.RunDir)
 	}
-	if err := runmarker.Remove(sylHome, pointer); err != nil {
+	if err := run.Unmark(); err != nil {
 		return fmt.Errorf("remove live-run marker: %w", err)
 	}
 	return nil
 }
 
-func isInterrupted(pointer runmarker.Pointer, state runstate.State) bool {
+func isInterrupted(run sylhome.LiveRun, state runstate.State) bool {
 	if state.Status != runstate.Running {
 		return false
 	}
-	if !isLocalHost(pointer.Host, state.Hostname, currentHostname()) {
+	if !isLocalHost(run.Host, state.Hostname, currentHostname()) {
 		return false
 	}
 	return !processIsAlive(state.PID)
@@ -140,21 +134,21 @@ func isInterrupted(pointer runmarker.Pointer, state runstate.State) bool {
 // ReadOverview reads the registry, live markers, and referenced Run state.
 // It does not write state or inspect historical Run directories.
 func (reader *Reader) ReadOverview() (Overview, error) {
-	entries, err := registry.List(reader.sylHome)
+	entries, err := reader.sylHome.Projects()
 	if err != nil {
 		return Overview{}, fmt.Errorf("read registered Projects: %w", err)
 	}
 
 	projects, projectConfigs := inspectProjects(entries)
-	pointers, err := runmarker.List(reader.sylHome)
+	runs, err := reader.sylHome.LiveRuns()
 	if err != nil {
 		return Overview{Projects: projects}, fmt.Errorf("read live-run markers: %w", err)
 	}
 
 	localHost := currentHostname()
 	overview := Overview{Projects: projects}
-	for _, pointer := range pointers {
-		run := buildRun(pointer, projectConfigs, localHost)
+	for _, liveRun := range runs {
+		run := buildRun(liveRun, projectConfigs, localHost)
 		isAwaitingAnswer := run.Status == runstate.Running && run.Activity == string(runstate.AwaitingAnswer)
 		if isAwaitingAnswer && !run.Interrupted {
 			overview.AwaitingAnswer = append(overview.AwaitingAnswer, run)
@@ -175,7 +169,7 @@ type projectRecord struct {
 	configLoaded  bool
 }
 
-func inspectProjects(entries []registry.Entry) ([]Project, map[string]projectRecord) {
+func inspectProjects(entries []sylhome.RegisteredProject) ([]Project, map[string]projectRecord) {
 	projects := make([]Project, 0, len(entries))
 	records := make(map[string]projectRecord, len(entries))
 	for _, entry := range entries {
@@ -192,7 +186,7 @@ func inspectProjects(entries []registry.Entry) ([]Project, map[string]projectRec
 	return projects, records
 }
 
-func inspectProject(path string, entry registry.Entry) (Project, config.Config, bool) {
+func inspectProject(path string, entry sylhome.RegisteredProject) (Project, config.Config, bool) {
 	project := Project{Name: filepath.Base(path), Path: path, Health: HealthInvalid, FirstSeen: entry.FirstSeen}
 	info, err := os.Stat(path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -217,7 +211,7 @@ func inspectProject(path string, entry registry.Entry) (Project, config.Config, 
 	return project, configuration, true
 }
 
-func buildRun(pointer runmarker.Pointer, projects map[string]projectRecord, localHost string) Run {
+func buildRun(pointer sylhome.LiveRun, projects map[string]projectRecord, localHost string) Run {
 	projectPath := filepath.Clean(pointer.ProjectPath)
 	record := projects[projectPath]
 	run := Run{
