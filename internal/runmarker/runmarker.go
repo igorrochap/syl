@@ -10,6 +10,8 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+
+	"github.com/igorrochap/syl/internal/atomicfile"
 )
 
 const activeDirectory = "active"
@@ -145,33 +147,9 @@ func writeAtomically(path string, pointer Pointer) error {
 	}
 	contents = append(contents, '\n')
 
-	temporary, err := os.CreateTemp(filepath.Dir(path), ".run-marker-*")
-	if err != nil {
-		return fmt.Errorf("create temporary live-run marker: %w", err)
-	}
-	temporaryPath := temporary.Name()
-	keepTemporary := false
-	defer func() {
-		if !keepTemporary {
-			_ = os.Remove(temporaryPath)
-		}
-	}()
-
-	if err := temporary.Chmod(0o644); err != nil {
-		_ = temporary.Close()
-		return fmt.Errorf("set temporary live-run marker permissions: %w", err)
-	}
-	if _, err := temporary.Write(contents); err != nil {
-		_ = temporary.Close()
-		return fmt.Errorf("write temporary live-run marker: %w", err)
-	}
-	if err := temporary.Close(); err != nil {
-		return fmt.Errorf("close temporary live-run marker: %w", err)
-	}
-	if err := os.Rename(temporaryPath, path); err != nil {
+	if err := atomicfile.Write(path, contents, 0o644); err != nil {
 		return fmt.Errorf("replace live-run marker %s: %w", path, err)
 	}
-	keepTemporary = true
 	return nil
 }
 

@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"sort"
 	"time"
+
+	"github.com/igorrochap/syl/internal/atomicfile"
 )
 
 const fileName = "projects.json"
@@ -194,33 +196,9 @@ func write(sylHome, registryPath string, entries []Entry) error {
 	}
 	contents = append(contents, '\n')
 
-	temporary, err := os.CreateTemp(sylHome, ".projects.json-*")
-	if err != nil {
-		return fmt.Errorf("create temporary project registry: %w", err)
-	}
-	temporaryPath := temporary.Name()
-	keepTemporary := false
-	defer func() {
-		if !keepTemporary {
-			_ = os.Remove(temporaryPath)
-		}
-	}()
-
-	if err := temporary.Chmod(0o644); err != nil {
-		_ = temporary.Close()
-		return fmt.Errorf("set temporary project registry permissions: %w", err)
-	}
-	if _, err := temporary.Write(contents); err != nil {
-		_ = temporary.Close()
-		return fmt.Errorf("write temporary project registry: %w", err)
-	}
-	if err := temporary.Close(); err != nil {
-		return fmt.Errorf("close temporary project registry: %w", err)
-	}
-	if err := os.Rename(temporaryPath, registryPath); err != nil {
+	if err := atomicfile.Write(registryPath, contents, 0o644); err != nil {
 		return fmt.Errorf("replace project registry %s: %w", registryPath, err)
 	}
-	keepTemporary = true
 	return nil
 }
 
