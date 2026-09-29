@@ -132,7 +132,7 @@ func TestRunHarnessConversationPausesOnceForQuestionWithDuplicatedResult(t *test
 			{Type: harness.EventAssistantText, Text: conversationTestVerdict},
 		}},
 	}
-	questions := NewQuestionHandler(strings.NewReader("Use SQLite.\n"), io.Discard, "review", nil)
+	questions := NewQuestionHandler(strings.NewReader("Use SQLite.\n"), io.Discard, "review", nil, nil)
 
 	result, err := runHarnessConversation(context.Background(), adapter, func(ctx context.Context) (harness.Stream, error) {
 		return adapter.Run(ctx, request)
@@ -168,7 +168,7 @@ func TestRunHarnessConversationRendersQuestionAndConfirmsResume(t *testing.T) {
 		}},
 	}
 	var output strings.Builder
-	questions := NewQuestionHandler(strings.NewReader("Use SQLite.\n"), &output, "#42", nil)
+	questions := NewQuestionHandler(strings.NewReader("Use SQLite.\n"), &output, "#42", nil, nil)
 
 	result, err := runHarnessConversation(context.Background(), adapter, func(ctx context.Context) (harness.Stream, error) {
 		return adapter.Run(ctx, harness.Request{})
@@ -220,7 +220,7 @@ func TestQuestionAnswerSupportsBackslashContinuation(t *testing.T) {
 			{Type: harness.EventAssistantText, Text: conversationTestVerdict},
 		}},
 	}
-	questions := NewQuestionHandler(strings.NewReader("first line\\\nsecond line\n"), io.Discard, "#42", nil)
+	questions := NewQuestionHandler(strings.NewReader("first line\\\nsecond line\n"), io.Discard, "#42", nil, nil)
 
 	_, err := runHarnessConversation(context.Background(), adapter, func(ctx context.Context) (harness.Stream, error) {
 		return adapter.Run(ctx, harness.Request{})
@@ -249,7 +249,7 @@ func TestQuestionAnswerRepromptsAfterEmptyLine(t *testing.T) {
 		}},
 	}
 	var output strings.Builder
-	questions := NewQuestionHandler(strings.NewReader("\nUseful answer\n"), &output, "#42", nil)
+	questions := NewQuestionHandler(strings.NewReader("\nUseful answer\n"), &output, "#42", nil, nil)
 
 	_, err := runHarnessConversation(context.Background(), adapter, func(ctx context.Context) (harness.Stream, error) {
 		return adapter.Run(ctx, harness.Request{})
@@ -272,7 +272,7 @@ func TestQuestionAnswerRepromptsAfterEmptyLine(t *testing.T) {
 
 func TestQuestionAnswerEOFWithoutAnswerExplainsUnavailableInput(t *testing.T) {
 	var output strings.Builder
-	questions := NewQuestionHandler(strings.NewReader(""), &output, "#42", nil)
+	questions := NewQuestionHandler(strings.NewReader(""), &output, "#42", nil, nil)
 
 	_, err := questions.Handle(context.Background(), "Which details?")
 	if err == nil || !strings.Contains(err.Error(), "terminal input is unavailable") {

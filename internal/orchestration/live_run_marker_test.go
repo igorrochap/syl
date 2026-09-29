@@ -40,7 +40,7 @@ func TestRunImplementCreatesAndRemovesLiveRunMarker(t *testing.T) {
 	err := RunImplement(context.Background(), ImplementOptions{
 		OriginRoot: root,
 		WorkRoot:   root,
-		SylHome:    testSylHome(t, sylHome),
+		OpenRun:    NewDiskRunOpener(root, testSylHome(t, sylHome), io.Discard),
 		ProjectConfig: config.Config{
 			Roles: config.RolesConfig{
 				Implement: config.RoleConfig{Harness: config.HarnessCodex},
@@ -101,7 +101,7 @@ func TestRunReviewCreatesAndRemovesLiveRunMarker(t *testing.T) {
 	err := RunReview(context.Background(), ReviewOptions{
 		OriginRoot: root,
 		WorkRoot:   root,
-		SylHome:    testSylHome(t, sylHome),
+		OpenRun:    NewDiskRunOpener(root, testSylHome(t, sylHome), io.Discard),
 		Git:        git,
 		Input:      strings.NewReader(""),
 		Output:     io.Discard,
@@ -136,7 +136,7 @@ func TestRunContinuesWhenLiveRunMarkerWriteFails(t *testing.T) {
 	err := RunImplement(context.Background(), ImplementOptions{
 		OriginRoot: root,
 		WorkRoot:   root,
-		SylHome:    testSylHome(t, sylHome),
+		OpenRun:    NewDiskRunOpener(root, testSylHome(t, sylHome), &output),
 		ProjectConfig: config.Config{
 			Roles: config.RolesConfig{
 				Implement: config.RoleConfig{Harness: config.HarnessCodex},

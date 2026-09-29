@@ -240,7 +240,7 @@ func TestCodexQuestionResumeUsesSameSessionAndAnswerThroughConversation(t *testi
 	command := fakeCodexQuestionResumeCommand(t, argsPath)
 	adapter := &Adapter{command: command, projectRoot: root}
 	var questionOutput strings.Builder
-	questions := orchestration.NewQuestionHandler(strings.NewReader("SQLite\n\n"), &questionOutput, "#8", nil)
+	questions := orchestration.NewQuestionHandler(strings.NewReader("SQLite\n\n"), &questionOutput, "#8", nil, nil)
 
 	review, err := orchestration.RunReviewExecution(context.Background(), adapter, harness.Request{
 		Model:  "gpt-5.6-luna",

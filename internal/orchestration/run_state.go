@@ -9,24 +9,28 @@ import (
 )
 
 type runStateTracker struct {
-	persister        runStateProvider
-	marker           liveRunMarkerProvider
+	recorder         RunRecorder
 	state            runstate.State
 	previousActivity runstate.Activity
 	finalized        bool
 }
 
-func newRunStateTracker(recorder RunRecorder) *runStateTracker {
-	persister, ok := recorder.(runStateProvider)
-	if !ok {
-		return nil
+func newRunState(spec RunSpec) runstate.State {
+	iteration := 0
+	if spec.Kind == runstate.Review {
+		iteration = 1
 	}
-	marker, _ := recorder.(liveRunMarkerProvider)
-	return &runStateTracker{persister: persister, marker: marker, state: persister.runStateSnapshot()}
+	return runstate.New(spec.Kind, spec.TicketRef, iteration, spec.MaxIterations, time.Now().UTC())
+}
+
+func newRunStateTracker(recorder RunRecorder, state runstate.State) *runStateTracker {
+	tracker := &runStateTracker{recorder: recorder, state: state}
+	tracker.save()
+	return tracker
 }
 
 func (r *runStateTracker) setIteration(iteration int) {
-	if r == nil || r.finalized || r.state.Iteration == iteration {
+	if r.finalized || r.state.Iteration == iteration {
 		return
 	}
 	r.state.Iteration = iteration
@@ -34,7 +38,7 @@ func (r *runStateTracker) setIteration(iteration int) {
 }
 
 func (r *runStateTracker) setActivity(activity runstate.Activity) {
-	if r == nil || r.finalized || r.state.Activity == activity {
+	if r.finalized || r.state.Activity == activity {
 		return
 	}
 	r.state.Activity = activity
@@ -42,8 +46,22 @@ func (r *runStateTracker) setActivity(activity runstate.Activity) {
 	r.save()
 }
 
+func (r *runStateTracker) startActivity(iteration int, activity runstate.Activity) {
+	if r.finalized {
+		return
+	}
+	changed := r.state.Iteration != iteration || r.state.Activity != activity || r.state.Question != ""
+	if !changed {
+		return
+	}
+	r.state.Iteration = iteration
+	r.state.Activity = activity
+	r.state.Question = ""
+	r.save()
+}
+
 func (r *runStateTracker) questionAsked(question string) {
-	if r == nil || r.finalized {
+	if r.finalized {
 		return
 	}
 	r.previousActivity = r.state.Activity
@@ -53,7 +71,7 @@ func (r *runStateTracker) questionAsked(question string) {
 }
 
 func (r *runStateTracker) questionAnswered() {
-	if r == nil || r.finalized {
+	if r.finalized {
 		return
 	}
 	r.state.Activity = r.previousActivity
@@ -62,7 +80,7 @@ func (r *runStateTracker) questionAnswered() {
 }
 
 func (r *runStateTracker) finish(status runstate.Status) {
-	if r == nil || r.finalized {
+	if r.finalized {
 		return
 	}
 	ended := time.Now().UTC()
@@ -71,9 +89,6 @@ func (r *runStateTracker) finish(status runstate.Status) {
 	r.state.Question = ""
 	r.state.EndedAt = &ended
 	r.save()
-	if r.marker != nil {
-		r.marker.removeLiveRunMarker()
-	}
 	r.finalized = true
 }
 
@@ -86,20 +101,16 @@ func (r *runStateTracker) finishForError(ctx context.Context, err error) {
 }
 
 func (r *runStateTracker) save() {
-	if r == nil || r.finalized {
+	if r.finalized {
 		return
 	}
 	r.state.UpdatedAt = time.Now().UTC()
-	r.persister.persistRunState(r.state)
+	r.recorder.RecordState(r.state)
 }
 
 type questionStateObserver interface {
 	questionAsked(question string)
 	questionAnswered()
-}
-
-type liveRunMarkerProvider interface {
-	removeLiveRunMarker()
 }
 
 var _ questionStateObserver = (*runStateTracker)(nil)

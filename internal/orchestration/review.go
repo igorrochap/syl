@@ -58,7 +58,7 @@ const (
 type ReviewOptions struct {
 	OriginRoot           string
 	WorkRoot             string
-	SylHome              sylhome.Dir
+	OpenRun              func(RunSpec) (RunRecorder, error)
 	ProjectConfig        config.Config
 	IssueTracker         tracker.Tracker
 	Ticket               *tracker.Ticket
@@ -99,7 +99,9 @@ func RunReview(ctx context.Context, options ReviewOptions) (returnErr error) {
 	options.Output = ensureLineTrackingWriter(options.Output)
 	preparation, err := runReviewPreparation(ctx, options)
 	if err != nil {
-		preparation.runState.finishForError(ctx, err)
+		if preparation.runState != nil {
+			preparation.runState.finishForError(ctx, err)
+		}
 		return err
 	}
 	defer func() {
@@ -123,17 +125,7 @@ func runReviewPreparation(
 	ctx context.Context,
 	options ReviewOptions,
 ) (reviewPreparation, error) {
-	return prepareReviewWithContextAndWarning(
-		ctx,
-		options.OriginRoot,
-		options.WorkRoot,
-		options.TicketRef,
-		options.Context,
-		string(options.ProjectConfig.Roles.Review.Harness),
-		options.Git,
-		options.Output,
-		options.SylHome,
-	)
+	return prepareReviewWithOpener(ctx, options, options.OpenRun)
 }
 
 func completeStandaloneReview(ctx context.Context, options ReviewOptions, preparation reviewPreparation, run standaloneReviewRun) error {
@@ -198,7 +190,7 @@ func handleStandaloneReviewError(options ReviewOptions, preparation reviewPrepar
 	if artifactErr := recordStandaloneReviewArtifacts(preparation.recorder, unparseable.Execution); artifactErr != nil {
 		return fmt.Errorf("%w; save review run artifacts: %v", err, artifactErr)
 	}
-	return reviewTranscriptSavedError(err, preparation.recorder.Dir())
+	return reviewTranscriptSavedError(err, recorderArtifactDir(preparation.recorder))
 }
 
 func runStandaloneReview(ctx context.Context, options ReviewOptions, preparation reviewPreparation) (standaloneReviewRun, error) {
@@ -208,8 +200,7 @@ func runStandaloneReview(ctx context.Context, options ReviewOptions, preparation
 		notifier = nil
 	}
 	notifier = withNotificationContext(notifier, options.OriginRoot, options.Git)
-	questions := NewQuestionHandler(options.Input, options.Output, options.TicketRef, notifier)
-	questions.setStateObserver(preparation.runState)
+	questions := NewQuestionHandler(options.Input, options.Output, options.TicketRef, notifier, preparation.runState)
 	preparation.runState.setIteration(1)
 	preparation.runState.setActivity(runstate.Reviewing)
 	mode := QuietHarnessOutput
@@ -284,38 +275,27 @@ func recordReviewUsage(params reviewUsageParams) {
 }
 
 func prepareReview(ctx context.Context, originRoot, ticketRef string, git GitRunner) (reviewPreparation, error) {
-	return prepareReviewWithContext(ctx, originRoot, originRoot, ticketRef, "", "", git)
+	return prepareReviewWithOpener(ctx, ReviewOptions{
+		OriginRoot: originRoot,
+		WorkRoot:   originRoot,
+		OpenRun:    NewDiskRunOpener(originRoot, sylhome.Dir{}, nil),
+		TicketRef:  ticketRef,
+		Git:        git,
+	}, NewDiskRunOpener(originRoot, sylhome.Dir{}, nil))
 }
 
-func prepareReviewWithContext(
+func prepareReviewWithOpener(
 	ctx context.Context,
-	originRoot string,
-	workRoot string,
-	ticketRef string,
-	reviewContext string,
-	reviewerHarness string,
-	git GitRunner,
+	options ReviewOptions,
+	opener func(RunSpec) (RunRecorder, error),
 ) (reviewPreparation, error) {
-	return prepareReviewWithContextAndWarning(
-		ctx, originRoot, workRoot, ticketRef, reviewContext, reviewerHarness, git, nil, sylhome.Dir{},
-	)
-}
-
-func prepareReviewWithContextAndWarning(
-	ctx context.Context,
-	originRoot string,
-	workRoot string,
-	ticketRef string,
-	reviewContext string,
-	reviewerHarness string,
-	git GitRunner,
-	warningOutput io.Writer,
-	sylHome sylhome.Dir,
-) (reviewPreparation, error) {
-	if git == nil {
+	if options.Git == nil {
 		return reviewPreparation{}, errors.New("review: git runner is not configured")
 	}
-	branchPoint, err := git.Run(ctx, "rev-parse", "HEAD")
+	if opener == nil {
+		return reviewPreparation{}, errors.New("review: Run opener is not configured")
+	}
+	branchPoint, err := options.Git.Run(ctx, "rev-parse", "HEAD")
 	if err != nil {
 		return reviewPreparation{}, fmt.Errorf("review: record branch point: %w", err)
 	}
@@ -323,21 +303,30 @@ func prepareReviewWithContextAndWarning(
 	if branchPoint == "" {
 		return reviewPreparation{}, errors.New("review: record branch point: git returned an empty ref")
 	}
-	diff, err := computeReviewDiff(ctx, git, branchPoint)
+	diff, err := computeReviewDiff(ctx, options.Git, branchPoint)
 	if err != nil {
 		return reviewPreparation{}, fmt.Errorf("review: %w", err)
 	}
-	recorder, err := newReviewRunRecorderWithState(
-		originRoot, workRoot, ticketRef, branchPoint, reviewerHarness, reviewContext, warningOutput, sylHome,
-	)
+	recorder, err := opener(RunSpec{
+		Kind:            runstate.Review,
+		TicketRef:       options.TicketRef,
+		MaxIterations:   1,
+		BranchPoint:     branchPoint,
+		WorkRoot:        options.WorkRoot,
+		ReviewerHarness: string(options.ProjectConfig.Roles.Review.Harness),
+		ReviewContext:   options.Context,
+	})
 	if err != nil {
-		if recorder != nil {
-			runState := newRunStateTracker(recorder)
-			return reviewPreparation{branchPoint: branchPoint, recorder: recorder, runState: runState}, err
-		}
 		return reviewPreparation{}, err
 	}
-	runState := newRunStateTracker(recorder)
+	if recorder == nil {
+		return reviewPreparation{}, errors.New("review: Run opener returned a nil recorder")
+	}
+	runState := newRunStateTracker(recorder, newRunState(RunSpec{
+		Kind:          runstate.Review,
+		TicketRef:     options.TicketRef,
+		MaxIterations: 1,
+	}))
 	diffPath, err := recorder.RecordReviewDiff(0, diff)
 	if err != nil {
 		return reviewPreparation{branchPoint: branchPoint, recorder: recorder, runState: runState}, fmt.Errorf("review: %w", err)
