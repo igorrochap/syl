@@ -50,7 +50,10 @@ func TestGitLabReusesExistingLabelColors(t *testing.T) {
 		"label list --output json --per-page 100": {
 			output: `[{"name":"todo","color":"#123456"},{"name":"doing","color":"#654321"}]`,
 		},
-		"issue update 7 --label doing --unlabel todo": {},
+		"issue view 7 --output json": {
+			output: `{"iid":7,"labels":["todo"]}`,
+		},
+		"api --method PUT projects/:fullpath/issues/7 --raw-field labels=doing": {},
 	}}
 	gitLab, err := NewGitLab(runner)
 	if err != nil {
@@ -94,7 +97,10 @@ func TestGitLabUpdateStatusSwapsLabelsWithoutClosingIssue(t *testing.T) {
 			output: `[{"name":"todo"}]`,
 		},
 		"label create --name doing --color #5319E7 --description In progress": {},
-		"issue update 7 --label doing --unlabel todo":                         {},
+		"issue view 7 --output json": {
+			output: `{"iid":7,"labels":["todo","bug"]}`,
+		},
+		"api --method PUT projects/:fullpath/issues/7 --raw-field labels=bug,doing": {},
 	}}
 	gitLab, err := NewGitLab(runner)
 	if err != nil {
@@ -104,8 +110,140 @@ func TestGitLabUpdateStatusSwapsLabelsWithoutClosingIssue(t *testing.T) {
 	if err := gitLab.UpdateStatus(context.Background(), 7, "doing"); err != nil {
 		t.Fatalf("UpdateStatus() error = %v", err)
 	}
-	if !runner.hasCall("issue update 7 --label doing --unlabel todo") || runner.hasCall("issue close 7") {
-		t.Fatalf("UpdateStatus() calls = %#v, want label swap and no close", runner.calls)
+	if !runner.hasCall("api --method PUT projects/:fullpath/issues/7 --raw-field labels=bug,doing") || runner.hasIssueStateChangeCall() {
+		t.Fatalf("UpdateStatus() calls = %#v, want complete label update and no close", runner.calls)
+	}
+	if runner.hasForbiddenStatusUpdateCall() {
+		t.Fatalf("UpdateStatus() calls = %#v, want no add/remove label parameters", runner.calls)
+	}
+}
+
+func TestGitLabUpdateStatusKeepsNonStatusLabelsWhenReturningToTodo(t *testing.T) {
+	runner := &scriptedGitLabRunner{responses: map[string]gitLabResponse{
+		"label list --output json --per-page 100": {
+			output: `[{"name":"todo"},{"name":"doing"}]`,
+		},
+		"issue view 7 --output json": {
+			output: `{"iid":7,"labels":["doing","priority::high"]}`,
+		},
+		"api --method PUT projects/:fullpath/issues/7 --raw-field labels=priority::high,todo": {},
+	}}
+	gitLab, err := NewGitLab(runner)
+	if err != nil {
+		t.Fatalf("NewGitLab() error = %v", err)
+	}
+
+	if err := gitLab.UpdateStatus(context.Background(), 7, "todo"); err != nil {
+		t.Fatalf("UpdateStatus() error = %v", err)
+	}
+	if !runner.hasCall("api --method PUT projects/:fullpath/issues/7 --raw-field labels=priority::high,todo") || runner.hasIssueStateChangeCall() || runner.hasForbiddenStatusUpdateCall() {
+		t.Fatalf("UpdateStatus() calls = %#v, want priority label and todo only", runner.calls)
+	}
+}
+
+func TestGitLabUpdateStatusHandlesEmptyAndExistingTargetLabels(t *testing.T) {
+	tests := []struct {
+		name        string
+		issueLabels string
+		wantUpdate  string
+	}{
+		{name: "empty labels", issueLabels: `[]`, wantUpdate: "doing"},
+		{name: "already doing", issueLabels: `["doing"]`, wantUpdate: "doing"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			runner := &scriptedGitLabRunner{responses: map[string]gitLabResponse{
+				"label list --output json --per-page 100": {
+					output: `[{"name":"todo"},{"name":"doing"}]`,
+				},
+				"issue view 7 --output json": {
+					output: `{"iid":7,"labels":` + test.issueLabels + `}`,
+				},
+				"api --method PUT projects/:fullpath/issues/7 --raw-field labels=" + test.wantUpdate: {},
+			}}
+			gitLab, err := NewGitLab(runner)
+			if err != nil {
+				t.Fatalf("NewGitLab() error = %v", err)
+			}
+
+			if err := gitLab.UpdateStatus(context.Background(), 7, "doing"); err != nil {
+				t.Fatalf("UpdateStatus() error = %v", err)
+			}
+			if !runner.hasCall("api --method PUT projects/:fullpath/issues/7 --raw-field labels="+test.wantUpdate) || runner.hasForbiddenStatusUpdateCall() {
+				t.Fatalf("UpdateStatus() calls = %#v, want labels=%s without add/remove parameters", runner.calls, test.wantUpdate)
+			}
+		})
+	}
+}
+
+func TestGitLabUpdateStatusRejectsCommaInExistingLabelWithoutUpdating(t *testing.T) {
+	runner := &scriptedGitLabRunner{responses: map[string]gitLabResponse{
+		"label list --output json --per-page 100": {
+			output: `[{"name":"todo"},{"name":"doing"}]`,
+		},
+		"issue view 7 --output json": {
+			output: `{"iid":7,"labels":["needs,triage"]}`,
+		},
+	}}
+	gitLab, err := NewGitLab(runner)
+	if err != nil {
+		t.Fatalf("NewGitLab() error = %v", err)
+	}
+
+	err = gitLab.UpdateStatus(context.Background(), 7, "doing")
+	if err == nil || !strings.Contains(err.Error(), "needs,triage") {
+		t.Fatalf("UpdateStatus() error = %v, want comma-containing label", err)
+	}
+	if runner.hasStatusUpdateCall() {
+		t.Fatalf("UpdateStatus() calls = %#v, want no update request", runner.calls)
+	}
+}
+
+func TestGitLabUpdateStatusReturnsIssueNotFoundFromRead(t *testing.T) {
+	runner := &scriptedGitLabRunner{responses: map[string]gitLabResponse{
+		"label list --output json --per-page 100": {
+			output: `[{"name":"todo"},{"name":"doing"}]`,
+		},
+		"issue view 7 --output json": {
+			err:    errors.New("issue lookup failed"),
+			output: "issue not found",
+		},
+	}}
+	gitLab, err := NewGitLab(runner)
+	if err != nil {
+		t.Fatalf("NewGitLab() error = %v", err)
+	}
+
+	err = gitLab.UpdateStatus(context.Background(), 7, "doing")
+	if err == nil || !strings.Contains(err.Error(), "GitLab issue #7 not found") {
+		t.Fatalf("UpdateStatus() error = %v, want issue-not-found error", err)
+	}
+	if runner.hasStatusUpdateCall() {
+		t.Fatalf("UpdateStatus() calls = %#v, want no update request", runner.calls)
+	}
+}
+
+func TestGitLabUpdateStatusClassifiesUpdateAuthenticationError(t *testing.T) {
+	runner := &scriptedGitLabRunner{responses: map[string]gitLabResponse{
+		"label list --output json --per-page 100": {
+			output: `[{"name":"todo"},{"name":"doing"}]`,
+		},
+		"issue view 7 --output json": {
+			output: `{"iid":7,"labels":["todo"]}`,
+		},
+		"api --method PUT projects/:fullpath/issues/7 --raw-field labels=doing": {
+			err: errors.New("not authenticated"),
+		},
+	}}
+	gitLab, err := NewGitLab(runner)
+	if err != nil {
+		t.Fatalf("NewGitLab() error = %v", err)
+	}
+
+	err = gitLab.UpdateStatus(context.Background(), 7, "doing")
+	if err == nil || !strings.Contains(err.Error(), "glab is not authenticated") {
+		t.Fatalf("UpdateStatus() error = %v, want authentication guidance", err)
 	}
 }
 
@@ -131,8 +269,14 @@ func TestGitLabBootstrapsMissingLabelsOnlyOnce(t *testing.T) {
 			output: `[{"name":"todo"}]`,
 		},
 		"label create --name doing --color #5319E7 --description In progress": {},
-		"issue update 7 --label doing --unlabel todo":                         {},
-		"issue update 8 --label doing --unlabel todo":                         {},
+		"issue view 7 --output json": {
+			output: `{"iid":7,"labels":["todo"]}`,
+		},
+		"issue view 8 --output json": {
+			output: `{"iid":8,"labels":["todo"]}`,
+		},
+		"api --method PUT projects/:fullpath/issues/7 --raw-field labels=doing": {},
+		"api --method PUT projects/:fullpath/issues/8 --raw-field labels=doing": {},
 	}}
 	gitLab, err := NewGitLab(runner)
 	if err != nil {
@@ -291,4 +435,31 @@ func (r *scriptedGitLabRunner) count(command string) int {
 
 func (r *scriptedGitLabRunner) hasCall(command string) bool {
 	return r.count(command) > 0
+}
+
+func (r *scriptedGitLabRunner) hasStatusUpdateCall() bool {
+	for _, call := range r.calls {
+		if strings.HasPrefix(call, "api --method PUT projects/:fullpath/issues/") {
+			return true
+		}
+	}
+	return false
+}
+
+func (r *scriptedGitLabRunner) hasForbiddenStatusUpdateCall() bool {
+	for _, call := range r.calls {
+		if strings.Contains(call, "--unlabel") || strings.Contains(call, "add_labels") || strings.Contains(call, "remove_labels") {
+			return true
+		}
+	}
+	return false
+}
+
+func (r *scriptedGitLabRunner) hasIssueStateChangeCall() bool {
+	for _, call := range r.calls {
+		if strings.Contains(call, "close") || strings.Contains(call, "reopen") || strings.Contains(call, "state_event") {
+			return true
+		}
+	}
+	return false
 }

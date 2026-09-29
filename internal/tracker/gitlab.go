@@ -83,13 +83,9 @@ func (g *GitLab) Resolve(ctx context.Context, reference string) (Ticket, error) 
 		return Ticket{}, err
 	}
 
-	output, err := g.run(ctx, "view issue", "issue", "view", strconv.Itoa(number), "--output", "json")
+	issue, err := g.readIssue(ctx, number)
 	if err != nil {
-		return Ticket{}, gitlabIssueLookupError(number, err)
-	}
-	issue, err := decodeGitLabIssue(output)
-	if err != nil {
-		return Ticket{}, fmt.Errorf("decode GitLab issue #%d: %w", number, err)
+		return Ticket{}, err
 	}
 	return issue.ticket(), nil
 }
@@ -126,11 +122,16 @@ func (g *GitLab) UpdateStatus(ctx context.Context, number int, status string) er
 		return err
 	}
 
-	other := gitlabTodoLabel
-	if status == gitlabTodoLabel {
-		other = gitlabDoingLabel
+	issue, err := g.readIssue(ctx, number)
+	if err != nil {
+		return err
 	}
-	_, err := g.run(ctx, "update issue status", "issue", "update", strconv.Itoa(number), "--label", status, "--unlabel", other)
+	labels, err := gitlabStatusLabels(issue.Labels, status)
+	if err != nil {
+		return fmt.Errorf("update GitLab issue #%d status: %w", number, err)
+	}
+
+	_, err = g.run(ctx, "update issue status", "api", "--method", "PUT", fmt.Sprintf("projects/:fullpath/issues/%d", number), "--raw-field", "labels="+strings.Join(labels, ","))
 	return err
 }
 
@@ -205,6 +206,44 @@ func (g *GitLab) ensureLabels(ctx context.Context) error {
 	}
 	g.labelsReady = true
 	return nil
+}
+
+func (g *GitLab) readIssue(ctx context.Context, number int) (gitlabIssue, error) {
+	output, err := g.run(ctx, "view issue", "issue", "view", strconv.Itoa(number), "--output", "json")
+	if err != nil {
+		return gitlabIssue{}, gitlabIssueLookupError(number, err)
+	}
+	issue, err := decodeGitLabIssue(output)
+	if err != nil {
+		return gitlabIssue{}, fmt.Errorf("decode GitLab issue #%d: %w", number, err)
+	}
+	return issue, nil
+}
+
+func gitlabStatusLabels(current []string, status string) ([]string, error) {
+	other := gitlabTodoLabel
+	if status == gitlabTodoLabel {
+		other = gitlabDoingLabel
+	}
+
+	labels := make([]string, 0, len(current)+1)
+	hasStatus := false
+	for _, label := range current {
+		if strings.Contains(label, ",") {
+			return nil, fmt.Errorf("label %q contains a comma and cannot be sent in the labels parameter", label)
+		}
+		if label == other {
+			continue
+		}
+		labels = append(labels, label)
+		if label == status {
+			hasStatus = true
+		}
+	}
+	if !hasStatus {
+		labels = append(labels, status)
+	}
+	return labels, nil
 }
 
 func (g *GitLab) run(ctx context.Context, operation string, args ...string) (string, error) {
