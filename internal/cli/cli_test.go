@@ -811,7 +811,7 @@ func TestImplementResolvesGitLabTicketAndReportsItsTitle(t *testing.T) {
 	if !strings.Contains(fixture.stdout.String(), "syl implement #42 — Add resilient workflow") {
 		t.Fatalf("implement output = %q, want GitLab ticket title in banner", fixture.stdout.String())
 	}
-	if !glab.hasCall("issue update 42 --label doing --unlabel todo") {
+	if !glab.hasCall("api --method PUT projects/:fullpath/issues/42 --raw-field labels=doing") {
 		t.Fatalf("GitLab calls = %#v, want todo to doing transition", glab.calls)
 	}
 }
@@ -945,7 +945,7 @@ func (r *implementGitLabRunner) Run(_ context.Context, args ...string) (string, 
 		return `[{"name":"todo"},{"name":"doing"}]`, nil
 	case "issue view 42 --output json":
 		return `{"id":9042,"iid":42,"title":"Add resilient workflow","description":"Acceptance criteria: leave a working implementation.","state":"opened","labels":["todo"]}`, nil
-	case "issue update 42 --label doing --unlabel todo":
+	case "api --method PUT projects/:fullpath/issues/42 --raw-field labels=doing":
 		return "", nil
 	default:
 		return "", fmt.Errorf("unexpected glab command %q", call)
