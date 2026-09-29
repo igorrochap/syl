@@ -15,7 +15,6 @@ import (
 	"github.com/igorrochap/syl/internal/config"
 	"github.com/igorrochap/syl/internal/harness"
 	"github.com/igorrochap/syl/internal/runstate"
-	"github.com/igorrochap/syl/internal/sylhome"
 	"github.com/igorrochap/syl/internal/tracker"
 	"github.com/igorrochap/syl/internal/ui"
 	"github.com/igorrochap/syl/internal/usage"
@@ -40,7 +39,7 @@ type implementSummary struct {
 type ImplementOptions struct {
 	OriginRoot           string
 	WorkRoot             string
-	SylHome              sylhome.Dir
+	OpenRun              func(RunSpec) (RunRecorder, error)
 	ProjectConfig        config.Config
 	IssueTracker         tracker.Tracker
 	Ticket               tracker.Ticket
@@ -62,7 +61,7 @@ type implementRunState struct {
 	setup     implementSetup
 	notifier  Notifier
 	questions *QuestionHandler
-	recorder  *diskRunRecorder
+	recorder  RunRecorder
 	runState  *runStateTracker
 }
 
@@ -155,6 +154,9 @@ func prepareImplementRun(ctx context.Context, options ImplementOptions, originGi
 }
 
 func validateImplementOptions(options ImplementOptions) error {
+	if options.OpenRun == nil {
+		return errors.New("implement: Run opener is not configured")
+	}
 	if options.Git == nil {
 		return errors.New("implement: git runner is not configured")
 	}
@@ -168,38 +170,36 @@ func validateImplementOptions(options ImplementOptions) error {
 }
 
 func initializeImplementRun(options ImplementOptions, setup implementSetup) (implementRunState, error) {
-	recorder, err := newImplementRunRecorderWithState(
-		options.OriginRoot,
-		options.WorkRoot,
-		options.Ticket.Number,
-		setup.branch,
-		setup.branchPoint,
-		string(options.ProjectConfig.Roles.Implement.Harness),
-		string(options.ProjectConfig.Roles.Review.Harness),
-		options.Context,
-		options.ReviewContext,
-		options.ProjectConfig.Loop.MaxIterations,
-		options.Output,
-		options.SylHome,
-	)
+	spec := RunSpec{
+		Kind:               runstate.Implement,
+		TicketRef:          "#" + strconv.Itoa(options.Ticket.Number),
+		MaxIterations:      options.ProjectConfig.Loop.MaxIterations,
+		Branch:             setup.branch,
+		BranchPoint:        setup.branchPoint,
+		WorkRoot:           options.WorkRoot,
+		ImplementerHarness: string(options.ProjectConfig.Roles.Implement.Harness),
+		ReviewerHarness:    string(options.ProjectConfig.Roles.Review.Harness),
+		ImplementContext:   options.Context,
+		ReviewContext:      options.ReviewContext,
+	}
+	recorder, err := options.OpenRun(spec)
 	if err != nil {
-		if recorder != nil {
-			runState := newRunStateTracker(recorder)
-			return implementRunState{setup: setup, recorder: recorder, runState: runState}, err
-		}
 		return implementRunState{}, err
 	}
-	runState := newRunStateTracker(recorder)
+	if recorder == nil {
+		return implementRunState{}, errors.New("implement: Run opener returned a nil recorder")
+	}
+	runState := newRunStateTracker(recorder, newRunState(spec))
 	notifier := options.Notifier
 	if !options.ProjectConfig.Notifications.Enabled {
 		notifier = nil
 	}
 	notifier = withNotificationContext(notifier, options.OriginRoot, setup.git)
-	questions := NewQuestionHandler(options.Input, options.Output, "#"+strconv.Itoa(options.Ticket.Number), notifier)
-	questions.setStateObserver(runState)
+	questions := NewQuestionHandler(options.Input, options.Output, "#"+strconv.Itoa(options.Ticket.Number), notifier, runState)
 	run := implementRunState{setup: setup, notifier: notifier, questions: questions, recorder: recorder, runState: runState}
 	if options.IdentificationBanner != nil {
-		if err := options.IdentificationBanner(recorder.Dir()); err != nil {
+		artifactDir := filepath.Dir(recorder.ImplementHandoffPath(1))
+		if err := options.IdentificationBanner(artifactDir); err != nil {
 			return run, err
 		}
 	}
@@ -332,6 +332,7 @@ type implementTurnParams struct {
 }
 
 func runImplementIterations(ctx context.Context, params implementIterationsParams) (int, verdict.Verdict, []verdict.Finding, error) {
+	params.runState = ensureImplementRunState(params)
 	params.output = ensureLineTrackingWriter(params.output)
 	var blocking []verdict.Finding
 	var final verdict.Verdict
@@ -398,6 +399,17 @@ func runImplementIterations(ctx context.Context, params implementIterationsParam
 	return iterations, final, nitFindings(final), nil
 }
 
+func ensureImplementRunState(params implementIterationsParams) *runStateTracker {
+	if params.runState != nil {
+		return params.runState
+	}
+	return newRunStateTracker(params.recorder, newRunState(RunSpec{
+		Kind:          runstate.Implement,
+		TicketRef:     "#" + strconv.Itoa(params.ticket.Number),
+		MaxIterations: params.projectConfig.Loop.MaxIterations,
+	}))
+}
+
 func runImplementReview(ctx context.Context, params implementIterationsParams, reviewParams implementReviewParams) (ReviewExecution, error) {
 	params.runState.setActivity(runstate.Reviewing)
 	reviewRequest := harness.Request{
@@ -441,7 +453,7 @@ func runImplementReview(ctx context.Context, params implementIterationsParams, r
 			if artifactErr := params.recorder.RecordReviewOutput(reviewParams.iteration, unparseable.Execution); artifactErr != nil {
 				return ReviewExecution{}, artifactErr
 			}
-			return ReviewExecution{}, reviewTranscriptSavedError(err, params.recorder.Dir())
+			return ReviewExecution{}, reviewTranscriptSavedError(err, recorderArtifactDir(params.recorder))
 		}
 		return ReviewExecution{}, err
 	}
@@ -485,7 +497,7 @@ func prepareIterationReviewDiff(ctx context.Context, params implementIterationsP
 	if params.worktreeArtifactRoot == "" {
 		return diffPath, nil
 	}
-	return recordWorktreeReviewDiff(params.worktreeArtifactRoot, params.recorder.Dir(), iteration, diff)
+	return recordWorktreeReviewDiff(params.worktreeArtifactRoot, filepath.Dir(diffPath), iteration, diff)
 }
 
 func prepareIterationHandoffPath(params implementIterationsParams, iteration int) (string, error) {
@@ -493,7 +505,7 @@ func prepareIterationHandoffPath(params implementIterationsParams, iteration int
 	if params.worktreeArtifactRoot == "" {
 		return handoffPath, nil
 	}
-	path, err := worktreeRunArtifactPath(params.worktreeArtifactRoot, params.recorder.Dir(), filepath.Base(handoffPath))
+	path, err := worktreeRunArtifactPath(params.worktreeArtifactRoot, filepath.Dir(handoffPath), filepath.Base(handoffPath))
 	if err != nil {
 		return "", fmt.Errorf("prepare worktree handoff path: %w", err)
 	}
@@ -530,8 +542,7 @@ func runImplementTurn(
 	params implementIterationsParams,
 	turn implementTurnParams,
 ) (implementExecution, error) {
-	params.runState.setIteration(turn.iteration)
-	params.runState.setActivity(runstate.Implementing)
+	params.runState.startActivity(turn.iteration, runstate.Implementing)
 	activity := "implementing"
 	if turn.iteration > 1 {
 		activity = fmt.Sprintf("revising %d blocking finding(s)", len(turn.blocking))
@@ -599,11 +610,7 @@ func runImplementTurn(
 // recordRoleUsage persists usage as best-effort metadata. Usage collection or
 // persistence failures must not fail the run.
 func recordRoleUsage(recorder RunRecorder, entry usage.Entry) {
-	usageRecorder, ok := recorder.(UsageRecorder)
-	if !ok {
-		return
-	}
-	_ = usageRecorder.RecordUsage(entry)
+	_ = recorder.RecordUsage(entry)
 }
 
 type implementExecution struct {

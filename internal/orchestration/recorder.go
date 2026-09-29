@@ -18,8 +18,9 @@ import (
 
 // RunRecorder records the domain events that make up a syl run.
 type RunRecorder interface {
-	Dir() string
 	ImplementHandoffPath(iteration int) string
+	RecordState(state runstate.State)
+	RecordUsage(entry usage.Entry) error
 	RecordImplementTurn(iteration int, feed, transcript string) error
 	RecordReviewDiff(iteration int, diff string) (string, error)
 	RecordReviewOutput(iteration int, review ReviewExecution) error
@@ -29,11 +30,22 @@ type RunRecorder interface {
 	WriteSessions() error
 }
 
-// UsageRecorder is implemented by disk-backed run recorders. Keeping this
-// optional preserves the small in-memory recorder seam used by orchestration
-// tests and by callers that do not persist usage artifacts.
-type UsageRecorder interface {
-	RecordUsage(entry usage.Entry) error
+// RunSpec describes the artifacts and lifecycle metadata for a Run.
+type RunSpec struct {
+	Kind               runstate.Kind
+	TicketRef          string
+	MaxIterations      int
+	Branch             string
+	BranchPoint        string
+	WorkRoot           string
+	ImplementerHarness string
+	ReviewerHarness    string
+	ImplementContext   string
+	ReviewContext      string
+}
+
+func recorderArtifactDir(recorder RunRecorder) string {
+	return filepath.Dir(recorder.ImplementHandoffPath(1))
 }
 
 type artifactKind uint8
@@ -58,7 +70,6 @@ type diskRunRecorder struct {
 	sessionKeys   map[sessionKey]struct{}
 	usage         usage.Artifact
 	runState      runstate.State
-	hasRunState   bool
 	warningOutput io.Writer
 	marker        *sylhome.LiveRun
 }
@@ -71,111 +82,11 @@ type sessionKey struct {
 
 var _ RunRecorder = (*diskRunRecorder)(nil)
 
-func newImplementRunRecorder(
-	originRoot string,
-	workRoot string,
-	issueNumber int,
-	branch string,
-	branchPoint string,
-	implementerHarness string,
-	reviewerHarness string,
-	implementContext string,
-	reviewContext string,
-) (*diskRunRecorder, error) {
-	return newImplementRunRecorderWithState(
-		originRoot, workRoot, issueNumber, branch, branchPoint, implementerHarness, reviewerHarness,
-		implementContext, reviewContext, 0, nil, sylhome.Dir{},
-	)
-}
-
-func newImplementRunRecorderWithState(
-	originRoot string,
-	workRoot string,
-	issueNumber int,
-	branch string,
-	branchPoint string,
-	implementerHarness string,
-	reviewerHarness string,
-	implementContext string,
-	reviewContext string,
-	maxIterations int,
-	warningOutput io.Writer,
-	sylHome sylhome.Dir,
-) (*diskRunRecorder, error) {
-	workRoot, err := resolveRunWorkRoot(workRoot)
-	if err != nil {
-		return nil, err
+// NewDiskRunOpener returns the production Run opener for one origin root.
+func NewDiskRunOpener(originRoot string, sylHome sylhome.Dir, warningOutput io.Writer) func(RunSpec) (RunRecorder, error) {
+	return func(spec RunSpec) (RunRecorder, error) {
+		return openDiskRun(originRoot, sylHome, warningOutput, spec)
 	}
-	metadata := fmt.Sprintf(
-		"Branch: %s\nBranch point: %s\nWork root: %s\nImplementer harness: %s\nReviewer harness: %s\n",
-		branch, branchPoint, workRoot, implementerHarness, reviewerHarness,
-	)
-	metadata = appendRoleContext(metadata, "Implementer", implementContext)
-	metadata = appendRoleContext(metadata, "Reviewer", reviewContext)
-	initialState := runstate.New(
-		runstate.Implement,
-		"#"+strconv.Itoa(issueNumber),
-		0,
-		maxIterations,
-		time.Now().UTC(),
-	)
-	recorder, recorderErr := newDiskRunRecorderWithState(
-		originRoot,
-		strconv.Itoa(issueNumber),
-		metadata,
-		"implement",
-		&initialState,
-		warningOutput,
-	)
-	if recorder != nil {
-		recorder.createLiveRunMarker(sylHome, originRoot, initialState)
-	}
-	return recorder, recorderErr
-}
-
-func newReviewRunRecorder(
-	originRoot string,
-	workRoot string,
-	ticketRef string,
-	branchPoint string,
-	reviewerHarness string,
-	reviewContext string,
-) (*diskRunRecorder, error) {
-	return newReviewRunRecorderWithState(
-		originRoot, workRoot, ticketRef, branchPoint, reviewerHarness, reviewContext, nil, sylhome.Dir{},
-	)
-}
-
-func newReviewRunRecorderWithState(
-	originRoot string,
-	workRoot string,
-	ticketRef string,
-	branchPoint string,
-	reviewerHarness string,
-	reviewContext string,
-	warningOutput io.Writer,
-	sylHome sylhome.Dir,
-) (*diskRunRecorder, error) {
-	workRoot, err := resolveRunWorkRoot(workRoot)
-	if err != nil {
-		return nil, err
-	}
-	suffix := "review"
-	trimmedTicketRef := strings.TrimSpace(ticketRef)
-	if number, err := strconv.Atoi(strings.TrimPrefix(trimmedTicketRef, "#")); err == nil && number > 0 {
-		suffix = strconv.Itoa(number)
-	}
-	metadata := fmt.Sprintf(
-		"Ticket: %s\nBranch point: %s\nWork root: %s\nReviewer harness: %s\n",
-		trimmedTicketRef, branchPoint, workRoot, reviewerHarness,
-	)
-	metadata = appendRoleContext(metadata, "Reviewer", reviewContext)
-	initialState := runstate.New(runstate.Review, trimmedTicketRef, 1, 1, time.Now().UTC())
-	recorder, recorderErr := newDiskRunRecorderWithState(originRoot, suffix, metadata, "review", &initialState, warningOutput)
-	if recorder != nil {
-		recorder.createLiveRunMarker(sylHome, originRoot, initialState)
-	}
-	return recorder, recorderErr
 }
 
 func resolveRunWorkRoot(workRoot string) (string, error) {
@@ -206,23 +117,15 @@ func appendRoleContext(metadata, role, context string) string {
 	return builder.String()
 }
 
-func newDiskRunRecorder(
-	originRoot string,
-	suffix string,
-	metadata string,
-	runType string,
-) (*diskRunRecorder, error) {
-	return newDiskRunRecorderWithState(originRoot, suffix, metadata, runType, nil, nil)
-}
-
-func newDiskRunRecorderWithState(
-	originRoot string,
-	suffix string,
-	metadata string,
-	runType string,
-	initialState *runstate.State,
-	warningOutput io.Writer,
-) (*diskRunRecorder, error) {
+func openDiskRun(originRoot string, sylHome sylhome.Dir, warningOutput io.Writer, spec RunSpec) (*diskRunRecorder, error) {
+	workRoot, err := resolveRunWorkRoot(spec.WorkRoot)
+	if err != nil {
+		return nil, err
+	}
+	suffix, metadata, runType, err := runArtifacts(spec, workRoot)
+	if err != nil {
+		return nil, err
+	}
 	dir := filepath.Join(
 		originRoot,
 		".syl",
@@ -230,68 +133,94 @@ func newDiskRunRecorderWithState(
 		time.Now().UTC().Format("20060102T150405.000000000Z")+"-"+suffix,
 	)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return nil, fmt.Errorf("create %s run artifacts: %w", runType, err)
+		return nil, fmt.Errorf("create %s run artifacts %s: %w", runType, dir, err)
 	}
 	recorder := &diskRunRecorder{
 		dir:           dir,
 		sessionKeys:   make(map[sessionKey]struct{}),
 		usage:         usage.NewArtifact(),
 		warningOutput: warningOutput,
+		runState:      newRunState(spec),
 	}
-	if initialState != nil {
-		recorder.runState = *initialState
-		recorder.hasRunState = true
-		recorder.persistRunState(*initialState)
-	}
+	recorder.RecordState(recorder.runState)
 	if err := writeArtifact(filepath.Join(dir, artifactFilename(metadataArtifact, 0)), metadata); err != nil {
-		return recorder, err
+		return nil, recorder.failOpen(err)
 	}
 	if err := recorder.writeUsage(); err != nil {
-		return recorder, err
+		return nil, recorder.failOpen(err)
 	}
+	recorder.createLiveRunMarker(sylHome, originRoot)
 	return recorder, nil
 }
 
-type runStateProvider interface {
-	persistRunState(state runstate.State)
-	runStateSnapshot() runstate.State
-}
-
-var _ runStateProvider = (*diskRunRecorder)(nil)
-
-func (r *diskRunRecorder) persistRunState(state runstate.State) {
-	if !r.hasRunState {
-		return
+func runArtifacts(spec RunSpec, workRoot string) (string, string, string, error) {
+	trimmedTicketRef := strings.TrimSpace(spec.TicketRef)
+	suffix := strings.TrimPrefix(trimmedTicketRef, "#")
+	if suffix == "" {
+		suffix = string(spec.Kind)
 	}
-	r.runState = state
-	if err := runstate.Write(runstate.Path(r.dir), state); err != nil {
-		if r.warningOutput == nil {
-			return
+	switch spec.Kind {
+	case runstate.Implement:
+		metadata := fmt.Sprintf(
+			"Branch: %s\nBranch point: %s\nWork root: %s\nImplementer harness: %s\nReviewer harness: %s\n",
+			spec.Branch, spec.BranchPoint, workRoot, spec.ImplementerHarness, spec.ReviewerHarness,
+		)
+		metadata = appendRoleContext(metadata, "Implementer", spec.ImplementContext)
+		metadata = appendRoleContext(metadata, "Reviewer", spec.ReviewContext)
+		return suffix, metadata, "implement", nil
+	case runstate.Review:
+		number, err := strconv.Atoi(suffix)
+		if err != nil || number <= 0 {
+			suffix = "review"
 		}
-		_, _ = fmt.Fprintf(r.warningOutput, "syl: warning: write run state: %v\n", err)
+		metadata := fmt.Sprintf(
+			"Ticket: %s\nBranch point: %s\nWork root: %s\nReviewer harness: %s\n",
+			trimmedTicketRef, spec.BranchPoint, workRoot, spec.ReviewerHarness,
+		)
+		metadata = appendRoleContext(metadata, "Reviewer", spec.ReviewContext)
+		return suffix, metadata, "review", nil
+	default:
+		return "", "", "", fmt.Errorf("unsupported Run kind %q", spec.Kind)
 	}
 }
 
-func (r *diskRunRecorder) runStateSnapshot() runstate.State {
-	return r.runState
+func (r *diskRunRecorder) failOpen(err error) error {
+	failed := r.runState
+	failed.Status = runstate.Failed
+	failed.Activity = ""
+	failed.Question = ""
+	ended := time.Now().UTC()
+	failed.EndedAt = &ended
+	r.RecordState(failed)
+	return err
 }
 
-func (r *diskRunRecorder) createLiveRunMarker(sylHome sylhome.Dir, projectRoot string, state runstate.State) {
-	if sylHome.String() == "" || !r.hasRunState || !runStateFileExists(r.dir) {
+func (r *diskRunRecorder) createLiveRunMarker(sylHome sylhome.Dir, projectRoot string) {
+	if sylHome.String() == "" {
 		return
 	}
 	marker, err := sylHome.MarkLive(sylhome.LiveRun{
 		ProjectPath: projectRoot,
 		RunDir:      r.dir,
-		TicketRef:   state.TicketRef,
-		Host:        state.Hostname,
-		PID:         state.PID,
+		TicketRef:   r.runState.TicketRef,
+		Host:        r.runState.Hostname,
+		PID:         r.runState.PID,
 	})
 	if err != nil {
 		r.warn("create live-run marker", err)
 		return
 	}
 	r.marker = &marker
+}
+
+func (r *diskRunRecorder) RecordState(state runstate.State) {
+	r.runState = state
+	if err := runstate.Write(runstate.Path(r.dir), state); err != nil {
+		r.warn("write run state", err)
+	}
+	if state.Status != runstate.Running {
+		r.removeLiveRunMarker()
+	}
 }
 
 func (r *diskRunRecorder) removeLiveRunMarker() {
@@ -310,15 +239,6 @@ func (r *diskRunRecorder) warn(action string, err error) {
 		return
 	}
 	_, _ = fmt.Fprintf(r.warningOutput, "syl: warning: %s: %v\n", action, err)
-}
-
-func runStateFileExists(runDir string) bool {
-	info, err := os.Stat(runstate.Path(runDir))
-	return err == nil && info.Mode().IsRegular()
-}
-
-func (r *diskRunRecorder) Dir() string {
-	return r.dir
 }
 
 func (r *diskRunRecorder) ImplementHandoffPath(iteration int) string {
