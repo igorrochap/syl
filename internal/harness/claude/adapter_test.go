@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/igorrochap/syl/internal/config"
 	"github.com/igorrochap/syl/internal/harness"
@@ -856,11 +857,143 @@ fi
 			if got := eventAssistantText(events); got != wantText {
 				t.Fatalf("assistant text = %q, want %q", got, wantText)
 			}
-			if err := stream.Wait(); err == nil || !strings.Contains(err.Error(), tt.want) {
+			err = stream.Wait()
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("Wait() error = %v, want %q", err, tt.want)
+			}
+			sessionID := eventSessionID(events)
+			path := filepath.Join(transcriptDir, sessionID+".jsonl")
+			for _, want := range []string{path, sessionID} {
+				if !strings.Contains(err.Error(), want) {
+					t.Fatalf("Wait() error = %q, want %q", err, want)
+				}
 			}
 			if !tt.exits && time.Since(started) < adapter.idleTimeout {
 				t.Fatal("turn completed before the idle timeout")
+			}
+		})
+	}
+}
+
+func TestPTYIdleTimeoutReportsMissingTranscriptAndSilentTerminal(t *testing.T) {
+	root, home := t.TempDir(), t.TempDir()
+	command := writeClaudeTestDouble(t, "trap 'exit 0' TERM\nwhile :; do sleep 0.05; done\n")
+	adapter := newPTYTestAdapter(command, root, home)
+	adapter.idleTimeout = 200 * time.Millisecond
+	stream, err := adapter.Run(context.Background(), harness.Request{
+		Model: "claude-sonnet-5", Prompt: "review", Effort: config.EffortMedium,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sessionID string
+	for event := range stream.Events() {
+		if event.Type == harness.EventSession {
+			sessionID = event.SessionID
+		}
+	}
+	err = stream.Wait()
+	if err == nil {
+		t.Fatal("Wait() succeeded, want idle-timeout error")
+	}
+	path := filepath.Join(claudeTranscriptDir(t, home, root), sessionID+".jsonl")
+	if !filepath.IsAbs(path) || sessionID == "" {
+		t.Fatalf("invalid session transcript path %q or session id %q", path, sessionID)
+	}
+	message := err.Error()
+	wantFirstLine := "claude code pty session was idle for 200ms without a review verdict"
+	if firstLine := strings.SplitN(message, "\n", 2)[0]; firstLine != wantFirstLine {
+		t.Fatalf("first line = %q, want %q", firstLine, wantFirstLine)
+	}
+	for _, want := range []string{path, sessionID, "missing", "no terminal output was captured"} {
+		if !strings.Contains(message, want) {
+			t.Fatalf("Wait() error = %q, want %q", message, want)
+		}
+	}
+	if strings.Contains(message, "Last terminal output") {
+		t.Fatalf("silent session printed an empty terminal tail: %q", message)
+	}
+}
+
+func TestPTYIdleTimeoutReportsBoundedReadableTerminalTail(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		output string
+		want   string
+	}{
+		{
+			name: "large colored output and OSC notifications",
+			output: `printf 'old output\n'
+i=0
+while [ "$i" -lt 1000 ]; do printf 'repeated output éééééééééé\n'; i=$((i+1)); done
+printf '\033[31mLAST PRINTED LINE\033[0m\n'
+printf '\033]9;Claude is waiting for your input\007'
+printf '\033]0;hidden title\033\\'
+`,
+			want: "LAST PRINTED LINE\n",
+		},
+		{
+			name: "escapes split between terminal reads",
+			output: fmt.Sprintf(`printf '\033[0%s32mGREEN TEXT\033[0m\n'
+printf '\033]9;Claude is waiting for your input\007'
+printf '\033]0;%s\033\\LAST PRINTED LINE\n\033[31'
+`, strings.Repeat(";0", 4096), strings.Repeat("hidden title", 1024)),
+			want: "GREEN TEXT\nLAST PRINTED LINE\n",
+		},
+		{
+			name: "other terminal controls",
+			output: `printf '\033c\033(BREADY\tTEXT\r\n'
+printf '\033\033[0m\033[31\033[0m'
+printf '\033Pignored control string\033\\'
+printf '\033]0;ignored title\033\033\\LAST PRINTED LINE\n'
+`,
+			want: "READY\tTEXT\nLAST PRINTED LINE\n",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			root, home := t.TempDir(), t.TempDir()
+			transcriptDir := claudeTranscriptDir(t, home, root)
+			command := writeClaudeTestDouble(t, fmt.Sprintf(`
+mkdir -p %q
+touch %q/"$2".jsonl
+%s
+trap 'exit 0' TERM
+while :; do sleep 0.05; done
+`, transcriptDir, transcriptDir, tt.output))
+			adapter := newPTYTestAdapter(command, root, home)
+			adapter.idleTimeout = time.Second
+			stream, err := adapter.Run(context.Background(), harness.Request{
+				Model: "claude-sonnet-5", Prompt: "review", Effort: config.EffortMedium,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var events []harness.Event
+			for event := range stream.Events() {
+				events = append(events, event)
+			}
+			err = stream.Wait()
+			if err == nil {
+				t.Fatal("Wait() succeeded, want idle-timeout error")
+			}
+			message := err.Error()
+			if !strings.Contains(message, eventSessionID(events)) {
+				t.Fatalf("Wait() error lacks session id: %q", message)
+			}
+			_, tail, found := strings.Cut(message, "Last terminal output (at most 2048 bytes):\n")
+			if !found {
+				t.Fatalf("Wait() error lacks terminal tail: %q", message)
+			}
+			if len(tail) > 2048 || !utf8.ValidString(tail) {
+				t.Fatalf("terminal tail is not valid UTF-8 within 2048 bytes: %d bytes", len(tail))
+			}
+			if !strings.HasSuffix(tail, tt.want) {
+				t.Fatalf("terminal tail = %q, want suffix %q", tail, tt.want)
+			}
+			for _, unwanted := range []string{"\x1b", "\x07", "hidden title", "Claude is waiting", "old output", "missing"} {
+				if strings.Contains(message, unwanted) {
+					t.Fatalf("Wait() error contains %q: %q", unwanted, message)
+				}
 			}
 		})
 	}

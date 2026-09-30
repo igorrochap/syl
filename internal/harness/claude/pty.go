@@ -10,7 +10,9 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -24,6 +26,7 @@ const (
 	verdictMarker       = "VERDICT:"
 	questionStartMarker = "QUESTION:\n"
 	questionEndMarker   = "\nEND QUESTION"
+	terminalTailLimit   = 2048
 )
 
 // PTYAdapter drives Claude Code sessions through a pseudo-terminal.
@@ -116,6 +119,10 @@ func (a *PTYAdapter) start(
 	if err != nil {
 		return nil, fmt.Errorf("find Claude transcript: %w", err)
 	}
+	transcriptPath, err = filepath.Abs(transcriptPath)
+	if err != nil {
+		return nil, fmt.Errorf("resolve Claude transcript path: %w", err)
+	}
 	seenEntries := 0
 	if mode == transcriptStartResume {
 		entries, readErr := reader.Read(transcriptPath)
@@ -182,7 +189,8 @@ func (a *PTYAdapter) runSession(
 		processDone <- process.Wait()
 	}()
 	idleSignals := make(chan struct{}, 1)
-	go watchClaudeTerminal(terminal, idleSignals)
+	output := &terminalOutput{}
+	go watchClaudeTerminal(terminal, idleSignals, output)
 
 	events <- harness.Event{Type: harness.EventSession, SessionID: session.sessionID}
 	processExited, monitorErr := a.monitorSession(
@@ -191,6 +199,7 @@ func (a *PTYAdapter) runSession(
 		events,
 		idleSignals,
 		processDone,
+		output,
 	)
 	if !processExited {
 		if err := terminateProcess(process, processDone, a.terminateWait); err != nil {
@@ -206,6 +215,7 @@ func (a *PTYAdapter) monitorSession(
 	events chan<- harness.Event,
 	idleSignals <-chan struct{},
 	processDone <-chan error,
+	output *terminalOutput,
 ) (bool, error) {
 	pollInterval, idleTimeout := a.sessionTiming()
 	poll := time.NewTicker(pollInterval)
@@ -215,6 +225,8 @@ func (a *PTYAdapter) monitorSession(
 	transcripts := transcriptMonitor{
 		reader:      session.transcript,
 		path:        session.transcriptPath,
+		sessionID:   session.sessionID,
+		output:      output,
 		events:      events,
 		idle:        idle,
 		idleTimeout: idleTimeout,
@@ -269,6 +281,8 @@ type transcriptProgress struct {
 type transcriptMonitor struct {
 	reader      transcript.Reader
 	path        string
+	sessionID   string
+	output      *terminalOutput
 	events      chan<- harness.Event
 	seenEntries int
 	completion  harness.CompletionSignal
@@ -289,7 +303,7 @@ func (m *transcriptMonitor) checkProcessExit(waitErr error) error {
 	if waitErr != nil {
 		return fmt.Errorf("claude code exited unsuccessfully: %w", waitErr)
 	}
-	return fmt.Errorf("claude code exited before producing a %s", m.completion)
+	return m.describeSessionFailure(fmt.Errorf("claude code exited before producing a %s", m.completion))
 }
 
 func (m *transcriptMonitor) checkCompletion() (bool, error) {
@@ -311,7 +325,17 @@ func (m *transcriptMonitor) checkIdleTimeout() (bool, error) {
 	if progress.newEntries {
 		return false, nil
 	}
-	return true, fmt.Errorf("claude code pty session was idle for %s without a %s", m.idleTimeout, m.completion)
+	err = fmt.Errorf("claude code pty session was idle for %s without a %s", m.idleTimeout, m.completion)
+	return true, m.describeSessionFailure(err)
+}
+
+func (m *transcriptMonitor) describeSessionFailure(err error) error {
+	status := ""
+	if _, statErr := os.Stat(m.path); errors.Is(statErr, os.ErrNotExist) {
+		status = " (missing: file does not exist)"
+	}
+	return fmt.Errorf("%w\nSession id: %s\nSession transcript: %s%s\n%s",
+		err, m.sessionID, m.path, status, m.output.describeTail())
 }
 
 func (m *transcriptMonitor) checkProgress() (transcriptProgress, error) {
@@ -401,13 +425,122 @@ func newSessionID() (string, error) {
 	), nil
 }
 
-func watchClaudeTerminal(terminal io.Reader, idleSignals chan<- struct{}) {
+type terminalOutput struct {
+	mu    sync.Mutex
+	state terminalEscapeState
+	tail  []byte
+}
+
+type terminalEscapeState int
+
+const (
+	terminalText terminalEscapeState = iota
+	terminalEscape
+	terminalCSI
+	terminalEscapeIntermediate
+	terminalString
+	terminalStringEscape
+)
+
+func (o *terminalOutput) capture(data []byte) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	// Keep parser state across reads so split or truncated escapes never leak
+	// into the bounded tail, even when their payload exceeds the tail limit.
+	for _, value := range data {
+		o.captureByte(value)
+	}
+	if len(o.tail) > terminalTailLimit {
+		start := len(o.tail) - terminalTailLimit
+		copy(o.tail, o.tail[start:])
+		o.tail = o.tail[:terminalTailLimit]
+	}
+}
+
+func (o *terminalOutput) captureByte(value byte) {
+	switch o.state {
+	case terminalText:
+		o.captureText(value)
+	case terminalEscape:
+		o.state = beginTerminalEscape(value)
+	case terminalCSI, terminalEscapeIntermediate:
+		o.finishTerminalEscape(value)
+	case terminalString, terminalStringEscape:
+		o.finishTerminalString(value)
+	}
+}
+
+func (o *terminalOutput) captureText(value byte) {
+	if value == '\x1b' {
+		o.state = terminalEscape
+		return
+	}
+	isReadable := value >= ' ' && value != '\x7f' || value == '\n' || value == '\t'
+	if isReadable {
+		o.tail = append(o.tail, value)
+	}
+}
+
+func beginTerminalEscape(value byte) terminalEscapeState {
+	switch value {
+	case '\x1b':
+		return terminalEscape
+	case '[':
+		return terminalCSI
+	case ']', 'P', 'X', '^', '_':
+		return terminalString
+	}
+	if value >= 0x20 && value <= 0x2f {
+		return terminalEscapeIntermediate
+	}
+	return terminalText
+}
+
+func (o *terminalOutput) finishTerminalEscape(value byte) {
+	if value == '\x1b' {
+		o.state = terminalEscape
+		return
+	}
+	finalStart := byte(0x40)
+	if o.state == terminalEscapeIntermediate {
+		finalStart = 0x30
+	}
+	if value >= finalStart && value <= 0x7e {
+		o.state = terminalText
+	}
+}
+
+func (o *terminalOutput) finishTerminalString(value byte) {
+	isTerminator := value == '\x07' || o.state == terminalStringEscape && value == '\\'
+	if isTerminator {
+		o.state = terminalText
+		return
+	}
+	o.state = terminalString
+	if value == '\x1b' {
+		o.state = terminalStringEscape
+	}
+}
+
+func (o *terminalOutput) describeTail() string {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if len(o.tail) == 0 {
+		return "no terminal output was captured"
+	}
+	// A byte bound can split a UTF-8 rune at either end; omit partial runes.
+	tail := bytes.ToValidUTF8(o.tail, nil)
+	return fmt.Sprintf("Last terminal output (at most %d bytes):\n%s", terminalTailLimit, tail)
+}
+
+func watchClaudeTerminal(terminal io.Reader, idleSignals chan<- struct{}, output *terminalOutput) {
 	marker := []byte(claudeIdleEscape)
 	buffer := make([]byte, 4096)
 	var tail []byte
 	for {
 		count, err := terminal.Read(buffer)
 		if count > 0 {
+			output.capture(buffer[:count])
 			combined := append(tail, buffer[:count]...)
 			if bytes.Contains(combined, marker) {
 				select {
