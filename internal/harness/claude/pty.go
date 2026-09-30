@@ -43,6 +43,7 @@ type sessionParams struct {
 	transcriptPath string
 	sessionID      string
 	seenEntries    int
+	completion     harness.CompletionSignal
 }
 
 type ptyStream struct {
@@ -81,7 +82,7 @@ func (a *PTYAdapter) Run(ctx context.Context, request harness.Request) (harness.
 	if err != nil {
 		return nil, err
 	}
-	return a.start(ctx, sessionID, args, transcriptStartFresh)
+	return a.start(ctx, sessionID, args, transcriptStartFresh, request.Completion)
 }
 
 func (a *PTYAdapter) Resume(
@@ -96,7 +97,7 @@ func (a *PTYAdapter) Resume(
 	if err != nil {
 		return nil, err
 	}
-	return a.start(ctx, sessionID, args, transcriptStartResume)
+	return a.start(ctx, sessionID, args, transcriptStartResume, request.Completion)
 }
 
 func (a *PTYAdapter) Attach(ctx context.Context, request harness.Request) error {
@@ -108,6 +109,7 @@ func (a *PTYAdapter) start(
 	sessionID string,
 	args []string,
 	mode transcriptStartMode,
+	completion harness.CompletionSignal,
 ) (harness.Stream, error) {
 	reader := transcript.New(a.homeDir)
 	transcriptPath, err := reader.Find(a.projectRoot, sessionID)
@@ -127,6 +129,7 @@ func (a *PTYAdapter) start(
 		transcriptPath: transcriptPath,
 		sessionID:      sessionID,
 		seenEntries:    seenEntries,
+		completion:     completion,
 	}
 	command := a.command
 	if command == "" {
@@ -204,14 +207,7 @@ func (a *PTYAdapter) monitorSession(
 	idleSignals <-chan struct{},
 	processDone <-chan error,
 ) (bool, error) {
-	pollInterval := a.pollInterval
-	if pollInterval <= 0 {
-		pollInterval = 250 * time.Millisecond
-	}
-	idleTimeout := a.idleTimeout
-	if idleTimeout <= 0 {
-		idleTimeout = 5 * time.Minute
-	}
+	pollInterval, idleTimeout := a.sessionTiming()
 	poll := time.NewTicker(pollInterval)
 	defer poll.Stop()
 	idle := time.NewTimer(idleTimeout)
@@ -223,6 +219,7 @@ func (a *PTYAdapter) monitorSession(
 		idle:        idle,
 		idleTimeout: idleTimeout,
 		seenEntries: session.seenEntries,
+		completion:  session.completion,
 	}
 
 	for {
@@ -230,57 +227,38 @@ func (a *PTYAdapter) monitorSession(
 		case <-ctx.Done():
 			return false, ctx.Err()
 		case waitErr := <-processDone:
-			progress, readErr := transcripts.checkProgress()
-			if readErr != nil {
-				return true, readErr
-			}
-			if progress.complete {
-				return true, nil
-			}
-			if waitErr != nil {
-				return true, fmt.Errorf("Claude Code exited unsuccessfully: %w", waitErr)
-			}
-			return true, errors.New("Claude Code exited before producing a review verdict")
+			return true, transcripts.checkProcessExit(waitErr)
 		case <-poll.C:
-			progress, readErr := transcripts.checkProgress()
-			if readErr != nil {
-				return false, readErr
-			}
-			// The poll is the only completion signal that always arrives. The
-			// session never exits by itself, and the terminal escape can be
-			// missed: it is emitted once, and a signal consumed before the
-			// transcript reaches disk leaves nothing to wake the run again.
-			if progress.complete {
-				return false, nil
+			// Polling also catches a terminal escape that arrived before the
+			// transcript reached disk, or never arrived at all.
+			finished, err := transcripts.checkCompletion()
+			if finished {
+				return false, err
 			}
 		case <-idleSignals:
-			progress, readErr := transcripts.checkProgress()
-			if readErr != nil {
-				return false, readErr
-			}
-			if progress.complete {
-				return false, nil
+			finished, err := transcripts.checkCompletion()
+			if finished {
+				return false, err
 			}
 		case <-idle.C:
-			progress, readErr := transcripts.checkProgress()
-			if readErr != nil {
-				return false, readErr
+			finished, err := transcripts.checkIdleTimeout()
+			if finished {
+				return false, err
 			}
-			if progress.newEntries {
-				if progress.complete {
-					return false, nil
-				}
-				continue
-			}
-			if progress.complete {
-				return false, nil
-			}
-			return false, fmt.Errorf(
-				"Claude Code pty session was idle for %s without a review verdict",
-				idleTimeout,
-			)
 		}
 	}
+}
+
+func (a *PTYAdapter) sessionTiming() (time.Duration, time.Duration) {
+	pollInterval := a.pollInterval
+	if pollInterval <= 0 {
+		pollInterval = 250 * time.Millisecond
+	}
+	idleTimeout := a.idleTimeout
+	if idleTimeout <= 0 {
+		idleTimeout = 5 * time.Minute
+	}
+	return pollInterval, idleTimeout
 }
 
 type transcriptProgress struct {
@@ -293,14 +271,51 @@ type transcriptMonitor struct {
 	path        string
 	events      chan<- harness.Event
 	seenEntries int
+	completion  harness.CompletionSignal
 	// Completion stays latched across later polls that contain no new entries.
 	complete    bool
 	idle        *time.Timer
 	idleTimeout time.Duration
 }
 
+func (m *transcriptMonitor) checkProcessExit(waitErr error) error {
+	progress, err := m.checkProgress()
+	if err != nil {
+		return err
+	}
+	if progress.complete {
+		return nil
+	}
+	if waitErr != nil {
+		return fmt.Errorf("claude code exited unsuccessfully: %w", waitErr)
+	}
+	return fmt.Errorf("claude code exited before producing a %s", m.completion)
+}
+
+func (m *transcriptMonitor) checkCompletion() (bool, error) {
+	progress, err := m.checkProgress()
+	if err != nil {
+		return true, err
+	}
+	return progress.complete, nil
+}
+
+func (m *transcriptMonitor) checkIdleTimeout() (bool, error) {
+	progress, err := m.checkProgress()
+	if err != nil {
+		return true, err
+	}
+	if progress.complete {
+		return true, nil
+	}
+	if progress.newEntries {
+		return false, nil
+	}
+	return true, fmt.Errorf("claude code pty session was idle for %s without a %s", m.idleTimeout, m.completion)
+}
+
 func (m *transcriptMonitor) checkProgress() (transcriptProgress, error) {
-	entryCount, complete, err := readTranscript(m.reader, m.path, m.seenEntries, m.events)
+	entryCount, complete, err := readTranscript(m.reader, m.path, m.seenEntries, m.events, m.completion)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return transcriptProgress{}, nil
@@ -426,6 +441,7 @@ func readTranscript(
 	path string,
 	seenEntries int,
 	events chan<- harness.Event,
+	completion harness.CompletionSignal,
 ) (int, bool, error) {
 	entries, err := reader.Read(path)
 	if err != nil {
@@ -449,7 +465,7 @@ func readTranscript(
 			events <- event
 		}
 	}
-	return len(entries), latestCompletedTurnIsComplete(newEntries), nil
+	return len(entries), latestCompletedTurnIsComplete(newEntries, completion), nil
 }
 
 func decodeTranscriptEntry(raw json.RawMessage) ([]harness.Event, error) {
@@ -487,7 +503,7 @@ func decodeTranscriptEntry(raw json.RawMessage) ([]harness.Event, error) {
 	return events, nil
 }
 
-func latestCompletedTurnIsComplete(entries []transcript.Entry) bool {
+func latestCompletedTurnIsComplete(entries []transcript.Entry, completion harness.CompletionSignal) bool {
 	for index := len(entries) - 1; index >= 0; index-- {
 		var message transcriptMessage
 		if err := json.Unmarshal(entries[index].Raw, &message); err != nil {
@@ -496,24 +512,28 @@ func latestCompletedTurnIsComplete(entries []transcript.Entry) bool {
 		if !isAssistantTranscriptMessage(message) || message.Message.StopReason != "end_turn" {
 			continue
 		}
-		blocks, err := transcriptContentBlocks(message.Message.Content)
-		if err != nil {
-			return false
-		}
-		var assistantText strings.Builder
-		for _, block := range blocks {
-			if block.Type != "text" {
-				continue
-			}
-			assistantText.WriteString(block.Text)
-		}
-		text := assistantText.String()
-		if strings.Contains(text, verdictMarker) || containsQuestionBlock(text) {
+		if completion == harness.CompletionTurnEnd {
 			return true
 		}
-		return false
+		return containsCompletionMarker(message)
 	}
 	return false
+}
+
+func containsCompletionMarker(message transcriptMessage) bool {
+	blocks, err := transcriptContentBlocks(message.Message.Content)
+	if err != nil {
+		return false
+	}
+	var assistantText strings.Builder
+	for _, block := range blocks {
+		if block.Type != "text" {
+			continue
+		}
+		assistantText.WriteString(block.Text)
+	}
+	text := assistantText.String()
+	return strings.Contains(text, verdictMarker) || containsQuestionBlock(text)
 }
 
 func containsQuestionBlock(text string) bool {
