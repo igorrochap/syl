@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v1.35.1 (2026-09-29)
+
+### Bug Fixes
+
+- **tracker**: Improve GitLab status update reliability
+  ([#211](https://github.com/igorrochap/syl/pull/211),
+  [`b3459ef`](https://github.com/igorrochap/syl/commit/b3459ef672e66ca0a00e8b9713d13efbad0f261e))
+
+
 ## v1.35.0 (2026-09-23)
 
 ### Features
