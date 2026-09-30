@@ -5,25 +5,25 @@ import (
 	"errors"
 	"time"
 
-	"github.com/igorrochap/syl/internal/runstate"
+	"github.com/igorrochap/syl/internal/runrecord"
 )
 
 type runStateTracker struct {
 	recorder         RunRecorder
-	state            runstate.State
-	previousActivity runstate.Activity
+	state            runrecord.State
+	previousActivity runrecord.Activity
 	finalized        bool
 }
 
-func newRunState(spec RunSpec) runstate.State {
+func newRunState(spec RunSpec) runrecord.State {
 	iteration := 0
-	if spec.Kind == runstate.Review {
+	if spec.Kind == runrecord.Review {
 		iteration = 1
 	}
-	return runstate.New(spec.Kind, spec.TicketRef, iteration, spec.MaxIterations, time.Now().UTC())
+	return runrecord.New(spec.Kind, spec.TicketRef, iteration, spec.MaxIterations, time.Now().UTC())
 }
 
-func newRunStateTracker(recorder RunRecorder, state runstate.State) *runStateTracker {
+func newRunStateTracker(recorder RunRecorder, state runrecord.State) *runStateTracker {
 	tracker := &runStateTracker{recorder: recorder, state: state}
 	tracker.save()
 	return tracker
@@ -37,7 +37,7 @@ func (r *runStateTracker) setIteration(iteration int) {
 	r.save()
 }
 
-func (r *runStateTracker) setActivity(activity runstate.Activity) {
+func (r *runStateTracker) setActivity(activity runrecord.Activity) {
 	if r.finalized || r.state.Activity == activity {
 		return
 	}
@@ -46,7 +46,7 @@ func (r *runStateTracker) setActivity(activity runstate.Activity) {
 	r.save()
 }
 
-func (r *runStateTracker) startActivity(iteration int, activity runstate.Activity) {
+func (r *runStateTracker) startActivity(iteration int, activity runrecord.Activity) {
 	if r.finalized {
 		return
 	}
@@ -65,7 +65,7 @@ func (r *runStateTracker) questionAsked(question string) {
 		return
 	}
 	r.previousActivity = r.state.Activity
-	r.state.Activity = runstate.AwaitingAnswer
+	r.state.Activity = runrecord.AwaitingAnswer
 	r.state.Question = question
 	r.save()
 }
@@ -79,7 +79,7 @@ func (r *runStateTracker) questionAnswered() {
 	r.save()
 }
 
-func (r *runStateTracker) finish(status runstate.Status) {
+func (r *runStateTracker) finish(status runrecord.Status) {
 	if r.finalized {
 		return
 	}
@@ -94,10 +94,10 @@ func (r *runStateTracker) finish(status runstate.Status) {
 
 func (r *runStateTracker) finishForError(ctx context.Context, err error) {
 	if errors.Is(err, context.Canceled) || errors.Is(ctx.Err(), context.Canceled) {
-		r.finish(runstate.Cancelled)
+		r.finish(runrecord.Cancelled)
 		return
 	}
-	r.finish(runstate.Failed)
+	r.finish(runrecord.Failed)
 }
 
 func (r *runStateTracker) save() {

@@ -28,7 +28,7 @@ linters:
             - "!**/internal/updater/*.go"
             - "!**/internal/usage/*.go"
             - "!**/internal/sylhome/*.go"
-            - "!**/internal/runstate/*.go"
+            - "!**/internal/runrecord/*.go"
             - "!**/internal/atomicfile/*.go"
             - "!**/internal/readmodel/*.go"
             - "!**/internal/configedit/*.go"
@@ -83,6 +83,7 @@ linters:
             - github.com/igorrochap/syl/internal/initializer$
             - github.com/igorrochap/syl/internal/orchestration$
             - github.com/igorrochap/syl/internal/readmodel$
+            - github.com/igorrochap/syl/internal/runrecord$
             - github.com/igorrochap/syl/internal/sylhome$
             - github.com/igorrochap/syl/internal/tracker$
             - github.com/igorrochap/syl/internal/ui$
@@ -103,7 +104,7 @@ linters:
             - golang.org
             - github.com/igorrochap/syl/internal/config$
             - github.com/igorrochap/syl/internal/harness$
-            - github.com/igorrochap/syl/internal/runstate$
+            - github.com/igorrochap/syl/internal/runrecord$
             - github.com/igorrochap/syl/internal/sylhome$
             - github.com/igorrochap/syl/internal/tracker$
             - github.com/igorrochap/syl/internal/ui$
@@ -122,7 +123,7 @@ linters:
             - golang.org
             - github.com/igorrochap/syl/internal/config$
             - github.com/igorrochap/syl/internal/sylhome$
-            - github.com/igorrochap/syl/internal/runstate$
+            - github.com/igorrochap/syl/internal/runrecord$
             - github.com/igorrochap/syl/internal/usage$
             - github.com/igorrochap/syl/internal/verdict$
           deny:
@@ -149,7 +150,7 @@ linters:
             - github.com
             - golang.org
             - github.com/igorrochap/syl/internal/readmodel$
-            - github.com/igorrochap/syl/internal/runstate$
+            - github.com/igorrochap/syl/internal/runrecord$
             - github.com/igorrochap/syl/internal/sylhome$
             - github.com/igorrochap/syl/internal/configedit$
           deny:
@@ -231,6 +232,7 @@ linters:
             - github.com
             - golang.org
             - github.com/igorrochap/syl/internal/harness/claude/transcript$
+            - github.com/igorrochap/syl/internal/runrecord$
           deny:
             - pkg: github.com/igorrochap/syl
               desc: usage recomputation reads transcript records but must not depend on workflow callers
@@ -282,7 +284,6 @@ linters:
           files:
             - "**/internal/config/*.go"
             - "**/internal/sylhome/*.go"
-            - "**/internal/runstate/*.go"
           list-mode: lax
           allow:
             - $gostd
@@ -292,6 +293,19 @@ linters:
           deny:
             - pkg: github.com/igorrochap/syl
               desc: support writers may depend only on the atomic file module
+        runrecord:
+          files:
+            - "**/internal/runrecord/*.go"
+          list-mode: lax
+          allow:
+            - $gostd
+            - github.com
+            - golang.org
+            - github.com/igorrochap/syl/internal/atomicfile$
+            - github.com/igorrochap/syl/internal/verdict$
+          deny:
+            - pkg: github.com/igorrochap/syl
+              desc: Run records own their directory format and depend only on atomic replacement and verdict parsing
         ui:
           files:
             - "**/internal/ui/*.go"

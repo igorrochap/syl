@@ -12,8 +12,8 @@ import (
 
 	"github.com/igorrochap/syl/internal/config"
 	"github.com/igorrochap/syl/internal/harness"
+	"github.com/igorrochap/syl/internal/runrecord"
 	"github.com/igorrochap/syl/internal/ui"
-	"github.com/igorrochap/syl/internal/usage"
 	"github.com/spf13/cobra"
 )
 
@@ -28,12 +28,6 @@ type resumeTarget struct {
 	workRoot   string
 	harness    config.Harness
 	incomplete bool
-}
-
-type resumeMetadata struct {
-	workRoot           string
-	implementerHarness config.Harness
-	reviewerHarness    config.Harness
 }
 
 type resumeSelection struct {
@@ -164,7 +158,7 @@ func resumeCandidateRunDirectories(originRoot string, selection resumeSelection)
 }
 
 func resumeTargetFromRun(runDir, role string, selection resumeSelection) (resumeTarget, bool, error) {
-	records, err := resumeSessionsForRole(filepath.Join(runDir, "sessions.txt"), role)
+	records, err := resumeSessionsForRole(runDir, role)
 	if err != nil {
 		return resumeTarget{}, false, err
 	}
@@ -201,8 +195,8 @@ func filterResumeRunDirectories(runDirs []string, ticketNumber string) []string 
 }
 
 func resumeRunDirectories(originRoot string) ([]string, error) {
-	runsDir := filepath.Join(originRoot, ".syl", "runs")
-	entries, err := os.ReadDir(runsDir)
+	runsDir := runrecord.RunsDirectory(originRoot)
+	runDirs, err := runrecord.Directories(originRoot)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, fmt.Errorf("%w in %s", errNoResumeRunDirectories, runsDir)
@@ -210,13 +204,6 @@ func resumeRunDirectories(originRoot string) ([]string, error) {
 		return nil, fmt.Errorf("read run directories %s: %w", runsDir, err)
 	}
 
-	var runDirs []string
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-		runDirs = append(runDirs, filepath.Join(runsDir, entry.Name()))
-	}
 	if len(runDirs) == 0 {
 		return nil, fmt.Errorf("%w in %s", errNoResumeRunDirectories, runsDir)
 	}
@@ -240,16 +227,16 @@ func noResumeRunsForTicket(ticketReference string) error {
 	return fmt.Errorf("no run directories found for ticket %s", ticketReference)
 }
 
-func resumeSessionsForRole(path, role string) ([]usage.SessionRecord, error) {
-	records, err := usage.ReadSessionRecords(path)
+func resumeSessionsForRole(runDir, role string) ([]runrecord.Session, error) {
+	records, err := runrecord.NewReader(nil).ReadSessions(runDir)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("read sessions %s: %w", path, err)
+		return nil, fmt.Errorf("read sessions %s: %w", runDir, err)
 	}
 
-	matching := make([]usage.SessionRecord, 0, len(records))
+	matching := make([]runrecord.Session, 0, len(records))
 	for _, record := range records {
 		if record.Role == role {
 			matching = append(matching, record)
@@ -258,17 +245,17 @@ func resumeSessionsForRole(path, role string) ([]usage.SessionRecord, error) {
 	return matching, nil
 }
 
-func selectResumeSession(records []usage.SessionRecord, selection resumeSelection) (usage.SessionRecord, bool) {
+func selectResumeSession(records []runrecord.Session, selection resumeSelection) (runrecord.Session, bool) {
 	if selection.hasIteration {
 		for _, record := range records {
 			if record.Iteration == selection.iteration {
 				return record, true
 			}
 		}
-		return usage.SessionRecord{}, false
+		return runrecord.Session{}, false
 	}
 
-	var selected usage.SessionRecord
+	var selected runrecord.Session
 	for index, record := range records {
 		if index > 0 && record.Iteration <= selected.Iteration {
 			continue
@@ -278,14 +265,14 @@ func selectResumeSession(records []usage.SessionRecord, selection resumeSelectio
 	return selected, len(records) > 0
 }
 
-func resumeIterationError(runDir, role string, iteration int, records []usage.SessionRecord) error {
+func resumeIterationError(runDir, role string, iteration int, records []runrecord.Session) error {
 	return fmt.Errorf(
 		"run %s has no recorded %s session at iteration %d; recorded %s iterations: %s",
 		filepath.Base(runDir), role, iteration, role, recordedResumeIterations(records),
 	)
 }
 
-func recordedResumeIterations(records []usage.SessionRecord) string {
+func recordedResumeIterations(records []runrecord.Session) string {
 	seen := make(map[int]struct{}, len(records))
 	iterations := make([]int, 0, len(records))
 	for _, record := range records {
@@ -303,22 +290,24 @@ func recordedResumeIterations(records []usage.SessionRecord) string {
 	return strings.Join(values, ", ")
 }
 
-func buildResumeTarget(runDir, role string, session usage.SessionRecord) (resumeTarget, error) {
-	metadata, err := readResumeMetadata(filepath.Join(runDir, "metadata.txt"))
+func buildResumeTarget(runDir, role string, session runrecord.Session) (resumeTarget, error) {
+	metadata, err := runrecord.NewReader(nil).ReadMetadata(runDir)
 	if err != nil {
-		return resumeTarget{}, err
+		if !errors.Is(err, os.ErrNotExist) {
+			return resumeTarget{}, fmt.Errorf("read run metadata %s: %w", runDir, err)
+		}
 	}
-	if metadata.workRoot == "" {
+	if metadata.WorkRoot == "" {
 		return resumeTarget{}, fmt.Errorf(
 			"run %s has no Work root line; runs recorded before this feature cannot be resumed",
 			runDir,
 		)
 	}
-	workRoot := metadata.workRoot
+	workRoot := metadata.WorkRoot
 	if err := checkResumeWorkRoot(runDir, workRoot); err != nil {
 		return resumeTarget{}, err
 	}
-	harnessName := metadata.harnessFor(role)
+	harnessName := config.Harness(metadata.HarnessFor(resumeRunKind(role)))
 	if harnessName == "" {
 		return resumeTarget{}, fmt.Errorf("run %s has no recorded %s harness", runDir, role)
 	}
@@ -332,41 +321,11 @@ func buildResumeTarget(runDir, role string, session usage.SessionRecord) (resume
 	}, nil
 }
 
-func readResumeMetadata(path string) (resumeMetadata, error) {
-	contents, err := os.ReadFile(path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return resumeMetadata{}, nil
-		}
-		return resumeMetadata{}, fmt.Errorf("read run metadata %s: %w", path, err)
-	}
-
-	var metadata resumeMetadata
-	for _, line := range strings.Split(string(contents), "\n") {
-		if strings.HasPrefix(line, " ") || strings.HasPrefix(line, "\t") {
-			continue
-		}
-		key, value, ok := strings.Cut(line, ":")
-		if !ok {
-			continue
-		}
-		switch strings.ToLower(strings.TrimSpace(key)) {
-		case "work root":
-			metadata.workRoot = strings.TrimSpace(value)
-		case "implementer harness":
-			metadata.implementerHarness = config.Harness(strings.TrimSpace(value))
-		case "reviewer harness":
-			metadata.reviewerHarness = config.Harness(strings.TrimSpace(value))
-		}
-	}
-	return metadata, nil
-}
-
-func (m resumeMetadata) harnessFor(role string) config.Harness {
+func resumeRunKind(role string) runrecord.Kind {
 	if role == "implement" {
-		return m.implementerHarness
+		return runrecord.Implement
 	}
-	return m.reviewerHarness
+	return runrecord.Review
 }
 
 func checkResumeWorkRoot(runDir, workRoot string) error {
@@ -384,14 +343,11 @@ func checkResumeWorkRoot(runDir, workRoot string) error {
 }
 
 func resumeRunIsIncomplete(runDir string) (bool, error) {
-	_, err := os.Stat(filepath.Join(runDir, "summary.txt"))
-	if err == nil {
-		return false, nil
+	exists, err := runrecord.NewReader(nil).HasSummary(runDir)
+	if err != nil {
+		return false, fmt.Errorf("check run summary %s: %w", runDir, err)
 	}
-	if errors.Is(err, os.ErrNotExist) {
-		return true, nil
-	}
-	return false, fmt.Errorf("check run summary %s: %w", runDir, err)
+	return !exists, nil
 }
 
 func writeResumeBanner(output io.Writer, target resumeTarget, role string) error {

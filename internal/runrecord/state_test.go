@@ -1,4 +1,4 @@
-package runstate
+package runrecord
 
 import (
 	"os"

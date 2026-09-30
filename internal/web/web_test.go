@@ -21,7 +21,7 @@ import (
 
 	"github.com/igorrochap/syl/internal/config"
 	"github.com/igorrochap/syl/internal/configedit"
-	"github.com/igorrochap/syl/internal/runstate"
+	"github.com/igorrochap/syl/internal/runrecord"
 	"github.com/igorrochap/syl/internal/sylhome"
 	"github.com/igorrochap/syl/internal/usage"
 	"github.com/igorrochap/syl/internal/web"
@@ -71,8 +71,8 @@ func TestHandlerShowsLiveRunBannerOnConfigForm(t *testing.T) {
 	}
 	writeWebRegistry(t, sylHome, sylhome.RegisteredProject{Path: project})
 	runDir := filepath.Join(project, ".syl", "runs", "live-config")
-	writeWebRun(t, project, filepath.Base(runDir), runstate.State{
-		Status: runstate.Running, PID: os.Getpid(), Hostname: testHostname(t), Kind: runstate.Implement,
+	writeWebRun(t, project, filepath.Base(runDir), runrecord.State{
+		Status: runrecord.Running, PID: os.Getpid(), Hostname: testHostname(t), Kind: runrecord.Implement,
 		StartedAt: time.Now().UTC(),
 	})
 	createLiveRun(t, sylHome, project, runDir, "#186", os.Getpid(), testHostname(t))
@@ -417,8 +417,8 @@ func TestHandlerShowsUninitializedConfigAndKeepsRunHistoryAvailable(t *testing.T
 	if err := os.MkdirAll(filepath.Join(project, ".syl", "runs", "run-187"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := runstate.Write(runstate.Path(filepath.Join(project, ".syl", "runs", "run-187")), runstate.State{
-		Status: runstate.Approved, TicketRef: "#187", Kind: runstate.Implement,
+	if err := runrecord.Write(runrecord.Path(filepath.Join(project, ".syl", "runs", "run-187")), runrecord.State{
+		Status: runrecord.Approved, TicketRef: "#187", Kind: runrecord.Implement,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -458,10 +458,10 @@ func TestHandlerRendersProjectHistoryAndConfigMetadata(t *testing.T) {
 		t.Fatal(err)
 	}
 	ended := time.Date(2026, time.September, 24, 12, 1, 0, 0, time.UTC)
-	if err := runstate.Write(runstate.Path(runDir), runstate.State{
-		Status: runstate.Approved, Iteration: 1, MaxIterations: 3,
+	if err := runrecord.Write(runrecord.Path(runDir), runrecord.State{
+		Status: runrecord.Approved, Iteration: 1, MaxIterations: 3,
 		StartedAt: time.Date(2026, time.September, 24, 12, 0, 0, 0, time.UTC), EndedAt: &ended,
-		Kind: runstate.Implement, TicketRef: "#184",
+		Kind: runrecord.Implement, TicketRef: "#184",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -500,10 +500,10 @@ func TestHandlerRendersRunPageAndRawArtifacts(t *testing.T) {
 		t.Fatal(err)
 	}
 	ended := time.Date(2026, time.September, 20, 20, 31, 0, 0, time.UTC)
-	if err := runstate.Write(runstate.Path(runDir), runstate.State{
-		Status: runstate.Approved, Iteration: 1, MaxIterations: 3,
+	if err := runrecord.Write(runrecord.Path(runDir), runrecord.State{
+		Status: runrecord.Approved, Iteration: 1, MaxIterations: 3,
 		StartedAt: time.Date(2026, time.September, 20, 19, 50, 0, 0, time.UTC), EndedAt: &ended,
-		Kind: runstate.Implement, TicketRef: "#173",
+		Kind: runrecord.Implement, TicketRef: "#173",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -586,9 +586,9 @@ func TestHandlerPollsOnlyRunningRunAndRefusesUnsafeArtifacts(t *testing.T) {
 	if err := os.MkdirAll(runDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := runstate.Write(runstate.Path(runDir), runstate.State{
-		Status: runstate.Running, Activity: runstate.Reviewing, Iteration: 1, MaxIterations: 3,
-		PID: os.Getpid(), Hostname: testHostname(t), StartedAt: time.Now().UTC(), Kind: runstate.Implement, TicketRef: "#173",
+	if err := runrecord.Write(runrecord.Path(runDir), runrecord.State{
+		Status: runrecord.Running, Activity: runrecord.Reviewing, Iteration: 1, MaxIterations: 3,
+		PID: os.Getpid(), Hostname: testHostname(t), StartedAt: time.Now().UTC(), Kind: runrecord.Implement, TicketRef: "#173",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -637,9 +637,9 @@ func TestHandlerShowsInterruptedProjectRunAndFindsNewRunsOnNextRequest(t *testin
 		t.Fatal(err)
 	}
 	writeWebRegistry(t, sylHome, sylhome.RegisteredProject{Path: project})
-	writeWebRun(t, project, "20260924T120000.000000000Z-1", runstate.State{
-		Status: runstate.Running, Activity: runstate.Reviewing, Iteration: 1, MaxIterations: 3,
-		PID: 999999, Hostname: testHostname(t), StartedAt: time.Now().UTC(), Kind: runstate.Implement, TicketRef: "#1",
+	writeWebRun(t, project, "20260924T120000.000000000Z-1", runrecord.State{
+		Status: runrecord.Running, Activity: runrecord.Reviewing, Iteration: 1, MaxIterations: 3,
+		PID: 999999, Hostname: testHostname(t), StartedAt: time.Now().UTC(), Kind: runrecord.Implement, TicketRef: "#1",
 	})
 	server, err := newServer(t, sylHome)
 	if err != nil {
@@ -652,9 +652,9 @@ func TestHandlerShowsInterruptedProjectRunAndFindsNewRunsOnNextRequest(t *testin
 		}
 	}
 
-	writeWebRun(t, project, "20260924T130000.000000000Z-2", runstate.State{
-		Status: runstate.Approved, Iteration: 1, MaxIterations: 3,
-		StartedAt: time.Now().UTC(), Kind: runstate.Implement, TicketRef: "#2",
+	writeWebRun(t, project, "20260924T130000.000000000Z-2", runrecord.State{
+		Status: runrecord.Approved, Iteration: 1, MaxIterations: 3,
+		StartedAt: time.Now().UTC(), Kind: runrecord.Implement, TicketRef: "#2",
 	})
 	body = serveProject(t, server.Handler(), project, "/projects/content")
 	if !strings.Contains(body, "#2") {
@@ -804,7 +804,7 @@ func TestHandlerRejectsMalformedAndIncompleteMutations(t *testing.T) {
 
 func TestHandlerReportsDismissStateReadFailure(t *testing.T) {
 	sylHome, runDir := writeMutationFixture(t, false)
-	if err := os.WriteFile(runstate.Path(runDir), []byte("not json"), 0o644); err != nil {
+	if err := os.WriteFile(runrecord.Path(runDir), []byte("not json"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	server, err := newServer(t, sylHome)
@@ -1023,12 +1023,12 @@ func TestHandlerRendersAwaitingAndInterruptedRuns(t *testing.T) {
 	if err := os.MkdirAll(runDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	state := runstate.State{
-		Status: runstate.Running, Activity: runstate.AwaitingAnswer, Iteration: 2, MaxIterations: 3,
+	state := runrecord.State{
+		Status: runrecord.Running, Activity: runrecord.AwaitingAnswer, Iteration: 2, MaxIterations: 3,
 		Question: "Choose the deployment target", PID: os.Getpid(), Hostname: testHostname(t),
-		StartedAt: time.Now().UTC(), Kind: runstate.Implement, TicketRef: "#181",
+		StartedAt: time.Now().UTC(), Kind: runrecord.Implement, TicketRef: "#181",
 	}
-	if err := runstate.Write(runstate.Path(runDir), state); err != nil {
+	if err := runrecord.Write(runrecord.Path(runDir), state); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(runDir, "metadata.txt"), []byte("Work root: /tmp/worktree\nImplementer harness: codex\n"), 0o644); err != nil {
@@ -1057,10 +1057,10 @@ func TestHandlerRendersAwaitingAndInterruptedRuns(t *testing.T) {
 		}
 	}
 
-	state.Activity = runstate.Implementing
+	state.Activity = runrecord.Implementing
 	state.Question = ""
 	state.PID = 999999
-	if err := runstate.Write(runstate.Path(runDir), state); err != nil {
+	if err := runrecord.Write(runrecord.Path(runDir), state); err != nil {
 		t.Fatal(err)
 	}
 	body = serveOverview(t, server.Handler(), "localhost:7777")
@@ -1153,13 +1153,13 @@ func writeWebRegistry(t *testing.T, sylHome string, entries ...sylhome.Registere
 	}
 }
 
-func writeWebRun(t *testing.T, project, name string, state runstate.State) {
+func writeWebRun(t *testing.T, project, name string, state runrecord.State) {
 	t.Helper()
 	runDir := filepath.Join(project, ".syl", "runs", name)
 	if err := os.MkdirAll(runDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := runstate.Write(runstate.Path(runDir), state); err != nil {
+	if err := runrecord.Write(runrecord.Path(runDir), state); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -1259,11 +1259,11 @@ func writeMutationFixture(t *testing.T, live bool) (string, string) {
 	if live {
 		pid = os.Getpid()
 	}
-	state := runstate.State{
-		Status: runstate.Running, Activity: runstate.Implementing, PID: pid,
-		Hostname: testHostname(t), StartedAt: time.Now().UTC(), Kind: runstate.Implement, TicketRef: "#183",
+	state := runrecord.State{
+		Status: runrecord.Running, Activity: runrecord.Implementing, PID: pid,
+		Hostname: testHostname(t), StartedAt: time.Now().UTC(), Kind: runrecord.Implement, TicketRef: "#183",
 	}
-	if err := runstate.Write(runstate.Path(runDir), state); err != nil {
+	if err := runrecord.Write(runrecord.Path(runDir), state); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(runDir, "metadata.txt"), []byte("Work root: /worktree\n"), 0o644); err != nil {

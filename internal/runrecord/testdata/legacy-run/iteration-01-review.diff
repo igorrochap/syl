@@ -1,0 +1,533 @@
+diff --git a/internal/cli/implement_test.go b/internal/cli/implement_test.go
+index 3395d08..eda960b 100644
+--- a/internal/cli/implement_test.go
++++ b/internal/cli/implement_test.go
+@@ -345,7 +345,6 @@ func TestImplementReviewContextReachesReviewerPromptsOnly(t *testing.T) {
+ 		streams: [][]harness.Event{
+ 			{{Type: harness.EventSession, SessionID: "implement-1"}, {Type: harness.EventAssistantText, Text: "First pass.\n"}},
+ 			{{Type: harness.EventSession, SessionID: "review-1"}, {Type: harness.EventAssistantText, Text: reviseVerdictText}},
+-			{{Type: harness.EventSession, SessionID: "implement-2"}, {Type: harness.EventAssistantText, Text: "Blocking finding fixed.\n"}},
+ 		},
+ 		resumes: [][]harness.Event{
+ 			{{Type: harness.EventAssistantText, Text: approveVerdictText}},
+@@ -364,14 +363,14 @@ func TestImplementReviewContextReachesReviewerPromptsOnly(t *testing.T) {
+ 	if code != 0 {
+ 		t.Fatalf("implement code = %d, stderr = %q", code, fixture.stderr.String())
+ 	}
+-	if len(loop.requests) != 3 || len(loop.resumeCalls) != 1 {
+-		t.Fatalf("harness requests = %d, resume calls = %d, want three requests and one resume", len(loop.requests), len(loop.resumeCalls))
++	if len(loop.requests) != 2 || len(loop.implementResumeCalls) != 1 || len(loop.resumeCalls) != 1 {
++		t.Fatalf("harness requests = %d, implement resumes = %d, review resumes = %d, want two fresh requests and one resume per role", len(loop.requests), len(loop.implementResumeCalls), len(loop.resumeCalls))
+ 	}
+ 	if !strings.Contains(loop.requests[1].Prompt, reviewerContext) {
+ 		t.Fatalf("first reviewer prompt = %q, want reviewer context %q", loop.requests[1].Prompt, reviewerContext)
+ 	}
+-	if strings.Contains(loop.requests[0].Prompt, reviewerContext) || strings.Contains(loop.requests[2].Prompt, reviewerContext) {
+-		t.Fatalf("implementer prompts = %q and %q, want no reviewer context %q", loop.requests[0].Prompt, loop.requests[2].Prompt, reviewerContext)
++	if strings.Contains(loop.requests[0].Prompt, reviewerContext) || strings.Contains(loop.implementResumeCalls[0].request.Prompt, reviewerContext) {
++		t.Fatalf("implementer prompts = %q and %q, want no reviewer context %q", loop.requests[0].Prompt, loop.implementResumeCalls[0].request.Prompt, reviewerContext)
+ 	}
+ 	resumePrompt := loop.resumeCalls[0].request.Prompt
+ 	for _, expected := range []string{
+@@ -397,7 +396,6 @@ func TestImplementContextsReachTheirRolesOnly(t *testing.T) {
+ 		streams: [][]harness.Event{
+ 			{{Type: harness.EventSession, SessionID: "implement-1"}},
+ 			{{Type: harness.EventSession, SessionID: "review-1"}, {Type: harness.EventAssistantText, Text: reviseVerdictText}},
+-			{{Type: harness.EventSession, SessionID: "implement-2"}},
+ 		},
+ 		resumes: [][]harness.Event{
+ 			{{Type: harness.EventAssistantText, Text: approveVerdictText}},
+@@ -416,10 +414,10 @@ func TestImplementContextsReachTheirRolesOnly(t *testing.T) {
+ 	if code != 0 {
+ 		t.Fatalf("implement code = %d, stderr = %q", code, fixture.stderr.String())
+ 	}
+-	if len(loop.requests) != 3 || len(loop.resumeCalls) != 1 {
+-		t.Fatalf("harness requests = %d, resume calls = %d, want three requests and one resume", len(loop.requests), len(loop.resumeCalls))
++	if len(loop.requests) != 2 || len(loop.implementResumeCalls) != 1 || len(loop.resumeCalls) != 1 {
++		t.Fatalf("harness requests = %d, implement resumes = %d, review resumes = %d, want two fresh requests and one resume per role", len(loop.requests), len(loop.implementResumeCalls), len(loop.resumeCalls))
+ 	}
+-	for _, request := range []harness.Request{loop.requests[0], loop.requests[2]} {
++	for _, request := range []harness.Request{loop.requests[0], loop.implementResumeCalls[0].request} {
+ 		if !strings.Contains(request.Prompt, implementerContext) || strings.Contains(request.Prompt, reviewerContext) {
+ 			t.Fatalf("implementer prompt = %q, want implementer context only", request.Prompt)
+ 		}
+@@ -873,7 +871,6 @@ func TestImplementLoopResumesPreviousReviewerSession(t *testing.T) {
+ 		streams: [][]harness.Event{
+ 			{{Type: harness.EventSession, SessionID: "implement-1"}, {Type: harness.EventAssistantText, Text: "First pass.\n"}},
+ 			{{Type: harness.EventSession, SessionID: "review-1a"}, {Type: harness.EventSession, SessionID: "review-1b"}, {Type: harness.EventAssistantText, Text: reviseVerdictText}},
+-			{{Type: harness.EventSession, SessionID: "implement-2"}, {Type: harness.EventAssistantText, Text: "Blocking finding fixed.\n"}},
+ 		},
+ 		resumes: [][]harness.Event{
+ 			{{Type: harness.EventAssistantText, Text: "The blocking finding is resolved, but I omitted the structured verdict."}},
+@@ -888,8 +885,11 @@ func TestImplementLoopResumesPreviousReviewerSession(t *testing.T) {
+ 	if code != 0 {
+ 		t.Fatalf("implement code = %d, want 0; stderr = %q", code, fixture.stderr.String())
+ 	}
+-	if len(loop.requests) != 3 {
+-		t.Fatalf("harness Run requests = %d, want two implement turns and one review turn", len(loop.requests))
++	if len(loop.requests) != 2 {
++		t.Fatalf("harness Run requests = %d, want fresh implement and review turns only", len(loop.requests))
++	}
++	if len(loop.implementResumeCalls) != 1 || loop.implementResumeCalls[0].sessionID != "implement-1" {
++		t.Fatalf("implement Resume calls = %#v, want iteration 2 to resume implement-1", loop.implementResumeCalls)
+ 	}
+ 	if len(loop.resumeCalls) != 2 {
+ 		t.Fatalf("harness Resume calls = %d, want warm re-review plus one verdict re-ask", len(loop.resumeCalls))
+@@ -925,7 +925,7 @@ func TestImplementLoopResumesPreviousReviewerSession(t *testing.T) {
+ 	if err != nil {
+ 		t.Fatalf("read sessions.txt: %v", err)
+ 	}
+-	for _, expected := range []string{"iteration 1 review: review-1a", "iteration 1 review: review-1b", "iteration 2 review: review-1b"} {
++	for _, expected := range []string{"iteration 1 implement: implement-1", "iteration 2 implement: implement-1", "iteration 1 review: review-1a", "iteration 1 review: review-1b", "iteration 2 review: review-1b"} {
+ 		if !strings.Contains(string(sessions), expected) {
+ 			t.Fatalf("sessions.txt = %q, want %q", sessions, expected)
+ 		}
+@@ -948,7 +948,6 @@ func TestImplementLoopFallsBackToFreshReviewWhenResumeCannotStart(t *testing.T)
+ 		streams: [][]harness.Event{
+ 			{{Type: harness.EventSession, SessionID: "implement-1"}, {Type: harness.EventAssistantText, Text: "First pass.\n"}},
+ 			{{Type: harness.EventSession, SessionID: "review-1"}, {Type: harness.EventAssistantText, Text: reviseVerdictText}},
+-			{{Type: harness.EventSession, SessionID: "implement-2"}, {Type: harness.EventAssistantText, Text: "Blocking finding fixed.\n"}},
+ 			{{Type: harness.EventSession, SessionID: "review-2"}, {Type: harness.EventAssistantText, Text: approveVerdictText}},
+ 		},
+ 		resumeErr: fmt.Errorf("review session is unavailable"),
+@@ -964,11 +963,11 @@ func TestImplementLoopFallsBackToFreshReviewWhenResumeCannotStart(t *testing.T)
+ 	if len(loop.resumeCalls) != 1 {
+ 		t.Fatalf("harness Resume calls = %d, want one attempted warm re-review", len(loop.resumeCalls))
+ 	}
+-	if len(loop.requests) != 4 {
++	if len(loop.requests) != 3 {
+ 		t.Fatalf("harness Run requests = %d, want fresh review fallback", len(loop.requests))
+ 	}
+-	if !strings.Contains(loop.requests[3].Prompt, "/code-review") {
+-		t.Fatalf("fallback review prompt = %q, want full review prompt", loop.requests[3].Prompt)
++	if !strings.Contains(loop.requests[2].Prompt, "/code-review") {
++		t.Fatalf("fallback review prompt = %q, want full review prompt", loop.requests[2].Prompt)
+ 	}
+ 	if !strings.Contains(fixture.stdout.String(), "Iterations: 2") || !strings.Contains(fixture.stdout.String(), "Final verdict: approve") {
+ 		t.Fatalf("stdout = %q, want successful two-iteration fallback summary", fixture.stdout.String())
+@@ -982,7 +981,6 @@ func TestImplementLoopFallsBackWhenResumedReviewStreamFails(t *testing.T) {
+ 		streams: [][]harness.Event{
+ 			{{Type: harness.EventSession, SessionID: "implement-1"}, {Type: harness.EventAssistantText, Text: "First pass.\n"}},
+ 			{{Type: harness.EventSession, SessionID: "review-1"}, {Type: harness.EventAssistantText, Text: reviseVerdictText}},
+-			{{Type: harness.EventSession, SessionID: "implement-2"}, {Type: harness.EventAssistantText, Text: "Blocking finding fixed.\n"}},
+ 			{{Type: harness.EventSession, SessionID: "review-2"}, {Type: harness.EventAssistantText, Text: approveVerdictText}},
+ 		},
+ 		resumes: [][]harness.Event{
+@@ -1001,7 +999,7 @@ func TestImplementLoopFallsBackWhenResumedReviewStreamFails(t *testing.T) {
+ 	if len(loop.resumeCalls) != 1 {
+ 		t.Fatalf("harness Resume calls = %d, want one failed warm re-review", len(loop.resumeCalls))
+ 	}
+-	if len(loop.requests) != 4 || !strings.Contains(loop.requests[3].Prompt, "/code-review") {
++	if len(loop.requests) != 3 || !strings.Contains(loop.requests[2].Prompt, "/code-review") {
+ 		t.Fatalf("harness requests = %#v, want a fresh review after stream failure", loop.requests)
+ 	}
+ 	if !strings.Contains(fixture.stdout.String(), "Final verdict: approve") {
+@@ -1016,7 +1014,6 @@ func TestImplementLoopStartsFreshReviewWithoutUsableSessionID(t *testing.T) {
+ 		streams: [][]harness.Event{
+ 			{{Type: harness.EventSession, SessionID: "implement-1"}, {Type: harness.EventAssistantText, Text: "First pass.\n"}},
+ 			{{Type: harness.EventAssistantText, Text: reviseVerdictText}},
+-			{{Type: harness.EventSession, SessionID: "implement-2"}, {Type: harness.EventAssistantText, Text: "Blocking finding fixed.\n"}},
+ 			{{Type: harness.EventSession, SessionID: "review-2"}, {Type: harness.EventAssistantText, Text: approveVerdictText}},
+ 		},
+ 	}
+@@ -1031,7 +1028,10 @@ func TestImplementLoopStartsFreshReviewWithoutUsableSessionID(t *testing.T) {
+ 	if len(loop.resumeCalls) != 0 {
+ 		t.Fatalf("harness Resume calls = %d, want no resume without a usable session ID", len(loop.resumeCalls))
+ 	}
+-	if len(loop.requests) != 4 || !strings.Contains(loop.requests[3].Prompt, "/code-review") {
++	if len(loop.implementResumeCalls) != 1 {
++		t.Fatalf("implement Resume calls = %d, want iteration 2 implement resume", len(loop.implementResumeCalls))
++	}
++	if len(loop.requests) != 3 || !strings.Contains(loop.requests[2].Prompt, "/code-review") {
+ 		t.Fatalf("harness requests = %#v, want a fresh full review on iteration 2", loop.requests)
+ 	}
+ }
+@@ -1667,13 +1667,14 @@ func (h *setupCheckingLoopHarness) Run(ctx context.Context, request harness.Requ
+ }
+ 
+ type resumingLoopHarness struct {
+-	root          string
+-	streams       [][]harness.Event
+-	resumes       [][]harness.Event
+-	requests      []harness.Request
+-	resumeCalls   []resumeCall
+-	resumeErr     error
+-	resumeWaitErr error
++	root                 string
++	streams              [][]harness.Event
++	resumes              [][]harness.Event
++	requests             []harness.Request
++	implementResumeCalls []resumeCall
++	resumeCalls          []resumeCall
++	resumeErr            error
++	resumeWaitErr        error
+ }
+ 
+ type resumeCall struct {
+@@ -1699,6 +1700,19 @@ func (h *resumingLoopHarness) Run(_ context.Context, request harness.Request) (h
+ }
+ 
+ func (h *resumingLoopHarness) Resume(_ context.Context, sessionID string, request harness.Request) (harness.Stream, error) {
++	if strings.Contains(request.Prompt, "/implement") || strings.Contains(request.Prompt, "/fix-review") {
++		h.implementResumeCalls = append(h.implementResumeCalls, resumeCall{sessionID: sessionID, request: request})
++		if err := os.WriteFile(filepath.Join(h.root, "change.txt"), []byte(fmt.Sprintf("implemented-resume-%d\n", len(h.implementResumeCalls))), 0o644); err != nil {
++			return nil, err
++		}
++		if output, err := exec.Command("git", "-C", h.root, "add", "change.txt").CombinedOutput(); err != nil {
++			return nil, fmt.Errorf("stage fixture change: %v\n%s", err, output)
++		}
++		return scriptedHarnessStream{events: []harness.Event{
++			{Type: harness.EventSession, SessionID: sessionID},
++			{Type: harness.EventAssistantText, Text: "Blocking finding fixed.\n"},
++		}}, nil
++	}
+ 	h.resumeCalls = append(h.resumeCalls, resumeCall{sessionID: sessionID, request: request})
+ 	if h.resumeErr != nil {
+ 		return nil, h.resumeErr
+diff --git a/internal/orchestration/conversation_test.go b/internal/orchestration/conversation_test.go
+index 894ac7d..eb652d1 100644
+--- a/internal/orchestration/conversation_test.go
++++ b/internal/orchestration/conversation_test.go
+@@ -329,6 +329,7 @@ type scriptedConversationAdapter struct {
+ 	runs        [][]harness.Event
+ 	resumes     [][]harness.Event
+ 	runCalls    int
++	runRequests []harness.Request
+ 	resumeCalls []conversationResumeCall
+ }
+ 
+@@ -338,7 +339,8 @@ type conversationResumeCall struct {
+ 	mcp       bool
+ }
+ 
+-func (a *scriptedConversationAdapter) Run(context.Context, harness.Request) (harness.Stream, error) {
++func (a *scriptedConversationAdapter) Run(_ context.Context, request harness.Request) (harness.Stream, error) {
++	a.runRequests = append(a.runRequests, request)
+ 	if a.runCalls >= len(a.runs) {
+ 		return nil, &scriptedConversationError{message: "no scripted run remains"}
+ 	}
+diff --git a/internal/orchestration/implement.go b/internal/orchestration/implement.go
+index 657c28b..fe90159 100644
+--- a/internal/orchestration/implement.go
++++ b/internal/orchestration/implement.go
+@@ -298,6 +298,7 @@ func runImplementIterations(ctx context.Context, params implementIterationsParam
+ 	params.output = ensureLineTrackingWriter(params.output)
+ 	var blocking []verdict.Finding
+ 	var final verdict.Verdict
++	var previousImplementerSession string
+ 	var previousReviewerSession string
+ 	iterations := 0
+ 	for iteration := 1; iteration <= params.projectConfig.Loop.MaxIterations; iteration++ {
+@@ -306,9 +307,11 @@ func runImplementIterations(ctx context.Context, params implementIterationsParam
+ 		if params.verbose {
+ 			mode = ParsedHarnessOutput
+ 		}
+-		if err := runImplementTurn(ctx, params, iteration, blocking, mode); err != nil {
++		implementResult, err := runImplementTurn(ctx, params, iteration, blocking, previousImplementerSession, mode)
++		if err != nil {
+ 			return 0, verdict.Verdict{}, nil, err
+ 		}
++		previousImplementerSession = lastUsableSessionID(implementResult.SessionIDs)
+ 		diffPath, err := prepareIterationReviewDiff(ctx, params, iteration)
+ 		if err != nil {
+ 			return 0, verdict.Verdict{}, nil, err
+@@ -429,17 +432,24 @@ func prepareIterationReviewDiff(ctx context.Context, params implementIterationsP
+ 	return recordWorktreeReviewDiff(params.reviewDiffRoot, params.recorder.Dir(), iteration, diff)
+ }
+ 
+-func runImplementTurn(ctx context.Context, params implementIterationsParams, iteration int, blocking []verdict.Finding, mode HarnessOutputMode) error {
++func runImplementTurn(
++	ctx context.Context,
++	params implementIterationsParams,
++	iteration int,
++	blocking []verdict.Finding,
++	previousSession string,
++	mode HarnessOutputMode,
++) (implementExecution, error) {
+ 	activity := "implementing"
+ 	if iteration > 1 {
+ 		activity = fmt.Sprintf("revising %d blocking finding(s)", len(blocking))
+ 	}
+ 	renderer := ui.New(params.output, ui.DetectCaps(params.output))
+ 	if err := writeRoleSection(params.output, "Implementer"); err != nil {
+-		return fmt.Errorf("write implement role: %w", err)
++		return implementExecution{}, fmt.Errorf("write implement role: %w", err)
+ 	}
+ 	if err := renderer.Step(ui.Step{Label: fmt.Sprintf("iteration %d/%d — %s", iteration, params.projectConfig.Loop.MaxIterations, activity)}); err != nil {
+-		return fmt.Errorf("write implement progress: %w", err)
++		return implementExecution{}, fmt.Errorf("write implement progress: %w", err)
+ 	}
+ 
+ 	implementRequest := harness.Request{
+@@ -449,17 +459,18 @@ func runImplementTurn(ctx context.Context, params implementIterationsParams, ite
+ 		MCP:    params.projectConfig.Roles.Implement.MCP,
+ 	}
+ 	implementStartedAt := time.Now().UTC()
+-	implementResult, err := runImplementRole(
++	implementResult, err := runImplementRoleWithResumeFallback(
+ 		ctx,
+ 		params.implementer,
+ 		implementRequest,
++		previousSession,
+ 		params.output,
+ 		mode,
+ 		params.questions,
+ 	)
+ 	implementEndedAt := time.Now().UTC()
+ 	if err != nil {
+-		return err
++		return implementExecution{}, err
+ 	}
+ 	recordRoleUsage(params.recorder, usage.CollectInvocation(usage.Invocation{
+ 		Iteration:  iteration,
+@@ -475,12 +486,15 @@ func runImplementTurn(ctx context.Context, params implementIterationsParams, ite
+ 		implementResult.Feed,
+ 		implementResult.Transcript,
+ 	); err != nil {
+-		return err
++		return implementExecution{}, err
+ 	}
+ 	if err := params.recorder.RecordSessions(iteration, "implement", implementResult.SessionIDs); err != nil {
+-		return fmt.Errorf("record implement sessions: %w", err)
++		return implementExecution{}, fmt.Errorf("record implement sessions: %w", err)
+ 	}
+-	return ensureHeadUnchanged(ctx, params.git, params.branchPoint)
++	if err := ensureHeadUnchanged(ctx, params.git, params.branchPoint); err != nil {
++		return implementExecution{}, err
++	}
++	return implementResult, nil
+ }
+ 
+ // recordRoleUsage persists usage as best-effort metadata. Usage collection or
+@@ -499,6 +513,15 @@ type implementExecution struct {
+ 	SessionIDs []string
+ }
+ 
++type implementExecutionOptions struct {
++	request          harness.Request
++	output           io.Writer
++	mode             HarnessOutputMode
++	questions        *QuestionHandler
++	initialSessionID string
++	start            harnessStreamStarter
++}
++
+ func runImplementRole(
+ 	ctx context.Context,
+ 	adapter harness.Adapter,
+@@ -507,24 +530,92 @@ func runImplementRole(
+ 	mode HarnessOutputMode,
+ 	questions *QuestionHandler,
+ ) (implementExecution, error) {
+-	var feed bytes.Buffer
+-	visibleOutput := output
+-	if mode != RawHarnessOutput {
+-		visibleOutput = newLiveHarnessOutput(output, mode, "implement")
+-	}
+-	artifactOutput := newPlainHarnessOutput(&feed, mode)
+-	result, err := runHarnessConversation(ctx, adapter, func(runContext context.Context) (harness.Stream, error) {
+-		return adapter.Run(runContext, request)
+-	}, conversationOptions{
++	return runImplementRoleFrom(ctx, adapter, implementExecutionOptions{
+ 		request:   request,
+-		output:    visibleOutput,
+-		artifact:  artifactOutput,
++		output:    output,
+ 		mode:      mode,
+ 		questions: questions,
++		start: func(runContext context.Context) (harness.Stream, error) {
++			return adapter.Run(runContext, request)
++		},
++	})
++}
++
++func runImplementRoleWithResumeFallback(
++	ctx context.Context,
++	adapter harness.Adapter,
++	request harness.Request,
++	sessionID string,
++	output io.Writer,
++	mode HarnessOutputMode,
++	questions *QuestionHandler,
++) (implementExecution, error) {
++	sessionID, hasSession := normalizeSessionID(sessionID)
++	if !hasSession {
++		return runImplementRole(ctx, adapter, request, output, mode, questions)
++	}
++
++	result, err := runImplementRoleFrom(ctx, adapter, implementExecutionOptions{
++		request:          request,
++		output:           output,
++		mode:             mode,
++		questions:        questions,
++		initialSessionID: sessionID,
++		start: func(runContext context.Context) (harness.Stream, error) {
++			stream, resumeErr := adapter.Resume(runContext, sessionID, request)
++			if resumeErr != nil {
++				return nil, &implementResumeError{cause: resumeErr}
++			}
++			return stream, nil
++		},
++	})
++	if err == nil {
++		return result, nil
++	}
++
++	var resumeErr *implementResumeError
++	if !errors.As(err, &resumeErr) {
++		return implementExecution{}, err
++	}
++	return runImplementRole(ctx, adapter, request, output, mode, questions)
++}
++
++type implementResumeError struct {
++	cause error
++}
++
++func (e *implementResumeError) Error() string {
++	return fmt.Sprintf("resume implementer session: %v", e.cause)
++}
++
++func (e *implementResumeError) Unwrap() error { return e.cause }
++
++func runImplementRoleFrom(
++	ctx context.Context,
++	adapter harness.Adapter,
++	options implementExecutionOptions,
++) (implementExecution, error) {
++	var feed bytes.Buffer
++	visibleOutput := options.output
++	if options.mode != RawHarnessOutput {
++		visibleOutput = newLiveHarnessOutput(options.output, options.mode, "implement")
++	}
++	artifactOutput := newPlainHarnessOutput(&feed, options.mode)
++	result, err := runHarnessConversation(ctx, adapter, options.start, conversationOptions{
++		request:   options.request,
++		output:    visibleOutput,
++		artifact:  artifactOutput,
++		mode:      options.mode,
++		questions: options.questions,
+ 		role:      "implement",
++		sessionID: options.initialSessionID,
+ 	})
+ 	if err != nil {
+-		return implementExecution{}, fmt.Errorf("run implement harness: %w", err)
++		implementErr := fmt.Errorf("run implement harness: %w", err)
++		if options.initialSessionID != "" {
++			return implementExecution{}, &implementResumeError{cause: implementErr}
++		}
++		return implementExecution{}, implementErr
+ 	}
+ 	return implementExecution{
+ 		Feed:       feed.String(),
+diff --git a/internal/orchestration/recorder_test.go b/internal/orchestration/recorder_test.go
+index abc51c9..8c022ab 100644
+--- a/internal/orchestration/recorder_test.go
++++ b/internal/orchestration/recorder_test.go
+@@ -105,16 +105,16 @@ func (r *failingSessionsRecorder) RecordSessions(iteration int, role string, ses
+ 
+ func TestRunImplementIterationsRecordsReviseThenApproveInMemory(t *testing.T) {
+ 	recorder := newMemoryRunRecorder()
+-	implementer := &scriptedConversationAdapter{runs: [][]harness.Event{
+-		{
++	implementer := &scriptedConversationAdapter{
++		runs: [][]harness.Event{{
+ 			{Type: harness.EventSession, SessionID: "implement-1"},
+ 			{Type: harness.EventAssistantText, Text: "first implementation"},
+-		},
+-		{
++		}},
++		resumes: [][]harness.Event{{
+ 			{Type: harness.EventSession, SessionID: "implement-2"},
+ 			{Type: harness.EventAssistantText, Text: "revised implementation"},
+-		},
+-	}}
++		}},
++	}
+ 	reviewer := &scriptedConversationAdapter{
+ 		runs: [][]harness.Event{{
+ 			{Type: harness.EventSession, SessionID: "review-1"},
+@@ -157,6 +157,83 @@ func TestRunImplementIterationsRecordsReviseThenApproveInMemory(t *testing.T) {
+ 	if len(reviewer.resumeCalls) != 1 {
+ 		t.Fatalf("review resume calls = %d, want 1", len(reviewer.resumeCalls))
+ 	}
++	if implementer.runCalls != 1 {
++		t.Fatalf("implement run calls = %d, want iteration 1 to be the only fresh run", implementer.runCalls)
++	}
++	if len(implementer.resumeCalls) != 1 {
++		t.Fatalf("implement resume calls = %d, want 1", len(implementer.resumeCalls))
++	}
++	if got := implementer.resumeCalls[0].sessionID; got != "implement-1" {
++		t.Fatalf("implement resume session = %q, want %q", got, "implement-1")
++	}
++	if got := implementer.resumeCalls[0].prompt; !strings.Contains(got, "worker.go:10") || !strings.Contains(got, "handle the error") {
++		t.Fatalf("implement resume prompt = %q, want iteration blocking finding", got)
++	}
++	wantSessions := "iteration 1 implement: implement-1\n" +
++		"iteration 1 review: review-1\n" +
++		"iteration 2 implement: implement-1\n" +
++		"iteration 2 implement: implement-2\n" +
++		"iteration 2 review: review-1\n"
++	if got := recorder.files[artifactFilename(sessionsArtifact, 0)]; got != wantSessions {
++		t.Fatalf("recorded sessions = %q, want %q", got, wantSessions)
++	}
++}
++
++func TestRunImplementIterationsFallsBackToFreshRunWhenImplementResumeFails(t *testing.T) {
++	recorder := newMemoryRunRecorder()
++	ticket := tracker.Ticket{Number: 42, Title: "Resume implementation", Body: "Keep context between iterations."}
++	implementer := &scriptedConversationAdapter{runs: [][]harness.Event{
++		{
++			{Type: harness.EventSession, SessionID: "implement-1"},
++			{Type: harness.EventAssistantText, Text: "first implementation"},
++		},
++		{
++			{Type: harness.EventSession, SessionID: "implement-fallback"},
++			{Type: harness.EventAssistantText, Text: "fresh revised implementation"},
++		},
++	}}
++	reviewer := &scriptedConversationAdapter{
++		runs: [][]harness.Event{{
++			{Type: harness.EventSession, SessionID: "review-1"},
++			{Type: harness.EventAssistantText, Text: "VERDICT: revise\nSUMMARY: Fix required\nFINDINGS:\n- [blocking] worker.go:10 — handle the error\n"},
++		}},
++		resumes: [][]harness.Event{{
++			{Type: harness.EventSession, SessionID: "review-1"},
++			{Type: harness.EventAssistantText, Text: "VERDICT: approve\nSUMMARY: Ready\nFINDINGS:\n"},
++		}},
++	}
++
++	iterations, final, _, err := runImplementIterations(context.Background(), implementIterationsParams{
++		git:           staticImplementGit{branchPoint: "branch-point", diff: "diff --git a/a b/a\n"},
++		implementer:   implementer,
++		reviewer:      reviewer,
++		projectConfig: config.Config{Loop: config.LoopConfig{MaxIterations: 2}},
++		ticket:        ticket,
++		branchPoint:   "branch-point",
++		recorder:      recorder,
++		output:        io.Discard,
++	})
++	if err != nil {
++		t.Fatalf("runImplementIterations() error = %v", err)
++	}
++	if iterations != 2 || final.Status != verdict.Approve {
++		t.Fatalf("result = (%d, %q), want (2, approve)", iterations, final.Status)
++	}
++	if len(implementer.resumeCalls) != 1 || implementer.resumeCalls[0].sessionID != "implement-1" {
++		t.Fatalf("implement resume calls = %#v, want one attempt for implement-1", implementer.resumeCalls)
++	}
++	if implementer.runCalls != 2 {
++		t.Fatalf("implement run calls = %d, want initial run and fallback run", implementer.runCalls)
++	}
++	wantPrompt := composeImplementPrompt(ticket, []verdict.Finding{{
++		Kind: verdict.Blocking, Location: "worker.go:10", Issue: "handle the error",
++	}}, 2, "")
++	if got := implementer.resumeCalls[0].prompt; got != wantPrompt {
++		t.Fatalf("implement resume prompt = %q, want %q", got, wantPrompt)
++	}
++	if got := implementer.runRequests[1].Prompt; got != wantPrompt {
++		t.Fatalf("implement fallback prompt = %q, want %q", got, wantPrompt)
++	}
+ }
+ 
+ func TestRunImplementIterationsStartsVerdictOnANewLineAfterReviewProse(t *testing.T) {

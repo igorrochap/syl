@@ -14,7 +14,7 @@ import (
 
 	"github.com/igorrochap/syl/internal/config"
 	"github.com/igorrochap/syl/internal/harness"
-	"github.com/igorrochap/syl/internal/runstate"
+	"github.com/igorrochap/syl/internal/runrecord"
 	"github.com/igorrochap/syl/internal/sylhome"
 	"github.com/igorrochap/syl/internal/tracker"
 	"github.com/igorrochap/syl/internal/ui"
@@ -152,10 +152,10 @@ func completeStandaloneReview(ctx context.Context, options ReviewOptions, prepar
 		}
 	}
 	if reviewVerdict.Status == verdict.Revise {
-		preparation.runState.finish(runstate.Exhausted)
+		preparation.runState.finish(runrecord.Exhausted)
 		return ErrReviewNeedsRevision
 	}
-	preparation.runState.finish(runstate.Approved)
+	preparation.runState.finish(runrecord.Approved)
 	return nil
 }
 
@@ -202,7 +202,7 @@ func runStandaloneReview(ctx context.Context, options ReviewOptions, preparation
 	notifier = withNotificationContext(notifier, options.OriginRoot, options.Git)
 	questions := NewQuestionHandler(options.Input, options.Output, options.TicketRef, notifier, preparation.runState)
 	preparation.runState.setIteration(1)
-	preparation.runState.setActivity(runstate.Reviewing)
+	preparation.runState.setActivity(runrecord.Reviewing)
 	mode := QuietHarnessOutput
 	if options.Verbose {
 		mode = ParsedHarnessOutput
@@ -308,7 +308,7 @@ func prepareReviewWithOpener(
 		return reviewPreparation{}, fmt.Errorf("review: %w", err)
 	}
 	recorder, err := opener(RunSpec{
-		Kind:            runstate.Review,
+		Kind:            runrecord.Review,
 		TicketRef:       options.TicketRef,
 		MaxIterations:   1,
 		BranchPoint:     branchPoint,
@@ -323,7 +323,7 @@ func prepareReviewWithOpener(
 		return reviewPreparation{}, errors.New("review: Run opener returned a nil recorder")
 	}
 	runState := newRunStateTracker(recorder, newRunState(RunSpec{
-		Kind:          runstate.Review,
+		Kind:          runrecord.Review,
 		TicketRef:     options.TicketRef,
 		MaxIterations: 1,
 	}))
@@ -632,16 +632,7 @@ func bytesAtLineStart(value []byte) bool {
 }
 
 func formatVerdict(reviewVerdict verdict.Verdict) string {
-	var builder strings.Builder
-	fmt.Fprintf(&builder, "VERDICT: %s\nSUMMARY: %s\nFINDINGS:\n", reviewVerdict.Status, reviewVerdict.Summary)
-	if len(reviewVerdict.Findings) == 0 {
-		builder.WriteString("- (none)\n")
-		return builder.String()
-	}
-	for _, finding := range reviewVerdict.Findings {
-		fmt.Fprintf(&builder, "- [%s] %s — %s\n", finding.Kind, finding.Location, finding.Issue)
-	}
-	return builder.String()
+	return runrecord.FormatVerdict(reviewVerdict)
 }
 
 func formatRemoteReviewComment(reviewVerdict verdict.Verdict) string {

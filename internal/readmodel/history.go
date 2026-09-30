@@ -6,17 +6,13 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
-	"strings"
 	"sync"
 	"time"
 
-	"github.com/igorrochap/syl/internal/runstate"
+	"github.com/igorrochap/syl/internal/runrecord"
 	"github.com/igorrochap/syl/internal/sylhome"
 	"github.com/igorrochap/syl/internal/usage"
 )
-
-const runDirectoryTimestampLayout = "20060102T150405.000000000Z"
 
 // ErrProjectNotFound means the requested path is not in the Project registry.
 var ErrProjectNotFound = errors.New("project is not registered")
@@ -25,6 +21,8 @@ var ErrProjectNotFound = errors.New("project is not registered")
 type FileSystem interface {
 	ReadDir(name string) ([]os.DirEntry, error)
 	ReadFile(name string) ([]byte, error)
+	Stat(name string) (os.FileInfo, error)
+	EvalSymlinks(path string) (string, error)
 }
 
 type osFileSystem struct{}
@@ -37,10 +35,19 @@ func (osFileSystem) ReadFile(name string) ([]byte, error) {
 	return os.ReadFile(name)
 }
 
+func (osFileSystem) Stat(name string) (os.FileInfo, error) {
+	return os.Stat(name)
+}
+
+func (osFileSystem) EvalSymlinks(path string) (string, error) {
+	return filepath.EvalSymlinks(path)
+}
+
 // Reader builds UI read models and retains immutable Run history in memory.
 type Reader struct {
 	sylHome sylhome.Dir
 	files   FileSystem
+	runs    *runrecord.Reader
 
 	mu      sync.Mutex
 	history map[string]projectHistory
@@ -59,6 +66,7 @@ func NewReaderWithFileSystem(sylHome sylhome.Dir, files FileSystem) *Reader {
 	return &Reader{
 		sylHome: sylHome,
 		files:   files,
+		runs:    runrecord.NewReader(files),
 		history: make(map[string]projectHistory),
 	}
 }
@@ -73,7 +81,7 @@ type ProjectPage struct {
 type HistoryRun struct {
 	RunDir        string
 	TicketRef     string
-	Kind          runstate.Kind
+	Kind          runrecord.Kind
 	Status        string
 	Activity      string
 	Iteration     int
@@ -131,8 +139,8 @@ func (reader *Reader) readLiveRunCount(projectPath string) (int, error) {
 		if filepath.Clean(run.ProjectPath) != filepath.Clean(canonicalProjectPath) {
 			continue
 		}
-		state, err := runstate.Read(runstate.Path(run.RunDir))
-		if err != nil || state.Status != runstate.Running {
+		state, err := reader.runs.ReadState(run.RunDir)
+		if err != nil || state.Status != runrecord.Running {
 			continue
 		}
 		if isLocalHost(run.Host, state.Hostname, localHost) && !processIsAlive(state.PID) {
@@ -158,11 +166,6 @@ type cachedHistoryRun struct {
 	terminal bool
 }
 
-type historyMetadata struct {
-	ticketRef string
-	kind      runstate.Kind
-}
-
 func registeredProject(entries []sylhome.RegisteredProject, path string) (sylhome.RegisteredProject, bool) {
 	for _, entry := range entries {
 		if filepath.Clean(entry.Path) == path {
@@ -173,7 +176,7 @@ func registeredProject(entries []sylhome.RegisteredProject, path string) (sylhom
 }
 
 func (reader *Reader) readProjectHistory(projectPath string) ([]HistoryRun, error) {
-	runsPath := filepath.Join(projectPath, ".syl", "runs")
+	runsPath := runrecord.RunsDirectory(projectPath)
 	entries, err := reader.files.ReadDir(runsPath)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
@@ -217,58 +220,55 @@ func (reader *Reader) readProjectHistory(projectPath string) ([]HistoryRun, erro
 
 func (reader *Reader) readNewHistoryRun(runsPath, name string) cachedHistoryRun {
 	runDir := filepath.Join(runsPath, name)
-	metadata := reader.readHistoryMetadata(filepath.Join(runDir, "metadata.txt"))
-	timestamp := parseRunDirectoryTimestamp(name)
+	record, _ := reader.runs.Read(runDir)
+	metadata := record.Metadata
+	timestamp := runrecord.DirectoryTimestamp(name)
 	base := HistoryRun{
 		RunDir:    runDir,
-		TicketRef: metadata.ticketRef,
-		Kind:      metadata.kind,
+		TicketRef: metadata.TicketRef,
+		Kind:      metadata.Kind,
 		StartedAt: timestamp,
 	}
 	cached := cachedHistoryRun{name: name, run: base}
 
-	contents, err := reader.files.ReadFile(runstate.Path(runDir))
-	if err == nil {
-		state, parseErr := runstate.Parse(runstate.Path(runDir), contents)
-		if parseErr == nil {
-			cached.run = reader.historyRunFromState(base, state)
-			cached.terminal = state.Status != runstate.Running
-			if cached.terminal {
-				reader.readFinalHistoryArtifacts(runDir, &cached)
-			}
-			reader.readHistoryUsage(runDir, &cached.run)
-			return cached
+	if record.HasState {
+		cached.run = reader.historyRunFromState(base, record.State)
+		cached.terminal = record.State.Status != runrecord.Running
+		if cached.terminal {
+			reader.readFinalHistoryArtifacts(record, &cached)
 		}
+		reader.readHistoryUsage(record, &cached.run)
+		return cached
 	}
 
-	reader.readLegacyHistoryRun(runDir, &cached)
-	reader.readHistoryUsage(runDir, &cached.run)
+	reader.readLegacyHistoryRun(record, &cached)
+	reader.readHistoryUsage(record, &cached.run)
 	return cached
 }
 
 func (reader *Reader) refreshRunningHistoryRun(runsPath string, cached cachedHistoryRun) cachedHistoryRun {
-	contents, err := reader.files.ReadFile(runstate.Path(filepath.Join(runsPath, cached.name)))
-	if err != nil {
-		return cached
-	}
-	state, err := runstate.Parse(runstate.Path(filepath.Join(runsPath, cached.name)), contents)
-	if err != nil {
-		return cached
-	}
-	cached.run = reader.historyRunFromState(cached.run, state)
 	runDir := filepath.Join(runsPath, cached.name)
+	record, err := reader.runs.Read(runDir)
+	if err != nil {
+		return cached
+	}
+	if !record.HasState {
+		return cached
+	}
+	state := record.State
+	cached.run = reader.historyRunFromState(cached.run, state)
 	cached.run.TotalTokens = 0
 	cached.run.TokensKnown = false
-	reader.readHistoryUsage(runDir, &cached.run)
-	if state.Status == runstate.Running {
+	reader.readHistoryUsage(record, &cached.run)
+	if state.Status == runrecord.Running {
 		return cached
 	}
 	cached.terminal = true
-	reader.readFinalHistoryArtifacts(runDir, &cached)
+	reader.readFinalHistoryArtifacts(record, &cached)
 	return cached
 }
 
-func (reader *Reader) historyRunFromState(run HistoryRun, state runstate.State) HistoryRun {
+func (reader *Reader) historyRunFromState(run HistoryRun, state runrecord.State) HistoryRun {
 	if state.TicketRef != "" {
 		run.TicketRef = state.TicketRef
 	}
@@ -281,62 +281,58 @@ func (reader *Reader) historyRunFromState(run HistoryRun, state runstate.State) 
 	run.MaxIterations = state.MaxIterations
 	run.StartedAt = state.StartedAt
 	if run.StartedAt.IsZero() {
-		run.StartedAt = parseRunDirectoryTimestamp(filepath.Base(run.RunDir))
+		run.StartedAt = runrecord.DirectoryTimestamp(filepath.Base(run.RunDir))
 	}
-	if state.Status == runstate.Running {
+	if state.Status == runrecord.Running {
 		run.Duration, run.DurationKnown = historyDuration(run.StartedAt, nil)
 	} else if state.EndedAt != nil {
 		run.Duration, run.DurationKnown = historyDuration(run.StartedAt, state.EndedAt)
 	}
 	localRun := state.Hostname == "" || isLocalHost("", state.Hostname, currentHostname())
-	if state.Status == runstate.Running && localRun && !processIsAlive(state.PID) {
+	if state.Status == runrecord.Running && localRun && !processIsAlive(state.PID) {
 		run.Status = "Interrupted"
 	}
 	return run
 }
 
-func (reader *Reader) readLegacyHistoryRun(runDir string, cached *cachedHistoryRun) {
-	if cached.run.TicketRef == "" && cached.run.Kind == runstate.Implement {
-		if ticketNumber := legacyTicketNumber(cached.name); ticketNumber != "" {
+func (reader *Reader) readLegacyHistoryRun(record runrecord.Record, cached *cachedHistoryRun) {
+	if cached.run.TicketRef == "" && cached.run.Kind == runrecord.Implement {
+		if ticketNumber := runrecord.LegacyTicketNumber(cached.name); ticketNumber != "" {
 			cached.run.TicketRef = "#" + ticketNumber
 		}
 	}
-	summary, summaryExists := reader.readOptional(filepath.Join(runDir, "summary.txt"))
-	if summaryExists {
+	if record.SummaryExists {
 		cached.run.Status = "completed"
-		cached.run.Verdict = summaryValue(string(summary), "Final verdict:")
-		cached.run.Iteration = summaryIterations(string(summary))
+		cached.run.Verdict = record.Summary.FinalVerdict
+		cached.run.Iteration = record.Summary.Iterations
 	} else {
 		cached.run.Status = "unknown"
 	}
 	if cached.run.Iteration == 0 {
-		cached.run.Iteration = legacyIteration(cached.run.Kind, reader.files, runDir)
+		cached.run.Iteration = legacyIteration(cached.run.Kind, record)
 	}
 	cached.terminal = true
 }
 
-func (reader *Reader) readFinalHistoryArtifacts(runDir string, cached *cachedHistoryRun) {
-	summary, summaryExists := reader.readOptional(filepath.Join(runDir, "summary.txt"))
-	if summaryExists {
+func (reader *Reader) readFinalHistoryArtifacts(record runrecord.Record, cached *cachedHistoryRun) {
+	if record.SummaryExists {
 		if cached.run.Verdict == "" {
-			cached.run.Verdict = summaryValue(string(summary), "Final verdict:")
+			cached.run.Verdict = record.Summary.FinalVerdict
 		}
 		if cached.run.Iteration == 0 {
-			cached.run.Iteration = summaryIterations(string(summary))
+			cached.run.Iteration = record.Summary.Iterations
 		}
 	}
-	verdictContents, verdictExists := reader.readOptional(filepath.Join(runDir, "verdict.txt"))
-	if verdictExists && cached.run.Verdict == "" {
-		cached.run.Verdict = summaryValue(string(verdictContents), "VERDICT:")
+	if cached.run.Verdict == "" {
+		cached.run.Verdict = record.VerdictText[1]
 	}
 }
 
-func (reader *Reader) readHistoryUsage(runDir string, run *HistoryRun) {
-	contents, err := reader.files.ReadFile(filepath.Join(runDir, "usage.json"))
-	if err != nil {
+func (reader *Reader) readHistoryUsage(record runrecord.Record, run *HistoryRun) {
+	if !record.UsageExists {
 		return
 	}
-	artifact, err := usage.ParseArtifact(filepath.Join(runDir, "usage.json"), contents)
+	artifact, err := usage.ParseArtifact(runrecord.ArtifactName(runrecord.UsageFile, 0), record.UsageContents)
 	if err != nil {
 		return
 	}
@@ -348,126 +344,15 @@ func (reader *Reader) readHistoryUsage(runDir string, run *HistoryRun) {
 	}
 }
 
-func (reader *Reader) readHistoryMetadata(path string) historyMetadata {
-	contents, err := reader.files.ReadFile(path)
-	if err != nil {
-		return historyMetadata{}
-	}
-	var metadata historyMetadata
-	for _, line := range strings.Split(string(contents), "\n") {
-		applyHistoryMetadataLine(&metadata, line)
-	}
-	return metadata
-}
-
-func applyHistoryMetadataLine(metadata *historyMetadata, line string) {
-	if strings.HasPrefix(line, " ") || strings.HasPrefix(line, "\t") {
-		return
-	}
-	key, value, ok := strings.Cut(line, ":")
-	if !ok {
-		return
-	}
-	value = strings.TrimSpace(value)
-	switch strings.ToLower(strings.TrimSpace(key)) {
-	case "ticket":
-		metadata.ticketRef = value
-	case "branch", "implementer harness":
-		metadata.kind = runstate.Implement
-	case "reviewer harness":
-		if metadata.kind == "" {
-			metadata.kind = runstate.Review
-		}
-	}
-}
-
-func (reader *Reader) readOptional(path string) ([]byte, bool) {
-	contents, err := reader.files.ReadFile(path)
-	return contents, err == nil
-}
-
-func summaryValue(contents, prefix string) string {
-	for _, line := range strings.Split(contents, "\n") {
-		if strings.HasPrefix(line, prefix) {
-			return strings.TrimSpace(strings.TrimPrefix(line, prefix))
-		}
-	}
-	return ""
-}
-
-func summaryIterations(contents string) int {
-	for _, line := range strings.Split(contents, "\n") {
-		if !strings.HasPrefix(line, "Iterations:") {
-			continue
-		}
-		iteration, err := strconv.Atoi(strings.TrimSpace(strings.TrimPrefix(line, "Iterations:")))
-		if err == nil && iteration > 0 {
-			return iteration
-		}
-	}
-	return 0
-}
-
-func legacyIteration(kind runstate.Kind, files FileSystem, runDir string) int {
-	if kind == runstate.Review {
+func legacyIteration(kind runrecord.Kind, record runrecord.Record) int {
+	if kind == runrecord.Review {
 		return 1
 	}
-	entries, err := files.ReadDir(runDir)
-	if err != nil {
-		return 0
-	}
-	highest := 0
-	for _, entry := range entries {
-		if !entry.Type().IsRegular() {
-			continue
-		}
-		withoutPrefix := strings.TrimPrefix(entry.Name(), "iteration-")
-		if withoutPrefix == entry.Name() {
-			continue
-		}
-		separator := strings.IndexByte(withoutPrefix, '-')
-		if separator < 1 {
-			continue
-		}
-		iteration, err := strconv.Atoi(withoutPrefix[:separator])
-		if err == nil && iteration > highest {
-			highest = iteration
-		}
-	}
-	return highest
-}
-
-func legacyTicketNumber(name string) string {
-	separator := strings.IndexByte(name, '-')
-	if separator < 1 || separator+1 >= len(name) {
-		return ""
-	}
-	ticketNumber := name[separator+1:]
-	if number, err := strconv.Atoi(ticketNumber); err != nil || number <= 0 {
-		return ""
-	}
-	return ticketNumber
-}
-
-func parseRunDirectoryTimestamp(name string) time.Time {
-	separator := strings.IndexByte(name, '-')
-	if separator < 1 {
-		return time.Time{}
-	}
-	timestamp, err := time.Parse(runDirectoryTimestampLayout, name[:separator])
-	if err != nil {
-		return time.Time{}
-	}
-	return timestamp
+	return record.HighestIteration
 }
 
 func historyRunSortKey(run HistoryRun) string {
-	name := filepath.Base(run.RunDir)
-	separator := strings.IndexByte(name, '-')
-	if separator > 0 {
-		return name[:separator] + "\x00" + name
-	}
-	return name
+	return runrecord.DirectorySortKey(filepath.Base(run.RunDir))
 }
 
 func historyDuration(startedAt time.Time, endedAt *time.Time) (time.Duration, bool) {

@@ -23,7 +23,7 @@ import (
 
 	"github.com/igorrochap/syl/internal/configedit"
 	"github.com/igorrochap/syl/internal/readmodel"
-	"github.com/igorrochap/syl/internal/runstate"
+	"github.com/igorrochap/syl/internal/runrecord"
 	"github.com/igorrochap/syl/internal/sylhome"
 )
 
@@ -446,7 +446,7 @@ func (s *Server) run(writer http.ResponseWriter, request *http.Request) {
 		writer.WriteHeader(http.StatusBadRequest)
 		return
 	}
-	runDir, err := resolveRunDirectory(runDir)
+	runDir, err := runrecord.ResolveRunDirectory(runDir)
 	if err != nil {
 		writeRunPathError(writer, err)
 		return
@@ -493,7 +493,7 @@ func (s *Server) artifact(writer http.ResponseWriter, request *http.Request) {
 	}
 	runDir := request.URL.Query().Get("path")
 	artifactName := request.URL.Query().Get("artifact")
-	path, err := safeArtifactPath(runDir, artifactName)
+	path, err := runrecord.ResolveArtifact(runDir, artifactName)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			writer.WriteHeader(http.StatusNotFound)
@@ -513,97 +513,6 @@ func (s *Server) artifact(writer http.ResponseWriter, request *http.Request) {
 	}
 	writer.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	_, _ = writer.Write(contents)
-}
-
-func safeArtifactPath(runDir, artifactName string) (string, error) {
-	if err := validateArtifactName(runDir, artifactName); err != nil {
-		return "", err
-	}
-	root, err := resolveRunDirectory(runDir)
-	if err != nil {
-		return "", err
-	}
-	return resolveArtifactFile(root, artifactName)
-}
-
-func validateArtifactName(runDir, artifactName string) error {
-	if strings.TrimSpace(runDir) == "" || strings.TrimSpace(artifactName) == "" {
-		return errors.New("run directory and artifact are required")
-	}
-	if isAbsoluteArtifactPath(artifactName) {
-		return errors.New("absolute artifact paths are not allowed")
-	}
-	if hasParentPathComponent(artifactName) {
-		return errors.New("artifact path traversal is not allowed")
-	}
-	return nil
-}
-
-func isAbsoluteArtifactPath(path string) bool {
-	if filepath.IsAbs(path) || filepath.VolumeName(path) != "" || strings.HasPrefix(path, "\\") {
-		return true
-	}
-	return len(path) >= 2 && path[1] == ':'
-}
-
-func resolveRunDirectory(runDir string) (string, error) {
-	root, err := filepath.EvalSymlinks(runDir)
-	if err != nil {
-		return "", err
-	}
-	rootInfo, err := os.Stat(root)
-	if err != nil {
-		return "", err
-	}
-	if !rootInfo.IsDir() {
-		return "", errors.New("run directory is not a directory")
-	}
-	if !isRunDirectory(root) {
-		return "", errors.New("path is not a Run directory")
-	}
-	return root, nil
-}
-
-func isRunDirectory(path string) bool {
-	runsDirectory := filepath.Dir(path)
-	return filepath.Base(path) != "" && filepath.Base(runsDirectory) == "runs" &&
-		filepath.Base(filepath.Dir(runsDirectory)) == ".syl"
-}
-
-func resolveArtifactFile(root, artifactName string) (string, error) {
-	candidate := filepath.Join(root, artifactName)
-	resolved, err := filepath.EvalSymlinks(candidate)
-	if err != nil {
-		return "", err
-	}
-	if !pathWithin(root, resolved) {
-		return "", errors.New("artifact resolves outside Run directory")
-	}
-	info, err := os.Stat(resolved)
-	if err != nil {
-		return "", err
-	}
-	if !info.Mode().IsRegular() {
-		return "", errors.New("artifact is not a regular file")
-	}
-	return resolved, nil
-}
-
-func hasParentPathComponent(path string) bool {
-	for _, component := range strings.FieldsFunc(path, func(r rune) bool { return r == '/' || r == '\\' }) {
-		if component == ".." {
-			return true
-		}
-	}
-	return false
-}
-
-func pathWithin(root, path string) bool {
-	relative, err := filepath.Rel(root, path)
-	if err != nil || filepath.IsAbs(relative) {
-		return false
-	}
-	return relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
 }
 
 func (s *Server) dismiss(writer http.ResponseWriter, request *http.Request) {
@@ -772,7 +681,7 @@ func templateFunctions() template.FuncMap {
 		"runStatus":          displayRunStatus,
 		"verdictClass":       verdictClass,
 		"runEndTime":         displayRunEndTime,
-		"trimArtifactName":   trimArtifactName,
+		"trimArtifactName":   runrecord.ArtifactLabel,
 		"runTime":            displayRunTime,
 		"runTokens":          displayRunTokens,
 		"iteration":          displayIteration,
@@ -864,14 +773,6 @@ func displayRunEndTime(value *time.Time) string {
 		return "—"
 	}
 	return displayRunTime(*value)
-}
-
-func trimArtifactName(name string) string {
-	extension := strings.TrimPrefix(filepath.Ext(name), ".")
-	if extension != "" {
-		return extension
-	}
-	return name
 }
 
 func displayRunDuration(run readmodel.RunDetail) string {
@@ -973,7 +874,7 @@ func displayIteration(iterationNumber, maximum int) string {
 	return strconv.Itoa(iterationNumber) + " / " + strconv.Itoa(maximum)
 }
 
-func displayKind(kind runstate.Kind) string {
+func displayKind(kind runrecord.Kind) string {
 	if kind == "" {
 		return "Run"
 	}
@@ -1045,7 +946,7 @@ func displayTicket(ticketReference string) string {
 	return ticketReference
 }
 
-func historyKind(kind runstate.Kind) string {
+func historyKind(kind runrecord.Kind) string {
 	if kind == "" {
 		return "—"
 	}

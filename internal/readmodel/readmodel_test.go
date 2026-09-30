@@ -11,7 +11,7 @@ import (
 
 	"github.com/igorrochap/syl/internal/config"
 	"github.com/igorrochap/syl/internal/readmodel"
-	"github.com/igorrochap/syl/internal/runstate"
+	"github.com/igorrochap/syl/internal/runrecord"
 	"github.com/igorrochap/syl/internal/sylhome"
 	"github.com/igorrochap/syl/internal/usage"
 )
@@ -26,19 +26,19 @@ func TestReaderReadsProjectRunHistoryNewestFirst(t *testing.T) {
 		Path: project, FirstSeen: time.Date(2026, time.September, 2, 0, 0, 0, 0, time.UTC),
 	})
 
-	writeHistoryRun(t, project, "20260924T120000.000000000Z-running", runstate.State{
-		Status: runstate.Running, Activity: runstate.Implementing, Iteration: 2, MaxIterations: 3,
+	writeHistoryRun(t, project, "20260924T120000.000000000Z-running", runrecord.State{
+		Status: runrecord.Running, Activity: runrecord.Implementing, Iteration: 2, MaxIterations: 3,
 		PID: os.Getpid(), Hostname: hostname(t), StartedAt: time.Date(2026, time.September, 24, 12, 0, 0, 0, time.UTC),
-		Kind: runstate.Implement, TicketRef: "#184",
+		Kind: runrecord.Implement, TicketRef: "#184",
 	}, "Implementer harness: codex\n", usage.Artifact{Entries: []usage.Entry{{
 		Tracked: true, Metrics: &usage.Metrics{TotalTokens: 900000},
 	}}})
 
 	ended := time.Date(2026, time.September, 24, 11, 30, 0, 0, time.UTC)
-	writeHistoryRun(t, project, "20260924T110000.000000000Z-approved", runstate.State{
-		Status: runstate.Approved, Iteration: 1, MaxIterations: 3, EndedAt: &ended,
+	writeHistoryRun(t, project, "20260924T110000.000000000Z-approved", runrecord.State{
+		Status: runrecord.Approved, Iteration: 1, MaxIterations: 3, EndedAt: &ended,
 		StartedAt: time.Date(2026, time.September, 24, 11, 0, 0, 0, time.UTC),
-		Kind:      runstate.Implement, TicketRef: "#183",
+		Kind:      runrecord.Implement, TicketRef: "#183",
 	}, "Implementer harness: codex\n", usage.Artifact{Entries: []usage.Entry{{
 		Tracked: true, Metrics: &usage.Metrics{TotalTokens: 2200000},
 	}}})
@@ -46,10 +46,10 @@ func TestReaderReadsProjectRunHistoryNewestFirst(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	writeHistoryRun(t, project, "20260924T100000.000000000Z-review", runstate.State{
-		Status: runstate.Approved, Iteration: 1, MaxIterations: 1, EndedAt: &ended,
+	writeHistoryRun(t, project, "20260924T100000.000000000Z-review", runrecord.State{
+		Status: runrecord.Approved, Iteration: 1, MaxIterations: 1, EndedAt: &ended,
 		StartedAt: time.Date(2026, time.September, 24, 10, 0, 0, 0, time.UTC),
-		Kind:      runstate.Review, TicketRef: "release-candidate",
+		Kind:      runrecord.Review, TicketRef: "release-candidate",
 	}, "Ticket: release-candidate\nReviewer harness: claude\n", usage.Artifact{})
 
 	writeLegacyHistoryRun(t, project, "20260924T090000.000000000Z-182", "Branch: feat/legacy\n", "Iterations: 2\nFinal verdict: approve\n", nil)
@@ -78,7 +78,7 @@ func TestReaderReadsProjectRunHistoryNewestFirst(t *testing.T) {
 	if page.Runs[1].Status != "approved" || page.Runs[1].Verdict != "approve" || page.Runs[1].TotalTokens != 2200000 {
 		t.Fatalf("approved Run = %#v, want final state, verdict, and usage", page.Runs[1])
 	}
-	if page.Runs[2].Kind != runstate.Review || page.Runs[2].TicketRef != "release-candidate" {
+	if page.Runs[2].Kind != runrecord.Review || page.Runs[2].TicketRef != "release-candidate" {
 		t.Fatalf("standalone review = %#v, want non-numeric reference", page.Runs[2])
 	}
 	if page.Runs[3].Status != "completed" || page.Runs[3].TicketRef != "#182" || page.Runs[3].Iteration != 2 || page.Runs[3].Verdict != "approve" {
@@ -102,10 +102,10 @@ func TestReaderReadsRunDetailsFromRecordedArtifacts(t *testing.T) {
 		t.Fatal(err)
 	}
 	ended := time.Date(2026, time.September, 20, 20, 31, 0, 0, time.UTC)
-	if err := runstate.Write(runstate.Path(runDir), runstate.State{
-		Status: runstate.Approved, Iteration: 1, MaxIterations: 3,
+	if err := runrecord.Write(runrecord.Path(runDir), runrecord.State{
+		Status: runrecord.Approved, Iteration: 1, MaxIterations: 3,
 		StartedAt: time.Date(2026, time.September, 20, 19, 50, 0, 0, time.UTC), EndedAt: &ended,
-		Kind: runstate.Implement, TicketRef: "#173",
+		Kind: runrecord.Implement, TicketRef: "#173",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -165,9 +165,9 @@ func TestReaderShowsCurrentActivityAndInterruptedRun(t *testing.T) {
 	if err := os.MkdirAll(runDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := runstate.Write(runstate.Path(runDir), runstate.State{
-		Status: runstate.Running, Activity: runstate.Reviewing, Iteration: 2, MaxIterations: 3,
-		PID: 999999, Hostname: hostname(t), Kind: runstate.Implement, TicketRef: "#173",
+	if err := runrecord.Write(runrecord.Path(runDir), runrecord.State{
+		Status: runrecord.Running, Activity: runrecord.Reviewing, Iteration: 2, MaxIterations: 3,
+		PID: 999999, Hostname: hostname(t), Kind: runrecord.Implement, TicketRef: "#173",
 		StartedAt: time.Now().Add(-time.Minute),
 	}); err != nil {
 		t.Fatal(err)
@@ -199,7 +199,7 @@ func TestReaderReadsLegacyRunValues(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadRun() error = %v", err)
 	}
-	if page.Run.Status != "completed" || page.Run.TicketRef != "#173" || page.Run.Kind != runstate.Implement {
+	if page.Run.Status != "completed" || page.Run.TicketRef != "#173" || page.Run.Kind != runrecord.Implement {
 		t.Fatalf("legacy Run = %#v, want completed implement Run", page.Run)
 	}
 	if page.Run.StartedAt.IsZero() || page.Run.EndedAt != nil || page.Run.DurationKnown {
@@ -225,13 +225,13 @@ func TestReaderMemoizesFinalAndLegacyRunsButRefreshesRunningState(t *testing.T) 
 	finalRun := filepath.Join(project, ".syl", "runs", "20260924T120000.000000000Z-final")
 	runningRun := filepath.Join(project, ".syl", "runs", "20260924T110000.000000000Z-running")
 	started := time.Date(2026, time.September, 24, 11, 0, 0, 0, time.UTC)
-	writeHistoryRun(t, project, filepath.Base(finalRun), runstate.State{
-		Status: runstate.Approved, Iteration: 1, MaxIterations: 1, StartedAt: started,
-		Kind: runstate.Implement, TicketRef: "#1",
+	writeHistoryRun(t, project, filepath.Base(finalRun), runrecord.State{
+		Status: runrecord.Approved, Iteration: 1, MaxIterations: 1, StartedAt: started,
+		Kind: runrecord.Implement, TicketRef: "#1",
 	}, "Branch: final\n", usage.Artifact{Entries: []usage.Entry{{Tracked: true, Metrics: &usage.Metrics{TotalTokens: 10}}}})
-	writeHistoryRun(t, project, filepath.Base(runningRun), runstate.State{
-		Status: runstate.Running, Activity: runstate.Implementing, PID: os.Getpid(), Hostname: hostname(t),
-		StartedAt: started, Kind: runstate.Implement, TicketRef: "#2",
+	writeHistoryRun(t, project, filepath.Base(runningRun), runrecord.State{
+		Status: runrecord.Running, Activity: runrecord.Implementing, PID: os.Getpid(), Hostname: hostname(t),
+		StartedAt: started, Kind: runrecord.Implement, TicketRef: "#2",
 	}, "Branch: running\n", usage.Artifact{Entries: []usage.Entry{{Tracked: true, Metrics: &usage.Metrics{TotalTokens: 20}}}})
 
 	files := &countingFileSystem{}
@@ -256,7 +256,7 @@ func TestReaderMemoizesFinalAndLegacyRunsButRefreshesRunningState(t *testing.T) 
 		t.Fatalf("running Run = %#v, want refreshed usage", page.Runs[1])
 	}
 
-	if err := os.WriteFile(runstate.Path(finalRun), []byte("invalid"), 0o644); err != nil {
+	if err := os.WriteFile(runrecord.Path(finalRun), []byte("invalid"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	page, err = reader.ReadProject(project)
@@ -315,28 +315,28 @@ func TestReaderCountsLiveRunsForProject(t *testing.T) {
 	writeRegistryEntry(t, sylHome, sylhome.RegisteredProject{Path: project})
 	host := hostname(t)
 
-	liveRun := createRun(t, project, "live", runstate.State{
-		Status: runstate.Running, PID: os.Getpid(), Hostname: host, StartedAt: time.Now(), Kind: runstate.Implement,
+	liveRun := createRun(t, project, "live", runrecord.State{
+		Status: runrecord.Running, PID: os.Getpid(), Hostname: host, StartedAt: time.Now(), Kind: runrecord.Implement,
 	}, "/worktrees/live")
 	createMarker(t, sylHome, project, liveRun, "#live", os.Getpid(), host)
 
-	finishedRun := createRun(t, project, "finished", runstate.State{
-		Status: runstate.Approved, StartedAt: time.Now(), Kind: runstate.Implement,
+	finishedRun := createRun(t, project, "finished", runrecord.State{
+		Status: runrecord.Approved, StartedAt: time.Now(), Kind: runrecord.Implement,
 	}, "/worktrees/finished")
 	createMarker(t, sylHome, project, finishedRun, "#finished", 999999, host)
 
-	staleRun := createRun(t, project, "stale", runstate.State{
-		Status: runstate.Running, PID: 999999, Hostname: host, StartedAt: time.Now(), Kind: runstate.Implement,
+	staleRun := createRun(t, project, "stale", runrecord.State{
+		Status: runrecord.Running, PID: 999999, Hostname: host, StartedAt: time.Now(), Kind: runrecord.Implement,
 	}, "/worktrees/stale")
 	createMarker(t, sylHome, project, staleRun, "#stale", 999999, host)
 
-	remoteRun := createRun(t, project, "remote", runstate.State{
-		Status: runstate.Running, PID: 999999, Hostname: "other-host", StartedAt: time.Now(), Kind: runstate.Implement,
+	remoteRun := createRun(t, project, "remote", runrecord.State{
+		Status: runrecord.Running, PID: 999999, Hostname: "other-host", StartedAt: time.Now(), Kind: runrecord.Implement,
 	}, "/worktrees/remote")
 	createMarker(t, sylHome, project, remoteRun, "#remote", 999999, "other-host")
 
-	otherRun := createRun(t, otherProject, "other", runstate.State{
-		Status: runstate.Running, PID: os.Getpid(), Hostname: host, StartedAt: time.Now(), Kind: runstate.Implement,
+	otherRun := createRun(t, otherProject, "other", runrecord.State{
+		Status: runrecord.Running, PID: os.Getpid(), Hostname: host, StartedAt: time.Now(), Kind: runrecord.Implement,
 	}, "/worktrees/other")
 	createMarker(t, sylHome, otherProject, otherRun, "#other", os.Getpid(), host)
 
@@ -386,25 +386,25 @@ func TestOverviewReadsProjectHealthAndLiveRuns(t *testing.T) {
 	}
 	writeRegistry(t, sylHome, okProject, uninitializedProject, invalidProject, missingProject)
 
-	awaitingRun := createRun(t, okProject, "awaiting", runstate.State{
-		Status: runstate.Running, Activity: runstate.AwaitingAnswer, Iteration: 2, MaxIterations: 3,
+	awaitingRun := createRun(t, okProject, "awaiting", runrecord.State{
+		Status: runrecord.Running, Activity: runrecord.AwaitingAnswer, Iteration: 2, MaxIterations: 3,
 		Question: "Which option?", PID: os.Getpid(), Hostname: hostname(t),
 		StartedAt: time.Date(2026, time.September, 23, 10, 0, 0, 0, time.UTC),
-		Kind:      runstate.Implement, TicketRef: "#181",
+		Kind:      runrecord.Implement, TicketRef: "#181",
 	}, "/worktrees/awaiting")
 	createMarker(t, sylHome, okProject, awaitingRun, "#181", os.Getpid(), hostname(t))
 
-	interruptedRun := createRun(t, okProject, "interrupted", runstate.State{
-		Status: runstate.Running, Activity: runstate.Implementing, Iteration: 1, MaxIterations: 3,
+	interruptedRun := createRun(t, okProject, "interrupted", runrecord.State{
+		Status: runrecord.Running, Activity: runrecord.Implementing, Iteration: 1, MaxIterations: 3,
 		PID: 999999, Hostname: hostname(t), StartedAt: time.Date(2026, time.September, 23, 9, 0, 0, 0, time.UTC),
-		Kind: runstate.Implement, TicketRef: "#182",
+		Kind: runrecord.Implement, TicketRef: "#182",
 	}, "/worktrees/interrupted")
 	createMarker(t, sylHome, okProject, interruptedRun, "#182", 999999, hostname(t))
 
-	remoteRun := createRun(t, okProject, "remote", runstate.State{
-		Status: runstate.Running, Activity: runstate.Reviewing, Iteration: 2, MaxIterations: 3,
+	remoteRun := createRun(t, okProject, "remote", runrecord.State{
+		Status: runrecord.Running, Activity: runrecord.Reviewing, Iteration: 2, MaxIterations: 3,
 		PID: 1, Hostname: "other-host", StartedAt: time.Date(2026, time.September, 23, 8, 0, 0, 0, time.UTC),
-		Kind: runstate.Implement, TicketRef: "#183",
+		Kind: runrecord.Implement, TicketRef: "#183",
 	}, "/worktrees/remote")
 	createMarker(t, sylHome, okProject, remoteRun, "#183", 1, "other-host")
 
@@ -431,7 +431,7 @@ func TestOverviewReadsProjectHealthAndLiveRuns(t *testing.T) {
 		t.Fatalf("LiveRuns = %d, want interrupted and remote Runs", len(overview.LiveRuns))
 	}
 	interrupted := findRun(t, overview.LiveRuns, "#182")
-	if !interrupted.Interrupted || interrupted.Activity != string(runstate.Implementing) {
+	if !interrupted.Interrupted || interrupted.Activity != string(runrecord.Implementing) {
 		t.Fatalf("interrupted Run = %#v, want last-seen activity", interrupted)
 	}
 	remote := findRun(t, overview.LiveRuns, "#183")
@@ -451,7 +451,7 @@ func TestOverviewShowsUnknownRunWhenStateCannotBeRead(t *testing.T) {
 	if err := os.MkdirAll(runDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(runstate.Path(runDir), []byte("before"), 0o644); err != nil {
+	if err := os.WriteFile(runrecord.Path(runDir), []byte("before"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	createMarker(t, sylHome, project, runDir, "#184", os.Getpid(), hostname(t))
@@ -463,7 +463,7 @@ func TestOverviewShowsUnknownRunWhenStateCannotBeRead(t *testing.T) {
 	if len(overview.LiveRuns) != 1 || !overview.LiveRuns[0].Unknown {
 		t.Fatalf("LiveRuns = %#v, want one unknown Run", overview.LiveRuns)
 	}
-	contents, err := os.ReadFile(runstate.Path(runDir))
+	contents, err := os.ReadFile(runrecord.Path(runDir))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -479,14 +479,14 @@ func TestDismissRemovesOnlyInterruptedMarkerAndLeavesRunUntouched(t *testing.T) 
 	if err := os.MkdirAll(runDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	state := runstate.State{
-		Status: runstate.Running, Activity: runstate.Implementing, PID: 999999,
-		Hostname: hostname(t), StartedAt: time.Now().UTC(), Kind: runstate.Implement, TicketRef: "#183",
+	state := runrecord.State{
+		Status: runrecord.Running, Activity: runrecord.Implementing, PID: 999999,
+		Hostname: hostname(t), StartedAt: time.Now().UTC(), Kind: runrecord.Implement, TicketRef: "#183",
 	}
-	if err := runstate.Write(runstate.Path(runDir), state); err != nil {
+	if err := runrecord.Write(runrecord.Path(runDir), state); err != nil {
 		t.Fatal(err)
 	}
-	beforeState, err := os.ReadFile(runstate.Path(runDir))
+	beforeState, err := os.ReadFile(runrecord.Path(runDir))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -502,7 +502,7 @@ func TestDismissRemovesOnlyInterruptedMarkerAndLeavesRunUntouched(t *testing.T) 
 	if len(markers) != 0 {
 		t.Fatalf("markers = %#v, want empty", markers)
 	}
-	afterState, err := os.ReadFile(runstate.Path(runDir))
+	afterState, err := os.ReadFile(runrecord.Path(runDir))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -518,11 +518,11 @@ func TestDismissRefusesLiveRunAndKeepsMarker(t *testing.T) {
 	if err := os.MkdirAll(runDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	state := runstate.State{
-		Status: runstate.Running, Activity: runstate.Implementing, PID: os.Getpid(),
-		Hostname: hostname(t), StartedAt: time.Now().UTC(), Kind: runstate.Implement, TicketRef: "#183",
+	state := runrecord.State{
+		Status: runrecord.Running, Activity: runrecord.Implementing, PID: os.Getpid(),
+		Hostname: hostname(t), StartedAt: time.Now().UTC(), Kind: runrecord.Implement, TicketRef: "#183",
 	}
-	if err := runstate.Write(runstate.Path(runDir), state); err != nil {
+	if err := runrecord.Write(runrecord.Path(runDir), state); err != nil {
 		t.Fatal(err)
 	}
 	createMarker(t, sylHome, project, runDir, state.TicketRef, state.PID, state.Hostname)
@@ -577,7 +577,7 @@ func TestDismissReportsUnreadableRunState(t *testing.T) {
 	if err := os.MkdirAll(runDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(runstate.Path(runDir), []byte("not json"), 0o644); err != nil {
+	if err := os.WriteFile(runrecord.Path(runDir), []byte("not json"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	createMarker(t, sylHome, project, runDir, "#183", 999999, hostname(t))
@@ -590,11 +590,11 @@ func TestDismissReportsUnreadableRunState(t *testing.T) {
 func TestDismissRefusesFinishedAndRemoteRuns(t *testing.T) {
 	for _, test := range []struct {
 		name       string
-		status     runstate.Status
+		status     runrecord.Status
 		markerHost string
 	}{
-		{name: "finished", status: runstate.Approved, markerHost: hostname(t)},
-		{name: "remote", status: runstate.Running, markerHost: "remote-host"},
+		{name: "finished", status: runrecord.Approved, markerHost: hostname(t)},
+		{name: "remote", status: runrecord.Running, markerHost: "remote-host"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			sylHome := t.TempDir()
@@ -603,11 +603,11 @@ func TestDismissRefusesFinishedAndRemoteRuns(t *testing.T) {
 			if err := os.MkdirAll(runDir, 0o755); err != nil {
 				t.Fatal(err)
 			}
-			state := runstate.State{
-				Status: test.status, Activity: runstate.Implementing, PID: 999999,
-				Hostname: hostname(t), StartedAt: time.Now().UTC(), Kind: runstate.Implement,
+			state := runrecord.State{
+				Status: test.status, Activity: runrecord.Implementing, PID: 999999,
+				Hostname: hostname(t), StartedAt: time.Now().UTC(), Kind: runrecord.Implement,
 			}
-			if err := runstate.Write(runstate.Path(runDir), state); err != nil {
+			if err := runrecord.Write(runrecord.Path(runDir), state); err != nil {
 				t.Fatal(err)
 			}
 			createMarker(t, sylHome, project, runDir, "#183", state.PID, test.markerHost)
@@ -634,13 +634,13 @@ func writeRegistry(t *testing.T, sylHome string, paths ...string) {
 	}
 }
 
-func createRun(t *testing.T, project, name string, state runstate.State, workRoot string) string {
+func createRun(t *testing.T, project, name string, state runrecord.State, workRoot string) string {
 	t.Helper()
 	runDir := filepath.Join(project, ".syl", "runs", name)
 	if err := os.MkdirAll(runDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := runstate.Write(runstate.Path(runDir), state); err != nil {
+	if err := runrecord.Write(runrecord.Path(runDir), state); err != nil {
 		t.Fatal(err)
 	}
 	contents := strings.Join([]string{
@@ -716,13 +716,13 @@ func liveRuns(t *testing.T, path string) ([]sylhome.LiveRun, error) {
 	return openSylHome(t, path).LiveRuns()
 }
 
-func writeHistoryRun(t *testing.T, project, name string, state runstate.State, metadata string, artifact usage.Artifact) {
+func writeHistoryRun(t *testing.T, project, name string, state runrecord.State, metadata string, artifact usage.Artifact) {
 	t.Helper()
 	runDir := filepath.Join(project, ".syl", "runs", name)
 	if err := os.MkdirAll(runDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := runstate.Write(runstate.Path(runDir), state); err != nil {
+	if err := runrecord.Write(runrecord.Path(runDir), state); err != nil {
 		t.Fatal(err)
 	}
 	if metadata != "" {
@@ -775,6 +775,14 @@ func (files *countingFileSystem) ReadFile(name string) ([]byte, error) {
 		files.usageReads++
 	}
 	return os.ReadFile(name)
+}
+
+func (files *countingFileSystem) Stat(name string) (os.FileInfo, error) {
+	return os.Stat(name)
+}
+
+func (files *countingFileSystem) EvalSymlinks(path string) (string, error) {
+	return filepath.EvalSymlinks(path)
 }
 
 func assertProjectHealth(t *testing.T, projects []readmodel.Project, path string, want readmodel.Health) {

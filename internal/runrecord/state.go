@@ -1,5 +1,4 @@
-// Package runstate defines the durable state recorded by each syl Run.
-package runstate
+package runrecord
 
 import (
 	"encoding/json"

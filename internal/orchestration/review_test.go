@@ -11,7 +11,7 @@ import (
 
 	"github.com/igorrochap/syl/internal/config"
 	"github.com/igorrochap/syl/internal/harness"
-	"github.com/igorrochap/syl/internal/runstate"
+	"github.com/igorrochap/syl/internal/runrecord"
 	"github.com/igorrochap/syl/internal/sylhome"
 	"github.com/igorrochap/syl/internal/tracker"
 	"github.com/igorrochap/syl/internal/verdict"
@@ -100,7 +100,7 @@ func TestCompleteStandaloneReviewSeparatesRenderedVerdictFromStreamedProse(t *te
 	}, reviewPreparation{
 		branchPoint: "HEAD",
 		recorder:    recorder,
-		runState:    newRunStateTracker(recorder, newRunState(RunSpec{Kind: runstate.Review, MaxIterations: 1})),
+		runState:    newRunStateTracker(recorder, newRunState(RunSpec{Kind: runrecord.Review, MaxIterations: 1})),
 	}, standaloneReviewRun{
 		review: ReviewExecution{
 			Verdict: verdict.Verdict{Status: verdict.Approve, Summary: "Ready"},

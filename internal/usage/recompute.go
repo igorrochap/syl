@@ -4,11 +4,12 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/igorrochap/syl/internal/runrecord"
 )
 
 // RoleMetadata supplies the configuration fields that cannot be recovered
@@ -24,20 +25,9 @@ type sessionInvocation struct {
 	sessions  []string
 }
 
-// SessionRecord is one parsed session entry from a run's sessions.txt file.
-type SessionRecord struct {
-	Iteration int
-	Role      string
-	SessionID string
-}
-
 type usageCluster struct {
 	role        string
 	invocations []sessionInvocation
-}
-
-type runMetadata struct {
-	kind string
 }
 
 // RecomputeArtifact rebuilds a usage artifact in memory from a run's legacy
@@ -53,65 +43,34 @@ func RecomputeArtifact(runDir, projectRoot, homeDir string, roles map[string]Rol
 		return Artifact{}, fmt.Errorf("run path %q is not a directory", runDir)
 	}
 
-	metadata := readRunMetadata(filepath.Join(runDir, "metadata.txt"))
-	invocations := readSessionInvocations(filepath.Join(runDir, "sessions.txt"))
-	invocations = mergeArtifactInvocations(runDir, metadata, invocations)
+	record, err := runrecord.NewReader(nil).Read(runDir)
+	if err != nil {
+		return Artifact{}, err
+	}
+	invocations := invocationsFromSessions(record.Sessions)
+	invocations = mergeArtifactInvocations(record, invocations)
 	clusters := clusterInvocations(invocations)
 
 	artifact := NewArtifact()
 	for _, cluster := range clusters {
-		for _, entry := range recomputeCluster(runDir, projectRoot, homeDir, roles, cluster) {
+		for _, entry := range recomputeCluster(record, projectRoot, homeDir, roles, cluster) {
 			artifact.Upsert(entry)
 		}
 	}
 	return artifact, nil
 }
 
-func readRunMetadata(path string) runMetadata {
-	contents, err := os.ReadFile(path)
-	if err != nil {
-		return runMetadata{}
-	}
-	var metadata runMetadata
-	for _, line := range strings.Split(string(contents), "\n") {
-		if strings.HasPrefix(line, " ") || strings.HasPrefix(line, "\t") {
-			continue
-		}
-		key, _, ok := strings.Cut(line, ":")
-		if !ok {
-			continue
-		}
-		switch strings.ToLower(strings.TrimSpace(key)) {
-		case "branch":
-			metadata.kind = "implement"
-		case "ticket":
-			metadata.kind = "review"
-		}
-	}
-	return metadata
-}
-
-func readSessionInvocations(path string) []sessionInvocation {
-	contents, err := os.ReadFile(path)
-	if err != nil {
-		return nil
-	}
-
+func invocationsFromSessions(sessions []runrecord.Session) []sessionInvocation {
 	byInvocation := make(map[string]*sessionInvocation)
-	for _, line := range strings.Split(string(contents), "\n") {
-		invocation, ok := parseSessionLine(line)
-		if !ok {
-			continue
-		}
-		key := invocationKey(invocation.iteration, invocation.role)
+	for _, session := range sessions {
+		key := invocationKey(session.Iteration, session.Role)
 		current := byInvocation[key]
 		if current == nil {
-			grouped := invocation
-			grouped.sessions = nil
+			grouped := sessionInvocation{iteration: session.Iteration, role: session.Role}
 			byInvocation[key] = &grouped
 			current = &grouped
 		}
-		appendSession(&current.sessions, invocation.sessions[0])
+		appendSession(&current.sessions, session.SessionID)
 	}
 
 	result := make([]sessionInvocation, 0, len(byInvocation))
@@ -122,118 +81,54 @@ func readSessionInvocations(path string) []sessionInvocation {
 	return result
 }
 
-// ReadSessionRecords reads the valid session entries in a sessions.txt file.
-// Invalid lines are ignored so partially written or older artifacts remain
-// readable. A missing file is returned as an error to let callers distinguish
-// it from an existing empty file.
-func ReadSessionRecords(path string) ([]SessionRecord, error) {
-	contents, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
+func mergeArtifactInvocations(record runrecord.Record, invocations []sessionInvocation) []sessionInvocation {
+	knownInvocations := make(map[string]struct{}, len(invocations))
+	for _, invocation := range invocations {
+		knownInvocations[invocationKey(invocation.iteration, invocation.role)] = struct{}{}
 	}
-	return ParseSessionRecords(contents), nil
-}
-
-// ParseSessionRecords reads valid session entries from sessions.txt contents.
-// Invalid lines are ignored so partially written or older artifacts remain
-// readable.
-func ParseSessionRecords(contents []byte) []SessionRecord {
-	var records []SessionRecord
-	for _, line := range strings.Split(string(contents), "\n") {
-		invocation, ok := parseSessionLine(line)
-		if !ok {
-			continue
-		}
-		records = append(records, SessionRecord{
-			Iteration: invocation.iteration,
-			Role:      invocation.role,
-			SessionID: invocation.sessions[0],
-		})
-	}
-	return records
-}
-
-func parseSessionLine(line string) (sessionInvocation, bool) {
-	left, sessionID, ok := strings.Cut(strings.TrimSpace(line), ":")
-	if !ok {
-		return sessionInvocation{}, false
-	}
-	fields := strings.Fields(left)
-	if len(fields) != 3 || !strings.EqualFold(fields[0], "iteration") {
-		return sessionInvocation{}, false
-	}
-	iteration, err := strconv.Atoi(fields[1])
-	if err != nil || iteration < 0 {
-		return sessionInvocation{}, false
-	}
-	role := strings.TrimSpace(fields[2])
-	sessionID = strings.TrimSpace(sessionID)
-	if role == "" || sessionID == "" {
-		return sessionInvocation{}, false
-	}
-	return sessionInvocation{iteration: iteration, role: role, sessions: []string{sessionID}}, true
-}
-
-func mergeArtifactInvocations(runDir string, metadata runMetadata, invocations []sessionInvocation) []sessionInvocation {
-	byInvocation := make(map[string]int, len(invocations))
-	for index, invocation := range invocations {
-		byInvocation[invocationKey(invocation.iteration, invocation.role)] = index
-	}
-
-	add := func(iteration int, role string) {
-		key := invocationKey(iteration, role)
-		if _, exists := byInvocation[key]; exists {
-			return
-		}
-		byInvocation[key] = len(invocations)
-		invocations = append(invocations, sessionInvocation{iteration: iteration, role: role})
-	}
-
-	paths, _ := filepath.Glob(filepath.Join(runDir, "iteration-*-*.feed"))
-	transcripts, _ := filepath.Glob(filepath.Join(runDir, "iteration-*-*.transcript"))
-	paths = append(paths, transcripts...)
-	for _, path := range paths {
-		iteration, role, ok := parseIterationArtifact(filepath.Base(path))
-		if ok {
-			add(iteration, role)
+	for _, artifact := range record.Artifacts {
+		if isInvocationArtifact(artifact) && !artifact.Standalone {
+			invocations = appendInvocationIfMissing(invocations, knownInvocations, artifact.Iteration, artifact.Role)
 		}
 	}
-
-	if metadata.kind == "review" {
-		for _, name := range []string{"review.feed", "review.transcript"} {
-			if _, err := os.Stat(filepath.Join(runDir, name)); err == nil {
-				add(0, "review")
-			}
-		}
+	if record.Metadata.Kind == runrecord.Review && hasStandaloneReviewOutput(record.Artifacts) {
+		invocations = appendInvocationIfMissing(invocations, knownInvocations, 0, "review")
 	}
 	sortInvocations(invocations)
 	return invocations
 }
 
-func parseIterationArtifact(name string) (int, string, bool) {
-	if !strings.HasPrefix(name, "iteration-") {
-		return 0, "", false
+func isInvocationArtifact(artifact runrecord.Artifact) bool {
+	switch artifact.Kind {
+	case runrecord.ImplementFeed, runrecord.ReviewFeed, runrecord.ImplementTranscript, runrecord.ReviewTranscript:
+		return true
+	default:
+		return false
 	}
-	withoutPrefix := strings.TrimPrefix(name, "iteration-")
-	dash := strings.IndexByte(withoutPrefix, '-')
-	if dash < 1 {
-		return 0, "", false
+}
+
+func hasStandaloneReviewOutput(artifacts []runrecord.Artifact) bool {
+	for _, artifact := range artifacts {
+		isReviewOutput := artifact.Kind == runrecord.ReviewFeed || artifact.Kind == runrecord.ReviewTranscript
+		if artifact.Standalone && isReviewOutput {
+			return true
+		}
 	}
-	iteration, err := strconv.Atoi(withoutPrefix[:dash])
-	if err != nil || iteration < 0 {
-		return 0, "", false
+	return false
+}
+
+func appendInvocationIfMissing(
+	invocations []sessionInvocation,
+	known map[string]struct{},
+	iteration int,
+	role string,
+) []sessionInvocation {
+	key := invocationKey(iteration, role)
+	if _, exists := known[key]; exists {
+		return invocations
 	}
-	roleAndExtension := withoutPrefix[dash+1:]
-	dot := strings.LastIndexByte(roleAndExtension, '.')
-	if dot < 1 {
-		return 0, "", false
-	}
-	role := roleAndExtension[:dot]
-	extension := roleAndExtension[dot+1:]
-	if (extension != "feed" && extension != "transcript") || (role != "implement" && role != "review") {
-		return 0, "", false
-	}
-	return iteration, role, true
+	known[key] = struct{}{}
+	return append(invocations, sessionInvocation{iteration: iteration, role: role})
 }
 
 func invocationKey(iteration int, role string) string {
@@ -325,7 +220,7 @@ func invocationsShareSession(left, right sessionInvocation) bool {
 	return false
 }
 
-func recomputeCluster(runDir, projectRoot, homeDir string, roles map[string]RoleMetadata, cluster usageCluster) []Entry {
+func recomputeCluster(record runrecord.Record, projectRoot, homeDir string, roles map[string]RoleMetadata, cluster usageCluster) []Entry {
 	metadata := roleMetadata(roles, cluster.role)
 	allSessions := clusterSessionIDs(cluster)
 	collected, err := collectRoleUsage(projectRoot, homeDir, allSessions, metadata)
@@ -334,7 +229,7 @@ func recomputeCluster(runDir, projectRoot, homeDir string, roles map[string]Role
 	}
 
 	if collected.harness == "claude" && len(cluster.invocations) > 1 {
-		if entries, ok := splitClaudeCluster(runDir, projectRoot, homeDir, metadata, collected.metrics, cluster); ok {
+		if entries, ok := splitClaudeCluster(record, projectRoot, homeDir, metadata, collected.metrics, cluster); ok {
 			return entries
 		}
 		return []Entry{combinedEntry(cluster, metadata, collected.harness, collected.metrics)}
@@ -380,10 +275,10 @@ func collectRoleUsage(projectRoot, homeDir string, sessionIDs []string, metadata
 	return collectedRoleUsage{}, errors.New("usage reader could not identify a single harness")
 }
 
-func splitClaudeCluster(runDir, projectRoot, homeDir string, metadata RoleMetadata, full Metrics, cluster usageCluster) ([]Entry, bool) {
+func splitClaudeCluster(record runrecord.Record, projectRoot, homeDir string, metadata RoleMetadata, full Metrics, cluster usageCluster) ([]Entry, bool) {
 	ends := make(map[int]time.Time, len(cluster.invocations))
 	for _, invocation := range cluster.invocations {
-		end, ok := roleArtifactModTime(runDir, invocation.iteration, cluster.role)
+		end, ok := roleArtifactModTime(record, invocation.iteration, cluster.role)
 		if !ok {
 			return nil, false
 		}
@@ -416,48 +311,68 @@ func splitClaudeCluster(runDir, projectRoot, homeDir string, metadata RoleMetada
 	return entries, true
 }
 
-func roleArtifactModTime(runDir string, iteration int, role string) (time.Time, bool) {
-	patterns := []string{}
-	if iteration == 0 {
-		patterns = append(patterns, filepath.Join(runDir, role+".feed"), filepath.Join(runDir, role+".transcript"))
-	} else {
-		prefix := filepath.Join(runDir, fmt.Sprintf("iteration-%02d-%s", iteration, role))
-		patterns = append(patterns, prefix+".feed", prefix+".transcript")
+func roleArtifactModTime(record runrecord.Record, iteration int, role string) (time.Time, bool) {
+	if modifiedAt, found := matchingRoleArtifactModTime(record.Artifacts, iteration, role); found {
+		return modifiedAt, true
 	}
+	return fallbackFeedModTime(record.Artifacts, iteration)
+}
+
+func matchingRoleArtifactModTime(artifacts []runrecord.Artifact, iteration int, role string) (time.Time, bool) {
 	var latest time.Time
 	found := false
-	for _, pattern := range patterns {
-		info, err := os.Stat(pattern)
-		if err != nil {
+	for _, artifact := range artifacts {
+		if !isRoleArtifact(artifact, iteration, role) {
 			continue
 		}
-		if !found || info.ModTime().After(latest) {
-			latest = info.ModTime()
+		if !found || artifact.ModTime.After(latest) {
+			latest = artifact.ModTime
 			found = true
 		}
 	}
-	if found {
-		return latest, true
-	}
+	return latest, found
+}
 
+func fallbackFeedModTime(artifacts []runrecord.Artifact, iteration int) (time.Time, bool) {
 	// Older runs may have retained only a generic feed. It is safe to use it
 	// as an approximate boundary only when the role-specific artifacts do not
 	// exist at all.
 	if iteration == 0 {
 		return time.Time{}, false
 	}
-	paths, _ := filepath.Glob(filepath.Join(runDir, fmt.Sprintf("iteration-%02d-*.feed", iteration)))
-	for _, path := range paths {
-		info, err := os.Stat(path)
-		if err != nil {
+	var latest time.Time
+	found := false
+	for _, artifact := range artifacts {
+		if artifact.Iteration != iteration || !isFeedArtifact(artifact) {
 			continue
 		}
-		if !found || info.ModTime().After(latest) {
-			latest = info.ModTime()
+		if !found || artifact.ModTime.After(latest) {
+			latest = artifact.ModTime
 			found = true
 		}
 	}
 	return latest, found
+}
+
+func isRoleArtifact(artifact runrecord.Artifact, iteration int, role string) bool {
+	if iteration == 0 {
+		return artifact.Standalone && artifact.Role == role && isFeedOrTranscript(artifact)
+	}
+	if artifact.Iteration != iteration || artifact.Role != role {
+		return false
+	}
+	if artifact.Standalone {
+		return false
+	}
+	return isFeedOrTranscript(artifact)
+}
+
+func isFeedOrTranscript(artifact runrecord.Artifact) bool {
+	return isFeedArtifact(artifact) || artifact.Kind == runrecord.ImplementTranscript || artifact.Kind == runrecord.ReviewTranscript
+}
+
+func isFeedArtifact(artifact runrecord.Artifact) bool {
+	return artifact.Kind == runrecord.ImplementFeed || artifact.Kind == runrecord.ReviewFeed
 }
 
 func clusterSessionIDs(cluster usageCluster) []string {
