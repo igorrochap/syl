@@ -1,0 +1,57 @@
+{{define "run"}}{{template "layout-start" .}}{{template "run-content" .}}{{template "layout-end" .}}{{end}}
+
+{{define "run-content"}}
+<div id="run-content"{{if .Page.Run.Refreshing}} hx-get="/runs/content?path={{urlquery .Page.Run.RunDir}}" hx-trigger="every 3s [document.visibilityState === 'visible']" hx-target="#run-content" hx-swap="outerHTML"{{end}}>
+<nav class="breadcrumb" aria-label="Breadcrumb"><a href="/">Overview</a><span>/</span><a href="/projects?path={{urlquery .Page.Run.ProjectPath}}">{{.Page.Run.ProjectName}}</a><span>/</span><span>Run {{.Page.Run.Ticket}}</span></nav>
+
+<div class="run-page-heading">
+<div class="run-title"><h1>{{.Page.Run.Ticket}}</h1><span>{{.Page.Run.Branch}}</span></div>
+{{$status := .Page.Run.Status}}<div class="run-details"><span class="status-pill {{$status.PillClass}}">{{$status.Label}}</span><span>{{.Page.Run.Kind}}</span><span>·</span><span>{{.Page.Run.Iteration}}</span><span>·</span><span>{{.Page.Run.Started}} → {{.Page.Run.Ended}} ({{.Page.Run.Duration}})</span><span>·</span><span>{{.Page.Run.Tokens}} tokens</span></div>
+</div>
+
+<div class="run-layout">
+<div class="run-main-column">
+{{if .Page.SummaryExists}}
+<section class="section run-card" aria-labelledby="summary-heading"><h2 id="summary-heading">Summary</h2><p class="run-summary">{{.Page.Summary}}</p></section>
+{{end}}
+
+<section class="section run-card" aria-labelledby="iterations-heading"><h2 id="iterations-heading">Iterations</h2>
+{{if .Page.Iterations}}
+<div class="run-timeline">
+{{range .Page.Iterations}}
+<div class="run-timeline-item">
+<div class="iteration-marker">{{.Number}}</div>
+<div class="iteration-body">
+{{if .Roles}}
+<div class="role-list">
+{{range .Roles}}
+<div class="role-row"><span class="role-name">{{.Role}}</span><span class="role-harness">{{.Harness}}</span><span class="artifact-links">{{range .Artifacts}}<a href="{{printf "/runs/artifact?path=%s&artifact=%s" (urlquery $.Page.Run.RunDir) (urlquery .Name)}}">{{.Label}}</a>{{end}}</span></div>
+{{end}}
+</div>
+{{end}}
+{{if .Activity}}<div class="run-activity">Activity: {{.Activity}}</div>{{end}}
+{{if .HasVerdict}}
+<div class="verdict-card {{.VerdictClass}}"><div class="verdict-heading"><span class="status-pill {{.VerdictClass}}">{{.VerdictStatus}}</span><span>{{.VerdictSummary}}</span><span class="finding-counts">{{.BlockingCount}} blocking · {{.NitCount}} nits</span></div>
+{{if .FindingGroups}}<div class="finding-groups">{{range .FindingGroups}}<div class="finding-group"><h3>{{.Label}} · {{.Count}}</h3>{{range .Findings}}<div class="finding"><code>{{.Location}}</code><span>{{.Issue}}</span></div>{{end}}</div>{{end}}</div>{{else}}<span class="no-findings">No findings</span>{{end}}
+</div>
+{{end}}
+</div>
+</div>
+{{end}}
+</div>
+{{else}}<div class="empty-state">No iterations recorded yet.{{if .Page.Run.Activity}} Activity: {{.Page.Run.Activity}}{{end}}</div>{{end}}
+</section>
+
+{{if .Page.DiffStatKnown}}<section class="section run-card" aria-labelledby="diff-heading"><h2 id="diff-heading">Diff stat</h2><pre class="diff-stat">{{.Page.DiffStat}}</pre></section>{{end}}
+</div>
+
+<aside class="run-sidebar">
+<section class="section run-card" aria-labelledby="metadata-heading"><h2 id="metadata-heading">Metadata</h2><dl class="metadata-list"><div><dt>Branch</dt><dd>{{.Page.Metadata.Branch}}</dd></div><div><dt>Branch point</dt><dd>{{.Page.Metadata.BranchPoint}}</dd></div><div><dt>Work root</dt><dd>{{.Page.Metadata.WorkRoot}}</dd></div><div><dt>Run directory</dt><dd>{{.Page.Metadata.RunDirectory}}</dd></div><div><dt>Sessions</dt><dd>{{if .Page.Metadata.Sessions}}{{range .Page.Metadata.Sessions}}{{.}}<br>{{end}}{{else}}—{{end}}</dd></div></dl></section>
+
+<section class="section run-card" aria-labelledby="usage-heading"><h2 id="usage-heading">Usage</h2>{{if .Page.Usage}}<div class="usage-grid"><span class="usage-heading">Role</span><span class="usage-heading right">Input</span><span class="usage-heading right">Output</span><span class="usage-heading right">Cached</span>{{range .Page.Usage}}<span class="usage-role">{{.Role}}</span><span class="metric">{{.InputTokens}}</span><span class="metric">{{.OutputTokens}}</span><span class="metric">{{.CachedTokens}}</span>{{end}}</div>{{else}}<div class="empty-state">—</div>{{end}}</section>
+
+<section class="section run-card" aria-labelledby="resume-heading"><h2 id="resume-heading">Resume in a terminal</h2>{{if .Page.Resume}}{{range .Page.Resume}}<code class="resume-command">{{.}}</code>{{end}}<button class="copy-button" type="button" data-copy-command="{{range $index, $command := .Page.Resume}}{{if $index}}&#10;{{end}}{{$command}}{{end}}">Copy command</button>{{else}}<div class="empty-state">No recorded sessions.</div>{{end}}</section>
+</aside>
+</div>
+</div>
+{{end}}
