@@ -2,6 +2,93 @@
 
 <!-- version list -->
 
+## v1.36.0 (2026-09-30)
+
+### Bug Fixes
+
+- **runrecord**: Refactor artifact parsing and fix CI failure
+  ([#220](https://github.com/igorrochap/syl/pull/220),
+  [`b7cfb59`](https://github.com/igorrochap/syl/commit/b7cfb5990a0a05e9492ffaa723230489a418e214))
+
+### Documentation
+
+- **adr**: Document syl home as a value ([#220](https://github.com/igorrochap/syl/pull/220),
+  [`b7cfb59`](https://github.com/igorrochap/syl/commit/b7cfb5990a0a05e9492ffaa723230489a418e214))
+
+### Features
+
+- **cli**: Display dashboard summary on startup ([#220](https://github.com/igorrochap/syl/pull/220),
+  [`b7cfb59`](https://github.com/igorrochap/syl/commit/b7cfb5990a0a05e9492ffaa723230489a418e214))
+
+- **ui**: Add actions to dismiss runs and forget projects
+  ([#220](https://github.com/igorrochap/syl/pull/220),
+  [`b7cfb59`](https://github.com/igorrochap/syl/commit/b7cfb5990a0a05e9492ffaa723230489a418e214))
+
+- **ui**: Add dedicated run details page ([#220](https://github.com/igorrochap/syl/pull/220),
+  [`b7cfb59`](https://github.com/igorrochap/syl/commit/b7cfb5990a0a05e9492ffaa723230489a418e214))
+
+- **ui**: Add local overview web panel ([#220](https://github.com/igorrochap/syl/pull/220),
+  [`b7cfb59`](https://github.com/igorrochap/syl/commit/b7cfb5990a0a05e9492ffaa723230489a418e214))
+
+- **ui**: Add project history page ([#220](https://github.com/igorrochap/syl/pull/220),
+  [`b7cfb59`](https://github.com/igorrochap/syl/commit/b7cfb5990a0a05e9492ffaa723230489a418e214))
+
+- **ui**: Implement comprehensive local web dashboard
+  ([#220](https://github.com/igorrochap/syl/pull/220),
+  [`b7cfb59`](https://github.com/igorrochap/syl/commit/b7cfb5990a0a05e9492ffaa723230489a418e214))
+
+- **web**: Add project configuration editor ([#220](https://github.com/igorrochap/syl/pull/220),
+  [`b7cfb59`](https://github.com/igorrochap/syl/commit/b7cfb5990a0a05e9492ffaa723230489a418e214))
+
+- **web**: Improve error feedback for invalid configurations
+  ([#220](https://github.com/igorrochap/syl/pull/220),
+  [`b7cfb59`](https://github.com/igorrochap/syl/commit/b7cfb5990a0a05e9492ffaa723230489a418e214))
+
+### Refactoring
+
+- **config**: Introduce configview module ([#220](https://github.com/igorrochap/syl/pull/220),
+  [`b7cfb59`](https://github.com/igorrochap/syl/commit/b7cfb5990a0a05e9492ffaa723230489a418e214))
+
+- **core**: Abstract atomic file writing logic ([#220](https://github.com/igorrochap/syl/pull/220),
+  [`b7cfb59`](https://github.com/igorrochap/syl/commit/b7cfb5990a0a05e9492ffaa723230489a418e214))
+
+- **core**: Add sylhome package for centralized registry and runmarker handling
+  ([#220](https://github.com/igorrochap/syl/pull/220),
+  [`b7cfb59`](https://github.com/igorrochap/syl/commit/b7cfb5990a0a05e9492ffaa723230489a418e214))
+
+- **core**: Create runrecord module for durable run storage
+  ([#220](https://github.com/igorrochap/syl/pull/220),
+  [`b7cfb59`](https://github.com/igorrochap/syl/commit/b7cfb5990a0a05e9492ffaa723230489a418e214))
+
+- **orchestration**: Decouple run recording from disk operations
+  ([#220](https://github.com/igorrochap/syl/pull/220),
+  [`b7cfb59`](https://github.com/igorrochap/syl/commit/b7cfb5990a0a05e9492ffaa723230489a418e214))
+
+- **readmodel**: Improve code modularity and readability
+  ([#220](https://github.com/igorrochap/syl/pull/220),
+  [`b7cfb59`](https://github.com/igorrochap/syl/commit/b7cfb5990a0a05e9492ffaa723230489a418e214))
+
+- **run**: Centralize run status observation ([#220](https://github.com/igorrochap/syl/pull/220),
+  [`b7cfb59`](https://github.com/igorrochap/syl/commit/b7cfb5990a0a05e9492ffaa723230489a418e214))
+
+- **runrecord**: Extract legacy status logic ([#220](https://github.com/igorrochap/syl/pull/220),
+  [`b7cfb59`](https://github.com/igorrochap/syl/commit/b7cfb5990a0a05e9492ffaa723230489a418e214))
+
+- **web**: Extract view models into pageview package
+  ([#220](https://github.com/igorrochap/syl/pull/220),
+  [`b7cfb59`](https://github.com/igorrochap/syl/commit/b7cfb5990a0a05e9492ffaa723230489a418e214))
+
+### Testing
+
+- **config**: Add missing validation and error handling tests
+  ([#220](https://github.com/igorrochap/syl/pull/220),
+  [`b7cfb59`](https://github.com/igorrochap/syl/commit/b7cfb5990a0a05e9492ffaa723230489a418e214))
+
+- **web**: Add unit tests for display helpers and handlers
+  ([#220](https://github.com/igorrochap/syl/pull/220),
+  [`b7cfb59`](https://github.com/igorrochap/syl/commit/b7cfb5990a0a05e9492ffaa723230489a418e214))
+
+
 ## v1.35.1 (2026-09-29)
 
 ### Bug Fixes
