@@ -178,47 +178,37 @@ func (writer *Writer) WriteUsage(contents []byte) error {
 	return writer.writeFile(usageFile, contents)
 }
 
+var standaloneArtifactNames = map[ArtifactKind]string{
+	ReviewDiff:       "review.diff",
+	ReviewFeed:       "review.feed",
+	ReviewTranscript: "review.transcript",
+	VerdictFile:      "verdict.txt",
+	SummaryFile:      summaryFile,
+	SessionsFile:     sessionsFile,
+	UsageFile:        usageFile,
+	MetadataFile:     metadataFile,
+}
+
+var iterationArtifactFormats = map[ArtifactKind]string{
+	ImplementFeed:       "iteration-%02d-implement.feed",
+	ImplementTranscript: "iteration-%02d-implement.transcript",
+	ImplementHandoff:    "handoff-%02d.md",
+	ReviewDiff:          "iteration-%02d-review.diff",
+	ReviewFeed:          "iteration-%02d-review.feed",
+	ReviewTranscript:    "iteration-%02d-review.transcript",
+	VerdictFile:         "iteration-%02d-verdict.txt",
+}
+
 // ArtifactName returns the stable name for one artifact kind and iteration.
 func ArtifactName(kind ArtifactKind, iteration int) string {
 	if iteration == 0 {
-		switch kind {
-		case ReviewDiff:
-			return "review.diff"
-		case ReviewFeed:
-			return "review.feed"
-		case ReviewTranscript:
-			return "review.transcript"
-		case VerdictFile:
-			return "verdict.txt"
-		case SummaryFile:
-			return summaryFile
-		case SessionsFile:
-			return sessionsFile
-		case UsageFile:
-			return usageFile
-		case MetadataFile:
-			return metadataFile
-		}
+		return standaloneArtifactNames[kind]
+	}
+	format, ok := iterationArtifactFormats[kind]
+	if !ok {
 		return ""
 	}
-	switch kind {
-	case ImplementFeed:
-		return fmt.Sprintf("iteration-%02d-implement.feed", iteration)
-	case ImplementTranscript:
-		return fmt.Sprintf("iteration-%02d-implement.transcript", iteration)
-	case ImplementHandoff:
-		return fmt.Sprintf("handoff-%02d.md", iteration)
-	case ReviewDiff:
-		return fmt.Sprintf("iteration-%02d-review.diff", iteration)
-	case ReviewFeed:
-		return fmt.Sprintf("iteration-%02d-review.feed", iteration)
-	case ReviewTranscript:
-		return fmt.Sprintf("iteration-%02d-review.transcript", iteration)
-	case VerdictFile:
-		return fmt.Sprintf("iteration-%02d-verdict.txt", iteration)
-	default:
-		return ""
-	}
+	return fmt.Sprintf(format, iteration)
 }
 
 // FormatVerdict returns the stable text representation stored in verdict files.

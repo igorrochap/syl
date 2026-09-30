@@ -136,6 +136,18 @@ func (reader *Reader) Read(runDir string) (Record, error) {
 	record := Record{
 		Directory: runDir, Verdicts: make(map[int]verdict.Verdict), VerdictText: make(map[int]string),
 	}
+	reader.readRecordFiles(&record, runDir)
+	for _, entry := range entries {
+		reader.readEntry(&record, runDir, entry)
+	}
+	sort.Slice(record.Artifacts, func(left, right int) bool {
+		return record.Artifacts[left].Name < record.Artifacts[right].Name
+	})
+	return record, nil
+}
+
+// readRecordFiles fills the record from the fixed-name files, skipping any that are absent.
+func (reader *Reader) readRecordFiles(record *Record, runDir string) {
 	if contents, err := reader.files.ReadFile(filePath(runDir, metadataFile)); err == nil {
 		record.Metadata = ParseMetadata(contents)
 	}
@@ -150,44 +162,39 @@ func (reader *Reader) Read(runDir string) (Record, error) {
 		record.UsageContents = contents
 		record.UsageExists = true
 	}
-	if contents, err := reader.files.ReadFile(Path(runDir)); err == nil {
-		state, parseErr := Parse(Path(runDir), contents)
-		if parseErr == nil {
-			record.State = state
-			record.HasState = true
-		}
+	if state, err := reader.ReadState(runDir); err == nil {
+		record.State = state
+		record.HasState = true
 	}
-	for _, entry := range entries {
-		if entry.Type().IsRegular() {
-			if iteration := ParseIterationNumber(entry.Name()); iteration > record.HighestIteration {
-				record.HighestIteration = iteration
-			}
-		}
-		artifact, ok := ParseArtifactName(entry.Name())
-		if !ok || entry.IsDir() {
-			continue
-		}
-		if info, err := entry.Info(); err == nil {
-			artifact.ModTime = info.ModTime()
-		}
-		record.Artifacts = append(record.Artifacts, artifact)
-		if artifact.Kind != VerdictFile {
-			continue
-		}
-		contents, err := reader.files.ReadFile(filePath(runDir, artifact.Name))
-		if err != nil {
-			continue
-		}
-		record.VerdictText[artifact.Iteration] = ParseVerdictLabel(contents)
-		parsed, err := verdict.Parse(string(contents))
-		if err == nil {
-			record.Verdicts[artifact.Iteration] = parsed
-		}
+}
+
+// readEntry adds one directory entry to the record when it is a known artifact.
+func (reader *Reader) readEntry(record *Record, runDir string, entry os.DirEntry) {
+	if entry.Type().IsRegular() {
+		record.HighestIteration = max(record.HighestIteration, ParseIterationNumber(entry.Name()))
 	}
-	sort.Slice(record.Artifacts, func(left, right int) bool {
-		return record.Artifacts[left].Name < record.Artifacts[right].Name
-	})
-	return record, nil
+	artifact, ok := ParseArtifactName(entry.Name())
+	if !ok || entry.IsDir() {
+		return
+	}
+	if info, err := entry.Info(); err == nil {
+		artifact.ModTime = info.ModTime()
+	}
+	record.Artifacts = append(record.Artifacts, artifact)
+	if artifact.Kind == VerdictFile {
+		reader.readVerdict(record, runDir, artifact)
+	}
+}
+
+func (reader *Reader) readVerdict(record *Record, runDir string, artifact Artifact) {
+	contents, err := reader.files.ReadFile(filePath(runDir, artifact.Name))
+	if err != nil {
+		return
+	}
+	record.VerdictText[artifact.Iteration] = ParseVerdictLabel(contents)
+	if parsed, err := verdict.Parse(string(contents)); err == nil {
+		record.Verdicts[artifact.Iteration] = parsed
+	}
 }
 
 // ReadMetadata reads and parses metadata.txt.
@@ -333,63 +340,80 @@ func ParseVerdictLabel(contents []byte) string {
 	return ""
 }
 
+// metadataFields sets one metadata.txt field, keyed by its lowercase name.
+var metadataFields = map[string]func(metadata *Metadata, value string){
+	"branch": func(metadata *Metadata, value string) {
+		metadata.Branch = value
+		metadata.Kind = Implement
+	},
+	"ticket": func(metadata *Metadata, value string) {
+		metadata.TicketRef = value
+		metadata.inferKind(Review)
+	},
+	"branch point":        func(metadata *Metadata, value string) { metadata.BranchPoint = value },
+	"work root":           func(metadata *Metadata, value string) { metadata.WorkRoot = value },
+	"implementer harness": func(metadata *Metadata, value string) { metadata.ImplementerHarness = value },
+	"reviewer harness": func(metadata *Metadata, value string) {
+		metadata.ReviewerHarness = value
+		metadata.inferKind(Review)
+	},
+}
+
+// contextRoles maps a metadata.txt context header to the field its block fills.
+var contextRoles = map[string]func(metadata *Metadata) *string{
+	"implementer context": func(metadata *Metadata) *string { return &metadata.ImplementContext },
+	"reviewer context":    func(metadata *Metadata) *string { return &metadata.ReviewContext },
+}
+
+func (metadata *Metadata) inferKind(kind Kind) {
+	if metadata.Kind == "" {
+		metadata.Kind = kind
+	}
+}
+
+// contextBlock collects the indented lines that follow a role context header.
+type contextBlock struct {
+	target *string
+	lines  []string
+}
+
+func (block *contextBlock) add(line string) {
+	if block.target != nil {
+		block.lines = append(block.lines, strings.TrimPrefix(line, "  "))
+	}
+}
+
+func (block *contextBlock) flush() {
+	if block.target != nil {
+		*block.target = strings.TrimSpace(strings.Join(block.lines, "\n"))
+	}
+	*block = contextBlock{}
+}
+
 // ParseMetadata parses metadata.txt, including its indented role context blocks.
 func ParseMetadata(contents []byte) Metadata {
 	var metadata Metadata
-	var contextRole string
-	var contextLines []string
-	flushContext := func() {
-		context := strings.TrimSpace(strings.Join(contextLines, "\n"))
-		if contextRole == "implementer" {
-			metadata.ImplementContext = context
-		}
-		if contextRole == "reviewer" {
-			metadata.ReviewContext = context
-		}
-		contextRole = ""
-		contextLines = nil
-	}
+	var block contextBlock
 	for _, line := range strings.Split(string(contents), "\n") {
 		if strings.HasPrefix(line, " ") || strings.HasPrefix(line, "\t") {
-			if contextRole != "" {
-				contextLines = append(contextLines, strings.TrimPrefix(line, "  "))
-			}
+			block.add(line)
 			continue
 		}
-		flushContext()
+		block.flush()
 		key, value, ok := strings.Cut(line, ":")
 		if !ok {
 			continue
 		}
 		key = strings.ToLower(strings.TrimSpace(key))
 		value = strings.TrimSpace(value)
-		switch key {
-		case "branch":
-			metadata.Branch = value
-			metadata.Kind = Implement
-		case "ticket":
-			metadata.TicketRef = value
-			if metadata.Kind == "" {
-				metadata.Kind = Review
-			}
-		case "branch point":
-			metadata.BranchPoint = value
-		case "work root":
-			metadata.WorkRoot = value
-		case "implementer harness":
-			metadata.ImplementerHarness = value
-		case "reviewer harness":
-			metadata.ReviewerHarness = value
-			if metadata.Kind == "" {
-				metadata.Kind = Review
-			}
-		case "implementer context":
-			contextRole = "implementer"
-		case "reviewer context":
-			contextRole = "reviewer"
+		if setField, known := metadataFields[key]; known {
+			setField(&metadata, value)
+		}
+		if target, known := contextRoles[key]; known {
+			block.target = target(&metadata)
 		}
 	}
-	flushContext()
+	block.flush()
 	return metadata
 }
 
@@ -431,88 +455,121 @@ func ParseSummary(contents []byte) Summary {
 	text := string(contents)
 	lines := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
 	summary := Summary{Contents: text}
-	sawFinalVerdict := false
-	sawText := false
-	sawDiffStat := false
-	for index, line := range lines {
-		if strings.HasPrefix(line, "Iterations:") && summary.Iterations == 0 {
-			iteration, err := strconv.Atoi(strings.TrimSpace(strings.TrimPrefix(line, "Iterations:")))
-			if err == nil && iteration > 0 {
-				summary.Iterations = iteration
-			}
-		}
-		if strings.HasPrefix(line, "Final verdict:") && !sawFinalVerdict {
-			summary.FinalVerdict = strings.TrimSpace(strings.TrimPrefix(line, "Final verdict:"))
-			sawFinalVerdict = true
-		}
-		if strings.HasPrefix(line, "Summary:") && !sawText {
-			summary.Text = strings.TrimSpace(strings.TrimPrefix(line, "Summary:"))
-			sawText = true
-		}
-		if strings.HasPrefix(line, "Diff stat:") && !sawDiffStat {
-			summary.DiffStat = strings.TrimSpace(strings.Join(lines[index+1:], "\n"))
-			sawDiffStat = true
-		}
+	summary.Iterations = firstPositiveIterations(lines)
+	if index := firstLineIndex(lines, "Final verdict:"); index >= 0 {
+		summary.FinalVerdict = fieldValue(lines[index], "Final verdict:")
+	}
+	if index := firstLineIndex(lines, "Summary:"); index >= 0 {
+		summary.Text = fieldValue(lines[index], "Summary:")
+	}
+	if index := firstLineIndex(lines, "Diff stat:"); index >= 0 {
+		summary.DiffStat = strings.TrimSpace(strings.Join(lines[index+1:], "\n"))
 	}
 	return summary
 }
 
-// ParseArtifactName parses a known standalone or iteration artifact name.
-func ParseArtifactName(name string) (Artifact, bool) {
-	standalone := map[string]Artifact{
-		"review.diff":       {Kind: ReviewDiff, Name: name, Standalone: true, Iteration: 1, Role: "review", Extension: "diff"},
-		"review.feed":       {Kind: ReviewFeed, Name: name, Standalone: true, Iteration: 1, Role: "review", Extension: "feed"},
-		"review.transcript": {Kind: ReviewTranscript, Name: name, Standalone: true, Iteration: 1, Role: "review", Extension: "transcript"},
-		"verdict.txt":       {Kind: VerdictFile, Name: name, Standalone: true, Iteration: 1},
-		"summary.txt":       {Kind: SummaryFile, Name: name, Standalone: true},
-		"sessions.txt":      {Kind: SessionsFile, Name: name, Standalone: true},
-		"usage.json":        {Kind: UsageFile, Name: name, Standalone: true},
-	}
-	if artifact, ok := standalone[name]; ok {
-		return artifact, true
-	}
-	if strings.HasPrefix(name, "handoff-") && strings.HasSuffix(name, ".md") {
-		iteration, err := strconv.Atoi(strings.TrimSuffix(strings.TrimPrefix(name, "handoff-"), ".md"))
+// firstPositiveIterations skips Iterations lines that are not positive numbers.
+func firstPositiveIterations(lines []string) int {
+	for _, line := range lines {
+		if !strings.HasPrefix(line, "Iterations:") {
+			continue
+		}
+		iteration, err := strconv.Atoi(fieldValue(line, "Iterations:"))
 		if err == nil && iteration > 0 {
-			return Artifact{Kind: ImplementHandoff, Name: name, Iteration: iteration, Role: "implement", Extension: "md"}, true
+			return iteration
 		}
 	}
-	if !strings.HasPrefix(name, "iteration-") {
+	return 0
+}
+
+func firstLineIndex(lines []string, prefix string) int {
+	for index, line := range lines {
+		if strings.HasPrefix(line, prefix) {
+			return index
+		}
+	}
+	return -1
+}
+
+func fieldValue(line, prefix string) string {
+	return strings.TrimSpace(strings.TrimPrefix(line, prefix))
+}
+
+type roleExtension struct{ role, extension string }
+
+var iterationArtifactKinds = map[roleExtension]ArtifactKind{
+	{"implement", "feed"}:       ImplementFeed,
+	{"implement", "transcript"}: ImplementTranscript,
+	{"review", "diff"}:          ReviewDiff,
+	{"review", "feed"}:          ReviewFeed,
+	{"review", "transcript"}:    ReviewTranscript,
+	{"verdict", "txt"}:          VerdictFile,
+}
+
+// ParseArtifactName parses a known standalone or iteration artifact name.
+func ParseArtifactName(name string) (Artifact, bool) {
+	if artifact, ok := parseStandaloneArtifact(name); ok {
+		return artifact, true
+	}
+	if artifact, ok := parseHandoffArtifact(name); ok {
+		return artifact, true
+	}
+	return parseIterationArtifact(name)
+}
+
+func parseStandaloneArtifact(name string) (Artifact, bool) {
+	switch name {
+	case "review.diff":
+		return Artifact{Kind: ReviewDiff, Name: name, Standalone: true, Iteration: 1, Role: "review", Extension: "diff"}, true
+	case "review.feed":
+		return Artifact{Kind: ReviewFeed, Name: name, Standalone: true, Iteration: 1, Role: "review", Extension: "feed"}, true
+	case "review.transcript":
+		return Artifact{Kind: ReviewTranscript, Name: name, Standalone: true, Iteration: 1, Role: "review", Extension: "transcript"}, true
+	case "verdict.txt":
+		return Artifact{Kind: VerdictFile, Name: name, Standalone: true, Iteration: 1}, true
+	case summaryFile:
+		return Artifact{Kind: SummaryFile, Name: name, Standalone: true}, true
+	case sessionsFile:
+		return Artifact{Kind: SessionsFile, Name: name, Standalone: true}, true
+	case usageFile:
+		return Artifact{Kind: UsageFile, Name: name, Standalone: true}, true
+	}
+	return Artifact{}, false
+}
+
+func parseHandoffArtifact(name string) (Artifact, bool) {
+	number, found := strings.CutPrefix(name, "handoff-")
+	if !found {
 		return Artifact{}, false
 	}
-	withoutPrefix := strings.TrimPrefix(name, "iteration-")
-	dash := strings.IndexByte(withoutPrefix, '-')
-	if dash < 1 {
+	number, found = strings.CutSuffix(number, ".md")
+	if !found {
 		return Artifact{}, false
 	}
-	iteration, err := strconv.Atoi(withoutPrefix[:dash])
+	iteration, err := strconv.Atoi(number)
 	if err != nil || iteration <= 0 {
 		return Artifact{}, false
 	}
-	roleAndExtension := withoutPrefix[dash+1:]
+	return Artifact{Kind: ImplementHandoff, Name: name, Iteration: iteration, Role: "implement", Extension: "md"}, true
+}
+
+func parseIterationArtifact(name string) (Artifact, bool) {
+	iteration := ParseIterationNumber(name)
+	if iteration == 0 {
+		return Artifact{}, false
+	}
+	withoutPrefix := strings.TrimPrefix(name, "iteration-")
+	roleAndExtension := withoutPrefix[strings.IndexByte(withoutPrefix, '-')+1:]
 	dot := strings.LastIndexByte(roleAndExtension, '.')
 	if dot < 1 {
 		return Artifact{}, false
 	}
 	role, extension := roleAndExtension[:dot], roleAndExtension[dot+1:]
-	artifact := Artifact{Name: name, Iteration: iteration, Role: role, Extension: extension}
-	switch {
-	case role == "implement" && extension == "feed":
-		artifact.Kind = ImplementFeed
-	case role == "implement" && extension == "transcript":
-		artifact.Kind = ImplementTranscript
-	case role == "review" && extension == "diff":
-		artifact.Kind = ReviewDiff
-	case role == "review" && extension == "feed":
-		artifact.Kind = ReviewFeed
-	case role == "review" && extension == "transcript":
-		artifact.Kind = ReviewTranscript
-	case role == "verdict" && extension == "txt":
-		artifact.Kind = VerdictFile
-	default:
+	kind, ok := iterationArtifactKinds[roleExtension{role, extension}]
+	if !ok {
 		return Artifact{}, false
 	}
-	return artifact, true
+	return Artifact{Kind: kind, Name: name, Iteration: iteration, Role: role, Extension: extension}, true
 }
 
 // ArtifactLabel returns the artifact kind suffix shown in the Run page.
