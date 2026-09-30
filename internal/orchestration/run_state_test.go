@@ -11,18 +11,18 @@ import (
 
 	"github.com/igorrochap/syl/internal/config"
 	"github.com/igorrochap/syl/internal/harness"
-	"github.com/igorrochap/syl/internal/runmarker"
-	"github.com/igorrochap/syl/internal/runstate"
+	"github.com/igorrochap/syl/internal/runrecord"
+	"github.com/igorrochap/syl/internal/sylhome"
 	"github.com/igorrochap/syl/internal/tracker"
 )
 
 func TestRunImplementRecordsRunStateLifecycle(t *testing.T) {
 	root := t.TempDir()
-	var observations []runstate.State
-	readState := func() runstate.State {
+	var observations []runrecord.State
+	readState := func() runrecord.State {
 		t.Helper()
 		path := onlyRunStatePath(t, root)
-		state, err := runstate.Read(path)
+		state, err := runrecord.Read(path)
 		if err != nil {
 			t.Fatalf("read run state: %v", err)
 		}
@@ -55,6 +55,7 @@ func TestRunImplementRecordsRunStateLifecycle(t *testing.T) {
 	err := RunImplement(context.Background(), ImplementOptions{
 		OriginRoot: root,
 		WorkRoot:   root,
+		OpenRun:    NewDiskRunOpener(root, sylhome.Dir{}, &output),
 		ProjectConfig: config.Config{
 			Roles: config.RolesConfig{
 				Implement: config.RoleConfig{Harness: config.HarnessCodex},
@@ -72,7 +73,7 @@ func TestRunImplementRecordsRunStateLifecycle(t *testing.T) {
 		Output:       &output,
 		IdentificationBanner: func(string) error {
 			state := readState()
-			if state.Status != runstate.Running || state.Activity != runstate.Preparing {
+			if state.Status != runrecord.Running || state.Activity != runrecord.Preparing {
 				t.Fatalf("initial state = %#v, want running/preparing", state)
 			}
 			if state.PID <= 0 || state.Hostname == "" || state.StartedAt.IsZero() {
@@ -87,32 +88,95 @@ func TestRunImplementRecordsRunStateLifecycle(t *testing.T) {
 	if len(observations) != 4 {
 		t.Fatalf("observations = %d, want implement/review/implement/review stages", len(observations))
 	}
-	if observations[0].Activity != runstate.Implementing || observations[0].Iteration != 1 || observations[0].MaxIterations != 2 {
+	if observations[0].Activity != runrecord.Implementing || observations[0].Iteration != 1 || observations[0].MaxIterations != 2 {
 		t.Fatalf("first implement state = %#v", observations[0])
 	}
-	if observations[1].Activity != runstate.Reviewing || observations[1].Iteration != 1 {
+	if observations[1].Activity != runrecord.Reviewing || observations[1].Iteration != 1 {
 		t.Fatalf("first review state = %#v", observations[1])
 	}
-	if observations[2].Activity != runstate.Implementing || observations[2].Iteration != 2 {
+	if observations[2].Activity != runrecord.Implementing || observations[2].Iteration != 2 {
 		t.Fatalf("second implement state = %#v", observations[2])
 	}
-	if observations[3].Activity != runstate.Reviewing || observations[3].Iteration != 2 {
+	if observations[3].Activity != runrecord.Reviewing || observations[3].Iteration != 2 {
 		t.Fatalf("second review state = %#v", observations[3])
 	}
 	final := readState()
-	if final.Status != runstate.Approved || final.EndedAt == nil || final.Activity != "" || final.Question != "" {
+	if final.Status != runrecord.Approved || final.EndedAt == nil || final.Activity != "" || final.Question != "" {
 		t.Fatalf("final state = %#v, want approved with ended time and no live activity", final)
 	}
-	if final.Kind != runstate.Implement || final.TicketRef != "#180" {
+	if final.Kind != runrecord.Implement || final.TicketRef != "#180" {
 		t.Fatalf("final identity = %#v", final)
+	}
+}
+
+func TestRunImplementRecordsLifecycleThroughMemoryOpenRun(t *testing.T) {
+	recorder := newMemoryRunRecorder()
+	implementer := &scriptedConversationAdapter{
+		runs: [][]harness.Event{{
+			{Type: harness.EventSession, SessionID: "implement-1"},
+			{Type: harness.EventAssistantText, Text: "implemented"},
+		}},
+		resumes: [][]harness.Event{{
+			{Type: harness.EventSession, SessionID: "implement-1"},
+			{Type: harness.EventAssistantText, Text: "revised"},
+		}},
+	}
+	reviewer := &scriptedConversationAdapter{
+		runs: [][]harness.Event{{
+			{Type: harness.EventSession, SessionID: "review-1"},
+			{Type: harness.EventAssistantText, Text: "VERDICT: revise\nSUMMARY: Fix required\nFINDINGS:\n- [blocking] file.go:1 — fix it\n"},
+		}},
+		resumes: [][]harness.Event{{
+			{Type: harness.EventAssistantText, Text: "VERDICT: approve\nSUMMARY: Ready\nFINDINGS:\n"},
+		}},
+	}
+	err := RunImplement(context.Background(), ImplementOptions{
+		OriginRoot: t.TempDir(), WorkRoot: t.TempDir(),
+		OpenRun: func(RunSpec) (RunRecorder, error) {
+			return recorder, nil
+		},
+		ProjectConfig: config.Config{
+			Roles: config.RolesConfig{
+				Implement: config.RoleConfig{Harness: config.HarnessCodex},
+				Review:    config.RoleConfig{Harness: config.HarnessClaude},
+			},
+			Loop: config.LoopConfig{MaxIterations: 2},
+		},
+		IssueTracker: branchSetupTracker{}, Ticket: tracker.Ticket{Number: 203},
+		Implementer: implementer, Reviewer: reviewer, Git: &implementRunGit{}, OriginGit: &implementRunGit{},
+		Input: strings.NewReader(""), Output: io.Discard,
+	})
+	if err != nil {
+		t.Fatalf("RunImplement() error = %v", err)
+	}
+	if len(recorder.states) != 6 {
+		t.Fatalf("recorded states = %#v, want six lifecycle states", recorder.states)
+	}
+	want := []struct {
+		activity  runrecord.Activity
+		iteration int
+		status    runrecord.Status
+	}{
+		{activity: runrecord.Preparing, status: runrecord.Running},
+		{activity: runrecord.Implementing, iteration: 1, status: runrecord.Running},
+		{activity: runrecord.Reviewing, iteration: 1, status: runrecord.Running},
+		{activity: runrecord.Implementing, iteration: 2, status: runrecord.Running},
+		{activity: runrecord.Reviewing, iteration: 2, status: runrecord.Running},
+		{iteration: 2, status: runrecord.Approved},
+	}
+	for index, expected := range want {
+		got := recorder.states[index]
+		if got.Activity != expected.activity || got.Iteration != expected.iteration || got.Status != expected.status {
+			t.Errorf("state %d = %#v, want activity=%q iteration=%d status=%q", index, got, expected.activity, expected.iteration, expected.status)
+		}
 	}
 }
 
 func TestRunImplementRecordsQuestionPauseAndResume(t *testing.T) {
 	root := t.TempDir()
 	statePath := func() string { return onlyRunStatePath(t, root) }
-	var questionState runstate.State
-	var resumedState runstate.State
+	var questionState runrecord.State
+	var resumedState runrecord.State
 	implementer := &scriptedConversationAdapter{
 		runs: [][]harness.Event{{
 			{Type: harness.EventSession, SessionID: "implement-1"},
@@ -135,6 +199,7 @@ func TestRunImplementRecordsQuestionPauseAndResume(t *testing.T) {
 	}}}
 	err := RunImplement(context.Background(), ImplementOptions{
 		OriginRoot: root, WorkRoot: root,
+		OpenRun: NewDiskRunOpener(root, sylhome.Dir{}, io.Discard),
 		ProjectConfig: config.Config{
 			Roles: config.RolesConfig{
 				Implement: config.RoleConfig{Harness: config.HarnessCodex},
@@ -149,17 +214,65 @@ func TestRunImplementRecordsQuestionPauseAndResume(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunImplement() error = %v", err)
 	}
-	if questionState.Activity != runstate.AwaitingAnswer || questionState.Question != "Which option?" {
+	if questionState.Activity != runrecord.AwaitingAnswer || questionState.Question != "Which option?" {
 		t.Fatalf("question state = %#v, want awaiting answer", questionState)
 	}
-	if resumedState.Activity != runstate.Implementing || resumedState.Question != "" {
+	if resumedState.Activity != runrecord.Implementing || resumedState.Question != "" {
 		t.Fatalf("resumed state = %#v, want implementing without question", resumedState)
+	}
+}
+
+func TestRunImplementRecordsQuestionPauseThroughMemoryOpenRun(t *testing.T) {
+	recorder := newMemoryRunRecorder()
+	implementer := &scriptedConversationAdapter{
+		runs: [][]harness.Event{{
+			{Type: harness.EventSession, SessionID: "implement-1"},
+			{Type: harness.EventAssistantText, Text: "QUESTION:\nWhich option?\nEND QUESTION"},
+		}},
+		resumes: [][]harness.Event{{
+			{Type: harness.EventAssistantText, Text: "implemented after answer"},
+		}},
+	}
+	reviewer := &scriptedConversationAdapter{runs: [][]harness.Event{{
+		{Type: harness.EventSession, SessionID: "review-1"},
+		{Type: harness.EventAssistantText, Text: "VERDICT: approve\nSUMMARY: Ready\nFINDINGS:\n"},
+	}}}
+	err := RunImplement(context.Background(), ImplementOptions{
+		OriginRoot: t.TempDir(), WorkRoot: t.TempDir(),
+		OpenRun: func(RunSpec) (RunRecorder, error) {
+			return recorder, nil
+		},
+		ProjectConfig: config.Config{
+			Roles: config.RolesConfig{
+				Implement: config.RoleConfig{Harness: config.HarnessCodex},
+				Review:    config.RoleConfig{Harness: config.HarnessClaude},
+			},
+			Loop: config.LoopConfig{MaxIterations: 1},
+		},
+		IssueTracker: branchSetupTracker{}, Ticket: tracker.Ticket{Number: 203},
+		Implementer: implementer, Reviewer: reviewer, Git: &implementRunGit{}, OriginGit: &implementRunGit{},
+		Input: strings.NewReader("Use option A\n"), Output: io.Discard,
+	})
+	if err != nil {
+		t.Fatalf("RunImplement() error = %v", err)
+	}
+	var awaiting, restored bool
+	for _, state := range recorder.states {
+		if state.Activity == runrecord.AwaitingAnswer && state.Question == "Which option?" {
+			awaiting = true
+		}
+		if awaiting && state.Activity == runrecord.Implementing && state.Question == "" {
+			restored = true
+		}
+	}
+	if !awaiting || !restored {
+		t.Fatalf("recorded states = %#v, want awaiting-answer and restored implementing states", recorder.states)
 	}
 }
 
 func TestRunReviewRecordsStandaloneRunState(t *testing.T) {
 	root := t.TempDir()
-	var reviewingState runstate.State
+	var reviewingState runrecord.State
 	git := &reviewDiffGit{responses: map[string]reviewDiffResponse{
 		"rev-parse HEAD":                          {output: "branch-point\n"},
 		"diff branch-point":                       {output: "diff --git a/change.txt b/change.txt\n+reviewed\n"},
@@ -167,6 +280,7 @@ func TestRunReviewRecordsStandaloneRunState(t *testing.T) {
 	}}
 	err := RunReview(context.Background(), ReviewOptions{
 		OriginRoot: root, WorkRoot: root, Git: git, Input: strings.NewReader(""), Output: io.Discard,
+		OpenRun:       NewDiskRunOpener(root, sylhome.Dir{}, io.Discard),
 		ProjectConfig: config.Config{Roles: config.RolesConfig{Review: config.RoleConfig{Harness: config.HarnessClaude}}},
 		Adapter: &capturingReviewAdapter{runHook: func() {
 			reviewingState = mustReadRunState(t, onlyRunStatePath(t, root))
@@ -175,12 +289,42 @@ func TestRunReviewRecordsStandaloneRunState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunReview() error = %v", err)
 	}
-	if reviewingState.Status != runstate.Running || reviewingState.Activity != runstate.Reviewing || reviewingState.Iteration != 1 || reviewingState.MaxIterations != 1 {
+	if reviewingState.Status != runrecord.Running || reviewingState.Activity != runrecord.Reviewing || reviewingState.Iteration != 1 || reviewingState.MaxIterations != 1 {
 		t.Fatalf("active standalone review state = %#v, want running/reviewing at iteration 1/1", reviewingState)
 	}
 	state := mustReadRunState(t, onlyRunStatePath(t, root))
-	if state.Kind != runstate.Review || state.Iteration != 1 || state.MaxIterations != 1 || state.Status != runstate.Approved || state.EndedAt == nil {
+	if state.Kind != runrecord.Review || state.Iteration != 1 || state.MaxIterations != 1 || state.Status != runrecord.Approved || state.EndedAt == nil {
 		t.Fatalf("standalone review state = %#v", state)
+	}
+}
+
+func TestRunReviewRecordsLifecycleThroughMemoryOpenRun(t *testing.T) {
+	recorder := newMemoryRunRecorder()
+	git := &reviewDiffGit{responses: map[string]reviewDiffResponse{
+		"rev-parse HEAD":                          {output: "branch-point\n"},
+		"diff branch-point":                       {output: "diff --git a/change.txt b/change.txt\n+reviewed\n"},
+		"ls-files --others --exclude-standard -z": {},
+	}}
+	err := RunReview(context.Background(), ReviewOptions{
+		OriginRoot: t.TempDir(), WorkRoot: t.TempDir(),
+		OpenRun: func(RunSpec) (RunRecorder, error) {
+			return recorder, nil
+		},
+		Git: git, Input: strings.NewReader(""), Output: io.Discard,
+		ProjectConfig: config.Config{Roles: config.RolesConfig{Review: config.RoleConfig{Harness: config.HarnessClaude}}},
+		Adapter:       &capturingReviewAdapter{},
+	})
+	if err != nil {
+		t.Fatalf("RunReview() error = %v", err)
+	}
+	if len(recorder.states) != 3 {
+		t.Fatalf("recorded states = %#v, want preparing, reviewing, approved", recorder.states)
+	}
+	if got := recorder.states[1]; got.Activity != runrecord.Reviewing || got.Iteration != 1 || got.MaxIterations != 1 {
+		t.Fatalf("reviewing state = %#v, want reviewing at iteration 1/1", got)
+	}
+	if got := recorder.states[2]; got.Status != runrecord.Approved || got.Activity != "" {
+		t.Fatalf("final state = %#v, want approved without activity", got)
 	}
 }
 
@@ -189,7 +333,7 @@ func TestRunImplementRecordsExhaustedAndCancelledStates(t *testing.T) {
 		name       string
 		ctx        func() context.Context
 		reviewer   harness.Adapter
-		wantStatus runstate.Status
+		wantStatus runrecord.Status
 		wantError  string
 	}{
 		{
@@ -199,21 +343,21 @@ func TestRunImplementRecordsExhaustedAndCancelledStates(t *testing.T) {
 				{Type: harness.EventSession, SessionID: "review-1"},
 				{Type: harness.EventAssistantText, Text: "VERDICT: revise\nSUMMARY: More work\nFINDINGS:\n"},
 			}}},
-			wantStatus: runstate.Exhausted,
+			wantStatus: runrecord.Exhausted,
 			wantError:  "max iterations",
 		},
 		{
 			name:       "cancelled",
 			ctx:        context.Background,
 			reviewer:   &errorHarnessAdapter{err: context.Canceled},
-			wantStatus: runstate.Cancelled,
+			wantStatus: runrecord.Cancelled,
 			wantError:  "run review harness",
 		},
 		{
 			name:       "failed",
 			ctx:        context.Background,
 			reviewer:   &errorHarnessAdapter{err: errors.New("harness failed")},
-			wantStatus: runstate.Failed,
+			wantStatus: runrecord.Failed,
 			wantError:  "run review harness",
 		},
 	}
@@ -223,7 +367,7 @@ func TestRunImplementRecordsExhaustedAndCancelledStates(t *testing.T) {
 			sylHome := t.TempDir()
 			err := RunImplement(test.ctx(), ImplementOptions{
 				OriginRoot: root, WorkRoot: root, Git: &implementRunGit{}, OriginGit: &implementRunGit{},
-				SylHome:      sylHome,
+				OpenRun:      NewDiskRunOpener(root, testSylHome(t, sylHome), io.Discard),
 				IssueTracker: branchSetupTracker{}, Ticket: tracker.Ticket{Number: 180},
 				ProjectConfig: config.Config{
 					Roles: config.RolesConfig{
@@ -242,7 +386,7 @@ func TestRunImplementRecordsExhaustedAndCancelledStates(t *testing.T) {
 			if state.Status != test.wantStatus || state.EndedAt == nil {
 				t.Fatalf("state = %#v, want %s with ended time", state, test.wantStatus)
 			}
-			markers, markerErr := runmarker.List(sylHome)
+			markers, markerErr := testSylHome(t, sylHome).LiveRuns()
 			if markerErr != nil {
 				t.Fatalf("List() after %s Run: %v", test.name, markerErr)
 			}
@@ -259,6 +403,7 @@ func TestRunContinuesWhenRunStateWritesFail(t *testing.T) {
 	var runDir string
 	err := RunImplement(context.Background(), ImplementOptions{
 		OriginRoot: root, WorkRoot: root, Git: &implementRunGit{}, OriginGit: &implementRunGit{},
+		OpenRun:      NewDiskRunOpener(root, sylhome.Dir{}, &output),
 		IssueTracker: branchSetupTracker{}, Ticket: tracker.Ticket{Number: 180},
 		ProjectConfig: config.Config{
 			Roles: config.RolesConfig{
@@ -272,10 +417,10 @@ func TestRunContinuesWhenRunStateWritesFail(t *testing.T) {
 		Input:       strings.NewReader(""), Output: &output,
 		IdentificationBanner: func(artifactDir string) error {
 			runDir = artifactDir
-			if err := os.Remove(runstate.Path(runDir)); err != nil {
+			if err := os.Remove(runrecord.Path(runDir)); err != nil {
 				t.Fatalf("remove run state: %v", err)
 			}
-			return os.Mkdir(runstate.Path(runDir), 0o755)
+			return os.Mkdir(runrecord.Path(runDir), 0o755)
 		},
 	})
 	if err != nil {
@@ -295,9 +440,9 @@ func onlyRunStatePath(t *testing.T, root string) string {
 	return matches[0]
 }
 
-func mustReadRunState(t *testing.T, path string) runstate.State {
+func mustReadRunState(t *testing.T, path string) runrecord.State {
 	t.Helper()
-	state, err := runstate.Read(path)
+	state, err := runrecord.Read(path)
 	if err != nil {
 		t.Fatalf("read run state: %v", err)
 	}

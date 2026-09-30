@@ -358,7 +358,28 @@ parsed Verdict view:
 syl review 42 --raw
 ```
 
-### 6. Resume a recorded session
+### 6. Open the local Overview
+
+```sh
+syl ui
+```
+
+`syl ui` serves a read-only Overview of live Runs and registered Projects on
+`127.0.0.1:7777`, then opens it in the default browser. Run it from any
+directory; it does not require a project configuration or register the current
+directory. Use `--port N` to choose another loopback port and `--no-open` to
+keep the browser closed:
+
+```sh
+syl ui --port 8123 --no-open
+```
+
+The page polls while its browser tab is visible and pauses while hidden. The
+Overview derives Interrupted Runs from their process IDs; it never changes the
+Run state file. `syl ui` stays in the foreground and stops cleanly with
+Ctrl-C.
+
+### 7. Resume a recorded session
 
 ```sh
 syl resume implement
@@ -383,7 +404,7 @@ The resumed Harness and Work root come from that run's `metadata.txt`, not the
 current `.syl/config.toml`. The current Role's `mcp` setting is passed to the
 Harness. Pre-#160 runs have no recorded Work root and cannot be resumed.
 
-### 7. Inspect run usage
+### 8. Inspect run usage
 
 ```sh
 syl usage

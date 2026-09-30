@@ -277,6 +277,21 @@ func TestWidthHandling(t *testing.T) {
 	})
 }
 
+func TestBannerRowUsesCompleteBannerAlignment(t *testing.T) {
+	var output bytes.Buffer
+	renderer := New(&output, Caps{Width: 80, Unicode: true})
+	rows := []Field{
+		{Label: "a longer label", Value: "value"},
+		{Label: "browser", Value: "opened"},
+	}
+	if err := renderer.BannerRow(rows[1], rows); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := output.String(), "  browser:         opened\n"; got != want {
+		t.Fatalf("BannerRow() = %q, want %q", got, want)
+	}
+}
+
 func TestDetectCapsUsesEnvironmentAndTerminalWriter(t *testing.T) {
 	master, terminal, err := pty.Open()
 	if err != nil {

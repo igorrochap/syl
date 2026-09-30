@@ -10,6 +10,8 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/igorrochap/syl/internal/pageview"
+	"github.com/igorrochap/syl/internal/runrecord"
 	"github.com/igorrochap/syl/internal/ui"
 	"github.com/igorrochap/syl/internal/usage"
 	"github.com/spf13/cobra"
@@ -25,8 +27,7 @@ func (a *App) usageCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			artifactPath := filepath.Join(runDir, "usage.json")
-			artifact, err := usage.ReadArtifact(artifactPath)
+			contents, err := runrecord.NewReader(nil).ReadUsage(runDir)
 			if err != nil {
 				if errors.Is(err, os.ErrNotExist) {
 					artifact, recomputeErr := a.recomputeUsage(cmd.ErrOrStderr(), runDir)
@@ -39,6 +40,10 @@ func (a *App) usageCommand() *cobra.Command {
 					}
 					return renderUsageWithRenderer(renderer, artifact)
 				}
+				return err
+			}
+			artifact, err := usage.ParseArtifact(runDir, contents)
+			if err != nil {
 				return err
 			}
 			return renderUsage(cmd.OutOrStdout(), artifact)
@@ -63,48 +68,53 @@ func (a *App) recomputeUsage(stderr io.Writer, runDir string) (usage.Artifact, e
 }
 
 func resolveUsageRun(originRoot string, args []string) (string, error) {
-	runsDir := filepath.Join(originRoot, ".syl", "runs")
 	if len(args) == 1 {
-		name := strings.TrimSpace(args[0])
-		if name == "" {
-			return "", errors.New("usage run name cannot be empty")
-		}
-		candidate := name
-		if !filepath.IsAbs(candidate) {
-			if strings.ContainsRune(candidate, os.PathSeparator) || strings.HasPrefix(candidate, ".") {
-				candidate = filepath.Join(originRoot, candidate)
-			} else {
-				candidate = filepath.Join(runsDir, candidate)
-			}
-		}
-		info, err := os.Stat(candidate)
-		if err != nil {
-			return "", fmt.Errorf("run directory %q not found: %w", candidate, err)
-		}
-		if !info.IsDir() {
-			return "", fmt.Errorf("run path %q is not a directory", candidate)
-		}
-		return candidate, nil
+		return resolveNamedUsageRun(originRoot, args[0])
 	}
+	return resolveLatestUsageRun(originRoot)
+}
 
-	entries, err := os.ReadDir(runsDir)
+func resolveNamedUsageRun(originRoot, name string) (string, error) {
+	runsDir := runrecord.RunsDirectory(originRoot)
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "", errors.New("usage run name cannot be empty")
+	}
+	candidate := namedUsageRunPath(originRoot, runsDir, name)
+	info, err := os.Stat(candidate)
+	if err != nil {
+		return "", fmt.Errorf("run directory %q not found: %w", candidate, err)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("run path %q is not a directory", candidate)
+	}
+	return candidate, nil
+}
+
+func namedUsageRunPath(originRoot, runsDir, name string) string {
+	if filepath.IsAbs(name) {
+		return name
+	}
+	if strings.ContainsRune(name, os.PathSeparator) || strings.HasPrefix(name, ".") {
+		return filepath.Join(originRoot, name)
+	}
+	return filepath.Join(runsDir, name)
+}
+
+func resolveLatestUsageRun(originRoot string) (string, error) {
+	runsDir := runrecord.RunsDirectory(originRoot)
+	runDirs, err := runrecord.Directories(originRoot)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return "", fmt.Errorf("no run directories found in %s", runsDir)
 		}
 		return "", fmt.Errorf("read run directories %s: %w", runsDir, err)
 	}
-	var names []string
-	for _, entry := range entries {
-		if entry.IsDir() {
-			names = append(names, entry.Name())
-		}
-	}
-	if len(names) == 0 {
+	if len(runDirs) == 0 {
 		return "", fmt.Errorf("no run directories found in %s", runsDir)
 	}
-	sort.Strings(names)
-	return filepath.Join(runsDir, names[len(names)-1]), nil
+	sort.Strings(runDirs)
+	return runDirs[len(runDirs)-1], nil
 }
 
 func renderUsage(output io.Writer, artifact usage.Artifact) error {
@@ -182,8 +192,8 @@ func formatCodexUsage(metrics usage.Metrics) string {
 	}
 	return fmt.Sprintf(
 		"input %s (%.0f%% cached) · output %s (%s reasoning)",
-		formatTokenCount(metrics.InputTokens), math.Round(cachedPercent),
-		formatTokenCount(metrics.OutputTokens), formatTokenCount(metrics.ReasoningOutputTokens),
+		pageview.FormatTokenCount(metrics.InputTokens), math.Round(cachedPercent),
+		pageview.FormatTokenCount(metrics.OutputTokens), pageview.FormatTokenCount(metrics.ReasoningOutputTokens),
 	)
 }
 
@@ -193,15 +203,4 @@ func formatClaudeUsage(metrics usage.Metrics) string {
 		metrics.WeightedEstimate, metrics.InputTokens, metrics.OutputTokens,
 		metrics.CacheWriteTokens, metrics.CacheReadTokens,
 	)
-}
-
-func formatTokenCount(tokens int64) string {
-	switch {
-	case tokens >= 1_000_000:
-		return fmt.Sprintf("%.1fM", float64(tokens)/1_000_000)
-	case tokens >= 1_000:
-		return fmt.Sprintf("%.1fk", float64(tokens)/1_000)
-	default:
-		return fmt.Sprintf("%d", tokens)
-	}
 }

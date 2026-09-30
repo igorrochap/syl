@@ -10,16 +10,16 @@ import (
 
 	"github.com/igorrochap/syl/internal/config"
 	"github.com/igorrochap/syl/internal/harness"
-	"github.com/igorrochap/syl/internal/runmarker"
+	"github.com/igorrochap/syl/internal/sylhome"
 	"github.com/igorrochap/syl/internal/tracker"
 )
 
 func TestRunImplementCreatesAndRemovesLiveRunMarker(t *testing.T) {
 	root := t.TempDir()
 	sylHome := t.TempDir()
-	var duringRun []runmarker.Pointer
+	var duringRun []sylhome.LiveRun
 	observeMarker := func() {
-		pointers, err := runmarker.List(sylHome)
+		pointers, err := testSylHome(t, sylHome).LiveRuns()
 		if err != nil {
 			t.Fatalf("List() during implement: %v", err)
 		}
@@ -40,7 +40,7 @@ func TestRunImplementCreatesAndRemovesLiveRunMarker(t *testing.T) {
 	err := RunImplement(context.Background(), ImplementOptions{
 		OriginRoot: root,
 		WorkRoot:   root,
-		SylHome:    sylHome,
+		OpenRun:    NewDiskRunOpener(root, testSylHome(t, sylHome), io.Discard),
 		ProjectConfig: config.Config{
 			Roles: config.RolesConfig{
 				Implement: config.RoleConfig{Harness: config.HarnessCodex},
@@ -72,7 +72,7 @@ func TestRunImplementCreatesAndRemovesLiveRunMarker(t *testing.T) {
 	if duringRun[0].TicketRef != "#181" {
 		t.Fatalf("marker ticket reference = %q, want #181", duringRun[0].TicketRef)
 	}
-	afterRun, err := runmarker.List(sylHome)
+	afterRun, err := testSylHome(t, sylHome).LiveRuns()
 	if err != nil {
 		t.Fatalf("List() after implement: %v", err)
 	}
@@ -89,9 +89,9 @@ func TestRunReviewCreatesAndRemovesLiveRunMarker(t *testing.T) {
 		"diff branch-point":                       {output: "diff --git a/change.txt b/change.txt\n+reviewed\n"},
 		"ls-files --others --exclude-standard -z": {},
 	}}
-	var duringRun []runmarker.Pointer
+	var duringRun []sylhome.LiveRun
 	adapter := &capturingReviewAdapter{runHook: func() {
-		pointers, err := runmarker.List(sylHome)
+		pointers, err := testSylHome(t, sylHome).LiveRuns()
 		if err != nil {
 			t.Fatalf("List() during review: %v", err)
 		}
@@ -101,7 +101,7 @@ func TestRunReviewCreatesAndRemovesLiveRunMarker(t *testing.T) {
 	err := RunReview(context.Background(), ReviewOptions{
 		OriginRoot: root,
 		WorkRoot:   root,
-		SylHome:    sylHome,
+		OpenRun:    NewDiskRunOpener(root, testSylHome(t, sylHome), io.Discard),
 		Git:        git,
 		Input:      strings.NewReader(""),
 		Output:     io.Discard,
@@ -116,7 +116,7 @@ func TestRunReviewCreatesAndRemovesLiveRunMarker(t *testing.T) {
 	if len(duringRun) != 1 || duringRun[0].TicketRef != "" {
 		t.Fatalf("markers during standalone review = %#v, want one unticketed marker", duringRun)
 	}
-	afterRun, err := runmarker.List(sylHome)
+	afterRun, err := testSylHome(t, sylHome).LiveRuns()
 	if err != nil {
 		t.Fatalf("List() after review: %v", err)
 	}
@@ -136,7 +136,7 @@ func TestRunContinuesWhenLiveRunMarkerWriteFails(t *testing.T) {
 	err := RunImplement(context.Background(), ImplementOptions{
 		OriginRoot: root,
 		WorkRoot:   root,
-		SylHome:    sylHome,
+		OpenRun:    NewDiskRunOpener(root, testSylHome(t, sylHome), &output),
 		ProjectConfig: config.Config{
 			Roles: config.RolesConfig{
 				Implement: config.RoleConfig{Harness: config.HarnessCodex},

@@ -95,6 +95,18 @@ func sortEntries(entries []Entry) {
 
 // WriteArtifact serializes an artifact to path.
 func WriteArtifact(path string, artifact Artifact) error {
+	contents, err := MarshalArtifact(artifact)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(path, contents, 0o644); err != nil {
+		return fmt.Errorf("write usage artifact %s: %w", path, err)
+	}
+	return nil
+}
+
+// MarshalArtifact returns the stable bytes stored in usage.json.
+func MarshalArtifact(artifact Artifact) ([]byte, error) {
 	if artifact.SchemaVersion == 0 {
 		artifact.SchemaVersion = SchemaVersion
 	}
@@ -107,13 +119,10 @@ func WriteArtifact(path string, artifact Artifact) error {
 	sortEntries(artifact.Entries)
 	contents, err := json.MarshalIndent(artifact, "", "  ")
 	if err != nil {
-		return fmt.Errorf("encode usage artifact: %w", err)
+		return nil, fmt.Errorf("encode usage artifact: %w", err)
 	}
 	contents = append(contents, '\n')
-	if err := os.WriteFile(path, contents, 0o644); err != nil {
-		return fmt.Errorf("write usage artifact %s: %w", path, err)
-	}
-	return nil
+	return contents, nil
 }
 
 // ReadArtifact parses and validates an artifact from path.
@@ -122,6 +131,11 @@ func ReadArtifact(path string) (Artifact, error) {
 	if err != nil {
 		return Artifact{}, err
 	}
+	return ParseArtifact(path, contents)
+}
+
+// ParseArtifact decodes and validates a usage artifact from contents.
+func ParseArtifact(path string, contents []byte) (Artifact, error) {
 	var artifact Artifact
 	if err := json.Unmarshal(contents, &artifact); err != nil {
 		return Artifact{}, fmt.Errorf("decode usage artifact %s: %w", path, err)

@@ -27,9 +27,14 @@ linters:
             - "!**/internal/initializer/*.go"
             - "!**/internal/updater/*.go"
             - "!**/internal/usage/*.go"
-            - "!**/internal/registry/*.go"
-            - "!**/internal/runmarker/*.go"
-            - "!**/internal/runstate/*.go"
+            - "!**/internal/sylhome/*.go"
+            - "!**/internal/runrecord/*.go"
+            - "!**/internal/atomicfile/*.go"
+            - "!**/internal/readmodel/*.go"
+            - "!**/internal/configedit/*.go"
+            - "!**/internal/configview/*.go"
+            - "!**/internal/pageview/*.go"
+            - "!**/internal/web/*.go"
             - "!**/internal/adapters/gh/*.go"
             - "!**/internal/adapters/glab/*.go"
             - "!**/internal/adapters/git/*.go"
@@ -79,12 +84,16 @@ linters:
             - github.com/igorrochap/syl/internal/harness$
             - github.com/igorrochap/syl/internal/initializer$
             - github.com/igorrochap/syl/internal/orchestration$
-            - github.com/igorrochap/syl/internal/registry$
+            - github.com/igorrochap/syl/internal/pageview$
+            - github.com/igorrochap/syl/internal/readmodel$
+            - github.com/igorrochap/syl/internal/runrecord$
+            - github.com/igorrochap/syl/internal/sylhome$
             - github.com/igorrochap/syl/internal/tracker$
             - github.com/igorrochap/syl/internal/ui$
             - github.com/igorrochap/syl/internal/updater$
             - github.com/igorrochap/syl/internal/usage$
             - github.com/igorrochap/syl/internal/version$
+            - github.com/igorrochap/syl/internal/web$
           deny:
             - pkg: github.com/igorrochap/syl
               desc: command packages may depend on application packages and ports, not concrete harness adapters
@@ -98,8 +107,8 @@ linters:
             - golang.org
             - github.com/igorrochap/syl/internal/config$
             - github.com/igorrochap/syl/internal/harness$
-            - github.com/igorrochap/syl/internal/runmarker$
-            - github.com/igorrochap/syl/internal/runstate$
+            - github.com/igorrochap/syl/internal/runrecord$
+            - github.com/igorrochap/syl/internal/sylhome$
             - github.com/igorrochap/syl/internal/tracker$
             - github.com/igorrochap/syl/internal/ui$
             - github.com/igorrochap/syl/internal/usage$
@@ -107,6 +116,78 @@ linters:
           deny:
             - pkg: github.com/igorrochap/syl
               desc: orchestration depends on ports and support packages, not command or adapter packages
+        readmodel:
+          files:
+            - "**/internal/readmodel/*.go"
+          list-mode: lax
+          allow:
+            - $gostd
+            - github.com
+            - golang.org
+            - github.com/igorrochap/syl/internal/config$
+            - github.com/igorrochap/syl/internal/sylhome$
+            - github.com/igorrochap/syl/internal/runrecord$
+            - github.com/igorrochap/syl/internal/usage$
+            - github.com/igorrochap/syl/internal/verdict$
+          deny:
+            - pkg: github.com/igorrochap/syl
+              desc: the read model owns reads and must not depend on presentation packages
+        configedit:
+          files:
+            - "**/internal/configedit/*.go"
+          list-mode: lax
+          allow:
+            - $gostd
+            - github.com
+            - golang.org
+            - github.com/igorrochap/syl/internal/config$
+          deny:
+            - pkg: github.com/igorrochap/syl
+              desc: config editing owns validation and persistence but not HTTP presentation
+        configview:
+          files:
+            - "**/internal/configview/*.go"
+          list-mode: lax
+          allow:
+            - $gostd
+            - github.com
+            - golang.org
+            - github.com/igorrochap/syl/internal/config$
+            - github.com/igorrochap/syl/internal/configedit$
+            - github.com/igorrochap/syl/internal/readmodel$
+          deny:
+            - pkg: github.com/igorrochap/syl
+              desc: the Config tab view model owns page decisions without depending on HTTP adapters
+        web:
+          files:
+            - "**/internal/web/*.go"
+          list-mode: lax
+          allow:
+            - $gostd
+            - github.com
+            - golang.org
+            - github.com/igorrochap/syl/internal/readmodel$
+            - github.com/igorrochap/syl/internal/runrecord$
+            - github.com/igorrochap/syl/internal/sylhome$
+            - github.com/igorrochap/syl/internal/configedit$
+            - github.com/igorrochap/syl/internal/configview$
+            - github.com/igorrochap/syl/internal/pageview$
+          deny:
+            - pkg: github.com/igorrochap/syl
+              desc: the web adapter renders the read model without depending on command or workflow packages
+        pageview:
+          files:
+            - "**/internal/pageview/*.go"
+          list-mode: lax
+          allow:
+            - $gostd
+            - github.com
+            - golang.org
+            - github.com/igorrochap/syl/internal/readmodel$
+            - github.com/igorrochap/syl/internal/runrecord$
+          deny:
+            - pkg: github.com/igorrochap/syl
+              desc: page view models format read models without depending on HTTP or template adapters
         harness:
           files:
             - "**/internal/harness/*.go"
@@ -183,6 +264,7 @@ linters:
             - github.com
             - golang.org
             - github.com/igorrochap/syl/internal/harness/claude/transcript$
+            - github.com/igorrochap/syl/internal/runrecord$
           deny:
             - pkg: github.com/igorrochap/syl
               desc: usage recomputation reads transcript records but must not depend on workflow callers
@@ -215,14 +297,11 @@ linters:
             - "**/internal/adapters/git/*.go"
             - "**/internal/adapters/notify/*.go"
             - "**/internal/harness/claude/transcript/*.go"
-            - "**/internal/config/*.go"
             - "**/internal/tracker/*.go"
             - "**/internal/tui/*.go"
             - "**/internal/verdict/*.go"
             - "**/internal/version/*.go"
-            - "**/internal/registry/*.go"
-            - "**/internal/runmarker/*.go"
-            - "**/internal/runstate/*.go"
+            - "**/internal/atomicfile/*.go"
             - "**/scripts/*.go"
             - "**/skills/*.go"
           list-mode: lax
@@ -233,6 +312,32 @@ linters:
           deny:
             - pkg: github.com/igorrochap/syl
               desc: support packages do not depend on other project packages
+        atomicfile-users:
+          files:
+            - "**/internal/config/*.go"
+            - "**/internal/sylhome/*.go"
+          list-mode: lax
+          allow:
+            - $gostd
+            - github.com
+            - golang.org
+            - github.com/igorrochap/syl/internal/atomicfile$
+          deny:
+            - pkg: github.com/igorrochap/syl
+              desc: support writers may depend only on the atomic file module
+        runrecord:
+          files:
+            - "**/internal/runrecord/*.go"
+          list-mode: lax
+          allow:
+            - $gostd
+            - github.com
+            - golang.org
+            - github.com/igorrochap/syl/internal/atomicfile$
+            - github.com/igorrochap/syl/internal/verdict$
+          deny:
+            - pkg: github.com/igorrochap/syl
+              desc: Run records own their directory format and depend only on atomic replacement and verdict parsing
         ui:
           files:
             - "**/internal/ui/*.go"

@@ -6,6 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
+	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
 
@@ -15,28 +18,32 @@ import (
 	"github.com/igorrochap/syl/internal/harness"
 	"github.com/igorrochap/syl/internal/initializer"
 	"github.com/igorrochap/syl/internal/orchestration"
-	"github.com/igorrochap/syl/internal/registry"
+	"github.com/igorrochap/syl/internal/readmodel"
+	"github.com/igorrochap/syl/internal/sylhome"
 	"github.com/igorrochap/syl/internal/tracker"
 	"github.com/igorrochap/syl/internal/ui"
 	"github.com/igorrochap/syl/internal/updater"
 	"github.com/igorrochap/syl/internal/version"
+	"github.com/igorrochap/syl/internal/web"
 	"github.com/spf13/cobra"
 )
 
 type Dependencies struct {
-	Input     io.Reader
-	Harnesses func(root string) map[string]harness.Adapter
-	Notifier  orchestration.Notifier
-	GH        func(root string) tracker.GHRunner
-	GLab      func(root string) tracker.GLabRunner
-	Git       func(root string) orchestration.GitRunner
-	Updater   updater.Runner
+	Input         io.Reader
+	Harnesses     func(root string) map[string]harness.Adapter
+	Notifier      orchestration.Notifier
+	GH            func(root string) tracker.GHRunner
+	GLab          func(root string) tracker.GLabRunner
+	Git           func(root string) orchestration.GitRunner
+	Updater       updater.Runner
+	BrowserOpener func(url string) error
+	Listen        func(network, address string) (net.Listener, error)
 }
 
 type App struct {
 	originRoot      string
 	workRoot        string
-	sylHome         string
+	sylHome         sylhome.Dir
 	deps            Dependencies
 	harnessAdapters map[string]harness.Adapter
 }
@@ -50,7 +57,7 @@ type implementCommandOptions struct {
 }
 
 // New constructs an in-process CLI application with its three filesystem roots.
-func New(originRoot, workRoot, sylHome string, deps Dependencies) *App {
+func New(originRoot, workRoot string, sylHome sylhome.Dir, deps Dependencies) *App {
 	if originRoot == "" {
 		originRoot = "."
 	}
@@ -107,10 +114,144 @@ func (a *App) Command() *cobra.Command {
 		a.reviewCommand(),
 		a.resumeCommand(),
 		a.usageCommand(),
+		a.uiCommand(),
 		a.versionCommand(),
 		a.updateCommand(),
 	)
 	return root
+}
+
+func (a *App) uiCommand() *cobra.Command {
+	var port int
+	var noOpen bool
+	command := &cobra.Command{
+		Use:   "ui",
+		Short: "serve the local Overview web panel",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return a.runUICommand(cmd, port, noOpen)
+		},
+	}
+	command.Flags().IntVar(&port, "port", 7777, "listen on this loopback port")
+	command.Flags().BoolVar(&noOpen, "no-open", false, "do not open the Overview in a browser")
+	return command
+}
+
+func (a *App) runUICommand(cmd *cobra.Command, port int, noOpen bool) error {
+	listener, server, err := a.newUIServer(port)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = listener.Close() }()
+
+	renderer := ui.New(cmd.OutOrStdout(), ui.DetectCaps(cmd.OutOrStdout()))
+	startupRows, err := a.renderUIStartup(renderer, port, noOpen)
+	if err != nil {
+		return fmt.Errorf("write ui banner: %w", err)
+	}
+	if err := a.renderUIBrowserStatus(renderer, port, noOpen, startupRows); err != nil {
+		return fmt.Errorf("write ui browser status: %w", err)
+	}
+	if err := renderer.Text("Press Ctrl-C to stop."); err != nil {
+		return fmt.Errorf("write ui stop instruction: %w", err)
+	}
+	return a.serveUI(cmd.Context(), server, listener, renderer)
+}
+
+func (a *App) newUIServer(port int) (net.Listener, *web.Server, error) {
+	if port < 1 || port > 65535 {
+		return nil, nil, fmt.Errorf("ui port must be between 1 and 65535, got %d", port)
+	}
+	listener, err := a.uiListener(port)
+	if err != nil {
+		return nil, nil, fmt.Errorf("start ui on port %d: %w", port, err)
+	}
+	server, err := web.New(a.sylHome, port)
+	if err != nil {
+		_ = listener.Close()
+		return nil, nil, err
+	}
+	return listener, server, nil
+}
+
+func (a *App) renderUIStartup(renderer *ui.Renderer, port int, noOpen bool) ([]ui.Field, error) {
+	overview, projectsAvailable, liveRunsAvailable := readUIOverview(a.sylHome)
+	return renderUIStartupBanner(renderer, port, a.sylHome.String(), overview, projectsAvailable, liveRunsAvailable, noOpen)
+}
+
+func readUIOverview(sylHome sylhome.Dir) (readmodel.Overview, bool, bool) {
+	overview, err := readmodel.ReadOverview(sylHome)
+	if err == nil {
+		return overview, true, true
+	}
+	if overview.Projects != nil {
+		return overview, true, false
+	}
+	return overview, false, false
+}
+
+func (a *App) renderUIBrowserStatus(renderer *ui.Renderer, port int, noOpen bool, startupRows []ui.Field) error {
+	if noOpen {
+		return nil
+	}
+	status := "opened"
+	if err := a.openBrowser(fmt.Sprintf("http://127.0.0.1:%d/", port)); err != nil {
+		status = fmt.Sprintf("could not open (%s); open the URL above", err)
+	}
+	browserRow := ui.Field{Label: "browser", Value: status}
+	rows := append(append([]ui.Field{}, startupRows...), browserRow)
+	return renderer.BannerRow(browserRow, rows)
+}
+
+func (a *App) serveUI(ctx context.Context, server *web.Server, listener net.Listener, renderer *ui.Renderer) error {
+	contextToCancel, stop := signal.NotifyContext(ctx, os.Interrupt)
+	defer stop()
+	if err := server.Serve(contextToCancel, listener); err != nil {
+		return err
+	}
+	return renderer.Text("syl ui stopped.")
+}
+
+func renderUIStartupBanner(renderer *ui.Renderer, port int, sylHome string, overview readmodel.Overview, projectsAvailable, liveRunsAvailable, noOpen bool) ([]ui.Field, error) {
+	projects := "unavailable"
+	liveRuns := "unavailable"
+	if projectsAvailable {
+		projects = fmt.Sprintf("%d", len(overview.Projects))
+	}
+	if liveRunsAvailable {
+		liveRunCount := len(overview.LiveRuns) + len(overview.AwaitingAnswer)
+		liveRuns = fmt.Sprintf("%d", liveRunCount)
+		if len(overview.AwaitingAnswer) > 0 {
+			liveRuns += fmt.Sprintf(" (%d awaiting answer)", len(overview.AwaitingAnswer))
+		}
+	}
+	rows := []ui.Field{
+		{Label: "syl home", Value: sylHome},
+		{Label: "projects", Value: projects},
+		{Label: "live runs", Value: liveRuns},
+	}
+	if noOpen {
+		rows = append(rows, ui.Field{Label: "browser", Value: "not opened (--no-open)"})
+	}
+	err := renderer.Banner(ui.Banner{
+		Title: fmt.Sprintf("syl ui — http://127.0.0.1:%d/", port),
+		Rows:  rows,
+	})
+	return rows, err
+}
+
+func (a *App) uiListener(port int) (net.Listener, error) {
+	if a.deps.Listen != nil {
+		return a.deps.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	}
+	return net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+}
+
+func (a *App) openBrowser(url string) error {
+	if a.deps.BrowserOpener != nil {
+		return a.deps.BrowserOpener(url)
+	}
+	return openBrowser(url)
 }
 
 func (a *App) syncCommand() *cobra.Command {
@@ -188,7 +329,7 @@ func (a *App) runImplementCommand(cmd *cobra.Command, args []string, commandOpti
 		return a.cleanupProvisionedWorktree(cmd.Context(), provisionedWorktree, err)
 	}
 	return orchestration.RunImplement(cmd.Context(), orchestration.ImplementOptions{
-		OriginRoot: a.originRoot, WorkRoot: workRoot, SylHome: a.sylHome, ProjectConfig: projectConfig, IssueTracker: statusTracker, Ticket: ticket,
+		OriginRoot: a.originRoot, WorkRoot: workRoot, OpenRun: orchestration.NewDiskRunOpener(a.originRoot, a.sylHome, cmd.ErrOrStderr()), ProjectConfig: projectConfig, IssueTracker: statusTracker, Ticket: ticket,
 		Implementer: implementer, Reviewer: reviewer, Git: a.gitRunner(workRoot), OriginGit: a.gitRunner(a.originRoot),
 		Notifier: a.notifier(projectConfig.Notifications.Enabled), Input: cmd.InOrStdin(), Output: cmd.OutOrStdout(),
 		Context:             commandOptions.additionalContext,
@@ -364,7 +505,7 @@ func (a *App) reviewCommand() *cobra.Command {
 				return err
 			}
 			return orchestration.RunReview(cmd.Context(), orchestration.ReviewOptions{
-				OriginRoot: a.originRoot, WorkRoot: a.workRoot, SylHome: a.sylHome, ProjectConfig: projectConfig, IssueTracker: issueTracker,
+				OriginRoot: a.originRoot, WorkRoot: a.workRoot, OpenRun: orchestration.NewDiskRunOpener(a.originRoot, a.sylHome, cmd.ErrOrStderr()), ProjectConfig: projectConfig, IssueTracker: issueTracker,
 				Ticket: ticket, TicketRef: ticketRef, Context: additionalContext, Adapter: adapter, Input: cmd.InOrStdin(), Output: cmd.OutOrStdout(),
 				Raw: raw, Verbose: verbose, Notifier: a.notifier(projectConfig.Notifications.Enabled), Git: a.gitRunner(a.workRoot),
 				TranscriptUsage: projectConfig.Roles.Review.Harness == config.HarnessClaude,
@@ -527,7 +668,7 @@ func (a *App) loadProjectConfig(stderr io.Writer) (config.Config, error) {
 }
 
 func (a *App) registerProject(stderr io.Writer) {
-	if err := registry.Upsert(a.sylHome, a.originRoot); err != nil {
+	if err := a.sylHome.RegisterProject(a.originRoot); err != nil {
 		_, _ = fmt.Fprintf(stderr, "syl: warning: project registry: %v\n", err)
 	}
 }

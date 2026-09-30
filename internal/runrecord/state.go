@@ -1,5 +1,4 @@
-// Package runstate defines the durable state recorded by each syl Run.
-package runstate
+package runrecord
 
 import (
 	"encoding/json"
@@ -7,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/igorrochap/syl/internal/atomicfile"
 )
 
 const fileName = "run-state.json"
@@ -103,33 +104,9 @@ func Write(path string, state State) error {
 	}
 	contents = append(contents, '\n')
 
-	temporary, err := os.CreateTemp(filepath.Dir(path), ".run-state.json-*")
-	if err != nil {
-		return fmt.Errorf("create temporary run state: %w", err)
-	}
-	temporaryPath := temporary.Name()
-	keepTemporary := false
-	defer func() {
-		if !keepTemporary {
-			_ = os.Remove(temporaryPath)
-		}
-	}()
-
-	if err := temporary.Chmod(0o644); err != nil {
-		_ = temporary.Close()
-		return fmt.Errorf("set temporary run state permissions: %w", err)
-	}
-	if _, err := temporary.Write(contents); err != nil {
-		_ = temporary.Close()
-		return fmt.Errorf("write temporary run state: %w", err)
-	}
-	if err := temporary.Close(); err != nil {
-		return fmt.Errorf("close temporary run state: %w", err)
-	}
-	if err := os.Rename(temporaryPath, path); err != nil {
+	if err := atomicfile.Write(path, contents, 0o644); err != nil {
 		return fmt.Errorf("replace run state %s: %w", path, err)
 	}
-	keepTemporary = true
 	return nil
 }
 
@@ -139,6 +116,11 @@ func Read(path string) (State, error) {
 	if err != nil {
 		return State{}, err
 	}
+	return Parse(path, contents)
+}
+
+// Parse decodes and validates a Run state from contents.
+func Parse(path string, contents []byte) (State, error) {
 	var state State
 	if err := json.Unmarshal(contents, &state); err != nil {
 		return State{}, fmt.Errorf("decode run state %s: %w", path, err)

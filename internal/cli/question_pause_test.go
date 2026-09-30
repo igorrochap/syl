@@ -180,7 +180,7 @@ func TestOneShotReviewRawQuestionRendersWithoutProtocolMarkers(t *testing.T) {
 
 func TestQuestionDoesNotCancelHarnessContextBeforeResume(t *testing.T) {
 	adapter := &contextAwareQuestionHarness{}
-	questions := orchestration.NewQuestionHandler(strings.NewReader("Use the existing schema.\n"), io.Discard, "review", nil)
+	questions := orchestration.NewQuestionHandler(strings.NewReader("Use the existing schema.\n"), io.Discard, "review", nil, nil)
 
 	review, err := orchestration.RunReviewExecution(context.Background(), adapter, harness.Request{}, io.Discard, orchestration.ParsedHarnessOutput, questions)
 	if err != nil {

@@ -13,19 +13,72 @@ import (
 
 	"github.com/igorrochap/syl/internal/config"
 	"github.com/igorrochap/syl/internal/harness"
+	"github.com/igorrochap/syl/internal/runrecord"
+	"github.com/igorrochap/syl/internal/sylhome"
 	"github.com/igorrochap/syl/internal/tracker"
 	"github.com/igorrochap/syl/internal/usage"
 	"github.com/igorrochap/syl/internal/verdict"
 )
 
+const (
+	metadataArtifact            = runrecord.MetadataFile
+	implementFeedArtifact       = runrecord.ImplementFeed
+	implementTranscriptArtifact = runrecord.ImplementTranscript
+	implementHandoffArtifact    = runrecord.ImplementHandoff
+	reviewDiffArtifact          = runrecord.ReviewDiff
+	reviewFeedArtifact          = runrecord.ReviewFeed
+	reviewTranscriptArtifact    = runrecord.ReviewTranscript
+	verdictArtifact             = runrecord.VerdictFile
+	summaryArtifact             = runrecord.SummaryFile
+	sessionsArtifact            = runrecord.SessionsFile
+)
+
+type sessionKey struct {
+	iteration int
+	role      string
+	sessionID string
+}
+
+func artifactFilename(kind runrecord.ArtifactKind, iteration int) string {
+	return runrecord.ArtifactName(kind, iteration)
+}
+
+func recordSessions(sessions *[]string, keys map[sessionKey]struct{}, iteration int, role string, sessionIDs []string) {
+	for _, recordedID := range sessionIDs {
+		sessionID, ok := normalizeSessionID(recordedID)
+		if !ok {
+			continue
+		}
+		key := sessionKey{iteration: iteration, role: role, sessionID: sessionID}
+		if _, exists := keys[key]; exists {
+			continue
+		}
+		keys[key] = struct{}{}
+		*sessions = append(*sessions, fmt.Sprintf("iteration %d %s: %s", iteration, role, sessionID))
+	}
+}
+
+func writeArtifact(path, contents string) error {
+	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+		return fmt.Errorf("write run artifact %s: %w", path, err)
+	}
+	return nil
+}
+
 type memoryRunRecorder struct {
 	dir         string
 	files       map[string]string
+	states      []runrecord.State
+	usage       []usage.Entry
 	sessions    []string
 	sessionKeys map[sessionKey]struct{}
 }
 
 var _ RunRecorder = (*memoryRunRecorder)(nil)
+
+func openDiskRecorder(originRoot string, spec RunSpec) (*diskRunRecorder, error) {
+	return openDiskRun(originRoot, sylhome.Dir{}, nil, spec)
+}
 
 func newMemoryRunRecorder() *memoryRunRecorder {
 	return &memoryRunRecorder{
@@ -35,12 +88,17 @@ func newMemoryRunRecorder() *memoryRunRecorder {
 	}
 }
 
-func (r *memoryRunRecorder) Dir() string {
-	return r.dir
-}
-
 func (r *memoryRunRecorder) ImplementHandoffPath(iteration int) string {
 	return filepath.Join(r.dir, artifactFilename(implementHandoffArtifact, iteration))
+}
+
+func (r *memoryRunRecorder) RecordState(state runrecord.State) {
+	r.states = append(r.states, state)
+}
+
+func (r *memoryRunRecorder) RecordUsage(entry usage.Entry) error {
+	r.usage = append(r.usage, entry)
+	return nil
 }
 
 func (r *memoryRunRecorder) RecordImplementTurn(iteration int, feed, transcript string) error {
@@ -83,12 +141,12 @@ func (r *memoryRunRecorder) WriteSessions() error {
 	return nil
 }
 
-type failingUsageRecorder struct {
+type failingUsageRunRecorder struct {
 	*memoryRunRecorder
 	usageCalls int
 }
 
-func (r *failingUsageRecorder) RecordUsage(usage.Entry) error {
+func (r *failingUsageRunRecorder) RecordUsage(usage.Entry) error {
 	r.usageCalls++
 	return errors.New("usage artifact is unavailable")
 }
@@ -493,7 +551,7 @@ func TestFormatImplementSummaryPreservesDiffStatIndentation(t *testing.T) {
 }
 
 func TestRunImplementIterationsContinuesWhenUsageRecordingFails(t *testing.T) {
-	recorder := &failingUsageRecorder{memoryRunRecorder: newMemoryRunRecorder()}
+	recorder := &failingUsageRunRecorder{memoryRunRecorder: newMemoryRunRecorder()}
 	implementer := &scriptedConversationAdapter{runs: [][]harness.Event{{
 		{Type: harness.EventSession, SessionID: "implement-1"},
 		{Type: harness.EventAssistantText, Text: "implementation"},
@@ -596,6 +654,7 @@ func TestRunImplementPassesContextToImplementer(t *testing.T) {
 	err := RunImplement(context.Background(), ImplementOptions{
 		OriginRoot: t.TempDir(),
 		WorkRoot:   t.TempDir(),
+		OpenRun:    func(RunSpec) (RunRecorder, error) { return newMemoryRunRecorder(), nil },
 		ProjectConfig: config.Config{
 			Roles: config.RolesConfig{
 				Implement: config.RoleConfig{Harness: config.HarnessCodex},
@@ -629,22 +688,22 @@ func TestImplementRunRecorderRecordsRoleContexts(t *testing.T) {
 	workRoot := t.TempDir()
 	implementContext := "Keep the existing recorder.\nPreserve metadata ordering."
 	reviewContext := "Check the metadata output."
-	recorder, err := newImplementRunRecorder(
-		originRoot,
-		workRoot,
-		42,
-		"feat/record-role-context",
-		"abc123",
-		"codex",
-		"claude",
-		implementContext,
-		reviewContext,
-	)
+	recorder, err := openDiskRecorder(originRoot, RunSpec{
+		Kind:               runrecord.Implement,
+		TicketRef:          "#42",
+		Branch:             "feat/record-role-context",
+		BranchPoint:        "abc123",
+		WorkRoot:           workRoot,
+		ImplementerHarness: "codex",
+		ReviewerHarness:    "claude",
+		ImplementContext:   implementContext,
+		ReviewContext:      reviewContext,
+	})
 	if err != nil {
 		t.Fatalf("newImplementRunRecorder() error = %v", err)
 	}
 
-	metadata := readRunMetadataArtifact(t, recorder.Dir())
+	metadata := readRunMetadataArtifact(t, recorder.dir)
 	want := "Branch: feat/record-role-context\n" +
 		"Branch point: abc123\n" +
 		"Work root: " + workRoot + "\n" +
@@ -662,17 +721,15 @@ func TestImplementRunRecorderRecordsRoleContexts(t *testing.T) {
 
 func TestImplementRunRecorderPreservesMetadataWithoutContexts(t *testing.T) {
 	workRoot := t.TempDir()
-	recorder, err := newImplementRunRecorder(
-		t.TempDir(),
-		workRoot,
-		42,
-		"feat/record-role-context",
-		"abc123",
-		"codex",
-		"claude",
-		"",
-		"",
-	)
+	recorder, err := openDiskRecorder(t.TempDir(), RunSpec{
+		Kind:               runrecord.Implement,
+		TicketRef:          "#42",
+		Branch:             "feat/record-role-context",
+		BranchPoint:        "abc123",
+		WorkRoot:           workRoot,
+		ImplementerHarness: "codex",
+		ReviewerHarness:    "claude",
+	})
 	if err != nil {
 		t.Fatalf("newImplementRunRecorder() error = %v", err)
 	}
@@ -682,7 +739,7 @@ func TestImplementRunRecorderPreservesMetadataWithoutContexts(t *testing.T) {
 		"Work root: " + workRoot + "\n" +
 		"Implementer harness: codex\n" +
 		"Reviewer harness: claude\n"
-	if metadata := readRunMetadataArtifact(t, recorder.Dir()); metadata != want {
+	if metadata := readRunMetadataArtifact(t, recorder.dir); metadata != want {
 		t.Fatalf("metadata = %q, want %q", metadata, want)
 	}
 }
@@ -691,12 +748,20 @@ func TestReviewRunRecorderRecordsReviewerContext(t *testing.T) {
 	originRoot := t.TempDir()
 	workRoot := t.TempDir()
 	reviewContext := "Review only the parser.\nDo not modify files."
-	recorder, err := newReviewRunRecorder(originRoot, workRoot, "#42", "abc123", "claude", reviewContext)
+	recorder, err := openDiskRecorder(originRoot, RunSpec{
+		Kind:            runrecord.Review,
+		TicketRef:       "#42",
+		MaxIterations:   1,
+		BranchPoint:     "abc123",
+		WorkRoot:        workRoot,
+		ReviewerHarness: "claude",
+		ReviewContext:   reviewContext,
+	})
 	if err != nil {
 		t.Fatalf("newReviewRunRecorder() error = %v", err)
 	}
 
-	metadata := readRunMetadataArtifact(t, recorder.Dir())
+	metadata := readRunMetadataArtifact(t, recorder.dir)
 	want := "Ticket: #42\n" +
 		"Branch point: abc123\n" +
 		"Work root: " + workRoot + "\n" +
@@ -711,22 +776,21 @@ func TestReviewRunRecorderRecordsReviewerContext(t *testing.T) {
 
 func TestRunRecorderKeepsMetadataKeysOutsideMultilineContext(t *testing.T) {
 	implementContext := "first line\nBranch: something\nthird line"
-	recorder, err := newImplementRunRecorder(
-		t.TempDir(),
-		t.TempDir(),
-		42,
-		"feat/record-role-context",
-		"abc123",
-		"codex",
-		"claude",
-		implementContext,
-		"",
-	)
+	recorder, err := openDiskRecorder(t.TempDir(), RunSpec{
+		Kind:               runrecord.Implement,
+		TicketRef:          "#42",
+		Branch:             "feat/record-role-context",
+		BranchPoint:        "abc123",
+		WorkRoot:           t.TempDir(),
+		ImplementerHarness: "codex",
+		ReviewerHarness:    "claude",
+		ImplementContext:   implementContext,
+	})
 	if err != nil {
 		t.Fatalf("newImplementRunRecorder() error = %v", err)
 	}
 
-	metadata := readRunMetadataArtifact(t, recorder.Dir())
+	metadata := readRunMetadataArtifact(t, recorder.dir)
 	for _, expected := range []string{
 		"Implementer context:\n",
 		"  first line\n",
@@ -743,20 +807,21 @@ func TestRunRecorderKeepsMetadataKeysOutsideMultilineContext(t *testing.T) {
 }
 
 func TestDiskRunRecorderFlushesSessionsAfterEachRole(t *testing.T) {
+	runDir := t.TempDir()
 	recorder := &diskRunRecorder{
-		dir:         t.TempDir(),
-		sessionKeys: make(map[sessionKey]struct{}),
+		dir:    runDir,
+		writer: runrecord.NewWriter(runDir),
 	}
 
 	if err := recorder.RecordSessions(1, "implement", []string{"implement-1"}); err != nil {
 		t.Fatalf("record iteration 1 implement sessions: %v", err)
 	}
-	assertSessionsArtifact(t, recorder.Dir(), "iteration 1 implement: implement-1\n")
+	assertSessionsArtifact(t, recorder.dir, "iteration 1 implement: implement-1\n")
 
 	if err := recorder.RecordSessions(1, "review", []string{"review-1"}); err != nil {
 		t.Fatalf("record iteration 1 review sessions: %v", err)
 	}
-	assertSessionsArtifact(t, recorder.Dir(),
+	assertSessionsArtifact(t, recorder.dir,
 		"iteration 1 implement: implement-1\n"+
 			"iteration 1 review: review-1\n",
 	)
@@ -764,7 +829,7 @@ func TestDiskRunRecorderFlushesSessionsAfterEachRole(t *testing.T) {
 	if err := recorder.RecordSessions(2, "implement", []string{"implement-2"}); err != nil {
 		t.Fatalf("record iteration 2 implement sessions: %v", err)
 	}
-	assertSessionsArtifact(t, recorder.Dir(),
+	assertSessionsArtifact(t, recorder.dir,
 		"iteration 1 implement: implement-1\n"+
 			"iteration 1 review: review-1\n"+
 			"iteration 2 implement: implement-2\n",
@@ -806,9 +871,10 @@ func countUnindentedMetadataKey(metadata, wantedKey string) int {
 }
 
 func TestDiskRunRecorderDeduplicatesSessionIDs(t *testing.T) {
+	runDir := t.TempDir()
 	recorder := &diskRunRecorder{
-		dir:         t.TempDir(),
-		sessionKeys: make(map[sessionKey]struct{}),
+		dir:    runDir,
+		writer: runrecord.NewWriter(runDir),
 	}
 	if err := recorder.RecordSessions(2, "review", []string{"review-session", "review-session"}); err != nil {
 		t.Fatalf("record iteration 2 review sessions: %v", err)
@@ -823,13 +889,17 @@ func TestDiskRunRecorderDeduplicatesSessionIDs(t *testing.T) {
 		t.Fatalf("record iteration 2 review sessions: %v", err)
 	}
 
-	if got, want := len(recorder.sessions), 5; got != want {
-		t.Fatalf("recorded sessions = %d, want %d: %v", got, want, recorder.sessions)
+	recorded, err := runrecord.NewReader(nil).ReadSessions(recorder.dir)
+	if err != nil {
+		t.Fatalf("read recorded sessions: %v", err)
+	}
+	if got, want := len(recorded), 5; got != want {
+		t.Fatalf("recorded sessions = %d, want %d: %v", got, want, recorded)
 	}
 	if err := recorder.WriteSessions(); err != nil {
 		t.Fatalf("WriteSessions() error = %v", err)
 	}
-	got, err := os.ReadFile(filepath.Join(recorder.Dir(), artifactFilename(sessionsArtifact, 0)))
+	got, err := os.ReadFile(filepath.Join(recorder.dir, artifactFilename(sessionsArtifact, 0)))
 	if err != nil {
 		t.Fatalf("read sessions artifact: %v", err)
 	}
@@ -849,13 +919,68 @@ func TestDiskRunRecorderReportsSessionWriteFailure(t *testing.T) {
 		t.Fatalf("create sessions artifact directory: %v", err)
 	}
 	recorder := &diskRunRecorder{
-		dir:         runDir,
-		sessionKeys: make(map[sessionKey]struct{}),
+		dir:    runDir,
+		writer: runrecord.NewWriter(runDir),
 	}
 
 	err := recorder.RecordSessions(1, "review", []string{"review-session"})
 	if err == nil || !strings.Contains(err.Error(), "write run artifact") {
 		t.Fatalf("RecordSessions() error = %v, want sessions artifact write failure", err)
+	}
+}
+
+func TestDiskRunRecorderFailOpenRecordsFailedStateAndRemovesMarker(t *testing.T) {
+	projectRoot := t.TempDir()
+	runDir := filepath.Join(projectRoot, ".syl", "runs", "run-203")
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		t.Fatalf("create run directory: %v", err)
+	}
+	metadataPath := filepath.Join(runDir, artifactFilename(metadataArtifact, 0))
+	if err := os.Mkdir(metadataPath, 0o755); err != nil {
+		t.Fatalf("create metadata artifact directory: %v", err)
+	}
+	metadataErr := writeArtifact(metadataPath, "metadata")
+	if metadataErr == nil {
+		t.Fatal("writeArtifact() succeeded for metadata directory")
+	}
+
+	spec := RunSpec{
+		Kind:          runrecord.Implement,
+		TicketRef:     "#203",
+		MaxIterations: 1,
+	}
+	sylHome := testSylHome(t, t.TempDir())
+	marker, err := sylHome.MarkLive(sylhome.LiveRun{
+		ProjectPath: projectRoot,
+		RunDir:      runDir,
+		TicketRef:   spec.TicketRef,
+	})
+	if err != nil {
+		t.Fatalf("MarkLive() error = %v", err)
+	}
+	recorder := &diskRunRecorder{
+		dir:      runDir,
+		writer:   runrecord.NewWriter(runDir),
+		runState: newRunState(spec),
+		marker:   &marker,
+	}
+
+	if got := recorder.failOpen(metadataErr); !errors.Is(got, metadataErr) {
+		t.Fatalf("failOpen() error = %v, want %v", got, metadataErr)
+	}
+	state, err := runrecord.Read(runrecord.Path(runDir))
+	if err != nil {
+		t.Fatalf("read failed run state: %v", err)
+	}
+	if state.Status != runrecord.Failed || state.Activity != "" || state.Question != "" || state.EndedAt == nil {
+		t.Fatalf("failed run state = %+v, want failed with no activity/question and an end time", state)
+	}
+	runs, err := sylHome.LiveRuns()
+	if err != nil {
+		t.Fatalf("LiveRuns() error = %v", err)
+	}
+	if len(runs) != 0 {
+		t.Fatalf("live runs after failOpen() = %d, want 0", len(runs))
 	}
 }
 

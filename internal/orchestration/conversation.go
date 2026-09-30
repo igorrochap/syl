@@ -70,25 +70,29 @@ type harnessStreamResult struct {
 	Blocked    bool
 }
 
-func NewQuestionHandler(input io.Reader, output io.Writer, target string, notifier Notifier) *QuestionHandler {
+// NewQuestionHandler creates a question handler bound to the Run lifecycle observer.
+func NewQuestionHandler(
+	input io.Reader,
+	output io.Writer,
+	target string,
+	notifier Notifier,
+	observer questionStateObserver,
+) *QuestionHandler {
 	var answers *bufio.Reader
 	if input != nil {
 		answers = bufio.NewReader(input)
 	}
 	return &QuestionHandler{
-		answers:  answers,
-		output:   output,
-		notifier: notifier,
-		target:   questionTarget(target),
+		answers:       answers,
+		output:        output,
+		notifier:      notifier,
+		target:        questionTarget(target),
+		stateObserver: observer,
 	}
 }
 
 func (h *QuestionHandler) Handle(ctx context.Context, question string) (string, error) {
 	return h.handle(ctx, "harness", question)
-}
-
-func (h *QuestionHandler) setStateObserver(observer questionStateObserver) {
-	h.stateObserver = observer
 }
 
 func (h *QuestionHandler) handle(ctx context.Context, role, question string) (string, error) {

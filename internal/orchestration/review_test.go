@@ -11,6 +11,8 @@ import (
 
 	"github.com/igorrochap/syl/internal/config"
 	"github.com/igorrochap/syl/internal/harness"
+	"github.com/igorrochap/syl/internal/runrecord"
+	"github.com/igorrochap/syl/internal/sylhome"
 	"github.com/igorrochap/syl/internal/tracker"
 	"github.com/igorrochap/syl/internal/verdict"
 )
@@ -86,6 +88,7 @@ func TestOutputAtLineStartHandlesWriterShapes(t *testing.T) {
 
 func TestCompleteStandaloneReviewSeparatesRenderedVerdictFromStreamedProse(t *testing.T) {
 	var output strings.Builder
+	recorder := newMemoryRunRecorder()
 	output.WriteString("Reviewer prose.")
 
 	err := completeStandaloneReview(context.Background(), ReviewOptions{
@@ -96,7 +99,8 @@ func TestCompleteStandaloneReviewSeparatesRenderedVerdictFromStreamedProse(t *te
 		Output: &output,
 	}, reviewPreparation{
 		branchPoint: "HEAD",
-		recorder:    newMemoryRunRecorder(),
+		recorder:    recorder,
+		runState:    newRunStateTracker(recorder, newRunState(RunSpec{Kind: runrecord.Review, MaxIterations: 1})),
 	}, standaloneReviewRun{
 		review: ReviewExecution{
 			Verdict: verdict.Verdict{Status: verdict.Approve, Summary: "Ready"},
@@ -124,6 +128,7 @@ func TestRunReviewSeparatesRenderedVerdictForOpaqueOutputWriter(t *testing.T) {
 	err := RunReview(context.Background(), ReviewOptions{
 		OriginRoot: root,
 		WorkRoot:   root,
+		OpenRun:    NewDiskRunOpener(root, sylhome.Dir{}, io.Discard),
 		ProjectConfig: config.Config{
 			Tracker: config.TrackerConfig{Reviews: config.TrackerLocal},
 			Roles: config.RolesConfig{Review: config.RoleConfig{
@@ -199,6 +204,7 @@ func TestRunReviewPostsRemoteReviewComment(t *testing.T) {
 
 	err := RunReview(context.Background(), ReviewOptions{
 		OriginRoot: root,
+		OpenRun:    NewDiskRunOpener(root, sylhome.Dir{}, io.Discard),
 		ProjectConfig: config.Config{
 			Tracker: config.TrackerConfig{Reviews: config.TrackerGitHub},
 			Roles:   config.RolesConfig{Review: config.RoleConfig{Harness: config.HarnessClaude}},
@@ -234,6 +240,7 @@ func TestRunReviewPassesAdditionalContextToHarness(t *testing.T) {
 	err := RunReview(context.Background(), ReviewOptions{
 		OriginRoot: root,
 		WorkRoot:   root,
+		OpenRun:    NewDiskRunOpener(root, sylhome.Dir{}, io.Discard),
 		ProjectConfig: config.Config{
 			Tracker: config.TrackerConfig{Reviews: config.TrackerLocal},
 			Roles: config.RolesConfig{Review: config.RoleConfig{
@@ -305,6 +312,7 @@ func TestRunReviewSavesUnparseableReviewArtifacts(t *testing.T) {
 	err := RunReview(context.Background(), ReviewOptions{
 		OriginRoot: root,
 		WorkRoot:   root,
+		OpenRun:    NewDiskRunOpener(root, sylhome.Dir{}, &output),
 		ProjectConfig: config.Config{
 			Tracker: config.TrackerConfig{Reviews: config.TrackerLocal},
 			Roles:   config.RolesConfig{Review: config.RoleConfig{Harness: config.HarnessClaude}},

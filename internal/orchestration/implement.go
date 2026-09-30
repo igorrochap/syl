@@ -14,7 +14,7 @@ import (
 
 	"github.com/igorrochap/syl/internal/config"
 	"github.com/igorrochap/syl/internal/harness"
-	"github.com/igorrochap/syl/internal/runstate"
+	"github.com/igorrochap/syl/internal/runrecord"
 	"github.com/igorrochap/syl/internal/tracker"
 	"github.com/igorrochap/syl/internal/ui"
 	"github.com/igorrochap/syl/internal/usage"
@@ -39,7 +39,7 @@ type implementSummary struct {
 type ImplementOptions struct {
 	OriginRoot           string
 	WorkRoot             string
-	SylHome              string
+	OpenRun              func(RunSpec) (RunRecorder, error)
 	ProjectConfig        config.Config
 	IssueTracker         tracker.Tracker
 	Ticket               tracker.Ticket
@@ -61,7 +61,7 @@ type implementRunState struct {
 	setup     implementSetup
 	notifier  Notifier
 	questions *QuestionHandler
-	recorder  *diskRunRecorder
+	recorder  RunRecorder
 	runState  *runStateTracker
 }
 
@@ -154,6 +154,9 @@ func prepareImplementRun(ctx context.Context, options ImplementOptions, originGi
 }
 
 func validateImplementOptions(options ImplementOptions) error {
+	if options.OpenRun == nil {
+		return errors.New("implement: Run opener is not configured")
+	}
 	if options.Git == nil {
 		return errors.New("implement: git runner is not configured")
 	}
@@ -167,38 +170,36 @@ func validateImplementOptions(options ImplementOptions) error {
 }
 
 func initializeImplementRun(options ImplementOptions, setup implementSetup) (implementRunState, error) {
-	recorder, err := newImplementRunRecorderWithState(
-		options.OriginRoot,
-		options.WorkRoot,
-		options.Ticket.Number,
-		setup.branch,
-		setup.branchPoint,
-		string(options.ProjectConfig.Roles.Implement.Harness),
-		string(options.ProjectConfig.Roles.Review.Harness),
-		options.Context,
-		options.ReviewContext,
-		options.ProjectConfig.Loop.MaxIterations,
-		options.Output,
-		options.SylHome,
-	)
+	spec := RunSpec{
+		Kind:               runrecord.Implement,
+		TicketRef:          "#" + strconv.Itoa(options.Ticket.Number),
+		MaxIterations:      options.ProjectConfig.Loop.MaxIterations,
+		Branch:             setup.branch,
+		BranchPoint:        setup.branchPoint,
+		WorkRoot:           options.WorkRoot,
+		ImplementerHarness: string(options.ProjectConfig.Roles.Implement.Harness),
+		ReviewerHarness:    string(options.ProjectConfig.Roles.Review.Harness),
+		ImplementContext:   options.Context,
+		ReviewContext:      options.ReviewContext,
+	}
+	recorder, err := options.OpenRun(spec)
 	if err != nil {
-		if recorder != nil {
-			runState := newRunStateTracker(recorder)
-			return implementRunState{setup: setup, recorder: recorder, runState: runState}, err
-		}
 		return implementRunState{}, err
 	}
-	runState := newRunStateTracker(recorder)
+	if recorder == nil {
+		return implementRunState{}, errors.New("implement: Run opener returned a nil recorder")
+	}
+	runState := newRunStateTracker(recorder, newRunState(spec))
 	notifier := options.Notifier
 	if !options.ProjectConfig.Notifications.Enabled {
 		notifier = nil
 	}
 	notifier = withNotificationContext(notifier, options.OriginRoot, setup.git)
-	questions := NewQuestionHandler(options.Input, options.Output, "#"+strconv.Itoa(options.Ticket.Number), notifier)
-	questions.setStateObserver(runState)
+	questions := NewQuestionHandler(options.Input, options.Output, "#"+strconv.Itoa(options.Ticket.Number), notifier, runState)
 	run := implementRunState{setup: setup, notifier: notifier, questions: questions, recorder: recorder, runState: runState}
 	if options.IdentificationBanner != nil {
-		if err := options.IdentificationBanner(recorder.Dir()); err != nil {
+		artifactDir := filepath.Dir(recorder.ImplementHandoffPath(1))
+		if err := options.IdentificationBanner(artifactDir); err != nil {
 			return run, err
 		}
 	}
@@ -223,10 +224,10 @@ func completeImplementRun(ctx context.Context, options ImplementOptions, run imp
 		_ = run.notifier.Notify(ctx, fmt.Sprintf("implement #%d finished: %s", options.Ticket.Number, summary.final.Status))
 	}
 	if summary.final.Status == verdict.Revise {
-		run.runState.finish(runstate.Exhausted)
+		run.runState.finish(runrecord.Exhausted)
 		return fmt.Errorf("implement loop reached max iterations (%d) with revise verdict", options.ProjectConfig.Loop.MaxIterations)
 	}
-	run.runState.finish(runstate.Approved)
+	run.runState.finish(runrecord.Approved)
 	return nil
 }
 
@@ -331,6 +332,7 @@ type implementTurnParams struct {
 }
 
 func runImplementIterations(ctx context.Context, params implementIterationsParams) (int, verdict.Verdict, []verdict.Finding, error) {
+	params.runState = ensureImplementRunState(params)
 	params.output = ensureLineTrackingWriter(params.output)
 	var blocking []verdict.Finding
 	var final verdict.Verdict
@@ -397,8 +399,19 @@ func runImplementIterations(ctx context.Context, params implementIterationsParam
 	return iterations, final, nitFindings(final), nil
 }
 
+func ensureImplementRunState(params implementIterationsParams) *runStateTracker {
+	if params.runState != nil {
+		return params.runState
+	}
+	return newRunStateTracker(params.recorder, newRunState(RunSpec{
+		Kind:          runrecord.Implement,
+		TicketRef:     "#" + strconv.Itoa(params.ticket.Number),
+		MaxIterations: params.projectConfig.Loop.MaxIterations,
+	}))
+}
+
 func runImplementReview(ctx context.Context, params implementIterationsParams, reviewParams implementReviewParams) (ReviewExecution, error) {
-	params.runState.setActivity(runstate.Reviewing)
+	params.runState.setActivity(runrecord.Reviewing)
 	reviewRequest := harness.Request{
 		Model:  params.projectConfig.Roles.Review.Model,
 		Effort: params.projectConfig.Roles.Review.Effort,
@@ -440,7 +453,7 @@ func runImplementReview(ctx context.Context, params implementIterationsParams, r
 			if artifactErr := params.recorder.RecordReviewOutput(reviewParams.iteration, unparseable.Execution); artifactErr != nil {
 				return ReviewExecution{}, artifactErr
 			}
-			return ReviewExecution{}, reviewTranscriptSavedError(err, params.recorder.Dir())
+			return ReviewExecution{}, reviewTranscriptSavedError(err, recorderArtifactDir(params.recorder))
 		}
 		return ReviewExecution{}, err
 	}
@@ -484,7 +497,7 @@ func prepareIterationReviewDiff(ctx context.Context, params implementIterationsP
 	if params.worktreeArtifactRoot == "" {
 		return diffPath, nil
 	}
-	return recordWorktreeReviewDiff(params.worktreeArtifactRoot, params.recorder.Dir(), iteration, diff)
+	return recordWorktreeReviewDiff(params.worktreeArtifactRoot, filepath.Dir(diffPath), iteration, diff)
 }
 
 func prepareIterationHandoffPath(params implementIterationsParams, iteration int) (string, error) {
@@ -492,14 +505,11 @@ func prepareIterationHandoffPath(params implementIterationsParams, iteration int
 	if params.worktreeArtifactRoot == "" {
 		return handoffPath, nil
 	}
-	path, err := worktreeRunArtifactPath(params.worktreeArtifactRoot, params.recorder.Dir(), filepath.Base(handoffPath))
+	writer, err := worktreeRunWriter(params.worktreeArtifactRoot, filepath.Dir(handoffPath))
 	if err != nil {
 		return "", fmt.Errorf("prepare worktree handoff path: %w", err)
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return "", fmt.Errorf("create worktree handoff directory: %w", err)
-	}
-	return path, nil
+	return writer.HandoffPath(iteration), nil
 }
 
 func handoffExists(handoffPath string) (bool, error) {
@@ -529,8 +539,7 @@ func runImplementTurn(
 	params implementIterationsParams,
 	turn implementTurnParams,
 ) (implementExecution, error) {
-	params.runState.setIteration(turn.iteration)
-	params.runState.setActivity(runstate.Implementing)
+	params.runState.startActivity(turn.iteration, runrecord.Implementing)
 	activity := "implementing"
 	if turn.iteration > 1 {
 		activity = fmt.Sprintf("revising %d blocking finding(s)", len(turn.blocking))
@@ -598,11 +607,7 @@ func runImplementTurn(
 // recordRoleUsage persists usage as best-effort metadata. Usage collection or
 // persistence failures must not fail the run.
 func recordRoleUsage(recorder RunRecorder, entry usage.Entry) {
-	usageRecorder, ok := recorder.(UsageRecorder)
-	if !ok {
-		return
-	}
-	_ = usageRecorder.RecordUsage(entry)
+	_ = recorder.RecordUsage(entry)
 }
 
 type implementExecution struct {
@@ -762,54 +767,28 @@ func toUIFindings(findings []verdict.Finding) []ui.Finding {
 }
 
 func formatImplementSummary(summary implementSummary) string {
-	var builder strings.Builder
-	fmt.Fprintf(
-		&builder,
-		"Iterations: %d\nFinal verdict: %s\nSummary: %s\nNit findings:\n",
-		summary.iterations, summary.final.Status, summary.final.Summary,
-	)
-	if len(summary.nits) == 0 {
-		builder.WriteString("- (none)\n")
-	} else {
-		for _, finding := range summary.nits {
-			fmt.Fprintf(&builder, "- [%s] %s — %s\n", finding.Kind, finding.Location, finding.Issue)
-		}
-	}
-	if summary.worktreePath != "" {
-		fmt.Fprintf(&builder,
-			"Worktree: %s\nRemove worktree: git worktree remove --force %s\n",
-			summary.worktreePath, summary.worktreePath,
-		)
-	}
-	fmt.Fprintf(&builder, "Diff stat:\n%s\n", strings.TrimRight(summary.diffStat, " \t\r\n"))
-	return builder.String()
+	return runrecord.FormatSummary(runrecord.SummaryInput{
+		Iterations: summary.iterations, Final: summary.final, Nits: summary.nits,
+		DiffStat: summary.diffStat, WorktreePath: summary.worktreePath,
+	})
 }
 
 func recordWorktreeReviewDiff(worktreeRoot, runDir string, iteration int, diff string) (string, error) {
-	path, err := worktreeRunArtifactPath(worktreeRoot, runDir, artifactFilename(reviewDiffArtifact, iteration))
+	writer, err := worktreeRunWriter(worktreeRoot, runDir)
 	if err != nil {
 		return "", fmt.Errorf("record worktree review diff: %w", err)
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return "", fmt.Errorf("create worktree review diff directory: %w", err)
-	}
-	if err := writeArtifact(path, diff); err != nil {
-		return "", fmt.Errorf("write worktree review diff: %w", err)
-	}
-	return path, nil
+	return writer.WriteReviewDiff(iteration, diff)
 }
 
-func worktreeRunArtifactPath(worktreeRoot, runDir, filename string) (string, error) {
+func worktreeRunWriter(worktreeRoot, runDir string) (*runrecord.Writer, error) {
 	root, err := filepath.Abs(worktreeRoot)
 	if err != nil {
-		return "", fmt.Errorf("resolve worktree run artifact root: %w", err)
+		return nil, fmt.Errorf("resolve worktree run artifact root: %w", err)
 	}
 	runName := filepath.Base(filepath.Clean(runDir))
 	if runName == "." || runName == string(filepath.Separator) || runName == "" {
-		return "", errors.New("worktree run artifact directory is required")
+		return nil, errors.New("worktree run artifact directory is required")
 	}
-	if filename == "" || filepath.Base(filename) != filename {
-		return "", errors.New("worktree run artifact filename is required")
-	}
-	return filepath.Join(root, ".syl", "runs", runName, filename), nil
+	return runrecord.CreateNamedWriter(root, runName)
 }

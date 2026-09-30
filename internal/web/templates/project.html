@@ -1,0 +1,37 @@
+{{define "project"}}{{template "layout-start" .}}{{template "project-content" .}}{{template "layout-end" .}}{{end}}
+
+{{define "project-content"}}
+<div id="project-content" data-syl-token="{{.Token}}" hx-get="/projects/content?path={{urlquery .Page.Path}}" hx-trigger="every 3s [document.visibilityState === 'visible']" hx-target="#project-content" hx-swap="outerHTML">
+<nav class="breadcrumb" aria-label="Breadcrumb"><a href="/">Overview</a><span>/</span><span>{{.Page.Name}}</span></nav>
+
+<div class="project-page-heading">
+<div class="project-title"><h1>{{.Page.Name}}</h1><span class="pill {{.Page.HealthClass}}">{{.Page.Health}}</span></div>
+<div class="project-details"><code>{{.Page.Path}}</code><span>issues: {{.Page.IssueTracker}} · reviews: {{.Page.ReviewLog}}</span><span>first seen {{.Page.FirstSeen}}</span></div>
+</div>
+
+<div class="project-tabs" role="tablist" aria-label="Project sections">
+<a class="active" href="/projects?path={{urlquery .Page.Path}}" role="tab" aria-selected="true">Runs</a>
+<a href="/projects/config?path={{urlquery .Page.Path}}" role="tab" aria-selected="false">Config</a>
+</div>
+
+<section class="section project-history" aria-labelledby="runs-heading">
+<h2 id="runs-heading">Runs · {{.Page.RunCount}}</h2>
+{{if .Page.Runs}}
+<div class="history-table">
+<div class="history-grid header"><span>Ticket</span><span>Kind</span><span>Status</span><span>Iterations</span><span>Verdict</span><span>Started</span><span>Duration</span><span>Tokens</span></div>
+{{range .Page.Runs}}
+<a class="history-grid row" href="/runs?path={{urlquery .RunDir}}">
+<span class="history-ticket">{{.Ticket}}</span><span>{{.Kind}}</span>
+{{$status := .Status}}<span class="history-status"><span class="status-pill {{$status.PillClass}}">{{$status.Label}}</span>{{if and $status.ActivityApplicable .Activity}}<span class="history-activity">{{.Activity}}</span>{{end}}</span>
+<span class="history-iterations">{{.Iteration}}</span>
+<span class="history-verdict">{{.Verdict}}</span><span class="history-started">{{.Started}}</span><span class="history-duration">{{.Duration}}</span><span class="history-tokens">{{.Tokens}}</span>
+</a>
+{{end}}
+</div>
+{{else}}
+<div class="empty-state">No Runs recorded for this Project.</div>
+{{end}}
+</section>
+<p class="history-note">Runs recorded before syl kept run state show as <em>completed</em> when they have a summary, and <em>unknown</em> otherwise. Tickets are shown by number only; syl ui makes no tracker calls.</p>
+</div>
+{{end}}

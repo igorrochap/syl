@@ -1,0 +1,5 @@
+Branch: feat/implementer-session-resume
+Branch point: b2662efdc2856d6eb55af72123269d2fe083546a
+Work root: /Users/igorrocha/workspace/personal/my-harness
+Implementer harness: codex
+Reviewer harness: claude
