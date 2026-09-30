@@ -27,6 +27,15 @@ import (
 	"github.com/igorrochap/syl/internal/web"
 )
 
+const (
+	testAlivePID = 12345
+	testDeadPID  = 999999
+)
+
+func testProcessAlive(pid int) bool {
+	return pid == testAlivePID
+}
+
 func TestHandlerRendersStructuredConfigForm(t *testing.T) {
 	sylHome := t.TempDir()
 	project := t.TempDir()
@@ -72,10 +81,10 @@ func TestHandlerShowsLiveRunBannerOnConfigForm(t *testing.T) {
 	writeWebRegistry(t, sylHome, sylhome.RegisteredProject{Path: project})
 	runDir := filepath.Join(project, ".syl", "runs", "live-config")
 	writeWebRun(t, project, filepath.Base(runDir), runrecord.State{
-		Status: runrecord.Running, PID: os.Getpid(), Hostname: testHostname(t), Kind: runrecord.Implement,
+		Status: runrecord.Running, PID: testAlivePID, Hostname: testHostname(t), Kind: runrecord.Implement,
 		StartedAt: time.Now().UTC(),
 	})
-	createLiveRun(t, sylHome, project, runDir, "#186", os.Getpid(), testHostname(t))
+	createLiveRun(t, sylHome, project, runDir, "#186", testAlivePID, testHostname(t))
 	server, err := newServer(t, sylHome)
 	if err != nil {
 		t.Fatal(err)
@@ -588,7 +597,7 @@ func TestHandlerPollsOnlyRunningRunAndRefusesUnsafeArtifacts(t *testing.T) {
 	}
 	if err := runrecord.Write(runrecord.Path(runDir), runrecord.State{
 		Status: runrecord.Running, Activity: runrecord.Reviewing, Iteration: 1, MaxIterations: 3,
-		PID: os.Getpid(), Hostname: testHostname(t), StartedAt: time.Now().UTC(), Kind: runrecord.Implement, TicketRef: "#173",
+		PID: testAlivePID, Hostname: testHostname(t), StartedAt: time.Now().UTC(), Kind: runrecord.Implement, TicketRef: "#173",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -639,7 +648,7 @@ func TestHandlerShowsInterruptedProjectRunAndFindsNewRunsOnNextRequest(t *testin
 	writeWebRegistry(t, sylHome, sylhome.RegisteredProject{Path: project})
 	writeWebRun(t, project, "20260924T120000.000000000Z-1", runrecord.State{
 		Status: runrecord.Running, Activity: runrecord.Reviewing, Iteration: 1, MaxIterations: 3,
-		PID: 999999, Hostname: testHostname(t), StartedAt: time.Now().UTC(), Kind: runrecord.Implement, TicketRef: "#1",
+		PID: testDeadPID, Hostname: testHostname(t), StartedAt: time.Now().UTC(), Kind: runrecord.Implement, TicketRef: "#1",
 	})
 	server, err := newServer(t, sylHome)
 	if err != nil {
@@ -659,6 +668,76 @@ func TestHandlerShowsInterruptedProjectRunAndFindsNewRunsOnNextRequest(t *testin
 	body = serveProject(t, server.Handler(), project, "/projects/content")
 	if !strings.Contains(body, "#2") {
 		t.Fatal("second Project request did not find the new Run")
+	}
+}
+
+func TestInterruptedRunHasSameStatusAcrossPages(t *testing.T) {
+	sylHome := t.TempDir()
+	project := t.TempDir()
+	if _, err := config.Init(project); err != nil {
+		t.Fatal(err)
+	}
+	writeWebRegistry(t, sylHome, sylhome.RegisteredProject{Path: project})
+	runDir := filepath.Join(project, ".syl", "runs", "20260930T120000.000000000Z-205")
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	markerHost := testHostname(t)
+	state := runrecord.State{
+		Status: runrecord.Running, Activity: runrecord.Reviewing, Iteration: 1, MaxIterations: 2,
+		PID: testDeadPID, Hostname: "recorded-elsewhere", StartedAt: time.Now().UTC(),
+		Kind: runrecord.Implement, TicketRef: "#205",
+	}
+	if err := runrecord.Write(runrecord.Path(runDir), state); err != nil {
+		t.Fatal(err)
+	}
+	createLiveRun(t, sylHome, project, runDir, state.TicketRef, state.PID, markerHost)
+	server, err := newServer(t, sylHome)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	overview := serveOverview(t, server.Handler(), "127.0.0.1:7777")
+	projectPage := serveProject(t, server.Handler(), project, "/projects")
+	runPage := serveRun(t, server.Handler(), runDir, "/runs")
+	if !strings.Contains(overview, `<span class="activity interrupted"><span class="activity-dot"></span>Interrupted</span>`) {
+		t.Fatalf("Overview does not show the interrupted status: %s", overview)
+	}
+	for name, body := range map[string]string{"Project": projectPage, "Run": runPage} {
+		if !strings.Contains(body, `<span class="status-pill red">Interrupted</span>`) {
+			t.Fatalf("%s page does not show the interrupted status: %s", name, body)
+		}
+	}
+}
+
+func TestOverviewKeepsRecordedActivityForNonRunningRun(t *testing.T) {
+	sylHome := t.TempDir()
+	project := t.TempDir()
+	if _, err := config.Init(project); err != nil {
+		t.Fatal(err)
+	}
+	writeWebRegistry(t, sylHome, sylhome.RegisteredProject{Path: project})
+	runDir := filepath.Join(project, ".syl", "runs", "finished-with-activity")
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	state := runrecord.State{
+		Status: runrecord.Approved, Activity: runrecord.Reviewing, PID: testDeadPID,
+		Hostname: testHostname(t), StartedAt: time.Now().UTC(), Kind: runrecord.Implement, TicketRef: "#206",
+	}
+	if err := runrecord.Write(runrecord.Path(runDir), state); err != nil {
+		t.Fatal(err)
+	}
+	createLiveRun(t, sylHome, project, runDir, state.TicketRef, state.PID, state.Hostname)
+	server, err := newServer(t, sylHome)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	body := serveOverview(t, server.Handler(), "127.0.0.1:7777")
+	want := `<span class="activity running"><span class="activity-dot"></span>reviewing</span>`
+	if !strings.Contains(body, want) {
+		t.Fatalf("Overview activity = %q, want rendered fragment %q", body, want)
 	}
 }
 
@@ -1025,7 +1104,7 @@ func TestHandlerRendersAwaitingAndInterruptedRuns(t *testing.T) {
 	}
 	state := runrecord.State{
 		Status: runrecord.Running, Activity: runrecord.AwaitingAnswer, Iteration: 2, MaxIterations: 3,
-		Question: "Choose the deployment target", PID: os.Getpid(), Hostname: testHostname(t),
+		Question: "Choose the deployment target", PID: testAlivePID, Hostname: testHostname(t),
 		StartedAt: time.Now().UTC(), Kind: runrecord.Implement, TicketRef: "#181",
 	}
 	if err := runrecord.Write(runrecord.Path(runDir), state); err != nil {
@@ -1039,7 +1118,7 @@ func TestHandlerRendersAwaitingAndInterruptedRuns(t *testing.T) {
 		RunDir:      runDir,
 		TicketRef:   "#181",
 		Host:        testHostname(t),
-		PID:         os.Getpid(),
+		PID:         testAlivePID,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1059,7 +1138,7 @@ func TestHandlerRendersAwaitingAndInterruptedRuns(t *testing.T) {
 
 	state.Activity = runrecord.Implementing
 	state.Question = ""
-	state.PID = 999999
+	state.PID = testDeadPID
 	if err := runrecord.Write(runrecord.Path(runDir), state); err != nil {
 		t.Fatal(err)
 	}
@@ -1255,9 +1334,9 @@ func writeMutationFixture(t *testing.T, live bool) (string, string) {
 	if err := os.MkdirAll(runDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	pid := 999999
+	pid := testDeadPID
 	if live {
-		pid = os.Getpid()
+		pid = testAlivePID
 	}
 	state := runrecord.State{
 		Status: runrecord.Running, Activity: runrecord.Implementing, PID: pid,
@@ -1275,7 +1354,7 @@ func writeMutationFixture(t *testing.T, live bool) (string, string) {
 
 func newServer(t *testing.T, path string) (*web.Server, error) {
 	t.Helper()
-	return web.New(openSylHome(t, path), 7777)
+	return web.NewWithProcessLiveness(openSylHome(t, path), 7777, testProcessAlive)
 }
 
 func openSylHome(t *testing.T, path string) sylhome.Dir {

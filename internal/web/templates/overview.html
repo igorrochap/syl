@@ -98,7 +98,7 @@
 
 <div class="run-page-heading">
 <div class="run-title"><h1>{{historyTicket .Page.Run.TicketRef}}</h1><span>{{if .Page.Run.Branch}}{{.Page.Run.Branch}}{{else}}—{{end}}</span></div>
-<div class="run-details"><span class="status-pill {{historyStatusClass (runStatus .Page.Run)}}">{{runStatus .Page.Run}}</span><span>{{if .Page.Run.Kind}}{{.Page.Run.Kind}}{{else}}—{{end}}</span><span>·</span><span>{{if gt .Page.Run.MaxIterations 0}}{{.Page.Run.Iteration}} of {{.Page.Run.MaxIterations}} iterations{{else if gt .Page.Run.Iteration 0}}{{.Page.Run.Iteration}} iterations{{else}}—{{end}}</span><span>·</span><span>{{runTime .Page.Run.StartedAt}} → {{runEndTime .Page.Run.EndedAt}} ({{runDuration .Page.Run}})</span><span>·</span><span>{{runTokens .Page.Run}} tokens</span></div>
+{{$status := status .Page.Run.Status}}<div class="run-details"><span class="status-pill {{$status.PillClass}}">{{$status.Label}}</span><span>{{if .Page.Run.Kind}}{{.Page.Run.Kind}}{{else}}—{{end}}</span><span>·</span><span>{{if gt .Page.Run.MaxIterations 0}}{{.Page.Run.Iteration}} of {{.Page.Run.MaxIterations}} iterations{{else if gt .Page.Run.Iteration 0}}{{.Page.Run.Iteration}} iterations{{else}}—{{end}}</span><span>·</span><span>{{runTime .Page.Run.StartedAt}} → {{runEndTime .Page.Run.EndedAt}} ({{runDuration .Page.Run}})</span><span>·</span><span>{{runTokens .Page.Run}} tokens</span></div>
 </div>
 
 <div class="run-layout">
@@ -212,7 +212,7 @@
 {{range .Page.Runs}}
 <a class="history-grid row" href="/runs?path={{urlquery .RunDir}}">
 <span class="history-ticket">{{historyTicket .TicketRef}}</span><span>{{historyKind .Kind}}</span>
-<span class="history-status"><span class="status-pill {{historyStatusClass .Status}}">{{historyStatus .Status}}</span>{{if and (eq .Status "running") .Activity}}<span class="history-activity">{{.Activity}}</span>{{end}}</span>
+{{$status := status .Status}}<span class="history-status"><span class="status-pill {{$status.PillClass}}">{{$status.Label}}</span>{{if and $status.ActivityApplicable .Activity}}<span class="history-activity">{{.Activity}}</span>{{end}}</span>
 <span class="history-iterations">{{if gt .MaxIterations 0}}{{.Iteration}} / {{.MaxIterations}}{{else if gt .Iteration 0}}{{.Iteration}}{{else}}—{{end}}</span>
 <span class="history-verdict">{{if .Verdict}}{{.Verdict}}{{else}}—{{end}}</span><span class="history-started">{{started .StartedAt}}</span><span class="history-duration">{{duration .}}</span><span class="history-tokens">{{historyTokens .}}</span>
 </a>
@@ -436,13 +436,13 @@
 <div class="run-table">
 <div class="run-grid header"><span>Project</span><span>Ticket</span><span>Activity</span><span>Iteration</span><span>Harness</span><span>Started</span><span></span></div>
 {{range .Overview.LiveRuns}}
-<div class="run-grid row {{rowClass .}}">
+{{$status := status .Status}}<div class="run-grid row {{$status.RowClass}}">
 <a class="project" href="/projects?path={{urlquery .ProjectPath}}">{{.ProjectName}}</a>
 <a class="ticket" href="/runs?path={{urlquery .RunDir}}">{{ticket .TicketRef}}</a>
-<span><span class="activity {{activityClass .}}"><span class="activity-dot"></span>{{activity .}}</span>{{if .Interrupted}}<span class="last-seen">last seen {{.Activity}} · pid {{.PID}} gone</span>{{else if .Hostname}}{{if ne .Hostname $.LocalHostname}}<span class="last-seen">host {{.Hostname}}</span>{{end}}{{end}}</span>
+<span><span class="activity {{$status.ActivityClass}}"><span class="activity-dot"></span>{{if and $status.ShowRecordedActivity .Activity}}{{.Activity}}{{else}}{{$status.OverviewLabel}}{{end}}</span>{{if $status.Dismissible}}<span class="last-seen">last seen {{.Activity}} · pid {{.PID}} gone</span>{{else if .Hostname}}{{if ne .Hostname $.LocalHostname}}<span class="last-seen">host {{.Hostname}}</span>{{end}}{{end}}</span>
 <span class="iteration">{{iteration .Iteration .MaxIterations}}</span>
 <span class="harness">{{harness .Harness .Model}}</span>
-<span class="started">{{started .StartedAt}}</span>{{if .Interrupted}}<form class="run-action" method="post" action="/runs/dismiss" hx-post="/runs/dismiss" hx-target="#overview-content" hx-swap="outerHTML" hx-headers='{"X-Syl-Token":"{{$.Token}}"}'><input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="run_dir" value="{{.RunDir}}"><button class="dismiss-button" type="submit">Dismiss</button></form>{{else}}<span></span>{{end}}
+<span class="started">{{started .StartedAt}}</span>{{if $status.Dismissible}}<form class="run-action" method="post" action="/runs/dismiss" hx-post="/runs/dismiss" hx-target="#overview-content" hx-swap="outerHTML" hx-headers='{"X-Syl-Token":"{{$.Token}}"}'><input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="run_dir" value="{{.RunDir}}"><button class="dismiss-button" type="submit">Dismiss</button></form>{{else}}<span></span>{{end}}
 </div>
 {{end}}
 </div>

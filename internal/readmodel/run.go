@@ -40,7 +40,7 @@ type RunDetail struct {
 	TicketRef     string
 	Branch        string
 	Kind          runrecord.Kind
-	Status        string
+	Status        runrecord.ObservedStatus
 	Activity      string
 	Iteration     int
 	MaxIterations int
@@ -50,7 +50,6 @@ type RunDetail struct {
 	DurationKnown bool
 	TotalTokens   int64
 	TokensKnown   bool
-	Interrupted   bool
 	Refreshing    bool
 }
 
@@ -134,7 +133,8 @@ func (reader *Reader) ReadRun(runDir string) (RunPage, error) {
 	metadata := record.Metadata
 	sessions := readRunSessions(record.Sessions)
 	artifact := readRunUsage(record)
-	detail := buildRunDetail(path, metadata, record.SummaryExists, record.State, record.HasState)
+	status := reader.runs.ObserveStatus(path, reader.markerHostForRun(path), currentHostname())
+	detail := buildRunDetail(path, metadata, status, record.State, record.HasState)
 	addRunUsageTotals(&detail, artifact)
 	page := RunPage{
 		Run:           detail,
@@ -182,7 +182,13 @@ func readRunUsage(record runrecord.Record) usage.Artifact {
 	return artifact
 }
 
-func buildRunDetail(runDir string, metadata runrecord.Metadata, summaryExists bool, state runrecord.State, hasState bool) RunDetail {
+func buildRunDetail(
+	runDir string,
+	metadata runrecord.Metadata,
+	status runrecord.ObservedStatus,
+	state runrecord.State,
+	hasState bool,
+) RunDetail {
 	projectPath := filepath.Dir(filepath.Dir(filepath.Dir(runDir)))
 	detail := RunDetail{
 		RunDir:      runDir,
@@ -191,7 +197,7 @@ func buildRunDetail(runDir string, metadata runrecord.Metadata, summaryExists bo
 		TicketRef:   metadata.TicketRef,
 		Branch:      metadata.Branch,
 		Kind:        metadata.Kind,
-		Status:      legacyRunStatus(summaryExists),
+		Status:      status,
 		StartedAt:   runrecord.DirectoryTimestamp(filepath.Base(runDir)),
 	}
 	detail = applyLegacyRunTicket(detail, runDir)
@@ -213,8 +219,7 @@ func applyLegacyRunTicket(detail RunDetail, runDir string) RunDetail {
 func applyRunState(detail RunDetail, state runrecord.State, runDir string) RunDetail {
 	applyRunStateValues(&detail, state, runDir)
 	applyRunStateTiming(&detail, state)
-	applyRunStateStatus(&detail, state)
-	detail.Refreshing = state.Status == runrecord.Running && !detail.Interrupted
+	detail.Refreshing = detail.Status == runrecord.ObservedRunning
 	return detail
 }
 
@@ -225,7 +230,6 @@ func applyRunStateValues(detail *RunDetail, state runrecord.State, runDir string
 	if state.Kind != "" {
 		detail.Kind = state.Kind
 	}
-	detail.Status = string(state.Status)
 	detail.Activity = string(state.Activity)
 	detail.Iteration = state.Iteration
 	detail.MaxIterations = state.MaxIterations
@@ -243,22 +247,6 @@ func applyRunStateTiming(detail *RunDetail, state runrecord.State) {
 	} else if state.Status == runrecord.Running {
 		detail.Duration, detail.DurationKnown = historyDuration(detail.StartedAt, nil)
 	}
-}
-
-func applyRunStateStatus(detail *RunDetail, state runrecord.State) {
-	if state.Status == runrecord.Running && isLocalHost("", state.Hostname, currentHostname()) {
-		detail.Interrupted = !processIsAlive(state.PID)
-	}
-	if detail.Interrupted {
-		detail.Status = "Interrupted"
-	}
-}
-
-func legacyRunStatus(summaryExists bool) string {
-	if summaryExists {
-		return "completed"
-	}
-	return "unknown"
 }
 
 func buildRunMetadata(runDir string, metadata runrecord.Metadata, sessions []Session) RunMetadata {

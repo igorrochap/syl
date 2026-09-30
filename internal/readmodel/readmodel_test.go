@@ -16,6 +16,15 @@ import (
 	"github.com/igorrochap/syl/internal/usage"
 )
 
+const (
+	testAlivePID = 12345
+	testDeadPID  = 999999
+)
+
+func testProcessAlive(pid int) bool {
+	return pid == testAlivePID
+}
+
 func TestReaderReadsProjectRunHistoryNewestFirst(t *testing.T) {
 	sylHome := t.TempDir()
 	project := t.TempDir()
@@ -28,7 +37,7 @@ func TestReaderReadsProjectRunHistoryNewestFirst(t *testing.T) {
 
 	writeHistoryRun(t, project, "20260924T120000.000000000Z-running", runrecord.State{
 		Status: runrecord.Running, Activity: runrecord.Implementing, Iteration: 2, MaxIterations: 3,
-		PID: os.Getpid(), Hostname: hostname(t), StartedAt: time.Date(2026, time.September, 24, 12, 0, 0, 0, time.UTC),
+		PID: testAlivePID, Hostname: hostname(t), StartedAt: time.Date(2026, time.September, 24, 12, 0, 0, 0, time.UTC),
 		Kind: runrecord.Implement, TicketRef: "#184",
 	}, "Implementer harness: codex\n", usage.Artifact{Entries: []usage.Entry{{
 		Tracked: true, Metrics: &usage.Metrics{TotalTokens: 900000},
@@ -69,25 +78,25 @@ func TestReaderReadsProjectRunHistoryNewestFirst(t *testing.T) {
 	if got := page.Runs[0].TicketRef; got != "#184" {
 		t.Fatalf("newest Run ticket = %q, want #184", got)
 	}
-	if page.Runs[0].Status != "running" || page.Runs[0].Activity != "implementing" || page.Runs[0].Iteration != 2 || page.Runs[0].TotalTokens != 900000 {
+	if page.Runs[0].Status != runrecord.ObservedRunning || page.Runs[0].Activity != "implementing" || page.Runs[0].Iteration != 2 || page.Runs[0].TotalTokens != 900000 {
 		t.Fatalf("running Run = %#v, want live state and usage", page.Runs[0])
 	}
 	if !page.Runs[0].DurationKnown {
 		t.Fatal("running Run duration is unknown")
 	}
-	if page.Runs[1].Status != "approved" || page.Runs[1].Verdict != "approve" || page.Runs[1].TotalTokens != 2200000 {
+	if page.Runs[1].Status != runrecord.ObservedApproved || page.Runs[1].Verdict != "approve" || page.Runs[1].TotalTokens != 2200000 {
 		t.Fatalf("approved Run = %#v, want final state, verdict, and usage", page.Runs[1])
 	}
 	if page.Runs[2].Kind != runrecord.Review || page.Runs[2].TicketRef != "release-candidate" {
 		t.Fatalf("standalone review = %#v, want non-numeric reference", page.Runs[2])
 	}
-	if page.Runs[3].Status != "completed" || page.Runs[3].TicketRef != "#182" || page.Runs[3].Iteration != 2 || page.Runs[3].Verdict != "approve" {
+	if page.Runs[3].Status != runrecord.ObservedCompleted || page.Runs[3].TicketRef != "#182" || page.Runs[3].Iteration != 2 || page.Runs[3].Verdict != "approve" {
 		t.Fatalf("legacy completed Run = %#v, want derived values", page.Runs[3])
 	}
-	if page.Runs[4].Status != "unknown" || page.Runs[4].TokensKnown {
+	if page.Runs[4].Status != runrecord.ObservedUnknown || page.Runs[4].TokensKnown {
 		t.Fatalf("legacy unknown Run = %#v, want unknown status and missing tokens", page.Runs[4])
 	}
-	if page.Runs[5].TicketRef != "" || page.Runs[5].Kind != "" || page.Runs[5].Status != "unknown" {
+	if page.Runs[5].TicketRef != "" || page.Runs[5].Kind != "" || page.Runs[5].Status != runrecord.ObservedUnknown {
 		t.Fatalf("incomplete Run = %#v, want missing values", page.Runs[5])
 	}
 }
@@ -133,7 +142,7 @@ func TestReaderReadsRunDetailsFromRecordedArtifacts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadRun() error = %v", err)
 	}
-	if page.Run.TicketRef != "#173" || page.Run.Branch != "feat/implementer-context-rollover" || page.Run.Status != "approved" {
+	if page.Run.TicketRef != "#173" || page.Run.Branch != "feat/implementer-context-rollover" || page.Run.Status != runrecord.ObservedApproved {
 		t.Fatalf("Run = %#v, want ticket, branch, and status", page.Run)
 	}
 	if page.Run.Duration != 41*time.Minute || page.Run.TotalTokens != 2210 || !page.Run.TokensKnown {
@@ -167,7 +176,7 @@ func TestReaderShowsCurrentActivityAndInterruptedRun(t *testing.T) {
 	}
 	if err := runrecord.Write(runrecord.Path(runDir), runrecord.State{
 		Status: runrecord.Running, Activity: runrecord.Reviewing, Iteration: 2, MaxIterations: 3,
-		PID: 999999, Hostname: hostname(t), Kind: runrecord.Implement, TicketRef: "#173",
+		PID: testDeadPID, Hostname: hostname(t), Kind: runrecord.Implement, TicketRef: "#173",
 		StartedAt: time.Now().Add(-time.Minute),
 	}); err != nil {
 		t.Fatal(err)
@@ -179,11 +188,46 @@ func TestReaderShowsCurrentActivityAndInterruptedRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadRun() error = %v", err)
 	}
-	if !page.Run.Interrupted || page.Run.Status != "Interrupted" || page.Run.Refreshing {
+	if page.Run.Status != runrecord.ObservedInterrupted || page.Run.Refreshing {
 		t.Fatalf("Run = %#v, want interrupted and not refreshing", page.Run)
 	}
 	if page.Run.Activity != "reviewing" || len(page.Iterations) != 2 || page.Iterations[1].Activity != "reviewing" {
 		t.Fatalf("activity iterations = %#v, want current review activity", page.Iterations)
+	}
+}
+
+func TestReaderObservesHostlessRunAsInterruptedOnHistoryAndRunPages(t *testing.T) {
+	sylHome := t.TempDir()
+	project := t.TempDir()
+	if _, err := config.Init(project); err != nil {
+		t.Fatal(err)
+	}
+	writeRegistry(t, sylHome, project)
+	runDir := filepath.Join(project, ".syl", "runs", "hostless")
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := runrecord.Write(runrecord.Path(runDir), runrecord.State{
+		Status: runrecord.Running, Activity: runrecord.Implementing, PID: testDeadPID,
+		StartedAt: time.Now().UTC(), Kind: runrecord.Implement, TicketRef: "#174",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	reader := newReader(t, sylHome)
+	runPage, err := reader.ReadRun(runDir)
+	if err != nil {
+		t.Fatalf("ReadRun() error = %v", err)
+	}
+	if runPage.Run.Status != runrecord.ObservedInterrupted {
+		t.Fatalf("Run page status = %q, want interrupted", runPage.Run.Status)
+	}
+	projectPage, err := reader.ReadProject(project)
+	if err != nil {
+		t.Fatalf("ReadProject() error = %v", err)
+	}
+	if len(projectPage.Runs) != 1 || projectPage.Runs[0].Status != runrecord.ObservedInterrupted {
+		t.Fatalf("Project history = %#v, want one interrupted Run", projectPage.Runs)
 	}
 }
 
@@ -199,7 +243,7 @@ func TestReaderReadsLegacyRunValues(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadRun() error = %v", err)
 	}
-	if page.Run.Status != "completed" || page.Run.TicketRef != "#173" || page.Run.Kind != runrecord.Implement {
+	if page.Run.Status != runrecord.ObservedCompleted || page.Run.TicketRef != "#173" || page.Run.Kind != runrecord.Implement {
 		t.Fatalf("legacy Run = %#v, want completed implement Run", page.Run)
 	}
 	if page.Run.StartedAt.IsZero() || page.Run.EndedAt != nil || page.Run.DurationKnown {
@@ -230,7 +274,7 @@ func TestReaderMemoizesFinalAndLegacyRunsButRefreshesRunningState(t *testing.T) 
 		Kind: runrecord.Implement, TicketRef: "#1",
 	}, "Branch: final\n", usage.Artifact{Entries: []usage.Entry{{Tracked: true, Metrics: &usage.Metrics{TotalTokens: 10}}}})
 	writeHistoryRun(t, project, filepath.Base(runningRun), runrecord.State{
-		Status: runrecord.Running, Activity: runrecord.Implementing, PID: os.Getpid(), Hostname: hostname(t),
+		Status: runrecord.Running, Activity: runrecord.Implementing, PID: testAlivePID, Hostname: hostname(t),
 		StartedAt: started, Kind: runrecord.Implement, TicketRef: "#2",
 	}, "Branch: running\n", usage.Artifact{Entries: []usage.Entry{{Tracked: true, Metrics: &usage.Metrics{TotalTokens: 20}}}})
 
@@ -246,8 +290,8 @@ func TestReaderMemoizesFinalAndLegacyRunsButRefreshesRunningState(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if files.stateReads != 3 {
-		t.Fatalf("run-state reads = %d, want final once and running twice", files.stateReads)
+	if files.stateReads != 6 {
+		t.Fatalf("run-state reads = %d, want record reads and status observations", files.stateReads)
 	}
 	if files.usageReads != 3 {
 		t.Fatalf("usage reads = %d, want final once and running twice", files.usageReads)
@@ -264,7 +308,7 @@ func TestReaderMemoizesFinalAndLegacyRunsButRefreshesRunningState(t *testing.T) 
 		t.Fatal(err)
 	}
 	final := page.Runs[0]
-	if final.Status != "approved" || final.TotalTokens != 10 {
+	if final.Status != runrecord.ObservedApproved || final.TotalTokens != 10 {
 		t.Fatalf("memoized final Run = %#v, want original values", final)
 	}
 }
@@ -316,35 +360,35 @@ func TestReaderCountsLiveRunsForProject(t *testing.T) {
 	host := hostname(t)
 
 	liveRun := createRun(t, project, "live", runrecord.State{
-		Status: runrecord.Running, PID: os.Getpid(), Hostname: host, StartedAt: time.Now(), Kind: runrecord.Implement,
+		Status: runrecord.Running, PID: testAlivePID, Hostname: host, StartedAt: time.Now(), Kind: runrecord.Implement,
 	}, "/worktrees/live")
-	createMarker(t, sylHome, project, liveRun, "#live", os.Getpid(), host)
+	createMarker(t, sylHome, project, liveRun, "#live", testAlivePID, host)
 
 	finishedRun := createRun(t, project, "finished", runrecord.State{
 		Status: runrecord.Approved, StartedAt: time.Now(), Kind: runrecord.Implement,
 	}, "/worktrees/finished")
-	createMarker(t, sylHome, project, finishedRun, "#finished", 999999, host)
+	createMarker(t, sylHome, project, finishedRun, "#finished", testDeadPID, host)
 
 	staleRun := createRun(t, project, "stale", runrecord.State{
-		Status: runrecord.Running, PID: 999999, Hostname: host, StartedAt: time.Now(), Kind: runrecord.Implement,
+		Status: runrecord.Running, PID: testDeadPID, Hostname: host, StartedAt: time.Now(), Kind: runrecord.Implement,
 	}, "/worktrees/stale")
-	createMarker(t, sylHome, project, staleRun, "#stale", 999999, host)
+	createMarker(t, sylHome, project, staleRun, "#stale", testDeadPID, host)
 
 	remoteRun := createRun(t, project, "remote", runrecord.State{
-		Status: runrecord.Running, PID: 999999, Hostname: "other-host", StartedAt: time.Now(), Kind: runrecord.Implement,
+		Status: runrecord.Running, PID: testDeadPID, Hostname: "other-host", StartedAt: time.Now(), Kind: runrecord.Implement,
 	}, "/worktrees/remote")
-	createMarker(t, sylHome, project, remoteRun, "#remote", 999999, "other-host")
+	createMarker(t, sylHome, project, remoteRun, "#remote", testDeadPID, "other-host")
 
 	otherRun := createRun(t, otherProject, "other", runrecord.State{
-		Status: runrecord.Running, PID: os.Getpid(), Hostname: host, StartedAt: time.Now(), Kind: runrecord.Implement,
+		Status: runrecord.Running, PID: testAlivePID, Hostname: host, StartedAt: time.Now(), Kind: runrecord.Implement,
 	}, "/worktrees/other")
-	createMarker(t, sylHome, otherProject, otherRun, "#other", os.Getpid(), host)
+	createMarker(t, sylHome, otherProject, otherRun, "#other", testAlivePID, host)
 
 	missingStateRun := filepath.Join(project, ".syl", "runs", "missing-state")
 	if err := os.MkdirAll(missingStateRun, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	createMarker(t, sylHome, project, missingStateRun, "#missing-state", os.Getpid(), host)
+	createMarker(t, sylHome, project, missingStateRun, "#missing-state", testAlivePID, host)
 
 	page, err := newReader(t, sylHome).ReadProject(project)
 	if err != nil {
@@ -388,18 +432,18 @@ func TestOverviewReadsProjectHealthAndLiveRuns(t *testing.T) {
 
 	awaitingRun := createRun(t, okProject, "awaiting", runrecord.State{
 		Status: runrecord.Running, Activity: runrecord.AwaitingAnswer, Iteration: 2, MaxIterations: 3,
-		Question: "Which option?", PID: os.Getpid(), Hostname: hostname(t),
+		Question: "Which option?", PID: testAlivePID, Hostname: hostname(t),
 		StartedAt: time.Date(2026, time.September, 23, 10, 0, 0, 0, time.UTC),
 		Kind:      runrecord.Implement, TicketRef: "#181",
 	}, "/worktrees/awaiting")
-	createMarker(t, sylHome, okProject, awaitingRun, "#181", os.Getpid(), hostname(t))
+	createMarker(t, sylHome, okProject, awaitingRun, "#181", testAlivePID, hostname(t))
 
 	interruptedRun := createRun(t, okProject, "interrupted", runrecord.State{
 		Status: runrecord.Running, Activity: runrecord.Implementing, Iteration: 1, MaxIterations: 3,
-		PID: 999999, Hostname: hostname(t), StartedAt: time.Date(2026, time.September, 23, 9, 0, 0, 0, time.UTC),
+		PID: testDeadPID, Hostname: hostname(t), StartedAt: time.Date(2026, time.September, 23, 9, 0, 0, 0, time.UTC),
 		Kind: runrecord.Implement, TicketRef: "#182",
 	}, "/worktrees/interrupted")
-	createMarker(t, sylHome, okProject, interruptedRun, "#182", 999999, hostname(t))
+	createMarker(t, sylHome, okProject, interruptedRun, "#182", testDeadPID, hostname(t))
 
 	remoteRun := createRun(t, okProject, "remote", runrecord.State{
 		Status: runrecord.Running, Activity: runrecord.Reviewing, Iteration: 2, MaxIterations: 3,
@@ -431,11 +475,11 @@ func TestOverviewReadsProjectHealthAndLiveRuns(t *testing.T) {
 		t.Fatalf("LiveRuns = %d, want interrupted and remote Runs", len(overview.LiveRuns))
 	}
 	interrupted := findRun(t, overview.LiveRuns, "#182")
-	if !interrupted.Interrupted || interrupted.Activity != string(runrecord.Implementing) {
+	if interrupted.Status != runrecord.ObservedInterrupted || interrupted.Activity != string(runrecord.Implementing) {
 		t.Fatalf("interrupted Run = %#v, want last-seen activity", interrupted)
 	}
 	remote := findRun(t, overview.LiveRuns, "#183")
-	if remote.Interrupted || remote.Hostname != "other-host" {
+	if remote.Status != runrecord.ObservedRunning || remote.Hostname != "other-host" {
 		t.Fatalf("remote Run = %#v, want remote host without interruption", remote)
 	}
 }
@@ -454,13 +498,13 @@ func TestOverviewShowsUnknownRunWhenStateCannotBeRead(t *testing.T) {
 	if err := os.WriteFile(runrecord.Path(runDir), []byte("before"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	createMarker(t, sylHome, project, runDir, "#184", os.Getpid(), hostname(t))
+	createMarker(t, sylHome, project, runDir, "#184", testAlivePID, hostname(t))
 
 	overview, err := readOverview(t, sylHome)
 	if err != nil {
 		t.Fatalf("ReadOverview() error = %v", err)
 	}
-	if len(overview.LiveRuns) != 1 || !overview.LiveRuns[0].Unknown {
+	if len(overview.LiveRuns) != 1 || overview.LiveRuns[0].Status != runrecord.ObservedUnknown {
 		t.Fatalf("LiveRuns = %#v, want one unknown Run", overview.LiveRuns)
 	}
 	contents, err := os.ReadFile(runrecord.Path(runDir))
@@ -480,7 +524,7 @@ func TestDismissRemovesOnlyInterruptedMarkerAndLeavesRunUntouched(t *testing.T) 
 		t.Fatal(err)
 	}
 	state := runrecord.State{
-		Status: runrecord.Running, Activity: runrecord.Implementing, PID: 999999,
+		Status: runrecord.Running, Activity: runrecord.Implementing, PID: testDeadPID,
 		Hostname: hostname(t), StartedAt: time.Now().UTC(), Kind: runrecord.Implement, TicketRef: "#183",
 	}
 	if err := runrecord.Write(runrecord.Path(runDir), state); err != nil {
@@ -519,7 +563,7 @@ func TestDismissRefusesLiveRunAndKeepsMarker(t *testing.T) {
 		t.Fatal(err)
 	}
 	state := runrecord.State{
-		Status: runrecord.Running, Activity: runrecord.Implementing, PID: os.Getpid(),
+		Status: runrecord.Running, Activity: runrecord.Implementing, PID: testAlivePID,
 		Hostname: hostname(t), StartedAt: time.Now().UTC(), Kind: runrecord.Implement, TicketRef: "#183",
 	}
 	if err := runrecord.Write(runrecord.Path(runDir), state); err != nil {
@@ -570,7 +614,7 @@ func TestDismissReportsInvalidAndUnknownRuns(t *testing.T) {
 	}
 }
 
-func TestDismissReportsUnreadableRunState(t *testing.T) {
+func TestDismissRefusesUnreadableRunState(t *testing.T) {
 	sylHome := t.TempDir()
 	project := t.TempDir()
 	runDir := filepath.Join(project, ".syl", "runs", "corrupt")
@@ -580,21 +624,29 @@ func TestDismissReportsUnreadableRunState(t *testing.T) {
 	if err := os.WriteFile(runrecord.Path(runDir), []byte("not json"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	createMarker(t, sylHome, project, runDir, "#183", 999999, hostname(t))
+	createMarker(t, sylHome, project, runDir, "#183", testDeadPID, hostname(t))
 
-	if err := dismiss(t, sylHome, runDir); err == nil {
-		t.Fatal("Dismiss() with corrupt Run state succeeded")
+	if err := dismiss(t, sylHome, runDir); err == nil || !strings.Contains(err.Error(), "read Run state") {
+		t.Fatalf("Dismiss() error = %v, want Run state read failure", err)
 	}
 }
 
-func TestDismissRefusesFinishedAndRemoteRuns(t *testing.T) {
+func TestDismissRefusesEveryObservedStatusExceptInterrupted(t *testing.T) {
 	for _, test := range []struct {
-		name       string
-		status     runrecord.Status
-		markerHost string
+		name          string
+		status        runrecord.Status
+		pid           int
+		markerHost    string
+		legacySummary bool
 	}{
-		{name: "finished", status: runrecord.Approved, markerHost: hostname(t)},
-		{name: "remote", status: runrecord.Running, markerHost: "remote-host"},
+		{name: "running", status: runrecord.Running, pid: testAlivePID},
+		{name: "remote running", status: runrecord.Running, pid: testDeadPID, markerHost: "remote-host"},
+		{name: "approved", status: runrecord.Approved},
+		{name: "exhausted", status: runrecord.Exhausted},
+		{name: "failed", status: runrecord.Failed},
+		{name: "cancelled", status: runrecord.Cancelled},
+		{name: "completed", legacySummary: true},
+		{name: "unknown"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			sylHome := t.TempDir()
@@ -603,17 +655,46 @@ func TestDismissRefusesFinishedAndRemoteRuns(t *testing.T) {
 			if err := os.MkdirAll(runDir, 0o755); err != nil {
 				t.Fatal(err)
 			}
-			state := runrecord.State{
-				Status: test.status, Activity: runrecord.Implementing, PID: 999999,
-				Hostname: hostname(t), StartedAt: time.Now().UTC(), Kind: runrecord.Implement,
+			pid := test.pid
+			if pid == 0 {
+				pid = testDeadPID
 			}
-			if err := runrecord.Write(runrecord.Path(runDir), state); err != nil {
+			host := test.markerHost
+			if host == "" {
+				host = hostname(t)
+			}
+			if test.status != "" {
+				state := runrecord.State{
+					Status: test.status, Activity: runrecord.Implementing, PID: pid,
+					Hostname: hostname(t), StartedAt: time.Now().UTC(), Kind: runrecord.Implement,
+				}
+				if err := runrecord.Write(runrecord.Path(runDir), state); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if test.legacySummary {
+				if err := os.WriteFile(filepath.Join(runDir, "summary.txt"), nil, 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			createMarker(t, sylHome, project, runDir, "#183", pid, host)
+
+			err := dismiss(t, sylHome, runDir)
+			if err == nil {
+				t.Fatal("Dismiss() succeeded for a non-interrupted Run")
+			}
+			if test.status != "" && !errors.Is(err, readmodel.ErrRunNotInterrupted) {
+				t.Fatalf("Dismiss() error = %v, want ErrRunNotInterrupted", err)
+			}
+			if test.status == "" && !strings.Contains(err.Error(), "read Run state") {
+				t.Fatalf("Dismiss() error = %v, want Run state read failure", err)
+			}
+			markers, err := liveRuns(t, sylHome)
+			if err != nil {
 				t.Fatal(err)
 			}
-			createMarker(t, sylHome, project, runDir, "#183", state.PID, test.markerHost)
-
-			if err := dismiss(t, sylHome, runDir); !errors.Is(err, readmodel.ErrRunNotInterrupted) {
-				t.Fatalf("Dismiss() error = %v, want ErrRunNotInterrupted", err)
+			if len(markers) != 1 {
+				t.Fatalf("markers = %#v, want marker preserved", markers)
 			}
 		})
 	}
@@ -693,22 +774,24 @@ func openSylHome(t *testing.T, path string) sylhome.Dir {
 
 func newReader(t *testing.T, path string) *readmodel.Reader {
 	t.Helper()
-	return readmodel.NewReader(openSylHome(t, path))
+	return readmodel.NewReaderWithProcessLiveness(openSylHome(t, path), testProcessAlive)
 }
 
 func newReaderWithFileSystem(t *testing.T, path string, files readmodel.FileSystem) *readmodel.Reader {
 	t.Helper()
-	return readmodel.NewReaderWithFileSystem(openSylHome(t, path), files)
+	return readmodel.NewReaderWithFileSystemAndProcessLiveness(
+		openSylHome(t, path), files, testProcessAlive,
+	)
 }
 
 func readOverview(t *testing.T, path string) (readmodel.Overview, error) {
 	t.Helper()
-	return readmodel.ReadOverview(openSylHome(t, path))
+	return readmodel.NewReaderWithProcessLiveness(openSylHome(t, path), testProcessAlive).ReadOverview()
 }
 
 func dismiss(t *testing.T, path, runDir string) error {
 	t.Helper()
-	return readmodel.Dismiss(openSylHome(t, path), runDir)
+	return readmodel.DismissWithProcessLiveness(openSylHome(t, path), runDir, testProcessAlive)
 }
 
 func liveRuns(t *testing.T, path string) ([]sylhome.LiveRun, error) {

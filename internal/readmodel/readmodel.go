@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/igorrochap/syl/internal/config"
@@ -63,7 +62,7 @@ type Run struct {
 	RunDir        string
 	TicketRef     string
 	Kind          runrecord.Kind
-	Status        runrecord.Status
+	Status        runrecord.ObservedStatus
 	Activity      string
 	Question      string
 	Iteration     int
@@ -74,8 +73,6 @@ type Run struct {
 	Hostname      string
 	PID           int
 	StartedAt     time.Time
-	Interrupted   bool
-	Unknown       bool
 }
 
 // ReadOverview reads the registry, live markers, and referenced Run state.
@@ -86,6 +83,19 @@ func ReadOverview(sylHome sylhome.Dir) (Overview, error) {
 
 // Dismiss removes an orphaned live-run marker without touching the Run.
 func Dismiss(sylHome sylhome.Dir, runDir string) error {
+	return dismiss(sylHome, runDir, runrecord.NewReader(nil))
+}
+
+// DismissWithProcessLiveness dismisses a marker using the supplied process check.
+func DismissWithProcessLiveness(
+	sylHome sylhome.Dir,
+	runDir string,
+	processAlive func(int) bool,
+) error {
+	return dismiss(sylHome, runDir, runrecord.NewReaderWithProcessLiveness(nil, processAlive))
+}
+
+func dismiss(sylHome sylhome.Dir, runDir string, recordReader *runrecord.Reader) error {
 	if strings.TrimSpace(runDir) == "" {
 		return errors.New("run directory is required")
 	}
@@ -102,33 +112,24 @@ func Dismiss(sylHome sylhome.Dir, runDir string) error {
 		if filepath.Clean(run.RunDir) != filepath.Clean(resolvedRunDir) {
 			continue
 		}
-		return dismissMarker(run)
+		return dismissMarker(run, recordReader)
 	}
 	return fmt.Errorf("%w: %s", ErrRunMarkerNotFound, runDir)
 }
 
-func dismissMarker(run sylhome.LiveRun) error {
-	state, err := runrecord.NewReader(nil).ReadState(run.RunDir)
+func dismissMarker(run sylhome.LiveRun, recordReader *runrecord.Reader) error {
+	_, err := recordReader.ReadState(run.RunDir)
 	if err != nil {
 		return fmt.Errorf("read Run state: %w", err)
 	}
-	if !isInterrupted(run, state) {
+	status := recordReader.ObserveStatus(run.RunDir, run.Host, currentHostname())
+	if status != runrecord.ObservedInterrupted {
 		return fmt.Errorf("%w: %s", ErrRunNotInterrupted, run.RunDir)
 	}
 	if err := run.Unmark(); err != nil {
 		return fmt.Errorf("remove live-run marker: %w", err)
 	}
 	return nil
-}
-
-func isInterrupted(run sylhome.LiveRun, state runrecord.State) bool {
-	if state.Status != runrecord.Running {
-		return false
-	}
-	if !isLocalHost(run.Host, state.Hostname, currentHostname()) {
-		return false
-	}
-	return !processIsAlive(state.PID)
 }
 
 // ReadOverview reads the registry, live markers, and referenced Run state.
@@ -148,9 +149,9 @@ func (reader *Reader) ReadOverview() (Overview, error) {
 	localHost := currentHostname()
 	overview := Overview{Projects: projects}
 	for _, liveRun := range runs {
-		run := buildRun(liveRun, projectConfigs, localHost)
-		isAwaitingAnswer := run.Status == runrecord.Running && run.Activity == string(runrecord.AwaitingAnswer)
-		if isAwaitingAnswer && !run.Interrupted {
+		run := buildRun(liveRun, projectConfigs, localHost, reader.runs)
+		isAwaitingAnswer := run.Status == runrecord.ObservedRunning && run.Activity == string(runrecord.AwaitingAnswer)
+		if isAwaitingAnswer {
 			overview.AwaitingAnswer = append(overview.AwaitingAnswer, run)
 			continue
 		}
@@ -211,7 +212,12 @@ func inspectProject(path string, entry sylhome.RegisteredProject) (Project, conf
 	return project, configuration, true
 }
 
-func buildRun(pointer sylhome.LiveRun, projects map[string]projectRecord, localHost string) Run {
+func buildRun(
+	pointer sylhome.LiveRun,
+	projects map[string]projectRecord,
+	localHost string,
+	recordReader *runrecord.Reader,
+) Run {
 	projectPath := filepath.Clean(pointer.ProjectPath)
 	record := projects[projectPath]
 	run := Run{
@@ -226,18 +232,16 @@ func buildRun(pointer sylhome.LiveRun, projects map[string]projectRecord, localH
 		run.ProjectName = record.project.Name
 	}
 
-	metadata, _ := runrecord.NewReader(nil).ReadMetadata(pointer.RunDir)
-	state, err := runrecord.NewReader(nil).ReadState(pointer.RunDir)
+	metadata, _ := recordReader.ReadMetadata(pointer.RunDir)
+	run.Status = recordReader.ObserveStatus(pointer.RunDir, pointer.Host, localHost)
+	state, err := recordReader.ReadState(pointer.RunDir)
 	if err != nil {
-		run.Unknown = true
-		run.Activity = "unknown"
 		run.Harness = metadata.ImplementerHarness
 		run.WorkRoot = metadata.WorkRoot
 		return run
 	}
 
 	run.Kind = state.Kind
-	run.Status = state.Status
 	run.Activity = string(state.Activity)
 	run.Question = state.Question
 	run.Iteration = state.Iteration
@@ -249,9 +253,6 @@ func buildRun(pointer sylhome.LiveRun, projects map[string]projectRecord, localH
 	}
 	run.WorkRoot = metadata.WorkRoot
 	run.Harness, run.Model = roleConfiguration(state, metadata, record)
-	if state.Status == runrecord.Running && isLocalHost(pointer.Host, state.Hostname, localHost) {
-		run.Interrupted = !processIsAlive(state.PID)
-	}
 	return run
 }
 
@@ -270,26 +271,6 @@ func roleConfiguration(state runrecord.State, metadata runrecord.Metadata, proje
 		harness = string(role.Harness)
 	}
 	return harness, role.Model
-}
-
-func isLocalHost(markerHost, stateHost, localHost string) bool {
-	host := markerHost
-	if host == "" {
-		host = stateHost
-	}
-	return localHost != "" && host != "" && host == localHost
-}
-
-func processIsAlive(pid int) bool {
-	if pid <= 0 {
-		return false
-	}
-	process, err := os.FindProcess(pid)
-	if err != nil {
-		return false
-	}
-	err = process.Signal(syscall.Signal(0))
-	return err == nil || errors.Is(err, os.ErrPermission) || errors.Is(err, syscall.EPERM)
 }
 
 func currentHostname() string {
@@ -319,7 +300,7 @@ func addRunCounts(overview *Overview) {
 		if project == nil {
 			continue
 		}
-		if run.Interrupted {
+		if run.Status == runrecord.ObservedInterrupted {
 			project.InterruptedCount++
 			continue
 		}
