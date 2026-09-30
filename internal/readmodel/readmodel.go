@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/igorrochap/syl/internal/config"
-	"github.com/igorrochap/syl/internal/runstate"
+	"github.com/igorrochap/syl/internal/runrecord"
 	"github.com/igorrochap/syl/internal/sylhome"
 )
 
@@ -62,8 +62,8 @@ type Run struct {
 	ProjectPath   string
 	RunDir        string
 	TicketRef     string
-	Kind          runstate.Kind
-	Status        runstate.Status
+	Kind          runrecord.Kind
+	Status        runrecord.Status
 	Activity      string
 	Question      string
 	Iteration     int
@@ -108,7 +108,7 @@ func Dismiss(sylHome sylhome.Dir, runDir string) error {
 }
 
 func dismissMarker(run sylhome.LiveRun) error {
-	state, err := runstate.Read(runstate.Path(run.RunDir))
+	state, err := runrecord.NewReader(nil).ReadState(run.RunDir)
 	if err != nil {
 		return fmt.Errorf("read Run state: %w", err)
 	}
@@ -121,8 +121,8 @@ func dismissMarker(run sylhome.LiveRun) error {
 	return nil
 }
 
-func isInterrupted(run sylhome.LiveRun, state runstate.State) bool {
-	if state.Status != runstate.Running {
+func isInterrupted(run sylhome.LiveRun, state runrecord.State) bool {
+	if state.Status != runrecord.Running {
 		return false
 	}
 	if !isLocalHost(run.Host, state.Hostname, currentHostname()) {
@@ -149,7 +149,7 @@ func (reader *Reader) ReadOverview() (Overview, error) {
 	overview := Overview{Projects: projects}
 	for _, liveRun := range runs {
 		run := buildRun(liveRun, projectConfigs, localHost)
-		isAwaitingAnswer := run.Status == runstate.Running && run.Activity == string(runstate.AwaitingAnswer)
+		isAwaitingAnswer := run.Status == runrecord.Running && run.Activity == string(runrecord.AwaitingAnswer)
 		if isAwaitingAnswer && !run.Interrupted {
 			overview.AwaitingAnswer = append(overview.AwaitingAnswer, run)
 			continue
@@ -226,13 +226,13 @@ func buildRun(pointer sylhome.LiveRun, projects map[string]projectRecord, localH
 		run.ProjectName = record.project.Name
 	}
 
-	metadata := readMetadata(filepath.Join(pointer.RunDir, "metadata.txt"))
-	state, err := runstate.Read(runstate.Path(pointer.RunDir))
+	metadata, _ := runrecord.NewReader(nil).ReadMetadata(pointer.RunDir)
+	state, err := runrecord.NewReader(nil).ReadState(pointer.RunDir)
 	if err != nil {
 		run.Unknown = true
 		run.Activity = "unknown"
-		run.Harness = metadata.implementerHarness
-		run.WorkRoot = metadata.workRoot
+		run.Harness = metadata.ImplementerHarness
+		run.WorkRoot = metadata.WorkRoot
 		return run
 	}
 
@@ -247,23 +247,23 @@ func buildRun(pointer sylhome.LiveRun, projects map[string]projectRecord, localH
 	if pointer.Host == "" && state.Hostname != "" {
 		run.Hostname = state.Hostname
 	}
-	run.WorkRoot = metadata.workRoot
+	run.WorkRoot = metadata.WorkRoot
 	run.Harness, run.Model = roleConfiguration(state, metadata, record)
-	if state.Status == runstate.Running && isLocalHost(pointer.Host, state.Hostname, localHost) {
+	if state.Status == runrecord.Running && isLocalHost(pointer.Host, state.Hostname, localHost) {
 		run.Interrupted = !processIsAlive(state.PID)
 	}
 	return run
 }
 
-func roleConfiguration(state runstate.State, metadata runMetadata, project projectRecord) (string, string) {
-	harness := metadata.harnessFor(state.Kind)
+func roleConfiguration(state runrecord.State, metadata runrecord.Metadata, project projectRecord) (string, string) {
+	harness := metadata.HarnessFor(state.Kind)
 	model := ""
 	if !project.configLoaded {
 		return harness, model
 	}
 
 	role := project.configuration.Roles.Review
-	if state.Kind == runstate.Implement && state.Activity != runstate.Reviewing {
+	if state.Kind == runrecord.Implement && state.Activity != runrecord.Reviewing {
 		role = project.configuration.Roles.Implement
 	}
 	if harness == "" {
@@ -298,50 +298,6 @@ func currentHostname() string {
 		return ""
 	}
 	return host
-}
-
-type runMetadata struct {
-	workRoot           string
-	implementerHarness string
-	reviewerHarness    string
-	branch             string
-	branchPoint        string
-	ticketRef          string
-	kind               runstate.Kind
-}
-
-func readMetadata(path string) runMetadata {
-	contents, err := os.ReadFile(path)
-	if err != nil {
-		return runMetadata{}
-	}
-	metadata := runMetadata{}
-	for _, line := range strings.Split(string(contents), "\n") {
-		if strings.HasPrefix(line, " ") || strings.HasPrefix(line, "\t") {
-			continue
-		}
-		key, value, ok := strings.Cut(line, ":")
-		if !ok {
-			continue
-		}
-		value = strings.TrimSpace(value)
-		switch strings.ToLower(strings.TrimSpace(key)) {
-		case "work root":
-			metadata.workRoot = value
-		case "implementer harness":
-			metadata.implementerHarness = value
-		case "reviewer harness":
-			metadata.reviewerHarness = value
-		}
-	}
-	return metadata
-}
-
-func (m runMetadata) harnessFor(kind runstate.Kind) string {
-	if kind == runstate.Review {
-		return m.reviewerHarness
-	}
-	return m.implementerHarness
 }
 
 func sortRuns(runs []Run) {

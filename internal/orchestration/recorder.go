@@ -3,23 +3,19 @@ package orchestration
 import (
 	"fmt"
 	"io"
-	"os"
 	"path/filepath"
-	"sort"
-	"strconv"
-	"strings"
 	"time"
 
-	"github.com/igorrochap/syl/internal/runstate"
+	"github.com/igorrochap/syl/internal/runrecord"
 	"github.com/igorrochap/syl/internal/sylhome"
 	"github.com/igorrochap/syl/internal/usage"
 	"github.com/igorrochap/syl/internal/verdict"
 )
 
-// RunRecorder records the domain events that make up a syl run.
+// RunRecorder records the domain events that make up a syl Run.
 type RunRecorder interface {
 	ImplementHandoffPath(iteration int) string
-	RecordState(state runstate.State)
+	RecordState(state runrecord.State)
 	RecordUsage(entry usage.Entry) error
 	RecordImplementTurn(iteration int, feed, transcript string) error
 	RecordReviewDiff(iteration int, diff string) (string, error)
@@ -30,54 +26,20 @@ type RunRecorder interface {
 	WriteSessions() error
 }
 
-// RunSpec describes the artifacts and lifecycle metadata for a Run.
-type RunSpec struct {
-	Kind               runstate.Kind
-	TicketRef          string
-	MaxIterations      int
-	Branch             string
-	BranchPoint        string
-	WorkRoot           string
-	ImplementerHarness string
-	ReviewerHarness    string
-	ImplementContext   string
-	ReviewContext      string
-}
+// RunSpec describes the metadata and lifecycle settings for a Run.
+type RunSpec = runrecord.Spec
 
 func recorderArtifactDir(recorder RunRecorder) string {
 	return filepath.Dir(recorder.ImplementHandoffPath(1))
 }
 
-type artifactKind uint8
-
-const (
-	metadataArtifact artifactKind = iota
-	implementFeedArtifact
-	implementTranscriptArtifact
-	implementHandoffArtifact
-	reviewDiffArtifact
-	reviewFeedArtifact
-	reviewTranscriptArtifact
-	verdictArtifact
-	summaryArtifact
-	sessionsArtifact
-	usageArtifact
-)
-
 type diskRunRecorder struct {
 	dir           string
-	sessions      []string
-	sessionKeys   map[sessionKey]struct{}
+	writer        *runrecord.Writer
 	usage         usage.Artifact
-	runState      runstate.State
+	runState      runrecord.State
 	warningOutput io.Writer
 	marker        *sylhome.LiveRun
-}
-
-type sessionKey struct {
-	iteration int
-	role      string
-	sessionID string
 }
 
 var _ RunRecorder = (*diskRunRecorder)(nil)
@@ -97,53 +59,25 @@ func resolveRunWorkRoot(workRoot string) (string, error) {
 	return filepath.Clean(root), nil
 }
 
-// Context blocks use two-space indentation so their lines remain separate from
-// the unindented metadata keys. The usage metadata reader relies on that boundary.
-func appendRoleContext(metadata, role, context string) string {
-	context = strings.TrimSpace(context)
-	if context == "" {
-		return metadata
-	}
-
-	var builder strings.Builder
-	builder.WriteString(metadata)
-	builder.WriteString(role)
-	builder.WriteString(" context:\n")
-	for _, line := range strings.Split(context, "\n") {
-		builder.WriteString("  ")
-		builder.WriteString(line)
-		builder.WriteByte('\n')
-	}
-	return builder.String()
-}
-
 func openDiskRun(originRoot string, sylHome sylhome.Dir, warningOutput io.Writer, spec RunSpec) (*diskRunRecorder, error) {
 	workRoot, err := resolveRunWorkRoot(spec.WorkRoot)
 	if err != nil {
 		return nil, err
 	}
-	suffix, metadata, runType, err := runArtifacts(spec, workRoot)
+	spec.WorkRoot = workRoot
+	writer, err := runrecord.CreateWriter(originRoot, spec, time.Now().UTC())
 	if err != nil {
 		return nil, err
 	}
-	dir := filepath.Join(
-		originRoot,
-		".syl",
-		"runs",
-		time.Now().UTC().Format("20060102T150405.000000000Z")+"-"+suffix,
-	)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return nil, fmt.Errorf("create %s run artifacts %s: %w", runType, dir, err)
-	}
 	recorder := &diskRunRecorder{
-		dir:           dir,
-		sessionKeys:   make(map[sessionKey]struct{}),
+		dir:           writer.Directory(),
+		writer:        writer,
 		usage:         usage.NewArtifact(),
 		warningOutput: warningOutput,
 		runState:      newRunState(spec),
 	}
 	recorder.RecordState(recorder.runState)
-	if err := writeArtifact(filepath.Join(dir, artifactFilename(metadataArtifact, 0)), metadata); err != nil {
+	if err := writer.WriteMetadata(spec); err != nil {
 		return nil, recorder.failOpen(err)
 	}
 	if err := recorder.writeUsage(); err != nil {
@@ -153,235 +87,110 @@ func openDiskRun(originRoot string, sylHome sylhome.Dir, warningOutput io.Writer
 	return recorder, nil
 }
 
-func runArtifacts(spec RunSpec, workRoot string) (string, string, string, error) {
-	trimmedTicketRef := strings.TrimSpace(spec.TicketRef)
-	suffix := strings.TrimPrefix(trimmedTicketRef, "#")
-	if suffix == "" {
-		suffix = string(spec.Kind)
-	}
-	switch spec.Kind {
-	case runstate.Implement:
-		metadata := fmt.Sprintf(
-			"Branch: %s\nBranch point: %s\nWork root: %s\nImplementer harness: %s\nReviewer harness: %s\n",
-			spec.Branch, spec.BranchPoint, workRoot, spec.ImplementerHarness, spec.ReviewerHarness,
-		)
-		metadata = appendRoleContext(metadata, "Implementer", spec.ImplementContext)
-		metadata = appendRoleContext(metadata, "Reviewer", spec.ReviewContext)
-		return suffix, metadata, "implement", nil
-	case runstate.Review:
-		number, err := strconv.Atoi(suffix)
-		if err != nil || number <= 0 {
-			suffix = "review"
-		}
-		metadata := fmt.Sprintf(
-			"Ticket: %s\nBranch point: %s\nWork root: %s\nReviewer harness: %s\n",
-			trimmedTicketRef, spec.BranchPoint, workRoot, spec.ReviewerHarness,
-		)
-		metadata = appendRoleContext(metadata, "Reviewer", spec.ReviewContext)
-		return suffix, metadata, "review", nil
-	default:
-		return "", "", "", fmt.Errorf("unsupported Run kind %q", spec.Kind)
-	}
-}
-
-func (r *diskRunRecorder) failOpen(err error) error {
-	failed := r.runState
-	failed.Status = runstate.Failed
+func (recorder *diskRunRecorder) failOpen(err error) error {
+	failed := recorder.runState
+	failed.Status = runrecord.Failed
 	failed.Activity = ""
 	failed.Question = ""
 	ended := time.Now().UTC()
 	failed.EndedAt = &ended
-	r.RecordState(failed)
+	recorder.RecordState(failed)
 	return err
 }
 
-func (r *diskRunRecorder) createLiveRunMarker(sylHome sylhome.Dir, projectRoot string) {
+func (recorder *diskRunRecorder) createLiveRunMarker(sylHome sylhome.Dir, projectRoot string) {
 	if sylHome.String() == "" {
 		return
 	}
 	marker, err := sylHome.MarkLive(sylhome.LiveRun{
 		ProjectPath: projectRoot,
-		RunDir:      r.dir,
-		TicketRef:   r.runState.TicketRef,
-		Host:        r.runState.Hostname,
-		PID:         r.runState.PID,
+		RunDir:      recorder.dir,
+		TicketRef:   recorder.runState.TicketRef,
+		Host:        recorder.runState.Hostname,
+		PID:         recorder.runState.PID,
 	})
 	if err != nil {
-		r.warn("create live-run marker", err)
+		recorder.warn("create live-run marker", err)
 		return
 	}
-	r.marker = &marker
+	recorder.marker = &marker
 }
 
-func (r *diskRunRecorder) RecordState(state runstate.State) {
-	r.runState = state
-	if err := runstate.Write(runstate.Path(r.dir), state); err != nil {
-		r.warn("write run state", err)
+func (recorder *diskRunRecorder) RecordState(state runrecord.State) {
+	recorder.runState = state
+	if err := recorder.writer.WriteState(state); err != nil {
+		recorder.warn("write run state", err)
 	}
-	if state.Status != runstate.Running {
-		r.removeLiveRunMarker()
+	if state.Status != runrecord.Running {
+		recorder.removeLiveRunMarker()
 	}
 }
 
-func (r *diskRunRecorder) removeLiveRunMarker() {
-	if r.marker == nil {
+func (recorder *diskRunRecorder) removeLiveRunMarker() {
+	if recorder.marker == nil {
 		return
 	}
-	if err := r.marker.Unmark(); err != nil {
-		r.warn("remove live-run marker", err)
+	if err := recorder.marker.Unmark(); err != nil {
+		recorder.warn("remove live-run marker", err)
 		return
 	}
-	r.marker = nil
+	recorder.marker = nil
 }
 
-func (r *diskRunRecorder) warn(action string, err error) {
-	if r.warningOutput == nil {
+func (recorder *diskRunRecorder) warn(action string, err error) {
+	if recorder.warningOutput == nil {
 		return
 	}
-	_, _ = fmt.Fprintf(r.warningOutput, "syl: warning: %s: %v\n", action, err)
+	_, _ = fmt.Fprintf(recorder.warningOutput, "syl: warning: %s: %v\n", action, err)
 }
 
-func (r *diskRunRecorder) ImplementHandoffPath(iteration int) string {
-	return filepath.Join(r.dir, artifactFilename(implementHandoffArtifact, iteration))
+func (recorder *diskRunRecorder) ImplementHandoffPath(iteration int) string {
+	return recorder.writer.HandoffPath(iteration)
 }
 
-func (r *diskRunRecorder) RecordImplementTurn(iteration int, feed, transcript string) error {
-	if err := r.write(implementFeedArtifact, iteration, feed); err != nil {
+func (recorder *diskRunRecorder) RecordImplementTurn(iteration int, feed, transcript string) error {
+	return recorder.writer.WriteImplementTurn(iteration, feed, transcript)
+}
+
+func (recorder *diskRunRecorder) RecordReviewDiff(iteration int, diff string) (string, error) {
+	return recorder.writer.WriteReviewDiff(iteration, diff)
+}
+
+func (recorder *diskRunRecorder) RecordReviewOutput(iteration int, review ReviewExecution) error {
+	return recorder.writer.WriteReviewOutput(iteration, review.Feed, review.Transcript)
+}
+
+func (recorder *diskRunRecorder) RecordVerdict(iteration int, reviewVerdict verdict.Verdict) error {
+	return recorder.writer.WriteVerdict(iteration, reviewVerdict)
+}
+
+func (recorder *diskRunRecorder) RecordSessions(iteration int, role string, sessionIDs []string) error {
+	return recorder.writer.RecordSessions(iteration, role, sessionIDs)
+}
+
+func (recorder *diskRunRecorder) WriteSummary(summary implementSummary) error {
+	return recorder.writer.WriteSummary(runrecord.SummaryInput{
+		Iterations: summary.iterations, Final: summary.final, Nits: summary.nits,
+		DiffStat: summary.diffStat, WorktreePath: summary.worktreePath,
+	})
+}
+
+func (recorder *diskRunRecorder) WriteSessions() error {
+	return recorder.writer.WriteSessions()
+}
+
+func (recorder *diskRunRecorder) RecordUsage(entry usage.Entry) error {
+	if recorder.usage.SchemaVersion == 0 {
+		recorder.usage = usage.NewArtifact()
+	}
+	recorder.usage.Upsert(entry)
+	return recorder.writeUsage()
+}
+
+func (recorder *diskRunRecorder) writeUsage() error {
+	contents, err := usage.MarshalArtifact(recorder.usage)
+	if err != nil {
 		return err
 	}
-	return r.write(implementTranscriptArtifact, iteration, transcript)
-}
-
-func (r *diskRunRecorder) RecordReviewDiff(iteration int, diff string) (string, error) {
-	path := filepath.Join(r.dir, artifactFilename(reviewDiffArtifact, iteration))
-	if err := writeArtifact(path, diff); err != nil {
-		return "", fmt.Errorf("write pre-computed diff: %w", err)
-	}
-	return path, nil
-}
-
-func (r *diskRunRecorder) RecordReviewOutput(iteration int, review ReviewExecution) error {
-	if err := r.write(reviewFeedArtifact, iteration, review.Feed); err != nil {
-		return err
-	}
-	return r.write(reviewTranscriptArtifact, iteration, review.Transcript)
-}
-
-func (r *diskRunRecorder) RecordVerdict(
-	iteration int,
-	reviewVerdict verdict.Verdict,
-) error {
-	return r.write(verdictArtifact, iteration, formatVerdict(reviewVerdict))
-}
-
-func (r *diskRunRecorder) RecordSessions(iteration int, role string, sessionIDs []string) error {
-	if r.sessionKeys == nil {
-		r.sessionKeys = make(map[sessionKey]struct{})
-	}
-	recordSessions(&r.sessions, r.sessionKeys, iteration, role, sessionIDs)
-	return r.WriteSessions()
-}
-
-func (r *diskRunRecorder) WriteSummary(summary implementSummary) error {
-	return r.write(summaryArtifact, 0, formatImplementSummary(summary))
-}
-
-func (r *diskRunRecorder) WriteSessions() error {
-	sessions := append([]string(nil), r.sessions...)
-	sort.Strings(sessions)
-	return r.write(sessionsArtifact, 0, strings.Join(sessions, "\n")+"\n")
-}
-
-func (r *diskRunRecorder) RecordUsage(entry usage.Entry) error {
-	if r.usage.SchemaVersion == 0 {
-		r.usage = usage.NewArtifact()
-	}
-	r.usage.Upsert(entry)
-	return r.writeUsage()
-}
-
-func (r *diskRunRecorder) writeUsage() error {
-	return usage.WriteArtifact(filepath.Join(r.dir, artifactFilename(usageArtifact, 0)), r.usage)
-}
-
-func (r *diskRunRecorder) write(kind artifactKind, iteration int, contents string) error {
-	return writeArtifact(filepath.Join(r.dir, artifactFilename(kind, iteration)), contents)
-}
-
-func recordSessions(
-	sessions *[]string,
-	sessionKeys map[sessionKey]struct{},
-	iteration int,
-	role string,
-	sessionIDs []string,
-) {
-	for _, recordedSessionID := range sessionIDs {
-		sessionID, ok := normalizeSessionID(recordedSessionID)
-		if !ok {
-			continue
-		}
-		key := sessionKey{iteration: iteration, role: role, sessionID: sessionID}
-		if _, exists := sessionKeys[key]; exists {
-			continue
-		}
-		sessionKeys[key] = struct{}{}
-		*sessions = append(*sessions, fmt.Sprintf("iteration %d %s: %s", iteration, role, sessionID))
-	}
-}
-
-func artifactFilename(kind artifactKind, iteration int) string {
-	// Standalone reviews use iteration zero to preserve their unprefixed names.
-	if iteration == 0 {
-		return standaloneArtifactFilename(kind)
-	}
-	return iterationArtifactFilename(kind, iteration)
-}
-
-func standaloneArtifactFilename(kind artifactKind) string {
-	switch kind {
-	case metadataArtifact:
-		return "metadata.txt"
-	case reviewDiffArtifact:
-		return "review.diff"
-	case reviewFeedArtifact:
-		return "review.feed"
-	case reviewTranscriptArtifact:
-		return "review.transcript"
-	case verdictArtifact:
-		return "verdict.txt"
-	case summaryArtifact:
-		return "summary.txt"
-	case sessionsArtifact:
-		return "sessions.txt"
-	case usageArtifact:
-		return "usage.json"
-	}
-	return ""
-}
-
-func iterationArtifactFilename(kind artifactKind, iteration int) string {
-	switch kind {
-	case implementFeedArtifact:
-		return fmt.Sprintf("iteration-%02d-implement.feed", iteration)
-	case implementTranscriptArtifact:
-		return fmt.Sprintf("iteration-%02d-implement.transcript", iteration)
-	case implementHandoffArtifact:
-		return fmt.Sprintf("handoff-%02d.md", iteration)
-	case reviewDiffArtifact:
-		return fmt.Sprintf("iteration-%02d-review.diff", iteration)
-	case reviewFeedArtifact:
-		return fmt.Sprintf("iteration-%02d-review.feed", iteration)
-	case reviewTranscriptArtifact:
-		return fmt.Sprintf("iteration-%02d-review.transcript", iteration)
-	case verdictArtifact:
-		return fmt.Sprintf("iteration-%02d-verdict.txt", iteration)
-	}
-	return ""
-}
-
-func writeArtifact(path, contents string) error {
-	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
-		return fmt.Errorf("write run artifact %s: %w", path, err)
-	}
-	return nil
+	return recorder.writer.WriteUsage(contents)
 }

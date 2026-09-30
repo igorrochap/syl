@@ -64,6 +64,10 @@ _Avoid_: project status, state
 One recorded execution of `syl implement` or a standalone `syl review` for a project, with its artifacts kept under the origin root. `syl plan` sessions are not Runs.
 _Avoid_: job, execution, session
 
+**Run record**:
+The durable contents and file format of one Run directory under `<origin root>/.syl/runs/`, including its metadata, sessions, artifacts, summary, verdicts, handoff documents, and run state.
+_Avoid_: run files, run folder format
+
 **Run status**:
 The lifecycle outcome a Run records for itself: running, approved, exhausted (max iterations reached on a revise verdict), failed, or cancelled.
 _Avoid_: result, state

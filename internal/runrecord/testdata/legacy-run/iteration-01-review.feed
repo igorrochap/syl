@@ -1,0 +1,46 @@
+tool: Bash — {"command":"echo \"--- stat diff file ---\" \u0026\u0026 stat -f \"%z bytes\" .syl/runs/20260920T152244.289465000Z-172/iteration-01-review.diff \u0026\u0026 wc…
+tool: Bash — {"command":"find . -maxdepth 1 -iname \"CLAUDE.md\" -o -maxdepth 1 -iname \"CONTRIBUTING*\" -o -maxdepth 1 -iname \"AGENTS.md\" 2\u003e/dev/null \u0026\u0026 l…
+tool: Bash — {"command":"ls -a | head -30"}
+Now spawning both sub-agents in parallel.
+tool: Agent — {"description":"Standards review of implementer session diff","prompt":"You are the Standards sub-agent for a two-axis code review (Standards + Spec) in the re…
+tool: Agent — {"description":"Spec review of implementer session diff","prompt":"You are the Spec sub-agent for a two-axis code review (Standards + Spec) in the repo /Users/…
+Both sub-agents are running in parallel — Standards and Spec. Waiting for their reports.
+
+Standards report is in. Waiting on the Spec sub-agent to finish before aggregating.
+
+Both sub-agent reports are in. Aggregating.
+
+## Standards
+
+No hard standards violations found. The diff follows `docs/adr/0004-implementer-session-rollover.md` exactly (implementer resumes previous session via `previousImplementerSession`/`lastUsableSessionID`, falls back to fresh `Run` on resume failure), follows go-style error naming (`implementResumeError` mirrors the pre-existing `reviewResumeError`, unexported, `Error`-suffixed, implements `Unwrap()`), and respects the `.golangci.yml` orchestration-package depguard rules (no new imports outside the allowed set).
+
+Judgement calls (baselines, not hard violations):
+1. **Possible Duplicated Code (Fowler)** — `runImplementRoleWithResumeFallback` (`internal/orchestration/implement.go:544-583`) is structurally near-identical to `runReviewExecutionWithResumeFallback` (`internal/orchestration/review.go:360-406`): same `normalizeSessionID` guard, same `errors.As`-based fallback branch, same `*XxxResumeError{cause}` wrapper type. Since ADR 0004 explicitly calls for mirroring the reviewer's approach, this looks intentional rather than an oversight — flagged only as a low-priority note in case a shared generic helper would pay off later.
+2. `implementExecutionOptions` (6 fields) mirrors `reviewExecutionOptions`'s shape; not flagged as Long Parameter List since it's already collapsed into a struct.
+3. Test fixture growth in `internal/cli/implement_test.go` — `resumingLoopHarness.Resume` (~lines 1700-1715) now branches on `strings.Contains(request.Prompt, "/implement")` to pick behavior — a mild conditional-test-logic smell, but consistent with the existing scripted-harness pattern in that file.
+
+## Spec
+
+All five acceptance criteria appear implemented and covered by tests, with no missing/partial requirements and no scope creep found:
+- **AC1/AC2**: `runImplementIterations` starts `previousImplementerSession = ""` (iteration 1 fresh), then sets `previousImplementerSession = lastUsableSessionID(implementResult.SessionIDs)` after every turn, chaining resumes forward.
+- **AC3**: `runImplementRoleWithResumeFallback` wraps resume failures in `implementResumeError` and falls back to `runImplementRole` with the same composed request, mirroring the reviewer's pattern.
+- **AC4**: no changes touch `internal/config`; no new flag.
+- **AC5**: `RecordSessions(iteration, "implement", implementResult.SessionIDs)` still called every iteration; `recorder_test.go` asserts the new session entries.
+- Tests added: `TestRunImplementIterationsRecordsReviseThenApproveInMemory` (AC1/2/5) and `TestRunImplementIterationsFallsBackToFreshRunWhenImplementResumeFails` (AC3), plus updated `internal/cli/implement_test.go` harness routing.
+
+Minor implementation notes (not blocking):
+1. Unlike the reviewer, which uses a distinct `composeReviewResumePrompt` vs. `composeReviewPrompt`, the implementer reuses the same `composeImplementPrompt(...)` output for both the resume attempt and the fresh fallback. This matches the ticket's explicit instruction ("A resumed turn still receives the iteration's blocking findings... continues to compose the prompt with `composeImplementPrompt`"), so it's correct — just a structural asymmetry from the reviewer worth noting.
+2. `runImplementRoleWithResumeFallback` doesn't share a single output/progress writer across the resume attempt and fallback the way the reviewer's version does (which calls `progress.EndTurn()` before falling back to avoid dangling live-output state). Likely functionally fine, but a divergence from "reuse the reviewer's resume-fallback pattern" worth a human eyeball on rendered-output continuity.
+
+## Summary
+
+Standards: 0 hard violations, 3 judgement-call notes (worst: possible Duplicated Code between the two resume-fallback helpers — low priority, likely intentional per ADR). Spec: 0 missing/partial ACs, 2 minor implementation notes (worst: implement's resume-fallback doesn't close out the live-output writer the way the reviewer's does before falling back — worth a quick manual check, not a spec violation).
+
+```text
+VERDICT: approve
+SUMMARY: All 5 ACs implemented and tested; no hard standards violations; only minor judgement-call notes on both axes.
+FINDINGS:
+- [nit] internal/orchestration/implement.go:544 — runImplementRoleWithResumeFallback duplicates runReviewExecutionWithResumeFallback's structure (review.go:360); consider a shared generic helper if this pattern recurs.
+- [nit] internal/orchestration/implement.go:344 — resume-fallback path doesn't close the live-output/progress writer before falling back to a fresh run, unlike the reviewer's equivalent (review.go) which calls progress.EndTurn() first; worth confirming rendered-output continuity.
+- [nit] internal/cli/implement_test.go:1700 — resumingLoopHarness.Resume branches on strings.Contains(prompt, "/implement") to pick behavior, a mild conditional-test-logic smell consistent with existing harness style.
+```

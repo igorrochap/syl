@@ -1,0 +1,17 @@
+I’m using the vendored `implement` skill, with its required `code-quality` guidance. I’ll inspect the orchestration seams and existing reviewer resume tests, then make the change test-first where the project’s test structure supports it.The existing multi-iteration test already sits at the right public loop seam and uses the same scripted adapter as reviewer resume tests. I’m applying the `tdd` skill here: I’ll first change that test to require implementer resume behavior and add a resume-failure fallback case, then implement only enough orchestration to make them pass.The tests are red in the expected way: iteration 2 still calls a fresh run, and no resume attempt occurs. I’m now threading the last usable implementer session through the loop and adding a resume wrapper that falls back only when the resumed execution fails, preserving the same composed iteration prompt for both attempts.The focused tests are green, including session artifact assertions and the exact fallback prompt. The existing orchestration suite also passes. I’m at the project-wide verification stage now: formatting, static checks, architecture, coverage, and the full test suite through the repository’s quality gate.The quality gate exposed six CLI-level tests whose scripted harness traffic encoded the old “fresh implementer every iteration” behavior. The production change is behaving as intended; I’m updating those integration expectations and scripts so they distinguish implementer resumes from reviewer resumes, then I’ll rerun the affected CLI tests before the full gate.Implemented ticket #172 without committing or pushing.
+
+Key changes:
+
+- Implementer sessions now persist between loop iterations via `adapter.Resume`.
+- Iteration 1 always uses a fresh `adapter.Run`.
+- Resume failures fall back to a fresh run with the same composed iteration prompt.
+- Blocking findings remain included in resumed prompts.
+- Implementer session IDs continue to be recorded per iteration.
+- Existing HEAD-unchanged guard remains intact.
+- Updated orchestration and CLI integration tests for resume and fallback behavior.
+
+Files changed include [implement.go](/Users/igorrocha/workspace/personal/my-harness/internal/orchestration/implement.go:301) and [recorder_test.go](/Users/igorrocha/workspace/personal/my-harness/internal/orchestration/recorder_test.go:182).
+
+The vendored `implement`, `tdd`, and `code-quality` guidance shaped the test-first implementation and verification.
+
+Quality gate: all checks passed—format, vet, style, complexity, coverage, tests, and architecture.

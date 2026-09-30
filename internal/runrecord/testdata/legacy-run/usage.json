@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "entries": [
+    {
+      "iteration": 1,
+      "role": "implement",
+      "harness": "codex",
+      "model": "gpt-5.6-sol",
+      "tracked": true,
+      "metrics": {
+        "input_tokens": 1771089,
+        "output_tokens": 14249,
+        "cache_write_tokens": 0,
+        "cache_read_tokens": 0,
+        "weighted_estimate": 0,
+        "cached_input_tokens": 1695232,
+        "cache_write_input_tokens": 0,
+        "reasoning_output_tokens": 4641,
+        "total_tokens": 1785338
+      }
+    },
+    {
+      "iteration": 1,
+      "role": "review",
+      "harness": "claude",
+      "model": "claude-sonnet-5",
+      "tracked": true,
+      "metrics": {
+        "input_tokens": 42,
+        "output_tokens": 14596,
+        "cache_write_tokens": 117635,
+        "cache_read_tokens": 930945,
+        "weighted_estimate": 254776.25,
+        "cached_input_tokens": 0,
+        "cache_write_input_tokens": 0,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 0
+      }
+    }
+  ],
+  "disclaimer": "weighted_estimate is an estimate of plan-quota pressure, not a billing statement."
+}

@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/igorrochap/syl/internal/readmodel"
-	"github.com/igorrochap/syl/internal/runstate"
+	"github.com/igorrochap/syl/internal/runrecord"
 	"github.com/igorrochap/syl/internal/sylhome"
 )
 
@@ -68,7 +68,7 @@ func TestDisplayHelpersCoverOverviewStates(t *testing.T) {
 		{name: "interrupted", run: readmodel.Run{Interrupted: true, Activity: "implementing"}, want: "Interrupted"},
 		{name: "unknown", run: readmodel.Run{Unknown: true}, want: "Unknown"},
 		{name: "activity", run: readmodel.Run{Activity: "reviewing"}, want: "reviewing"},
-		{name: "status", run: readmodel.Run{Status: runstate.Running}, want: "running"},
+		{name: "status", run: readmodel.Run{Status: runrecord.Running}, want: "running"},
 	}
 	for _, test := range activityCases {
 		t.Run(test.name, func(t *testing.T) {
@@ -134,7 +134,7 @@ func TestDisplayHelpersCoverOverviewStates(t *testing.T) {
 	if got := displayKind(""); got != "Run" {
 		t.Fatalf("displayKind(\"\") = %q, want Run", got)
 	}
-	if got := displayKind(runstate.Review); got != string(runstate.Review) {
+	if got := displayKind(runrecord.Review); got != string(runrecord.Review) {
 		t.Fatalf("displayKind(review) = %q, want review", got)
 	}
 	if got := rowClass(readmodel.Run{}); got != "" {
@@ -174,11 +174,11 @@ func TestDisplayStartedCoversRelativeAndAbsoluteTimes(t *testing.T) {
 func TestHistoryDisplayHelpersCoverStatusesAndMissingValues(t *testing.T) {
 	for _, test := range []struct {
 		name string
-		kind runstate.Kind
+		kind runrecord.Kind
 		want string
 	}{
 		{name: "missing kind", want: "—"},
-		{name: "review kind", kind: runstate.Review, want: "review"},
+		{name: "review kind", kind: runrecord.Review, want: "review"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if got := historyKind(test.kind); got != test.want {

@@ -3,7 +3,6 @@ package readmodel
 import (
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -11,7 +10,7 @@ import (
 	"time"
 
 	"github.com/igorrochap/syl/internal/config"
-	"github.com/igorrochap/syl/internal/runstate"
+	"github.com/igorrochap/syl/internal/runrecord"
 	"github.com/igorrochap/syl/internal/sylhome"
 	"github.com/igorrochap/syl/internal/usage"
 	"github.com/igorrochap/syl/internal/verdict"
@@ -40,7 +39,7 @@ type RunDetail struct {
 	ProjectPath   string
 	TicketRef     string
 	Branch        string
-	Kind          runstate.Kind
+	Kind          runrecord.Kind
 	Status        string
 	Activity      string
 	Iteration     int
@@ -127,26 +126,25 @@ func (reader *Reader) ReadRun(runDir string) (RunPage, error) {
 	if err != nil {
 		return RunPage{}, fmt.Errorf("resolve Run directory: %w", err)
 	}
-	entries, err := reader.files.ReadDir(path)
+	record, err := reader.runs.Read(path)
 	if err != nil {
 		return RunPage{}, fmt.Errorf("%w: %s: %v", ErrRunNotFound, path, err)
 	}
 
-	metadata := reader.readRunMetadata(path)
-	summary, summaryExists := reader.readOptional(filepath.Join(path, "summary.txt"))
-	sessions := reader.readRunSessions(path)
-	artifact := reader.readRunUsage(path)
-	detail := reader.buildRunDetail(path, metadata, summaryExists)
+	metadata := record.Metadata
+	sessions := readRunSessions(record.Sessions)
+	artifact := readRunUsage(record)
+	detail := buildRunDetail(path, metadata, record.SummaryExists, record.State, record.HasState)
 	addRunUsageTotals(&detail, artifact)
 	page := RunPage{
 		Run:           detail,
 		Metadata:      buildRunMetadata(path, metadata, sessions),
-		Summary:       summaryValue(string(summary), "Summary:"),
-		SummaryExists: summaryExists,
-		DiffStat:      summaryDiffStat(string(summary)),
-		DiffStatKnown: summaryExists,
+		Summary:       record.Summary.Text,
+		SummaryExists: record.SummaryExists,
+		DiffStat:      record.Summary.DiffStat,
+		DiffStatKnown: record.SummaryExists,
 	}
-	page.Iterations = reader.buildIterations(path, entries, detail, sessions, artifact, metadata)
+	page.Iterations = reader.buildIterations(record, detail, sessions, artifact, metadata)
 	page.Usage = buildRoleUsage(artifact, page.Iterations, metadata)
 	page.Resume = buildResumeCommands(detail.TicketRef, sessions)
 	return page, nil
@@ -157,64 +155,7 @@ func ReadRun(sylHome sylhome.Dir, runDir string) (RunPage, error) {
 	return NewReader(sylHome).ReadRun(runDir)
 }
 
-func (reader *Reader) readRunMetadata(runDir string) runMetadata {
-	contents, err := reader.files.ReadFile(filepath.Join(runDir, "metadata.txt"))
-	if err != nil {
-		return runMetadata{}
-	}
-	return parseRunMetadata(contents)
-}
-
-func parseRunMetadata(contents []byte) runMetadata {
-	metadata := runMetadata{}
-	for _, line := range strings.Split(string(contents), "\n") {
-		applyRunMetadataLine(&metadata, line)
-	}
-	return metadata
-}
-
-func applyRunMetadataLine(metadata *runMetadata, line string) {
-	if strings.HasPrefix(line, " ") || strings.HasPrefix(line, "\t") {
-		return
-	}
-	key, value, ok := strings.Cut(line, ":")
-	if !ok {
-		return
-	}
-	applyRunMetadataField(metadata, strings.ToLower(strings.TrimSpace(key)), strings.TrimSpace(value))
-}
-
-func applyRunMetadataField(metadata *runMetadata, key, value string) {
-	switch key {
-	case "branch":
-		metadata.branch = value
-		metadata.kind = runstate.Implement
-	case "ticket":
-		metadata.ticketRef = value
-		if metadata.kind == "" {
-			metadata.kind = runstate.Review
-		}
-	case "branch point":
-		metadata.branchPoint = value
-	case "work root":
-		metadata.workRoot = value
-	case "implementer harness":
-		metadata.implementerHarness = value
-	case "reviewer harness":
-		metadata.reviewerHarness = value
-		if metadata.kind == "" {
-			metadata.kind = runstate.Review
-		}
-	}
-}
-
-func (reader *Reader) readRunSessions(runDir string) []Session {
-	path := filepath.Join(runDir, "sessions.txt")
-	contents, err := reader.files.ReadFile(path)
-	if err != nil {
-		return nil
-	}
-	records := usage.ParseSessionRecords(contents)
+func readRunSessions(records []runrecord.Session) []Session {
 	sessions := make([]Session, 0, len(records))
 	for _, record := range records {
 		sessions = append(sessions, Session{
@@ -230,69 +171,54 @@ func (reader *Reader) readRunSessions(runDir string) []Session {
 	return sessions
 }
 
-func (reader *Reader) readRunUsage(runDir string) usage.Artifact {
-	path := filepath.Join(runDir, "usage.json")
-	contents, err := reader.files.ReadFile(path)
-	if err != nil {
+func readRunUsage(record runrecord.Record) usage.Artifact {
+	if !record.UsageExists {
 		return usage.Artifact{}
 	}
-	artifact, err := usage.ParseArtifact(path, contents)
+	artifact, err := usage.ParseArtifact(runrecord.ArtifactName(runrecord.UsageFile, 0), record.UsageContents)
 	if err != nil {
 		return usage.Artifact{}
 	}
 	return artifact
 }
 
-func (reader *Reader) buildRunDetail(runDir string, metadata runMetadata, summaryExists bool) RunDetail {
+func buildRunDetail(runDir string, metadata runrecord.Metadata, summaryExists bool, state runrecord.State, hasState bool) RunDetail {
 	projectPath := filepath.Dir(filepath.Dir(filepath.Dir(runDir)))
 	detail := RunDetail{
 		RunDir:      runDir,
 		ProjectPath: projectPath,
 		ProjectName: filepath.Base(projectPath),
-		TicketRef:   metadata.ticketRef,
-		Branch:      metadata.branch,
-		Kind:        metadata.kind,
+		TicketRef:   metadata.TicketRef,
+		Branch:      metadata.Branch,
+		Kind:        metadata.Kind,
 		Status:      legacyRunStatus(summaryExists),
-		StartedAt:   parseRunDirectoryTimestamp(filepath.Base(runDir)),
+		StartedAt:   runrecord.DirectoryTimestamp(filepath.Base(runDir)),
 	}
 	detail = applyLegacyRunTicket(detail, runDir)
-	state, ok := reader.readRunState(runDir)
-	if !ok {
+	if !hasState {
 		return detail
 	}
 	return applyRunState(detail, state, runDir)
 }
 
 func applyLegacyRunTicket(detail RunDetail, runDir string) RunDetail {
-	if detail.Kind == runstate.Implement && detail.TicketRef == "" {
-		if number := legacyTicketNumber(filepath.Base(runDir)); number != "" {
+	if detail.Kind == runrecord.Implement && detail.TicketRef == "" {
+		if number := runrecord.LegacyTicketNumber(filepath.Base(runDir)); number != "" {
 			detail.TicketRef = "#" + number
 		}
 	}
 	return detail
 }
 
-func (reader *Reader) readRunState(runDir string) (runstate.State, bool) {
-	contents, err := reader.files.ReadFile(runstate.Path(runDir))
-	if err != nil {
-		return runstate.State{}, false
-	}
-	state, err := runstate.Parse(runstate.Path(runDir), contents)
-	if err != nil {
-		return runstate.State{}, false
-	}
-	return state, true
-}
-
-func applyRunState(detail RunDetail, state runstate.State, runDir string) RunDetail {
+func applyRunState(detail RunDetail, state runrecord.State, runDir string) RunDetail {
 	applyRunStateValues(&detail, state, runDir)
 	applyRunStateTiming(&detail, state)
 	applyRunStateStatus(&detail, state)
-	detail.Refreshing = state.Status == runstate.Running && !detail.Interrupted
+	detail.Refreshing = state.Status == runrecord.Running && !detail.Interrupted
 	return detail
 }
 
-func applyRunStateValues(detail *RunDetail, state runstate.State, runDir string) {
+func applyRunStateValues(detail *RunDetail, state runrecord.State, runDir string) {
 	if state.TicketRef != "" {
 		detail.TicketRef = state.TicketRef
 	}
@@ -305,22 +231,22 @@ func applyRunStateValues(detail *RunDetail, state runstate.State, runDir string)
 	detail.MaxIterations = state.MaxIterations
 	detail.StartedAt = state.StartedAt
 	if detail.StartedAt.IsZero() {
-		detail.StartedAt = parseRunDirectoryTimestamp(filepath.Base(runDir))
+		detail.StartedAt = runrecord.DirectoryTimestamp(filepath.Base(runDir))
 	}
 }
 
-func applyRunStateTiming(detail *RunDetail, state runstate.State) {
+func applyRunStateTiming(detail *RunDetail, state runrecord.State) {
 	if state.EndedAt != nil {
 		endedAt := *state.EndedAt
 		detail.EndedAt = &endedAt
 		detail.Duration, detail.DurationKnown = historyDuration(detail.StartedAt, detail.EndedAt)
-	} else if state.Status == runstate.Running {
+	} else if state.Status == runrecord.Running {
 		detail.Duration, detail.DurationKnown = historyDuration(detail.StartedAt, nil)
 	}
 }
 
-func applyRunStateStatus(detail *RunDetail, state runstate.State) {
-	if state.Status == runstate.Running && isLocalHost("", state.Hostname, currentHostname()) {
+func applyRunStateStatus(detail *RunDetail, state runrecord.State) {
+	if state.Status == runrecord.Running && isLocalHost("", state.Hostname, currentHostname()) {
 		detail.Interrupted = !processIsAlive(state.PID)
 	}
 	if detail.Interrupted {
@@ -335,22 +261,21 @@ func legacyRunStatus(summaryExists bool) string {
 	return "unknown"
 }
 
-func buildRunMetadata(runDir string, metadata runMetadata, sessions []Session) RunMetadata {
+func buildRunMetadata(runDir string, metadata runrecord.Metadata, sessions []Session) RunMetadata {
 	return RunMetadata{
-		Branch: metadata.branch, BranchPoint: metadata.branchPoint, WorkRoot: metadata.workRoot,
-		RunDirectory: filepath.Join(".syl", "runs", filepath.Base(runDir)), Sessions: sessions,
+		Branch: metadata.Branch, BranchPoint: metadata.BranchPoint, WorkRoot: metadata.WorkRoot,
+		RunDirectory: runrecord.RelativeDirectory(filepath.Base(runDir)), Sessions: sessions,
 	}
 }
 
 func (reader *Reader) buildIterations(
-	runDir string,
-	entries []os.DirEntry,
+	record runrecord.Record,
 	detail RunDetail,
 	sessions []Session,
 	artifact usage.Artifact,
-	metadata runMetadata,
+	metadata runrecord.Metadata,
 ) []Iteration {
-	index := collectIterationEntries(entries)
+	index := collectIterationEntries(record.Artifacts, record.Verdicts)
 	for _, session := range sessions {
 		index.addRole(session.Iteration, session.Role)
 	}
@@ -358,38 +283,41 @@ func (reader *Reader) buildIterations(
 		index.addRole(normalizeIteration(entry.Iteration), entry.Role)
 	}
 	index.addDetail(detail)
-	index.addSummary(reader.readOptional(filepath.Join(runDir, "summary.txt")))
+	index.addSummary(record.Summary, record.SummaryExists)
 	index.addLegacyReview(metadata)
-	return reader.buildIterationResults(index, runDir, detail, artifact, metadata)
+	return reader.buildIterationResults(index, detail, artifact, metadata)
 }
 
 type iterationIndex struct {
-	iterations   map[int]map[string]map[string]bool
-	verdictNames map[int]string
+	iterations     map[int]map[string]map[runrecord.ArtifactKind]string
+	verdictPresent map[int]bool
+	verdicts       map[int]verdict.Verdict
 }
 
 func newIterationIndex() iterationIndex {
 	return iterationIndex{
-		iterations:   make(map[int]map[string]map[string]bool),
-		verdictNames: make(map[int]string),
+		iterations:     make(map[int]map[string]map[runrecord.ArtifactKind]string),
+		verdictPresent: make(map[int]bool),
+		verdicts:       make(map[int]verdict.Verdict),
 	}
 }
 
-func collectIterationEntries(entries []os.DirEntry) iterationIndex {
+func collectIterationEntries(entries []runrecord.Artifact, verdicts map[int]verdict.Verdict) iterationIndex {
 	index := newIterationIndex()
 	for _, entry := range entries {
-		if entry.IsDir() {
+		if entry.Kind == runrecord.ImplementFeed || entry.Kind == runrecord.ImplementTranscript ||
+			entry.Kind == runrecord.ReviewDiff || entry.Kind == runrecord.ReviewFeed ||
+			entry.Kind == runrecord.ReviewTranscript {
+			index.addRole(entry.Iteration, entry.Role)
+			index.iterations[entry.Iteration][entry.Role][entry.Kind] = entry.Name
 			continue
 		}
-		iteration, role, artifactName, ok := parseRunArtifact(entry.Name())
-		if ok {
-			index.addRole(iteration, role)
-			index.iterations[iteration][role][artifactName] = true
-			continue
-		}
-		if parsedIteration, ok := parseRunVerdict(entry.Name()); ok {
-			index.addIteration(parsedIteration)
-			index.verdictNames[parsedIteration] = entry.Name()
+		if entry.Kind == runrecord.VerdictFile {
+			index.addIteration(entry.Iteration)
+			index.verdictPresent[entry.Iteration] = true
+			if parsed, ok := verdicts[entry.Iteration]; ok {
+				index.verdicts[entry.Iteration] = parsed
+			}
 		}
 	}
 	return index
@@ -400,7 +328,7 @@ func (index *iterationIndex) addIteration(number int) {
 		return
 	}
 	if index.iterations[number] == nil {
-		index.iterations[number] = make(map[string]map[string]bool)
+		index.iterations[number] = make(map[string]map[runrecord.ArtifactKind]string)
 	}
 }
 
@@ -410,7 +338,7 @@ func (index *iterationIndex) addRole(number int, role string) {
 		return
 	}
 	if index.iterations[number][role] == nil {
-		index.iterations[number][role] = make(map[string]bool)
+		index.iterations[number][role] = make(map[runrecord.ArtifactKind]string)
 	}
 }
 
@@ -426,24 +354,24 @@ func (index *iterationIndex) addDetail(detail RunDetail) {
 	index.addRole(detail.Iteration, role)
 }
 
-func (index *iterationIndex) addSummary(summary []byte, exists bool) {
+func (index *iterationIndex) addSummary(summary runrecord.Summary, exists bool) {
 	if !exists {
 		return
 	}
-	number := summaryIterations(string(summary))
+	number := summary.Iterations
 	if number <= 0 {
 		return
 	}
 	index.addIteration(number)
 }
 
-func (index *iterationIndex) addLegacyReview(metadata runMetadata) {
-	if metadata.kind == runstate.Review && len(index.iterations) == 0 {
+func (index *iterationIndex) addLegacyReview(metadata runrecord.Metadata) {
+	if metadata.Kind == runrecord.Review && len(index.iterations) == 0 {
 		index.addIteration(1)
 	}
 }
 
-func (reader *Reader) buildIterationResults(index iterationIndex, runDir string, detail RunDetail, artifact usage.Artifact, metadata runMetadata) []Iteration {
+func (reader *Reader) buildIterationResults(index iterationIndex, detail RunDetail, artifact usage.Artifact, metadata runrecord.Metadata) []Iteration {
 	result := make([]Iteration, 0, len(index.iterations))
 	for number, roles := range index.iterations {
 		item := Iteration{Number: number}
@@ -454,8 +382,10 @@ func (reader *Reader) buildIterationResults(index iterationIndex, runDir string,
 		for _, role := range roleNames {
 			item.Roles = append(item.Roles, buildRoleRun(number, role, roles[role], artifact, metadata, detail.ProjectPath))
 		}
-		if verdictName := index.verdictNames[number]; verdictName != "" {
-			item = reader.addVerdict(runDir, item, verdictName)
+		if index.verdictPresent[number] {
+			if parsed, ok := index.verdicts[number]; ok {
+				item = addVerdict(item, parsed)
+			}
 		}
 		result = append(result, item)
 	}
@@ -463,7 +393,7 @@ func (reader *Reader) buildIterationResults(index iterationIndex, runDir string,
 	return result
 }
 
-func buildRoleRun(number int, role string, names map[string]bool, artifact usage.Artifact, metadata runMetadata, projectPath string) RoleRun {
+func buildRoleRun(number int, role string, names map[runrecord.ArtifactKind]string, artifact usage.Artifact, metadata runrecord.Metadata, projectPath string) RoleRun {
 	roleRun := RoleRun{Role: role, Harness: harnessForRole(metadata, role)}
 	for _, entry := range artifact.Entries {
 		if normalizeIteration(entry.Iteration) != number || entry.Role != role {
@@ -479,9 +409,7 @@ func buildRoleRun(number int, role string, names map[string]bool, artifact usage
 	if roleRun.Model == "" {
 		roleRun.Model = roleModel(projectPath, role)
 	}
-	for _, name := range []string{
-		artifactName(names, ".diff"), artifactName(names, ".feed"), artifactName(names, ".transcript"),
-	} {
+	for _, name := range artifactNamesForRole(role, names) {
 		if name != "" {
 			roleRun.Artifacts = append(roleRun.Artifacts, Artifact{Name: name})
 		}
@@ -489,13 +417,11 @@ func buildRoleRun(number int, role string, names map[string]bool, artifact usage
 	return roleRun
 }
 
-func artifactName(names map[string]bool, extension string) string {
-	for name := range names {
-		if strings.HasSuffix(name, extension) {
-			return name
-		}
+func artifactNamesForRole(role string, names map[runrecord.ArtifactKind]string) []string {
+	if role == "review" {
+		return []string{names[runrecord.ReviewDiff], names[runrecord.ReviewFeed], names[runrecord.ReviewTranscript]}
 	}
-	return ""
+	return []string{names[runrecord.ImplementFeed], names[runrecord.ImplementTranscript]}
 }
 
 func roleModel(projectPath, role string) string {
@@ -512,7 +438,7 @@ func roleModel(projectPath, role string) string {
 	return ""
 }
 
-func sortedRoleNames(roles map[string]map[string]bool) []string {
+func sortedRoleNames(roles map[string]map[runrecord.ArtifactKind]string) []string {
 	names := make([]string, 0, len(roles))
 	for role := range roles {
 		names = append(names, role)
@@ -521,15 +447,7 @@ func sortedRoleNames(roles map[string]map[string]bool) []string {
 	return names
 }
 
-func (reader *Reader) addVerdict(runDir string, iteration Iteration, name string) Iteration {
-	contents, err := reader.files.ReadFile(filepath.Join(runDir, name))
-	if err != nil {
-		return iteration
-	}
-	parsed, err := verdict.Parse(string(contents))
-	if err != nil {
-		return iteration
-	}
+func addVerdict(iteration Iteration, parsed verdict.Verdict) Iteration {
 	iteration.Verdict = parsed
 	iteration.HasVerdict = true
 	iteration.BlockingCount = countFindings(parsed.Findings, verdict.Blocking)
@@ -573,7 +491,7 @@ func findingsOfKind(findings []verdict.Finding, kind verdict.FindingKind) []verd
 	return matching
 }
 
-func buildRoleUsage(artifact usage.Artifact, iterations []Iteration, metadata runMetadata) []RoleUsage {
+func buildRoleUsage(artifact usage.Artifact, iterations []Iteration, metadata runrecord.Metadata) []RoleUsage {
 	roles := roleUsageFromIterations(iterations)
 	mergeUsageEntries(roles, artifact.Entries)
 	completeRoleUsage(roles, metadata)
@@ -615,7 +533,7 @@ func mergeUsageEntries(roles map[string]RoleUsage, entries []usage.Entry) {
 	}
 }
 
-func completeRoleUsage(roles map[string]RoleUsage, metadata runMetadata) {
+func completeRoleUsage(roles map[string]RoleUsage, metadata runrecord.Metadata) {
 	for role, current := range roles {
 		if current.Harness == "" {
 			current.Harness = harnessForRole(metadata, role)
@@ -649,11 +567,11 @@ func addRunUsageTotals(detail *RunDetail, artifact usage.Artifact) {
 	}
 }
 
-func harnessForRole(metadata runMetadata, role string) string {
+func harnessForRole(metadata runrecord.Metadata, role string) string {
 	if role == "review" {
-		return metadata.reviewerHarness
+		return metadata.HarnessFor(runrecord.Review)
 	}
-	return metadata.implementerHarness
+	return metadata.HarnessFor(runrecord.Implement)
 }
 
 func buildResumeCommands(ticket string, sessions []Session) []ResumeCommand {
@@ -698,92 +616,11 @@ func normalizeIteration(iteration int) int {
 
 func activityRole(activity string) string {
 	switch activity {
-	case string(runstate.Implementing):
+	case string(runrecord.Implementing):
 		return "implement"
-	case string(runstate.Reviewing):
+	case string(runrecord.Reviewing):
 		return "review"
 	default:
 		return ""
 	}
-}
-
-func parseRunArtifact(name string) (int, string, string, bool) {
-	if strings.HasPrefix(name, "review.") {
-		return parseReviewArtifact(name)
-	}
-	if !strings.HasPrefix(name, "iteration-") {
-		return 0, "", "", false
-	}
-	return parseIterationArtifact(name)
-}
-
-func parseReviewArtifact(name string) (int, string, string, bool) {
-	switch name {
-	case "review.diff", "review.feed", "review.transcript":
-		return 1, "review", name, true
-	default:
-		return 0, "", "", false
-	}
-}
-
-func parseIterationArtifact(name string) (int, string, string, bool) {
-	withoutPrefix := strings.TrimPrefix(name, "iteration-")
-	dash := strings.IndexByte(withoutPrefix, '-')
-	if dash < 1 {
-		return 0, "", "", false
-	}
-	iteration, err := strconv.Atoi(withoutPrefix[:dash])
-	if err != nil || iteration <= 0 {
-		return 0, "", "", false
-	}
-	roleAndExtension := withoutPrefix[dash+1:]
-	dot := strings.LastIndexByte(roleAndExtension, '.')
-	if dot < 1 {
-		return 0, "", "", false
-	}
-	role := roleAndExtension[:dot]
-	if !isRunRole(role) {
-		return 0, "", "", false
-	}
-	extension := roleAndExtension[dot+1:]
-	if !isRunArtifactExtension(extension) {
-		return 0, "", "", false
-	}
-	return iteration, role, name, true
-}
-
-func isRunRole(role string) bool {
-	return role == "implement" || role == "review"
-}
-
-func isRunArtifactExtension(extension string) bool {
-	switch extension {
-	case "diff", "feed", "transcript":
-		return true
-	default:
-		return false
-	}
-}
-
-func parseRunVerdict(name string) (int, bool) {
-	if name == "verdict.txt" {
-		return 1, true
-	}
-	if !strings.HasPrefix(name, "iteration-") || !strings.HasSuffix(name, "-verdict.txt") {
-		return 0, false
-	}
-	value := strings.TrimSuffix(strings.TrimPrefix(name, "iteration-"), "-verdict.txt")
-	iteration, err := strconv.Atoi(value)
-	return iteration, err == nil && iteration > 0
-}
-
-func summaryDiffStat(contents string) string {
-	lines := strings.Split(strings.ReplaceAll(contents, "\r\n", "\n"), "\n")
-	for index, line := range lines {
-		if !strings.HasPrefix(line, "Diff stat:") {
-			continue
-		}
-		return strings.TrimSpace(strings.Join(lines[index+1:], "\n"))
-	}
-	return ""
 }

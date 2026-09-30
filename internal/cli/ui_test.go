@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/igorrochap/syl/internal/runstate"
+	"github.com/igorrochap/syl/internal/runrecord"
 	"github.com/igorrochap/syl/internal/sylhome"
 )
 
@@ -57,17 +57,17 @@ func TestUIBannerCountsProjectsLiveRunsAndAwaitingAnswers(t *testing.T) {
 	sylHome := t.TempDir()
 	projects := []string{t.TempDir(), t.TempDir()}
 	writeUIRegistry(t, sylHome, projects...)
-	createUIRun(t, sylHome, projects[0], "awaiting", runstate.State{
-		Status: runstate.Running, Activity: runstate.AwaitingAnswer, PID: os.Getpid(), Hostname: uiHostname(t),
-		StartedAt: time.Now().UTC(), Kind: runstate.Implement, TicketRef: "#1",
+	createUIRun(t, sylHome, projects[0], "awaiting", runrecord.State{
+		Status: runrecord.Running, Activity: runrecord.AwaitingAnswer, PID: os.Getpid(), Hostname: uiHostname(t),
+		StartedAt: time.Now().UTC(), Kind: runrecord.Implement, TicketRef: "#1",
 	})
-	createUIRun(t, sylHome, projects[0], "live", runstate.State{
-		Status: runstate.Running, Activity: runstate.Implementing, PID: os.Getpid(), Hostname: uiHostname(t),
-		StartedAt: time.Now().UTC(), Kind: runstate.Implement, TicketRef: "#2",
+	createUIRun(t, sylHome, projects[0], "live", runrecord.State{
+		Status: runrecord.Running, Activity: runrecord.Implementing, PID: os.Getpid(), Hostname: uiHostname(t),
+		StartedAt: time.Now().UTC(), Kind: runrecord.Implement, TicketRef: "#2",
 	})
-	createUIRun(t, sylHome, projects[1], "interrupted", runstate.State{
-		Status: runstate.Running, Activity: runstate.Reviewing, PID: 999999, Hostname: uiHostname(t),
-		StartedAt: time.Now().UTC(), Kind: runstate.Review, TicketRef: "#3",
+	createUIRun(t, sylHome, projects[1], "interrupted", runrecord.State{
+		Status: runrecord.Running, Activity: runrecord.Reviewing, PID: 999999, Hostname: uiHostname(t),
+		StartedAt: time.Now().UTC(), Kind: runrecord.Review, TicketRef: "#3",
 	})
 
 	contextToCancel, cancel := context.WithCancel(context.Background())
@@ -331,13 +331,13 @@ func writeUIRegistry(t *testing.T, sylHome string, projects ...string) {
 	}
 }
 
-func createUIRun(t *testing.T, sylHome, project, name string, state runstate.State) {
+func createUIRun(t *testing.T, sylHome, project, name string, state runrecord.State) {
 	t.Helper()
 	runDir := filepath.Join(project, ".syl", "runs", name)
 	if err := os.MkdirAll(runDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := runstate.Write(runstate.Path(runDir), state); err != nil {
+	if err := runrecord.Write(runrecord.Path(runDir), state); err != nil {
 		t.Fatal(err)
 	}
 	marker, err := testSylHome(t, sylHome).MarkLive(sylhome.LiveRun{
