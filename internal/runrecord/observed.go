@@ -37,13 +37,7 @@ func (reader *Reader) ObserveStatus(
 ) ObservedStatus {
 	state, err := reader.ReadState(runDir)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			hasSummary, summaryErr := reader.HasSummary(runDir)
-			if summaryErr == nil && hasSummary {
-				return ObservedCompleted
-			}
-		}
-		return ObservedUnknown
+		return reader.legacyStatus(runDir, err)
 	}
 	if state.Status != Running {
 		return ObservedStatus(state.Status)
@@ -62,6 +56,16 @@ func (reader *Reader) ObserveStatus(
 		return ObservedRunning
 	}
 	return ObservedInterrupted
+}
+
+func (reader *Reader) legacyStatus(runDir string, stateErr error) ObservedStatus {
+	if errors.Is(stateErr, os.ErrNotExist) {
+		hasSummary, summaryErr := reader.HasSummary(runDir)
+		if summaryErr == nil && hasSummary {
+			return ObservedCompleted
+		}
+	}
+	return ObservedUnknown
 }
 
 func checkProcessAlive(pid int) bool {
