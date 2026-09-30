@@ -16,12 +16,12 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/igorrochap/syl/internal/configedit"
+	"github.com/igorrochap/syl/internal/configview"
 	"github.com/igorrochap/syl/internal/readmodel"
 	"github.com/igorrochap/syl/internal/runrecord"
 	"github.com/igorrochap/syl/internal/sylhome"
@@ -239,30 +239,9 @@ type projectPageData struct {
 }
 
 type configPageData struct {
-	Page           readmodel.ProjectPage
-	Values         configedit.Values
-	Version        string
-	Errors         configedit.FieldErrors
-	Conflict       bool
-	TrackerOptions []string
-	HarnessOptions []string
-	EffortOptions  []string
-	Invalid        *invalidConfigData
-	Uninitialized  bool
-	Port           int
-	Token          string
-}
-
-type invalidConfigData struct {
-	Path  string
-	Error string
-	Lines []configSourceLine
-}
-
-type configSourceLine struct {
-	Number int
-	Text   string
-	Marked bool
+	configview.View
+	Port  int
+	Token string
 }
 
 func (s *Server) projectData(projectPath string) (projectPageData, error) {
@@ -271,64 +250,6 @@ func (s *Server) projectData(projectPath string) (projectPageData, error) {
 		return projectPageData{}, err
 	}
 	return projectPageData{Page: page, Port: s.port, Token: s.token}, nil
-}
-
-func (s *Server) configData(projectPath string) (configPageData, error) {
-	page, err := s.projectModel(projectPath)
-	if err != nil {
-		return configPageData{}, err
-	}
-	data := configPageData{
-		Page:           page,
-		TrackerOptions: configedit.TrackerOptions(),
-		HarnessOptions: configedit.HarnessOptions(),
-		EffortOptions:  configedit.EffortOptions(),
-		Port:           s.port,
-		Token:          s.token,
-	}
-	if page.Project.Health == readmodel.HealthUninitialized {
-		data.Uninitialized = true
-		return data, nil
-	}
-
-	snapshot, err := configedit.Load(projectPath)
-	if err == nil {
-		data.Values = snapshot.Values
-		data.Version = snapshot.Version
-		if data.Page.Project.Health != readmodel.HealthOK {
-			data.Page.Project.Health = readmodel.HealthOK
-		}
-		return data, nil
-	}
-	if page.Project.Health == readmodel.HealthMissing {
-		return configPageData{}, err
-	}
-	if errors.Is(err, os.ErrNotExist) {
-		data.Page.Project.Health = readmodel.HealthUninitialized
-		data.Uninitialized = true
-		return data, nil
-	}
-	var loadErr configedit.LoadError
-	if !errors.As(err, &loadErr) {
-		return configPageData{}, err
-	}
-
-	configPath := projectConfigPath(projectPath)
-	contents, readErr := os.ReadFile(configPath)
-	if readErr != nil {
-		return configPageData{}, readErr
-	}
-	data.Page.Project.Health = readmodel.HealthInvalid
-	data.Invalid = &invalidConfigData{
-		Path:  configPath,
-		Error: loadErr.Error(),
-		Lines: configSourceLines(contents, loadErr.Key),
-	}
-	return data, nil
-}
-
-func projectConfigPath(projectPath string) string {
-	return filepath.Join(projectPath, ".syl", "config.toml")
 }
 
 func (s *Server) configPage(writer http.ResponseWriter, request *http.Request) {
@@ -341,13 +262,14 @@ func (s *Server) configPage(writer http.ResponseWriter, request *http.Request) {
 		writer.WriteHeader(http.StatusBadRequest)
 		return
 	}
-	data, err := s.configData(projectPath)
+	page, err := s.projectModel(projectPath)
 	if err != nil {
-		if errors.Is(err, readmodel.ErrProjectNotFound) || errors.Is(err, os.ErrNotExist) {
-			writer.WriteHeader(http.StatusNotFound)
-			return
-		}
-		writeServerError(writer, err)
+		writeConfigPageError(writer, err)
+		return
+	}
+	view, err := configview.Build(page)
+	if err != nil {
+		writeConfigPageError(writer, err)
 		return
 	}
 	writer.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -355,9 +277,17 @@ func (s *Server) configPage(writer http.ResponseWriter, request *http.Request) {
 	if request.URL.Path == "/projects/config/content" {
 		templateName = "project-config-content"
 	}
-	if err := s.templates.ExecuteTemplate(writer, templateName, data); err != nil {
+	if err := s.templates.ExecuteTemplate(writer, templateName, s.configTemplateData(view)); err != nil {
 		return
 	}
+}
+
+func writeConfigPageError(writer http.ResponseWriter, err error) {
+	if errors.Is(err, readmodel.ErrProjectNotFound) || errors.Is(err, os.ErrNotExist) {
+		writer.WriteHeader(http.StatusNotFound)
+		return
+	}
+	writeServerError(writer, err)
 }
 
 func (s *Server) saveConfig(writer http.ResponseWriter, request *http.Request) {
@@ -379,15 +309,26 @@ func (s *Server) saveConfig(writer http.ResponseWriter, request *http.Request) {
 	}
 	values, fieldErrors := configedit.Parse(request.Form)
 	version := request.Form.Get("version")
-	if len(fieldErrors) > 0 {
-		s.renderConfigFeedback(writer, request, s.feedbackData(page, values, version, fieldErrors, false), http.StatusUnprocessableEntity)
-		return
+	result := configview.Save(page, version, values, fieldErrors)
+	s.renderConfigSaveResult(writer, request, projectPath, result)
+}
+
+func (s *Server) renderConfigSaveResult(writer http.ResponseWriter, request *http.Request, projectPath string, result configview.SaveResult) {
+	switch result.Outcome {
+	case configview.SaveSaved:
+		s.renderConfigSaved(writer, request, projectPath, result.View)
+	case configview.SaveFieldErrors:
+		s.renderConfigFeedback(writer, request, result.View, http.StatusUnprocessableEntity)
+	case configview.SaveConflict:
+		s.renderConfigFeedback(writer, request, result.View, http.StatusConflict)
+	case configview.SaveUnexpectedError:
+		writeServerError(writer, result.Err)
 	}
-	if s.renderConfigSaveError(writer, request, projectPath, page, version, values) {
-		return
-	}
+}
+
+func (s *Server) renderConfigSaved(writer http.ResponseWriter, request *http.Request, projectPath string, view configview.View) {
 	if request.Header.Get("HX-Request") == "true" {
-		s.renderConfigContent(writer, projectPath)
+		s.renderConfigContent(writer, view)
 		return
 	}
 	http.Redirect(writer, request, "/projects/config?path="+url.QueryEscape(projectPath), http.StatusSeeOther)
@@ -406,54 +347,27 @@ func (s *Server) configSavePage(writer http.ResponseWriter, projectPath string) 
 	return readmodel.ProjectPage{}, false
 }
 
-func (s *Server) feedbackData(page readmodel.ProjectPage, values configedit.Values, version string, fieldErrors configedit.FieldErrors, conflict bool) configPageData {
-	return configPageData{
-		Page: page, Values: values, Version: version, Errors: fieldErrors, Conflict: conflict,
-		TrackerOptions: configedit.TrackerOptions(), HarnessOptions: configedit.HarnessOptions(), EffortOptions: configedit.EffortOptions(),
-		Port: s.port, Token: s.token,
-	}
+func (s *Server) configTemplateData(view configview.View) configPageData {
+	return configPageData{View: view, Port: s.port, Token: s.token}
 }
 
-func (s *Server) renderConfigSaveError(writer http.ResponseWriter, request *http.Request, projectPath string, page readmodel.ProjectPage, version string, values configedit.Values) bool {
-	err := configedit.Save(projectPath, version, values)
-	if err == nil {
-		return false
-	}
-	if errors.Is(err, configedit.ErrConflict) {
-		s.renderConfigFeedback(writer, request, s.feedbackData(page, values, version, nil, true), http.StatusConflict)
-		return true
-	}
-	var fieldErrors configedit.FieldErrors
-	if errors.As(err, &fieldErrors) {
-		s.renderConfigFeedback(writer, request, s.feedbackData(page, values, version, fieldErrors, false), http.StatusUnprocessableEntity)
-		return true
-	}
-	writeServerError(writer, err)
-	return true
-}
-
-func (s *Server) renderConfigContent(writer http.ResponseWriter, projectPath string) {
-	data, err := s.configData(projectPath)
-	if err != nil {
-		writeServerError(writer, err)
-		return
-	}
+func (s *Server) renderConfigContent(writer http.ResponseWriter, view configview.View) {
 	writer.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := s.templates.ExecuteTemplate(writer, "project-config-content", data); err != nil {
+	if err := s.templates.ExecuteTemplate(writer, "project-config-content", s.configTemplateData(view)); err != nil {
 		return
 	}
 }
 
-func (s *Server) renderConfigFeedback(writer http.ResponseWriter, request *http.Request, data configPageData, status int) {
+func (s *Server) renderConfigFeedback(writer http.ResponseWriter, request *http.Request, view configview.View, status int) {
 	writer.Header().Set("Content-Type", "text/html; charset=utf-8")
 	writer.WriteHeader(status)
 	if request.Header.Get("HX-Request") != "true" {
-		if err := s.templates.ExecuteTemplate(writer, "project-config", data); err != nil {
+		if err := s.templates.ExecuteTemplate(writer, "project-config", s.configTemplateData(view)); err != nil {
 			return
 		}
 		return
 	}
-	if err := s.templates.ExecuteTemplate(writer, "project-config-content", data); err != nil {
+	if err := s.templates.ExecuteTemplate(writer, "project-config-content", s.configTemplateData(view)); err != nil {
 		return
 	}
 }
@@ -725,49 +639,6 @@ func boolText(value bool) string {
 		return "true"
 	}
 	return "false"
-}
-
-func configSourceLines(contents []byte, key string) []configSourceLine {
-	lines := strings.Split(string(contents), "\n")
-	if len(lines) > 1 && lines[len(lines)-1] == "" {
-		lines = lines[:len(lines)-1]
-	}
-	if len(lines) == 0 {
-		lines = []string{""}
-	}
-
-	table := ""
-	result := make([]configSourceLine, 0, len(lines))
-	for index, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
-			table = strings.TrimSpace(trimmed[1 : len(trimmed)-1])
-		}
-		result = append(result, configSourceLine{
-			Number: index + 1,
-			Text:   line,
-			Marked: configSourceLineMatchesKey(trimmed, table, key),
-		})
-	}
-	return result
-}
-
-func configSourceLineMatchesKey(line, table, key string) bool {
-	if key == "" || strings.HasPrefix(line, "#") {
-		return false
-	}
-	separator := strings.Index(line, "=")
-	if separator < 0 {
-		return false
-	}
-	name := strings.Trim(strings.TrimSpace(line[:separator]), `"`)
-	if name == "" {
-		return false
-	}
-	if !strings.Contains(name, ".") && table != "" {
-		name = table + "." + name
-	}
-	return name == key
 }
 
 func runArtifactURL(runDir, artifactName string) string {

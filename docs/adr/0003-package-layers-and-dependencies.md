@@ -32,7 +32,8 @@ not permitted.
 | Support with no project-package edges | `internal/ui` | none |
 | Application support | `internal/readmodel` | `internal/config`, `internal/runrecord`, `internal/sylhome`, `internal/usage`, `internal/verdict` |
 | Application support | `internal/configedit` | `internal/config` |
-| Interface adapter | `internal/web` | `internal/configedit`, `internal/readmodel`, `internal/runrecord`, `internal/sylhome` |
+| Application support | `internal/configview` | `internal/config`, `internal/configedit`, `internal/readmodel` |
+| Interface adapter | `internal/web` | `internal/configedit`, `internal/configview`, `internal/readmodel`, `internal/runrecord`, `internal/sylhome` |
 
 ## Exceptions
 
@@ -72,6 +73,9 @@ call exceptions:
 - `internal/configedit` owns the HTTP-independent config form model,
   validation, optimistic version check, and save operation; `internal/web`
   imports it only to adapt those operations to HTTP.
+- `internal/configview` builds the Config tab view model from the Project read
+  model and config editing module; it owns the Config tab state, invalid source
+  lines, and save outcomes, while `internal/web` maps those outcomes to HTTP.
 - Tests are not part of the architecture check. Test packages intentionally
   import concrete collaborators to exercise public seams; those imports do
   not create production dependency edges.
