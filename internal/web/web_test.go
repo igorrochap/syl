@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"html"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -72,122 +71,6 @@ func TestHandlerRendersStructuredConfigForm(t *testing.T) {
 	}
 }
 
-func TestHandlerShowsLiveRunBannerOnConfigForm(t *testing.T) {
-	sylHome := t.TempDir()
-	project := t.TempDir()
-	if _, err := config.Init(project); err != nil {
-		t.Fatal(err)
-	}
-	writeWebRegistry(t, sylHome, sylhome.RegisteredProject{Path: project})
-	runDir := filepath.Join(project, ".syl", "runs", "live-config")
-	writeWebRun(t, project, filepath.Base(runDir), runrecord.State{
-		Status: runrecord.Running, PID: testAlivePID, Hostname: testHostname(t), Kind: runrecord.Implement,
-		StartedAt: time.Now().UTC(),
-	})
-	createLiveRun(t, sylHome, project, runDir, "#186", testAlivePID, testHostname(t))
-	server, err := newServer(t, sylHome)
-	if err != nil {
-		t.Fatal(err)
-	}
-	body := serveProject(t, server.Handler(), project, "/projects/config")
-	if !strings.Contains(body, "1 Run is live in this project") || !strings.Contains(body, "Changes apply to the next Run") {
-		t.Fatalf("config form = %s, want live-Run banner", body)
-	}
-}
-
-func TestHandlerSavesValidConfigAndLoadsItBack(t *testing.T) {
-	sylHome := t.TempDir()
-	project := t.TempDir()
-	if _, err := config.Init(project); err != nil {
-		t.Fatal(err)
-	}
-	writeWebRegistry(t, sylHome, sylhome.RegisteredProject{Path: project})
-	server, err := newServer(t, sylHome)
-	if err != nil {
-		t.Fatal(err)
-	}
-	page := serveProject(t, server.Handler(), project, "/projects/config")
-	form := configForm(t, project, tokenFromPage(t, page))
-	form.Set("loop.max_iterations", "6")
-	response := postMutation(t, server.Handler(), configSaveRoute(project), form, "http://localhost:7777")
-	if response.Code != http.StatusSeeOther {
-		t.Fatalf("save status = %d; body = %q", response.Code, response.Body.String())
-	}
-	loaded, err := config.Load(project)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if loaded.Loop.MaxIterations != 6 {
-		t.Fatalf("loaded max_iterations = %d, want 6", loaded.Loop.MaxIterations)
-	}
-}
-
-func TestHandlerShowsValidationErrorWithoutWriting(t *testing.T) {
-	sylHome := t.TempDir()
-	project := t.TempDir()
-	if _, err := config.Init(project); err != nil {
-		t.Fatal(err)
-	}
-	writeWebRegistry(t, sylHome, sylhome.RegisteredProject{Path: project})
-	server, err := newServer(t, sylHome)
-	if err != nil {
-		t.Fatal(err)
-	}
-	page := serveProject(t, server.Handler(), project, "/projects/config")
-	form := configForm(t, project, tokenFromPage(t, page))
-	form.Set("loop.max_iterations", "0")
-	before, err := os.ReadFile(config.Path(project))
-	if err != nil {
-		t.Fatal(err)
-	}
-	response := postMutation(t, server.Handler(), configSaveRoute(project), form, "")
-	if response.Code != http.StatusUnprocessableEntity || !strings.Contains(response.Body.String(), "loop.max_iterations must be positive; got 0") {
-		t.Fatalf("validation response = %d/%q", response.Code, response.Body.String())
-	}
-	after, err := os.ReadFile(config.Path(project))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(after, before) {
-		t.Fatal("invalid config save changed the file")
-	}
-}
-
-func TestHandlerRefusesConfigConflictAndKeepsDiskChange(t *testing.T) {
-	sylHome := t.TempDir()
-	project := t.TempDir()
-	if _, err := config.Init(project); err != nil {
-		t.Fatal(err)
-	}
-	writeWebRegistry(t, sylHome, sylhome.RegisteredProject{Path: project})
-	server, err := newServer(t, sylHome)
-	if err != nil {
-		t.Fatal(err)
-	}
-	page := serveProject(t, server.Handler(), project, "/projects/config")
-	form := configForm(t, project, tokenFromPage(t, page))
-	external, err := os.ReadFile(config.Path(project))
-	if err != nil {
-		t.Fatal(err)
-	}
-	external = append(external, []byte("\n# changed by editor\n")...)
-	if err := os.WriteFile(config.Path(project), external, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	form.Set("loop.max_iterations", "9")
-	response := postMutation(t, server.Handler(), configSaveRoute(project), form, "")
-	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "changed on disk") || !strings.Contains(response.Body.String(), "Reload config") {
-		t.Fatalf("conflict response = %d/%q", response.Code, response.Body.String())
-	}
-	loaded, err := config.Load(project)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if loaded.Loop.MaxIterations != 3 || !strings.Contains(string(external), "changed by editor") {
-		t.Fatal("conflicting save did not preserve the on-disk change")
-	}
-}
-
 func TestHandlerProtectsConfigSaveWithTokenAndOrigin(t *testing.T) {
 	sylHome := t.TempDir()
 	project := t.TempDir()
@@ -215,17 +98,14 @@ func TestHandlerProtectsConfigSaveWithTokenAndOrigin(t *testing.T) {
 func TestHandlerConfigRoutesCoverContentFeedbackAndBadRequests(t *testing.T) {
 	sylHome := t.TempDir()
 	project := t.TempDir()
-	invalidProject := t.TempDir()
+	missingProject := filepath.Join(t.TempDir(), "missing-project")
 	if _, err := config.Init(project); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(filepath.Join(invalidProject, ".syl"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(config.Path(invalidProject), []byte("[tracker\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	writeWebRegistry(t, sylHome, sylhome.RegisteredProject{Path: project}, sylhome.RegisteredProject{Path: invalidProject})
+	writeWebRegistry(t, sylHome,
+		sylhome.RegisteredProject{Path: project},
+		sylhome.RegisteredProject{Path: missingProject},
+	)
 	server, err := newServer(t, sylHome)
 	if err != nil {
 		t.Fatal(err)
@@ -243,20 +123,28 @@ func TestHandlerConfigRoutesCoverContentFeedbackAndBadRequests(t *testing.T) {
 	if unknownProject.Code != http.StatusNotFound {
 		t.Fatalf("unknown config project status = %d, want not found", unknownProject.Code)
 	}
+	missingDirectory := serveProjectResponse(t, handler, missingProject, "/projects/config")
+	if missingDirectory.Code != http.StatusNotFound {
+		t.Fatalf("missing config Project status = %d, want not found", missingDirectory.Code)
+	}
 
 	content := serveProject(t, handler, project, "/projects/config/content")
 	if !strings.Contains(content, `name="loop.max_iterations"`) {
 		t.Fatalf("config content does not contain form fields: %s", content)
 	}
 
-	invalidResponse := serveProjectResponse(t, handler, invalidProject, "/projects/config")
-	if invalidResponse.Code != http.StatusOK || !strings.Contains(invalidResponse.Body.String(), "This config fails to load") {
-		t.Fatalf("invalid config page = %d/%q, want read-only invalid view", invalidResponse.Code, invalidResponse.Body.String())
-	}
-
 	page := serveProject(t, handler, project, "/projects/config")
 	token := tokenFromPage(t, page)
 	form := configForm(t, project, token)
+	form.Set("loop.max_iterations", "6")
+	redirect := postMutation(t, handler, configSaveRoute(project), form, "http://localhost:7777")
+	if redirect.Code != http.StatusSeeOther || redirect.Header().Get("Location") != "/projects/config?path="+url.QueryEscape(project) {
+		t.Fatalf("non-HTMX save = %d/%q, want redirect to Config tab", redirect.Code, redirect.Header().Get("Location"))
+	}
+
+	page = serveProject(t, handler, project, "/projects/config")
+	token = tokenFromPage(t, page)
+	form = configForm(t, project, token)
 	validHX := rawMutation(t, handler, http.MethodPost, configSaveRoute(project), form.Encode(), token, true)
 	if validHX.Code != http.StatusOK || !strings.Contains(validHX.Body.String(), `name="loop.max_iterations"`) {
 		t.Fatalf("HTMX config save = %d/%q, want rendered config content", validHX.Code, validHX.Body.String())
@@ -296,99 +184,12 @@ func TestHandlerConfigRoutesCoverContentFeedbackAndBadRequests(t *testing.T) {
 	}
 }
 
-func TestHandlerRendersInvalidConfigAsReadOnlySource(t *testing.T) {
-	sylHome := t.TempDir()
-	project := t.TempDir()
-	if _, err := config.Init(project); err != nil {
-		t.Fatal(err)
-	}
-	contents, err := os.ReadFile(config.Path(project))
-	if err != nil {
-		t.Fatal(err)
-	}
-	contents = []byte(strings.Replace(string(contents), `effort = "xhigh"`, `effort = "ultra"`, 1))
-	if err := os.WriteFile(config.Path(project), contents, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	writeWebRegistry(t, sylHome, sylhome.RegisteredProject{Path: project})
-	server, err := newServer(t, sylHome)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	body := serveProject(t, server.Handler(), project, "/projects/config")
-	wantError := `roles.implement.effort: invalid value "ultra"; want low, medium, high, or xhigh`
-	bodyText := html.UnescapeString(body)
-	for _, expected := range []string{
-		wantError,
-		config.Path(project),
-		`data-copy-path="` + config.Path(project) + `"`,
-		`class="config-source-line marked"`,
-		`hx-get="/projects/config/content?path=`,
-		`href="/projects?path=`,
-	} {
-		if !strings.Contains(bodyText, expected) {
-			t.Fatalf("invalid config body does not contain %q: %s", expected, body)
-		}
-	}
-	if strings.Contains(body, "<form") || strings.Contains(body, "<textarea") || strings.Contains(body, "contenteditable") {
-		t.Fatalf("invalid config rendered a raw editor control: %s", body)
-	}
-}
-
-func TestHandlerRendersMalformedConfigWithoutMarkedLine(t *testing.T) {
-	sylHome := t.TempDir()
-	project := t.TempDir()
-	if err := os.MkdirAll(filepath.Dir(config.Path(project)), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	contents := "[tracker\nissues = \"local\"\n"
-	if err := os.WriteFile(config.Path(project), []byte(contents), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	_, loadErr := config.Load(project)
-	if loadErr == nil {
-		t.Fatal("config.Load() succeeded for malformed TOML")
-	}
-	writeWebRegistry(t, sylHome, sylhome.RegisteredProject{Path: project})
-	server, err := newServer(t, sylHome)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	body := serveProject(t, server.Handler(), project, "/projects/config")
-	if !strings.Contains(html.UnescapeString(body), loadErr.Error()) {
-		t.Fatalf("malformed config body does not contain exact load error %q: %s", loadErr, body)
-	}
-	if strings.Contains(body, `class="config-source-line marked"`) {
-		t.Fatalf("malformed config marked a source line: %s", body)
-	}
-}
-
-func TestHandlerRendersEmptyInvalidConfigSourceWithLineNumber(t *testing.T) {
-	sylHome := t.TempDir()
-	project := t.TempDir()
-	if err := os.MkdirAll(filepath.Dir(config.Path(project)), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(config.Path(project), nil, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	writeWebRegistry(t, sylHome, sylhome.RegisteredProject{Path: project})
-	server, err := newServer(t, sylHome)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	body := serveProject(t, server.Handler(), project, "/projects/config")
-	if !strings.Contains(body, `class="config-source-line"><span class="config-source-number">1</span><pre></pre>`) {
-		t.Fatalf("empty invalid config source = %s, want numbered empty line", body)
-	}
-}
-
 func TestHandlerEscapesInvalidConfigSourceAndLoadsFormAfterFix(t *testing.T) {
 	sylHome := t.TempDir()
-	project := t.TempDir()
+	project := filepath.Join(t.TempDir(), "invalid")
+	if err := os.MkdirAll(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := config.Init(project); err != nil {
 		t.Fatal(err)
 	}
@@ -410,6 +211,35 @@ func TestHandlerEscapesInvalidConfigSourceAndLoadsFormAfterFix(t *testing.T) {
 	if !strings.Contains(body, "&lt;script&gt;") || strings.Contains(body, `effort = "<script>"`) {
 		t.Fatalf("invalid config source was not escaped as text: %s", body)
 	}
+	for _, forbidden := range []string{"<form", "&lt;form", "<textarea", "&lt;textarea", "contenteditable"} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("invalid config rendered editor control %q: %s", forbidden, body)
+		}
+	}
+	for _, expected := range []string{`hx-get="/projects/config/content?path=`, `href="/projects?path=`} {
+		if !strings.Contains(body, expected) {
+			t.Fatalf("invalid config omitted %q: %s", expected, body)
+		}
+	}
+
+	invalid = []byte(strings.Replace(string(valid), `effort = "xhigh"`, `effort = "ultra"`, 1))
+	if err := os.WriteFile(config.Path(project), invalid, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	invalidContent := serveProjectResponse(t, server.Handler(), project, "/projects/config/content")
+	if invalidContent.Code != http.StatusOK {
+		t.Fatalf("invalid config content status = %d, want 200", invalidContent.Code)
+	}
+	actual := invalidContent.Body.String()
+	actual = strings.ReplaceAll(actual, url.QueryEscape(project), "PROJECT_QUERY")
+	actual = strings.ReplaceAll(actual, project, "/fixture/project")
+	expected, err := os.ReadFile(filepath.Join("testdata", "config-invalid-content.golden"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if actual != string(expected) {
+		t.Fatalf("invalid Config fragment differs from golden:\n got: %q\nwant: %q", actual, expected)
+	}
 
 	if err := os.WriteFile(config.Path(project), valid, 0o644); err != nil {
 		t.Fatal(err)
@@ -417,40 +247,6 @@ func TestHandlerEscapesInvalidConfigSourceAndLoadsFormAfterFix(t *testing.T) {
 	content := serveProjectResponse(t, server.Handler(), project, "/projects/config/content")
 	if content.Code != http.StatusOK || !strings.Contains(content.Body.String(), `name="roles.implement.effort"`) || strings.Contains(content.Body.String(), "This config fails to load") {
 		t.Fatalf("fixed config content = %d/%q, want structured form", content.Code, content.Body.String())
-	}
-}
-
-func TestHandlerShowsUninitializedConfigAndKeepsRunHistoryAvailable(t *testing.T) {
-	sylHome := t.TempDir()
-	project := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(project, ".syl", "runs", "run-187"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := runrecord.Write(runrecord.Path(filepath.Join(project, ".syl", "runs", "run-187")), runrecord.State{
-		Status: runrecord.Approved, TicketRef: "#187", Kind: runrecord.Implement,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	writeWebRegistry(t, sylHome, sylhome.RegisteredProject{Path: project})
-	server, err := newServer(t, sylHome)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	body := serveProject(t, server.Handler(), project, "/projects/config")
-	for _, expected := range []string{
-		"No <code>.syl/config.toml</code> exists",
-		"syl init",
-		"href=\"/projects?path=",
-		"Runs",
-	} {
-		if !strings.Contains(body, expected) {
-			t.Fatalf("uninitialized config body does not contain %q: %s", expected, body)
-		}
-	}
-	runs := serveProject(t, server.Handler(), project, "/projects")
-	if !strings.Contains(runs, "#187") {
-		t.Fatalf("uninitialized project runs body does not contain history: %s", runs)
 	}
 }
 

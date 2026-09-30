@@ -343,8 +343,8 @@
 <nav class="breadcrumb" aria-label="Breadcrumb"><a href="/">Overview</a><span>/</span><a href="/projects?path={{urlquery .Page.Project.Path}}">{{.Page.Project.Name}}</a><span>/</span><span>Config</span></nav>
 
 <div class="project-page-heading">
-<div class="project-title"><h1>{{.Page.Project.Name}}</h1><span class="pill {{healthClass .Page.Project.Health}}">{{.Page.Project.Health}}</span></div>
-<div class="project-details"><code>{{.Page.Project.Path}}</code>{{if and (not .Invalid) (not .Uninitialized)}}<span>issues: {{.Values.TrackerIssues}} · reviews: {{.Values.TrackerReviews}}</span><span>first seen {{firstSeen .Page.Project.FirstSeen}}</span>{{end}}</div>
+<div class="project-title"><h1>{{.Page.Project.Name}}</h1><span class="pill {{healthClass .ConfigHealth}}">{{.ConfigHealth}}</span></div>
+<div class="project-details"><code>{{.Page.Project.Path}}</code>{{if eq .State "form"}}<span>issues: {{.Values.TrackerIssues}} · reviews: {{.Values.TrackerReviews}}</span><span>first seen {{firstSeen .Page.Project.FirstSeen}}</span>{{end}}</div>
 </div>
 
 <div class="project-tabs" role="tablist" aria-label="Project sections">
@@ -352,16 +352,16 @@
 <a class="active" href="/projects/config?path={{urlquery .Page.Project.Path}}" role="tab" aria-selected="true">Config</a>
 </div>
 
-{{if .Invalid}}
+{{if eq .State "invalid"}}
 <section class="config-invalid-alert" role="alert"><h2>This config fails to load</h2><code class="config-invalid-error">{{.Invalid.Error}}</code><p>syl ui only edits a config it can parse. Fix the file in your editor. This page picks up the change on its next refresh. Run history is unaffected.</p><div class="config-invalid-path"><code>{{.Invalid.Path}}</code><button class="config-copy-path" type="button" data-copy-path="{{.Invalid.Path}}">Copy path</button></div></section>
 <section class="config-source-card" aria-label="Read-only config.toml"><div class="config-source-heading"><span>config.toml</span><span>read-only</span></div><div class="config-source">{{range .Invalid.Lines}}<div class="config-source-line{{if .Marked}} marked{{end}}"><span class="config-source-number">{{.Number}}</span><pre>{{.Text}}</pre></div>{{end}}</div></section>
-{{else if .Uninitialized}}
+{{else if eq .State "uninitialized"}}
 <section class="config-uninitialized" role="alert"><h2>Config is not initialized</h2><p>No <code>.syl/config.toml</code> exists for this Project.</p><p>Run this command from the Project directory:</p><code class="config-init-command">syl init</code></section>
 {{else if .Conflict}}
 <div class="config-conflict" role="alert"><div><strong>config.toml changed on disk after you opened this form</strong><span>Something else, probably your editor, saved <code>.syl/config.toml</code>. Your changes were not saved, so nothing was overwritten. Reload to see the current file, then make your changes again.</span></div><a class="config-primary-button" href="/projects/config?path={{urlquery .Page.Project.Path}}">Reload config</a></div>
 {{end}}
-{{if and (not .Invalid) (not .Uninitialized)}}
-{{if gt .Page.Project.LiveRunCount 0}}
+{{if eq .State "form"}}
+{{if .HasLiveRunBanner}}
 <div class="config-live-banner" role="status"><span class="live-dot"></span><span><strong>{{.Page.Project.LiveRunCount}} {{if eq .Page.Project.LiveRunCount 1}}Run is{{else}}Runs are{{end}} live in this project.</strong> Changes apply to the next Run; live Runs keep the config they started with.</span></div>
 {{end}}
 

@@ -32,6 +32,7 @@ linters:
             - "!**/internal/atomicfile/*.go"
             - "!**/internal/readmodel/*.go"
             - "!**/internal/configedit/*.go"
+            - "!**/internal/configview/*.go"
             - "!**/internal/web/*.go"
             - "!**/internal/adapters/gh/*.go"
             - "!**/internal/adapters/glab/*.go"
@@ -141,6 +142,20 @@ linters:
           deny:
             - pkg: github.com/igorrochap/syl
               desc: config editing owns validation and persistence but not HTTP presentation
+        configview:
+          files:
+            - "**/internal/configview/*.go"
+          list-mode: lax
+          allow:
+            - $gostd
+            - github.com
+            - golang.org
+            - github.com/igorrochap/syl/internal/config$
+            - github.com/igorrochap/syl/internal/configedit$
+            - github.com/igorrochap/syl/internal/readmodel$
+          deny:
+            - pkg: github.com/igorrochap/syl
+              desc: the Config tab view model owns page decisions without depending on HTTP adapters
         web:
           files:
             - "**/internal/web/*.go"
@@ -153,6 +168,7 @@ linters:
             - github.com/igorrochap/syl/internal/runrecord$
             - github.com/igorrochap/syl/internal/sylhome$
             - github.com/igorrochap/syl/internal/configedit$
+            - github.com/igorrochap/syl/internal/configview$
           deny:
             - pkg: github.com/igorrochap/syl
               desc: the web adapter renders the read model without depending on command or workflow packages
