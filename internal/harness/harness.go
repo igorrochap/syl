@@ -27,11 +27,29 @@ type Event struct {
 	Raw          string
 }
 
+// CompletionSignal names the transcript signal a role expects.
+type CompletionSignal int
+
+const (
+	// CompletionReviewVerdict is the default for existing reviewer callers.
+	CompletionReviewVerdict CompletionSignal = iota
+	// CompletionTurnEnd accepts an assistant turn ending without a sentinel.
+	CompletionTurnEnd
+)
+
+func (s CompletionSignal) String() string {
+	if s == CompletionTurnEnd {
+		return "turn end"
+	}
+	return "review verdict"
+}
+
 type Request struct {
-	Model  string
-	Effort config.Effort
-	Prompt string
-	MCP    bool
+	Completion CompletionSignal
+	Model      string
+	Effort     config.Effort
+	Prompt     string
+	MCP        bool
 }
 
 type Stream interface {

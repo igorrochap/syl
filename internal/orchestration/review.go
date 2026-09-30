@@ -217,7 +217,8 @@ func runStandaloneReview(ctx context.Context, options ReviewOptions, preparation
 	}
 	startedAt := time.Now().UTC()
 	review, err := runReview(ctx, options.Adapter, harness.Request{
-		Model: options.ProjectConfig.Roles.Review.Model, Effort: options.ProjectConfig.Roles.Review.Effort,
+		Completion: harness.CompletionReviewVerdict,
+		Model:      options.ProjectConfig.Roles.Review.Model, Effort: options.ProjectConfig.Roles.Review.Effort,
 		Prompt: prompt, MCP: options.ProjectConfig.Roles.Review.MCP,
 	}, options.Output, mode, questions)
 	endedAt := time.Now().UTC()

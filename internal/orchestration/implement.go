@@ -413,10 +413,11 @@ func ensureImplementRunState(params implementIterationsParams) *runStateTracker 
 func runImplementReview(ctx context.Context, params implementIterationsParams, reviewParams implementReviewParams) (ReviewExecution, error) {
 	params.runState.setActivity(runrecord.Reviewing)
 	reviewRequest := harness.Request{
-		Model:  params.projectConfig.Roles.Review.Model,
-		Effort: params.projectConfig.Roles.Review.Effort,
-		Prompt: composeReviewPrompt("#"+strconv.Itoa(params.ticket.Number), &params.ticket, params.branchPoint, reviewParams.diffPath, params.reviewContext),
-		MCP:    params.projectConfig.Roles.Review.MCP,
+		Completion: harness.CompletionReviewVerdict,
+		Model:      params.projectConfig.Roles.Review.Model,
+		Effort:     params.projectConfig.Roles.Review.Effort,
+		Prompt:     composeReviewPrompt("#"+strconv.Itoa(params.ticket.Number), &params.ticket, params.branchPoint, reviewParams.diffPath, params.reviewContext),
+		MCP:        params.projectConfig.Roles.Review.MCP,
 	}
 	renderer := ui.New(params.output, ui.DetectCaps(params.output))
 	if err := writeRoleSection(params.output, "Reviewer"); err != nil {
@@ -553,8 +554,9 @@ func runImplementTurn(
 	}
 
 	implementRequest := harness.Request{
-		Model:  params.projectConfig.Roles.Implement.Model,
-		Effort: params.projectConfig.Roles.Implement.Effort,
+		Completion: harness.CompletionTurnEnd,
+		Model:      params.projectConfig.Roles.Implement.Model,
+		Effort:     params.projectConfig.Roles.Implement.Effort,
 		Prompt: composeImplementPrompt(
 			params.ticket,
 			turn.blocking,
