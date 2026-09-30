@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/igorrochap/syl/internal/pageview"
 	"github.com/igorrochap/syl/internal/runrecord"
 	"github.com/igorrochap/syl/internal/ui"
 	"github.com/igorrochap/syl/internal/usage"
@@ -191,8 +192,8 @@ func formatCodexUsage(metrics usage.Metrics) string {
 	}
 	return fmt.Sprintf(
 		"input %s (%.0f%% cached) · output %s (%s reasoning)",
-		formatTokenCount(metrics.InputTokens), math.Round(cachedPercent),
-		formatTokenCount(metrics.OutputTokens), formatTokenCount(metrics.ReasoningOutputTokens),
+		pageview.FormatTokenCount(metrics.InputTokens), math.Round(cachedPercent),
+		pageview.FormatTokenCount(metrics.OutputTokens), pageview.FormatTokenCount(metrics.ReasoningOutputTokens),
 	)
 }
 
@@ -202,15 +203,4 @@ func formatClaudeUsage(metrics usage.Metrics) string {
 		metrics.WeightedEstimate, metrics.InputTokens, metrics.OutputTokens,
 		metrics.CacheWriteTokens, metrics.CacheReadTokens,
 	)
-}
-
-func formatTokenCount(tokens int64) string {
-	switch {
-	case tokens >= 1_000_000:
-		return fmt.Sprintf("%.1fM", float64(tokens)/1_000_000)
-	case tokens >= 1_000:
-		return fmt.Sprintf("%.1fk", float64(tokens)/1_000)
-	default:
-		return fmt.Sprintf("%d", tokens)
-	}
 }

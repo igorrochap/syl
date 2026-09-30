@@ -1,0 +1,10 @@
+{{define "header"}}
+<header>
+<a class="wordmark" href="/">syl<span>/ui</span></a>
+<nav class="nav" aria-label="Primary"><a href="/">Overview</a></nav>
+<div class="server-state"><span class="{{.ServerDotClass}}"></span><span>127.0.0.1:{{.Port}} · {{.ServerState}}</span></div>
+<button class="theme-toggle" type="button" aria-label="Switch to light theme" onclick="toggleTheme()">
+<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"></path></svg><span>Dark</span>
+</button>
+</header>
+{{end}}

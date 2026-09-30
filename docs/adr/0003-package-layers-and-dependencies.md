@@ -15,7 +15,7 @@ not permitted.
 | Layer | Package | May import |
 | --- | --- | --- |
 | Composition | `cmd/syl` | every package under `internal/`, plus `scripts` and `skills` |
-| Command | `internal/cli` | `internal/adapters/git`, `internal/adapters/notify`, `internal/config`, `internal/harness`, `internal/initializer`, `internal/orchestration`, `internal/readmodel`, `internal/runrecord`, `internal/sylhome`, `internal/tracker`, `internal/ui`, `internal/updater`, `internal/usage`, `internal/version`, `internal/web` |
+| Command | `internal/cli` | `internal/adapters/git`, `internal/adapters/notify`, `internal/config`, `internal/harness`, `internal/initializer`, `internal/orchestration`, `internal/pageview`, `internal/readmodel`, `internal/runrecord`, `internal/sylhome`, `internal/tracker`, `internal/ui`, `internal/updater`, `internal/usage`, `internal/version`, `internal/web` |
 | Application | `internal/orchestration` | `internal/config`, `internal/harness`, `internal/runrecord`, `internal/sylhome`, `internal/tracker`, `internal/ui`, `internal/usage`, `internal/verdict` |
 | Application support | `internal/initializer` | `internal/config`, `internal/tui`, `internal/ui`, `scripts`, `skills` |
 | Application support | `internal/updater` | `scripts` |
@@ -33,7 +33,8 @@ not permitted.
 | Application support | `internal/readmodel` | `internal/config`, `internal/runrecord`, `internal/sylhome`, `internal/usage`, `internal/verdict` |
 | Application support | `internal/configedit` | `internal/config` |
 | Application support | `internal/configview` | `internal/config`, `internal/configedit`, `internal/readmodel` |
-| Interface adapter | `internal/web` | `internal/configedit`, `internal/configview`, `internal/readmodel`, `internal/runrecord`, `internal/sylhome` |
+| Presentation support | `internal/pageview` | `internal/readmodel`, `internal/runrecord` |
+| Interface adapter | `internal/web` | `internal/configedit`, `internal/configview`, `internal/pageview`, `internal/readmodel`, `internal/runrecord`, `internal/sylhome` |
 
 ## Exceptions
 
@@ -76,6 +77,10 @@ call exceptions:
 - `internal/configview` builds the Config tab view model from the Project read
   model and config editing module; it owns the Config tab state, invalid source
   lines, and save outcomes, while `internal/web` maps those outcomes to HTTP.
+- `internal/pageview` builds display-ready Overview, Project, and Run page
+  models from read models. It owns shared page formatters and the Run-status
+  presentation mapping, and has no HTTP or template dependency. The CLI uses
+  its token-count formatter for usage output.
 - Tests are not part of the architecture check. Test packages intentionally
   import concrete collaborators to exercise public seams; those imports do
   not create production dependency edges.

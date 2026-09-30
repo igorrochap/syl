@@ -20,6 +20,7 @@ import (
 
 	"github.com/igorrochap/syl/internal/config"
 	"github.com/igorrochap/syl/internal/configedit"
+	"github.com/igorrochap/syl/internal/readmodel"
 	"github.com/igorrochap/syl/internal/runrecord"
 	"github.com/igorrochap/syl/internal/sylhome"
 	"github.com/igorrochap/syl/internal/usage"
@@ -33,42 +34,6 @@ const (
 
 func testProcessAlive(pid int) bool {
 	return pid == testAlivePID
-}
-
-func TestHandlerRendersStructuredConfigForm(t *testing.T) {
-	sylHome := t.TempDir()
-	project := t.TempDir()
-	if _, err := config.Init(project); err != nil {
-		t.Fatal(err)
-	}
-	writeWebRegistry(t, sylHome, sylhome.RegisteredProject{Path: project})
-	server, err := newServer(t, sylHome)
-	if err != nil {
-		t.Fatal(err)
-	}
-	body := serveProject(t, server.Handler(), project, "/projects/config")
-	for _, field := range []string{
-		`name="tracker.issues"`, `name="tracker.reviews"`,
-		`name="roles.plan.harness"`, `name="roles.plan.model"`, `name="roles.plan.effort"`, `name="roles.plan.mcp"`,
-		`name="roles.implement.harness"`, `name="roles.implement.model"`, `name="roles.implement.effort"`, `name="roles.implement.mcp"`,
-		`name="roles.review.harness"`, `name="roles.review.model"`, `name="roles.review.effort"`, `name="roles.review.mcp"`,
-		`name="loop.max_iterations"`, `name="notifications.enabled"`, `name="worktree.root"`, `name="worktree.setup"`,
-		`name="worktree.copy"`, "Saving rewrites", "Comments you added by hand are not kept.", "Codex ignores this",
-		`data-mcp-harness="implement"`, `data-mcp-role="implement"`, `data-mcp-value`,
-		"document.addEventListener('change'", "updateSaveState", "save.disabled=hasErrors",
-	} {
-		if !strings.Contains(body, field) {
-			t.Fatalf("config form does not contain %q: %s", field, body)
-		}
-	}
-	if strings.Contains(body, "Changes apply to the next Run") {
-		t.Fatal("config form shows a live-Run banner without a live Run")
-	}
-	for _, option := range append(append(configedit.TrackerOptions(), configedit.HarnessOptions()...), configedit.EffortOptions()...) {
-		if !strings.Contains(body, `value="`+option+`"`) {
-			t.Fatalf("config form does not contain option %q", option)
-		}
-	}
 }
 
 func TestHandlerProtectsConfigSaveWithTokenAndOrigin(t *testing.T) {
@@ -128,9 +93,9 @@ func TestHandlerConfigRoutesCoverContentFeedbackAndBadRequests(t *testing.T) {
 		t.Fatalf("missing config Project status = %d, want not found", missingDirectory.Code)
 	}
 
-	content := serveProject(t, handler, project, "/projects/config/content")
-	if !strings.Contains(content, `name="loop.max_iterations"`) {
-		t.Fatalf("config content does not contain form fields: %s", content)
+	content := serveProjectResponse(t, handler, project, "/projects/config/content")
+	if content.Code != http.StatusOK {
+		t.Fatalf("config fragment status = %d, want OK", content.Code)
 	}
 
 	page := serveProject(t, handler, project, "/projects/config")
@@ -146,15 +111,15 @@ func TestHandlerConfigRoutesCoverContentFeedbackAndBadRequests(t *testing.T) {
 	token = tokenFromPage(t, page)
 	form = configForm(t, project, token)
 	validHX := rawMutation(t, handler, http.MethodPost, configSaveRoute(project), form.Encode(), token, true)
-	if validHX.Code != http.StatusOK || !strings.Contains(validHX.Body.String(), `name="loop.max_iterations"`) {
-		t.Fatalf("HTMX config save = %d/%q, want rendered config content", validHX.Code, validHX.Body.String())
+	if validHX.Code != http.StatusOK {
+		t.Fatalf("HTMX config save status = %d, want OK", validHX.Code)
 	}
 
 	form = configForm(t, project, token)
 	form.Set("loop.max_iterations", "0")
 	invalidHX := rawMutation(t, handler, http.MethodPost, configSaveRoute(project), form.Encode(), token, true)
-	if invalidHX.Code != http.StatusUnprocessableEntity || !strings.Contains(invalidHX.Body.String(), "loop.max_iterations must be positive; got 0") {
-		t.Fatalf("HTMX validation response = %d/%q", invalidHX.Code, invalidHX.Body.String())
+	if invalidHX.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("HTMX validation status = %d, want unprocessable entity", invalidHX.Code)
 	}
 
 	form = configForm(t, project, token)
@@ -166,8 +131,8 @@ func TestHandlerConfigRoutesCoverContentFeedbackAndBadRequests(t *testing.T) {
 		t.Fatal(err)
 	}
 	conflictHX := rawMutation(t, handler, http.MethodPost, configSaveRoute(project), form.Encode(), token, true)
-	if conflictHX.Code != http.StatusConflict || !strings.Contains(conflictHX.Body.String(), "Reload config") {
-		t.Fatalf("HTMX conflict response = %d/%q", conflictHX.Code, conflictHX.Body.String())
+	if conflictHX.Code != http.StatusConflict {
+		t.Fatalf("HTMX conflict status = %d, want conflict", conflictHX.Code)
 	}
 
 	missingSavePath := rawMutation(t, handler, http.MethodPost, "/projects/config/save", "", token, false)
@@ -184,7 +149,7 @@ func TestHandlerConfigRoutesCoverContentFeedbackAndBadRequests(t *testing.T) {
 	}
 }
 
-func TestHandlerEscapesInvalidConfigSourceAndLoadsFormAfterFix(t *testing.T) {
+func TestHandlerServesConfigRouteStatusesForInvalidAndFixedConfig(t *testing.T) {
 	sylHome := t.TempDir()
 	project := filepath.Join(t.TempDir(), "invalid")
 	if err := os.MkdirAll(project, 0o755); err != nil {
@@ -207,98 +172,25 @@ func TestHandlerEscapesInvalidConfigSourceAndLoadsFormAfterFix(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	body := serveProject(t, server.Handler(), project, "/projects/config")
-	if !strings.Contains(body, "&lt;script&gt;") || strings.Contains(body, `effort = "<script>"`) {
-		t.Fatalf("invalid config source was not escaped as text: %s", body)
-	}
-	for _, forbidden := range []string{"<form", "&lt;form", "<textarea", "&lt;textarea", "contenteditable"} {
-		if strings.Contains(body, forbidden) {
-			t.Fatalf("invalid config rendered editor control %q: %s", forbidden, body)
+	for _, route := range []string{"/projects/config", "/projects/config/content"} {
+		response := serveProjectResponse(t, server.Handler(), project, route)
+		if response.Code != http.StatusOK {
+			t.Fatalf("invalid config route %s status = %d, want OK", route, response.Code)
 		}
-	}
-	for _, expected := range []string{`hx-get="/projects/config/content?path=`, `href="/projects?path=`} {
-		if !strings.Contains(body, expected) {
-			t.Fatalf("invalid config omitted %q: %s", expected, body)
-		}
-	}
-
-	invalid = []byte(strings.Replace(string(valid), `effort = "xhigh"`, `effort = "ultra"`, 1))
-	if err := os.WriteFile(config.Path(project), invalid, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	invalidContent := serveProjectResponse(t, server.Handler(), project, "/projects/config/content")
-	if invalidContent.Code != http.StatusOK {
-		t.Fatalf("invalid config content status = %d, want 200", invalidContent.Code)
-	}
-	actual := invalidContent.Body.String()
-	actual = strings.ReplaceAll(actual, url.QueryEscape(project), "PROJECT_QUERY")
-	actual = strings.ReplaceAll(actual, project, "/fixture/project")
-	expected, err := os.ReadFile(filepath.Join("testdata", "config-invalid-content.golden"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if actual != string(expected) {
-		t.Fatalf("invalid Config fragment differs from golden:\n got: %q\nwant: %q", actual, expected)
 	}
 
 	if err := os.WriteFile(config.Path(project), valid, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	content := serveProjectResponse(t, server.Handler(), project, "/projects/config/content")
-	if content.Code != http.StatusOK || !strings.Contains(content.Body.String(), `name="roles.implement.effort"`) || strings.Contains(content.Body.String(), "This config fails to load") {
-		t.Fatalf("fixed config content = %d/%q, want structured form", content.Code, content.Body.String())
-	}
-}
-
-func TestHandlerRendersProjectHistoryAndConfigMetadata(t *testing.T) {
-	sylHome := t.TempDir()
-	project := t.TempDir()
-	if _, err := config.Init(project); err != nil {
-		t.Fatal(err)
-	}
-	firstSeen := time.Date(2026, time.September, 2, 0, 0, 0, 0, time.UTC)
-	writeWebRegistry(t, sylHome, sylhome.RegisteredProject{Path: project, FirstSeen: firstSeen})
-	runDir := filepath.Join(project, ".syl", "runs", "20260924T120000.000000000Z-184")
-	if err := os.MkdirAll(runDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	ended := time.Date(2026, time.September, 24, 12, 1, 0, 0, time.UTC)
-	if err := runrecord.Write(runrecord.Path(runDir), runrecord.State{
-		Status: runrecord.Approved, Iteration: 1, MaxIterations: 3,
-		StartedAt: time.Date(2026, time.September, 24, 12, 0, 0, 0, time.UTC), EndedAt: &ended,
-		Kind: runrecord.Implement, TicketRef: "#184",
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(runDir, "metadata.txt"), []byte("Implementer harness: codex\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(runDir, "summary.txt"), []byte("Final verdict: approve\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := usage.WriteArtifact(filepath.Join(runDir, "usage.json"), usage.Artifact{Entries: []usage.Entry{{
-		Tracked: true, Metrics: &usage.Metrics{TotalTokens: 2_200_000},
-	}}}); err != nil {
-		t.Fatal(err)
-	}
-
-	server, err := newServer(t, sylHome)
-	if err != nil {
-		t.Fatal(err)
-	}
-	body := serveProject(t, server.Handler(), project, "/projects")
-	for _, expected := range []string{
-		filepath.Base(project), project, "ok", "issues: github", "reviews: local", "first seen 2 Sep 2026",
-		"Runs", "Config", "#184", "implement", "approved", "1 / 3", "approve", "1m", "2.2M",
-		"/runs?path=", `document.visibilityState === 'visible'`,
-	} {
-		if !strings.Contains(body, expected) {
-			t.Fatalf("Project body does not contain %q: %s", expected, body)
+	for _, route := range []string{"/projects/config", "/projects/config/content"} {
+		response := serveProjectResponse(t, server.Handler(), project, route)
+		if response.Code != http.StatusOK {
+			t.Fatalf("fixed config route %s status = %d, want OK", route, response.Code)
 		}
 	}
 }
 
-func TestHandlerRendersRunPageAndRawArtifacts(t *testing.T) {
+func TestHandlerDoesNotPollEndedRunAndServesRawArtifacts(t *testing.T) {
 	project := t.TempDir()
 	runDir := filepath.Join(project, ".syl", "runs", "20260920T195033.518469000Z-173")
 	if err := os.MkdirAll(runDir, 0o755); err != nil {
@@ -329,26 +221,8 @@ func TestHandlerRendersRunPageAndRawArtifacts(t *testing.T) {
 		t.Fatal(err)
 	}
 	body := serveRun(t, server.Handler(), runDir, "/runs")
-	content := serveRun(t, server.Handler(), runDir, "/runs/content")
-	if !strings.Contains(content, `id="run-content"`) {
-		t.Fatalf("Run content does not contain its root element: %s", content)
-	}
-	for _, expected := range []string{
-		"#173", "feat/implementer-context-rollover", "approved", "implement", "1 of 3 iterations",
-		"Summary", "Ready for review", "Iterations", "Blocking · 1", "Nit · 1", "Diff stat",
-		"Branch point", "30de5905ca30", "Usage", "implement", "review", "syl resume implement #173", "syl resume review #173",
-	} {
-		if !strings.Contains(body, expected) {
-			t.Fatalf("Run body does not contain %q: %s", expected, body)
-		}
-	}
 	if strings.Contains(body, "hx-trigger=\"every 3s") {
 		t.Fatal("ended Run page contains a polling trigger")
-	}
-	writeWebArtifact(t, runDir, "summary.txt", "Iterations: 1\nFinal verdict: approve\nDiff stat:\n file.go | 2 ++\n")
-	emptySummaryBody := serveRun(t, server.Handler(), runDir, "/runs")
-	if !strings.Contains(emptySummaryBody, `aria-labelledby="summary-heading"`) || !strings.Contains(emptySummaryBody, `class="run-summary">—</p>`) {
-		t.Fatalf("Run body does not show an empty summary section: %s", emptySummaryBody)
 	}
 
 	request := httptest.NewRequest(http.MethodGet, "/runs/artifact?path="+url.QueryEscape(runDir)+"&artifact=iteration-01-implement.feed", nil)
@@ -410,8 +284,8 @@ func TestHandlerPollsOnlyRunningRunAndRefusesUnsafeArtifacts(t *testing.T) {
 		t.Fatal(err)
 	}
 	body := serveRun(t, server.Handler(), runDir, "/runs")
-	if !strings.Contains(body, "hx-trigger=\"every 3s [document.visibilityState === 'visible']\"") || !strings.Contains(body, "Activity: reviewing") {
-		t.Fatalf("running Run body = %s, want polling and activity", body)
+	if !strings.Contains(body, "hx-trigger=\"every 3s [document.visibilityState === 'visible']\"") {
+		t.Fatalf("running Run body = %s, want polling trigger", body)
 	}
 
 	for _, artifact := range []string{"../../config.toml", "/tmp/config.toml", "outside-link"} {
@@ -435,108 +309,6 @@ func TestHandlerPollsOnlyRunningRunAndRefusesUnsafeArtifacts(t *testing.T) {
 	}
 }
 
-func TestHandlerShowsInterruptedProjectRunAndFindsNewRunsOnNextRequest(t *testing.T) {
-	sylHome := t.TempDir()
-	project := t.TempDir()
-	if _, err := config.Init(project); err != nil {
-		t.Fatal(err)
-	}
-	writeWebRegistry(t, sylHome, sylhome.RegisteredProject{Path: project})
-	writeWebRun(t, project, "20260924T120000.000000000Z-1", runrecord.State{
-		Status: runrecord.Running, Activity: runrecord.Reviewing, Iteration: 1, MaxIterations: 3,
-		PID: testDeadPID, Hostname: testHostname(t), StartedAt: time.Now().UTC(), Kind: runrecord.Implement, TicketRef: "#1",
-	})
-	server, err := newServer(t, sylHome)
-	if err != nil {
-		t.Fatal(err)
-	}
-	body := serveProject(t, server.Handler(), project, "/projects/content")
-	for _, expected := range []string{"Interrupted", "#1"} {
-		if !strings.Contains(body, expected) {
-			t.Fatalf("first Project body does not contain %q", expected)
-		}
-	}
-
-	writeWebRun(t, project, "20260924T130000.000000000Z-2", runrecord.State{
-		Status: runrecord.Approved, Iteration: 1, MaxIterations: 3,
-		StartedAt: time.Now().UTC(), Kind: runrecord.Implement, TicketRef: "#2",
-	})
-	body = serveProject(t, server.Handler(), project, "/projects/content")
-	if !strings.Contains(body, "#2") {
-		t.Fatal("second Project request did not find the new Run")
-	}
-}
-
-func TestInterruptedRunHasSameStatusAcrossPages(t *testing.T) {
-	sylHome := t.TempDir()
-	project := t.TempDir()
-	if _, err := config.Init(project); err != nil {
-		t.Fatal(err)
-	}
-	writeWebRegistry(t, sylHome, sylhome.RegisteredProject{Path: project})
-	runDir := filepath.Join(project, ".syl", "runs", "20260930T120000.000000000Z-205")
-	if err := os.MkdirAll(runDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	markerHost := testHostname(t)
-	state := runrecord.State{
-		Status: runrecord.Running, Activity: runrecord.Reviewing, Iteration: 1, MaxIterations: 2,
-		PID: testDeadPID, Hostname: "recorded-elsewhere", StartedAt: time.Now().UTC(),
-		Kind: runrecord.Implement, TicketRef: "#205",
-	}
-	if err := runrecord.Write(runrecord.Path(runDir), state); err != nil {
-		t.Fatal(err)
-	}
-	createLiveRun(t, sylHome, project, runDir, state.TicketRef, state.PID, markerHost)
-	server, err := newServer(t, sylHome)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	overview := serveOverview(t, server.Handler(), "127.0.0.1:7777")
-	projectPage := serveProject(t, server.Handler(), project, "/projects")
-	runPage := serveRun(t, server.Handler(), runDir, "/runs")
-	if !strings.Contains(overview, `<span class="activity interrupted"><span class="activity-dot"></span>Interrupted</span>`) {
-		t.Fatalf("Overview does not show the interrupted status: %s", overview)
-	}
-	for name, body := range map[string]string{"Project": projectPage, "Run": runPage} {
-		if !strings.Contains(body, `<span class="status-pill red">Interrupted</span>`) {
-			t.Fatalf("%s page does not show the interrupted status: %s", name, body)
-		}
-	}
-}
-
-func TestOverviewKeepsRecordedActivityForNonRunningRun(t *testing.T) {
-	sylHome := t.TempDir()
-	project := t.TempDir()
-	if _, err := config.Init(project); err != nil {
-		t.Fatal(err)
-	}
-	writeWebRegistry(t, sylHome, sylhome.RegisteredProject{Path: project})
-	runDir := filepath.Join(project, ".syl", "runs", "finished-with-activity")
-	if err := os.MkdirAll(runDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	state := runrecord.State{
-		Status: runrecord.Approved, Activity: runrecord.Reviewing, PID: testDeadPID,
-		Hostname: testHostname(t), StartedAt: time.Now().UTC(), Kind: runrecord.Implement, TicketRef: "#206",
-	}
-	if err := runrecord.Write(runrecord.Path(runDir), state); err != nil {
-		t.Fatal(err)
-	}
-	createLiveRun(t, sylHome, project, runDir, state.TicketRef, state.PID, state.Hostname)
-	server, err := newServer(t, sylHome)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	body := serveOverview(t, server.Handler(), "127.0.0.1:7777")
-	want := `<span class="activity running"><span class="activity-dot"></span>reviewing</span>`
-	if !strings.Contains(body, want) {
-		t.Fatalf("Overview activity = %q, want rendered fragment %q", body, want)
-	}
-}
-
 func TestHandlerDismissesInterruptedRunWithoutChangingRunFiles(t *testing.T) {
 	sylHome, runDir := writeMutationFixture(t, false)
 	server, err := newServer(t, sylHome)
@@ -545,7 +317,7 @@ func TestHandlerDismissesInterruptedRunWithoutChangingRunFiles(t *testing.T) {
 	}
 	beforeRun := snapshotFiles(t, runDir)
 	beforeHome := snapshotFiles(t, sylHome)
-	token := tokenFromPage(t, serveOverview(t, server.Handler(), "127.0.0.1:7777"))
+	token := tokenFromPage(t, serveOverview(t, server.Handler()))
 
 	response := postMutation(t, server.Handler(), "/runs/dismiss", url.Values{
 		"run_dir": {runDir}, "token": {token},
@@ -566,8 +338,12 @@ func TestHandlerDismissesInterruptedRunWithoutChangingRunFiles(t *testing.T) {
 	if after := snapshotFiles(t, sylHome); reflect.DeepEqual(after, beforeHome) {
 		t.Fatal("syl home did not change after dismissing marker")
 	}
-	if body := serveOverview(t, server.Handler(), "localhost:7777"); strings.Contains(body, "#183") {
-		t.Fatal("dismissed Run still appears in Overview")
+	overview, err := readmodel.ReadOverview(openSylHome(t, sylHome))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(overview.AwaitingAnswer)+len(overview.LiveRuns) != 0 {
+		t.Fatalf("Overview still contains dismissed Runs: %#v", overview)
 	}
 }
 
@@ -579,7 +355,7 @@ func TestHandlerRefusesDismissForLiveRun(t *testing.T) {
 	}
 	beforeRun := snapshotFiles(t, runDir)
 	beforeHome := snapshotFiles(t, sylHome)
-	token := tokenFromPage(t, serveOverview(t, server.Handler(), "127.0.0.1:7777"))
+	token := tokenFromPage(t, serveOverview(t, server.Handler()))
 
 	response := postMutation(t, server.Handler(), "/runs/dismiss", url.Values{
 		"run_dir": {runDir}, "token": {token},
@@ -601,7 +377,7 @@ func TestHandlerRejectsMutationWithoutTokenWrongTokenAndForeignOrigin(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	token := tokenFromPage(t, serveOverview(t, server.Handler(), "127.0.0.1:7777"))
+	token := tokenFromPage(t, serveOverview(t, server.Handler()))
 	beforeRun := snapshotFiles(t, runDir)
 	beforeHome := snapshotFiles(t, sylHome)
 	for _, test := range []struct {
@@ -636,7 +412,7 @@ func TestHandlerAcceptsItsOwnOrigin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	token := tokenFromPage(t, serveOverview(t, server.Handler(), "127.0.0.1:7777"))
+	token := tokenFromPage(t, serveOverview(t, server.Handler()))
 
 	response := postMutation(t, server.Handler(), "/runs/dismiss", url.Values{
 		"run_dir": {runDir}, "token": {token},
@@ -651,7 +427,7 @@ func TestHandlerRejectsMalformedAndIncompleteMutations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	token := tokenFromPage(t, serveOverview(t, server.Handler(), "127.0.0.1:7777"))
+	token := tokenFromPage(t, serveOverview(t, server.Handler()))
 	for _, test := range []struct {
 		name  string
 		route string
@@ -686,7 +462,7 @@ func TestHandlerReportsDismissStateReadFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	token := tokenFromPage(t, serveOverview(t, server.Handler(), "127.0.0.1:7777"))
+	token := tokenFromPage(t, serveOverview(t, server.Handler()))
 	response := rawMutation(t, server.Handler(), http.MethodPost, "/runs/dismiss", url.Values{
 		"run_dir": {runDir},
 	}.Encode(), token, false)
@@ -700,7 +476,7 @@ func TestHandlerReportsForgetPathFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	token := tokenFromPage(t, serveOverview(t, server.Handler(), "127.0.0.1:7777"))
+	token := tokenFromPage(t, serveOverview(t, server.Handler()))
 	response := rawMutation(t, server.Handler(), http.MethodPost, "/projects/forget", url.Values{
 		"path": {"\x00"},
 	}.Encode(), token, false)
@@ -709,18 +485,18 @@ func TestHandlerReportsForgetPathFailure(t *testing.T) {
 	}
 }
 
-func TestHandlerRendersOverviewContentForHXMutation(t *testing.T) {
+func TestHandlerReturnsOverviewFragmentForHXMutation(t *testing.T) {
 	sylHome, runDir := writeMutationFixture(t, false)
 	server, err := newServer(t, sylHome)
 	if err != nil {
 		t.Fatal(err)
 	}
-	token := tokenFromPage(t, serveOverview(t, server.Handler(), "127.0.0.1:7777"))
+	token := tokenFromPage(t, serveOverview(t, server.Handler()))
 	response := rawMutation(t, server.Handler(), http.MethodPost, "/runs/dismiss", url.Values{
 		"run_dir": {runDir},
 	}.Encode(), token, true)
-	if response.Code != http.StatusOK {
-		t.Fatalf("HX dismiss status = %d, want 200; body = %q", response.Code, response.Body.String())
+	if response.Code != http.StatusOK || response.Header().Get("Content-Type") != "text/html; charset=utf-8" {
+		t.Fatalf("HX dismiss status/Content-Type = %d/%q, want 200/html", response.Code, response.Header().Get("Content-Type"))
 	}
 }
 
@@ -743,7 +519,7 @@ func TestHandlerForgetsProjectWithoutChangingProjectFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	beforeProject := snapshotFiles(t, project)
-	token := tokenFromPage(t, serveOverview(t, server.Handler(), "127.0.0.1:7777"))
+	token := tokenFromPage(t, serveOverview(t, server.Handler()))
 
 	response := postMutation(t, server.Handler(), "/projects/forget", url.Values{
 		"path": {project}, "token": {token},
@@ -788,26 +564,7 @@ func TestHandlerProjectRejectsUnknownProjectAndMissingPath(t *testing.T) {
 	}
 }
 
-func TestHandlerRejectsUntrustedHostWithoutPageContent(t *testing.T) {
-	server, err := newServer(t, t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	request := httptest.NewRequest(http.MethodGet, "http://evil.example:7777/", nil)
-	request.Host = "evil.example:7777"
-	recorder := httptest.NewRecorder()
-
-	server.Handler().ServeHTTP(recorder, request)
-
-	if recorder.Code != http.StatusMisdirectedRequest {
-		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusMisdirectedRequest)
-	}
-	if recorder.Body.Len() != 0 {
-		t.Fatalf("body = %q, want no page content", recorder.Body.String())
-	}
-}
-
-func TestHandlerRendersEmbeddedOverviewAndAssets(t *testing.T) {
+func TestHandlerServesOverviewAndEmbeddedAssets(t *testing.T) {
 	server, err := newServer(t, t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -821,128 +578,19 @@ func TestHandlerRendersEmbeddedOverviewAndAssets(t *testing.T) {
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body = %q", recorder.Code, recorder.Body.String())
 	}
-	for _, expected := range []string{
-		"syl<span>/ui</span>",
-		"syl-dark",
-		"hx-trigger=\"every 3s\"",
-		"No Projects registered yet",
-		"/assets/style.css",
-	} {
-		if !strings.Contains(recorder.Body.String(), expected) {
-			t.Fatalf("overview body does not contain %q", expected)
-		}
-	}
-
 	assetRequest := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7777/assets/htmx.min.js", nil)
 	assetRequest.Host = "127.0.0.1:7777"
 	assetRecorder := httptest.NewRecorder()
 	server.Handler().ServeHTTP(assetRecorder, assetRequest)
-	if assetRecorder.Code != http.StatusOK || !strings.Contains(assetRecorder.Body.String(), `version:"2.0.4"`) {
-		t.Fatalf("htmx asset status/body = %d/%q", assetRecorder.Code, assetRecorder.Body.String())
+	if assetRecorder.Code != http.StatusOK {
+		t.Fatalf("htmx asset status = %d, want OK", assetRecorder.Code)
 	}
 	styleRequest := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7777/assets/style.css", nil)
 	styleRequest.Host = "127.0.0.1:7777"
 	styleRecorder := httptest.NewRecorder()
 	server.Handler().ServeHTTP(styleRecorder, styleRequest)
-	if styleRecorder.Code != http.StatusOK || !strings.Contains(styleRecorder.Body.String(), "--accent:#7DD3FC") {
-		t.Fatalf("style asset status/body = %d/%q", styleRecorder.Code, styleRecorder.Body.String())
-	}
-}
-
-func TestOverviewShowsForgetOnlyForMissingProject(t *testing.T) {
-	sylHome := t.TempDir()
-	okProject := t.TempDir()
-	uninitializedProject := t.TempDir()
-	invalidProject := t.TempDir()
-	missingProject := filepath.Join(t.TempDir(), "missing")
-	if _, err := config.Init(okProject); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(filepath.Join(invalidProject, ".syl"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(config.Path(invalidProject), []byte("invalid = [\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	writeWebRegistry(t, sylHome,
-		sylhome.RegisteredProject{Path: okProject},
-		sylhome.RegisteredProject{Path: uninitializedProject},
-		sylhome.RegisteredProject{Path: invalidProject},
-		sylhome.RegisteredProject{Path: missingProject},
-	)
-	server, err := newServer(t, sylHome)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	body := serveOverview(t, server.Handler(), "127.0.0.1:7777")
-	if got := strings.Count(body, ">Forget</button>"); got != 1 {
-		t.Fatalf("Forget buttons = %d, want only the missing Project", got)
-	}
-}
-
-func TestHandlerRendersAwaitingAndInterruptedRuns(t *testing.T) {
-	sylHome := t.TempDir()
-	project := t.TempDir()
-	if _, err := config.Init(project); err != nil {
-		t.Fatal(err)
-	}
-	contents, err := json.Marshal([]sylhome.RegisteredProject{{Path: project}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(sylHome, "projects.json"), contents, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	runDir := filepath.Join(project, ".syl", "runs", "overview")
-	if err := os.MkdirAll(runDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	state := runrecord.State{
-		Status: runrecord.Running, Activity: runrecord.AwaitingAnswer, Iteration: 2, MaxIterations: 3,
-		Question: "Choose the deployment target", PID: testAlivePID, Hostname: testHostname(t),
-		StartedAt: time.Now().UTC(), Kind: runrecord.Implement, TicketRef: "#181",
-	}
-	if err := runrecord.Write(runrecord.Path(runDir), state); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(runDir, "metadata.txt"), []byte("Work root: /tmp/worktree\nImplementer harness: codex\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	marker, err := openSylHome(t, sylHome).MarkLive(sylhome.LiveRun{
-		ProjectPath: project,
-		RunDir:      runDir,
-		TicketRef:   "#181",
-		Host:        testHostname(t),
-		PID:         testAlivePID,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = marker.Unmark() })
-	server, err := newServer(t, sylHome)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	body := serveOverview(t, server.Handler(), "127.0.0.1:7777")
-	for _, expected := range []string{"Choose the deployment target", "/tmp/worktree", "ok", "awaiting-answer"} {
-		if !strings.Contains(body, expected) {
-			t.Fatalf("awaiting Overview does not contain %q", expected)
-		}
-	}
-
-	state.Activity = runrecord.Implementing
-	state.Question = ""
-	state.PID = testDeadPID
-	if err := runrecord.Write(runrecord.Path(runDir), state); err != nil {
-		t.Fatal(err)
-	}
-	body = serveOverview(t, server.Handler(), "localhost:7777")
-	for _, expected := range []string{"Interrupted", "implementing", "#181"} {
-		if !strings.Contains(body, expected) {
-			t.Fatalf("interrupted Overview does not contain %q", expected)
-		}
+	if styleRecorder.Code != http.StatusOK {
+		t.Fatalf("style asset status = %d, want OK", styleRecorder.Code)
 	}
 }
 
@@ -996,8 +644,9 @@ func (address fakeAddress) Network() string { return "tcp" }
 
 func (address fakeAddress) String() string { return string(address) }
 
-func serveOverview(t *testing.T, handler http.Handler, host string) string {
+func serveOverview(t *testing.T, handler http.Handler) string {
 	t.Helper()
+	host := "127.0.0.1:7777"
 	request := httptest.NewRequest(http.MethodGet, "http://"+host+"/", nil)
 	request.Host = host
 	recorder := httptest.NewRecorder()

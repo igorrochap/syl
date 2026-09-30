@@ -41,6 +41,11 @@ func TestBuildFormViewAndLiveRunBanner(t *testing.T) {
 	if len(view.TrackerOptions) == 0 || len(view.HarnessOptions) == 0 || len(view.EffortOptions) == 0 {
 		t.Fatalf("form options are incomplete: %+v", view)
 	}
+	if !reflect.DeepEqual(view.TrackerOptions, configedit.TrackerOptions()) ||
+		!reflect.DeepEqual(view.HarnessOptions, configedit.HarnessOptions()) ||
+		!reflect.DeepEqual(view.EffortOptions, configedit.EffortOptions()) {
+		t.Fatalf("form options = %+v, want config editor options", view)
+	}
 	if !view.HasLiveRunBanner {
 		t.Fatal("live Run banner is hidden when a Run is live")
 	}
@@ -92,6 +97,50 @@ func TestBuildInvalidViewMarksTheFailingKey(t *testing.T) {
 	}
 	if marked != 1 {
 		t.Fatalf("marked source lines = %d, want 1", marked)
+	}
+}
+
+func TestBuildInvalidViewKeepsRawSourceAndReturnsFormAfterFix(t *testing.T) {
+	project := t.TempDir()
+	if _, err := config.Init(project); err != nil {
+		t.Fatal(err)
+	}
+	path := config.Path(project)
+	valid, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	invalid := []byte(strings.Replace(string(valid), `effort = "xhigh"`, `effort = "<script>"`, 1))
+	if err := os.WriteFile(path, invalid, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	view, err := configview.Build(projectPage(project, readmodel.HealthInvalid))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view.State != configview.StateInvalid || view.Invalid == nil {
+		t.Fatalf("view = %+v, want invalid state", view)
+	}
+	containsRawSource := false
+	for _, line := range view.Invalid.Lines {
+		if line.Text == `effort = "<script>"` {
+			containsRawSource = true
+		}
+	}
+	if !containsRawSource {
+		t.Fatalf("invalid view did not preserve the source line: %+v", view.Invalid.Lines)
+	}
+
+	if err := os.WriteFile(path, valid, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	view, err = configview.Build(projectPage(project, readmodel.HealthInvalid))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view.State != configview.StateForm || view.Values.Implement.Effort != "xhigh" || view.Invalid != nil {
+		t.Fatalf("fixed config view = %+v, want editable form", view)
 	}
 }
 

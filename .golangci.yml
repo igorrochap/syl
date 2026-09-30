@@ -33,6 +33,7 @@ linters:
             - "!**/internal/readmodel/*.go"
             - "!**/internal/configedit/*.go"
             - "!**/internal/configview/*.go"
+            - "!**/internal/pageview/*.go"
             - "!**/internal/web/*.go"
             - "!**/internal/adapters/gh/*.go"
             - "!**/internal/adapters/glab/*.go"
@@ -83,6 +84,7 @@ linters:
             - github.com/igorrochap/syl/internal/harness$
             - github.com/igorrochap/syl/internal/initializer$
             - github.com/igorrochap/syl/internal/orchestration$
+            - github.com/igorrochap/syl/internal/pageview$
             - github.com/igorrochap/syl/internal/readmodel$
             - github.com/igorrochap/syl/internal/runrecord$
             - github.com/igorrochap/syl/internal/sylhome$
@@ -169,9 +171,23 @@ linters:
             - github.com/igorrochap/syl/internal/sylhome$
             - github.com/igorrochap/syl/internal/configedit$
             - github.com/igorrochap/syl/internal/configview$
+            - github.com/igorrochap/syl/internal/pageview$
           deny:
             - pkg: github.com/igorrochap/syl
               desc: the web adapter renders the read model without depending on command or workflow packages
+        pageview:
+          files:
+            - "**/internal/pageview/*.go"
+          list-mode: lax
+          allow:
+            - $gostd
+            - github.com
+            - golang.org
+            - github.com/igorrochap/syl/internal/readmodel$
+            - github.com/igorrochap/syl/internal/runrecord$
+          deny:
+            - pkg: github.com/igorrochap/syl
+              desc: page view models format read models without depending on HTTP or template adapters
         harness:
           files:
             - "**/internal/harness/*.go"
