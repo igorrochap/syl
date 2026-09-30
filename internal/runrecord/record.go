@@ -117,14 +117,25 @@ type FileSystem interface {
 type osFileSystem struct{}
 
 // Reader reads one Run record. A nil filesystem uses the operating system.
-type Reader struct{ files FileSystem }
+type Reader struct {
+	files        FileSystem
+	processAlive func(int) bool
+}
 
 // NewReader constructs a Run record reader.
 func NewReader(files FileSystem) *Reader {
+	return NewReaderWithProcessLiveness(files, checkProcessAlive)
+}
+
+// NewReaderWithProcessLiveness constructs a reader with a process liveness check.
+func NewReaderWithProcessLiveness(files FileSystem, processAlive func(int) bool) *Reader {
 	if files == nil {
 		files = osFileSystem{}
 	}
-	return &Reader{files: files}
+	if processAlive == nil {
+		processAlive = checkProcessAlive
+	}
+	return &Reader{files: files, processAlive: processAlive}
 }
 
 // Read loads all known Run record files and artifacts from runDir.

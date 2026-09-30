@@ -60,13 +60,30 @@ func NewReader(sylHome sylhome.Dir) *Reader {
 
 // NewReaderWithFileSystem constructs a reader with an injected history filesystem.
 func NewReaderWithFileSystem(sylHome sylhome.Dir, files FileSystem) *Reader {
+	return NewReaderWithFileSystemAndProcessLiveness(sylHome, files, nil)
+}
+
+// NewReaderWithProcessLiveness constructs a reader with an injected process check.
+func NewReaderWithProcessLiveness(
+	sylHome sylhome.Dir,
+	processAlive func(int) bool,
+) *Reader {
+	return NewReaderWithFileSystemAndProcessLiveness(sylHome, osFileSystem{}, processAlive)
+}
+
+// NewReaderWithFileSystemAndProcessLiveness constructs a reader with injected dependencies.
+func NewReaderWithFileSystemAndProcessLiveness(
+	sylHome sylhome.Dir,
+	files FileSystem,
+	processAlive func(int) bool,
+) *Reader {
 	if files == nil {
 		files = osFileSystem{}
 	}
 	return &Reader{
 		sylHome: sylHome,
 		files:   files,
-		runs:    runrecord.NewReader(files),
+		runs:    runrecord.NewReaderWithProcessLiveness(files, processAlive),
 		history: make(map[string]projectHistory),
 	}
 }
@@ -82,7 +99,7 @@ type HistoryRun struct {
 	RunDir        string
 	TicketRef     string
 	Kind          runrecord.Kind
-	Status        string
+	Status        runrecord.ObservedStatus
 	Activity      string
 	Iteration     int
 	MaxIterations int
@@ -139,16 +156,35 @@ func (reader *Reader) readLiveRunCount(projectPath string) (int, error) {
 		if filepath.Clean(run.ProjectPath) != filepath.Clean(canonicalProjectPath) {
 			continue
 		}
-		state, err := reader.runs.ReadState(run.RunDir)
-		if err != nil || state.Status != runrecord.Running {
-			continue
-		}
-		if isLocalHost(run.Host, state.Hostname, localHost) && !processIsAlive(state.PID) {
+		status := reader.runs.ObserveStatus(run.RunDir, run.Host, localHost)
+		if status != runrecord.ObservedRunning {
 			continue
 		}
 		count++
 	}
 	return count, nil
+}
+
+func (reader *Reader) markerHostForRun(runDir string) string {
+	runs, err := reader.sylHome.LiveRuns()
+	if err != nil {
+		return ""
+	}
+	resolvedRunDir, err := filepath.EvalSymlinks(runDir)
+	if err == nil {
+		runDir = resolvedRunDir
+	}
+	for _, run := range runs {
+		markerRunDir := run.RunDir
+		resolvedMarkerRunDir, err := filepath.EvalSymlinks(markerRunDir)
+		if err == nil {
+			markerRunDir = resolvedMarkerRunDir
+		}
+		if filepath.Clean(markerRunDir) == filepath.Clean(runDir) {
+			return run.Host
+		}
+	}
+	return ""
 }
 
 // ReadProject reads one registered Project and only that Project's Run history.
@@ -275,7 +311,7 @@ func (reader *Reader) historyRunFromState(run HistoryRun, state runrecord.State)
 	if state.Kind != "" {
 		run.Kind = state.Kind
 	}
-	run.Status = string(state.Status)
+	run.Status = reader.runs.ObserveStatus(run.RunDir, reader.markerHostForRun(run.RunDir), currentHostname())
 	run.Activity = string(state.Activity)
 	run.Iteration = state.Iteration
 	run.MaxIterations = state.MaxIterations
@@ -288,10 +324,6 @@ func (reader *Reader) historyRunFromState(run HistoryRun, state runrecord.State)
 	} else if state.EndedAt != nil {
 		run.Duration, run.DurationKnown = historyDuration(run.StartedAt, state.EndedAt)
 	}
-	localRun := state.Hostname == "" || isLocalHost("", state.Hostname, currentHostname())
-	if state.Status == runrecord.Running && localRun && !processIsAlive(state.PID) {
-		run.Status = "Interrupted"
-	}
 	return run
 }
 
@@ -301,12 +333,12 @@ func (reader *Reader) readLegacyHistoryRun(record runrecord.Record, cached *cach
 			cached.run.TicketRef = "#" + ticketNumber
 		}
 	}
-	if record.SummaryExists {
-		cached.run.Status = "completed"
+	cached.run.Status = reader.runs.ObserveStatus(
+		cached.run.RunDir, reader.markerHostForRun(cached.run.RunDir), currentHostname(),
+	)
+	if cached.run.Status == runrecord.ObservedCompleted {
 		cached.run.Verdict = record.Summary.FinalVerdict
 		cached.run.Iteration = record.Summary.Iterations
-	} else {
-		cached.run.Status = "unknown"
 	}
 	if cached.run.Iteration == 0 {
 		cached.run.Iteration = legacyIteration(cached.run.Kind, record)

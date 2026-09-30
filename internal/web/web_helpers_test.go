@@ -60,40 +60,6 @@ func (failingReader) Read([]byte) (int, error) {
 }
 
 func TestDisplayHelpersCoverOverviewStates(t *testing.T) {
-	activityCases := []struct {
-		name string
-		run  readmodel.Run
-		want string
-	}{
-		{name: "interrupted", run: readmodel.Run{Interrupted: true, Activity: "implementing"}, want: "Interrupted"},
-		{name: "unknown", run: readmodel.Run{Unknown: true}, want: "Unknown"},
-		{name: "activity", run: readmodel.Run{Activity: "reviewing"}, want: "reviewing"},
-		{name: "status", run: readmodel.Run{Status: runrecord.Running}, want: "running"},
-	}
-	for _, test := range activityCases {
-		t.Run(test.name, func(t *testing.T) {
-			if got := displayActivity(test.run); got != test.want {
-				t.Fatalf("displayActivity() = %q, want %q", got, test.want)
-			}
-		})
-	}
-
-	for _, test := range []struct {
-		name string
-		run  readmodel.Run
-		want string
-	}{
-		{name: "interrupted class", run: readmodel.Run{Interrupted: true}, want: "interrupted"},
-		{name: "unknown class", run: readmodel.Run{Unknown: true}, want: "unknown"},
-		{name: "running class", run: readmodel.Run{}, want: "running"},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			if got := activityClass(test.run); got != test.want {
-				t.Fatalf("activityClass() = %q, want %q", got, test.want)
-			}
-		})
-	}
-
 	for _, test := range []struct {
 		name   string
 		health readmodel.Health
@@ -137,17 +103,46 @@ func TestDisplayHelpersCoverOverviewStates(t *testing.T) {
 	if got := displayKind(runrecord.Review); got != string(runrecord.Review) {
 		t.Fatalf("displayKind(review) = %q, want review", got)
 	}
-	if got := rowClass(readmodel.Run{}); got != "" {
-		t.Fatalf("rowClass(live) = %q, want empty", got)
-	}
-	if got := rowClass(readmodel.Run{Interrupted: true}); got != "interrupted" {
-		t.Fatalf("rowClass(interrupted) = %q, want interrupted", got)
-	}
 	if got := displayTicket(" "); got != "—" {
 		t.Fatalf("displayTicket(blank) = %q, want em dash", got)
 	}
 	if got := displayTicket("#182"); got != "#182" {
 		t.Fatalf("displayTicket(ticket) = %q, want #182", got)
+	}
+}
+
+func TestRunStatusPresentationCoversObservedStatuses(t *testing.T) {
+	for _, test := range []struct {
+		name                 string
+		status               runrecord.ObservedStatus
+		label                string
+		overviewLabel        string
+		pillClass            string
+		activityClass        string
+		rowClass             string
+		activityApplicable   bool
+		showRecordedActivity bool
+		dismissible          bool
+	}{
+		{name: "running", status: runrecord.ObservedRunning, label: "running", overviewLabel: "running", pillClass: "running", activityClass: "running", activityApplicable: true, showRecordedActivity: true},
+		{name: "interrupted", status: runrecord.ObservedInterrupted, label: "Interrupted", overviewLabel: "Interrupted", pillClass: "red", activityClass: "interrupted", rowClass: "interrupted", dismissible: true},
+		{name: "approved", status: runrecord.ObservedApproved, label: "approved", overviewLabel: "approved", pillClass: "green", activityClass: "running", showRecordedActivity: true},
+		{name: "exhausted", status: runrecord.ObservedExhausted, label: "exhausted", overviewLabel: "exhausted", pillClass: "plum", activityClass: "running", showRecordedActivity: true},
+		{name: "failed", status: runrecord.ObservedFailed, label: "failed", overviewLabel: "failed", pillClass: "red", activityClass: "running", showRecordedActivity: true},
+		{name: "cancelled", status: runrecord.ObservedCancelled, label: "cancelled", overviewLabel: "cancelled", pillClass: "neutral", activityClass: "running", showRecordedActivity: true},
+		{name: "completed", status: runrecord.ObservedCompleted, label: "completed", overviewLabel: "completed", pillClass: "completed", activityClass: "running", showRecordedActivity: true},
+		{name: "unknown", status: runrecord.ObservedUnknown, label: "unknown", overviewLabel: "Unknown", pillClass: "unknown", activityClass: "unknown"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got := presentRunStatus(test.status)
+			if got.Label != test.label || got.OverviewLabel != test.overviewLabel ||
+				got.PillClass != test.pillClass || got.ActivityClass != test.activityClass ||
+				got.RowClass != test.rowClass || got.ActivityApplicable != test.activityApplicable ||
+				got.ShowRecordedActivity != test.showRecordedActivity ||
+				got.Dismissible != test.dismissible {
+				t.Fatalf("presentRunStatus() = %#v, want presentation for %q", got, test.status)
+			}
+		})
 	}
 }
 
@@ -183,25 +178,6 @@ func TestHistoryDisplayHelpersCoverStatusesAndMissingValues(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			if got := historyKind(test.kind); got != test.want {
 				t.Fatalf("historyKind() = %q, want %q", got, test.want)
-			}
-		})
-	}
-
-	for _, test := range []struct {
-		name   string
-		status string
-		want   string
-	}{
-		{name: "running", status: "running", want: "running"},
-		{name: "interrupted", status: "Interrupted", want: "red"},
-		{name: "approved", status: "approved", want: "green"},
-		{name: "exhausted", status: "exhausted", want: "plum"},
-		{name: "completed", status: "completed", want: "completed"},
-		{name: "unknown", status: "unknown", want: "unknown"},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			if got := historyStatusClass(test.status); got != test.want {
-				t.Fatalf("historyStatusClass() = %q, want %q", got, test.want)
 			}
 		})
 	}

@@ -38,12 +38,30 @@ type Server struct {
 	model        func() (readmodel.Overview, error)
 	projectModel func(string) (readmodel.ProjectPage, error)
 	runModel     func(string) (readmodel.RunPage, error)
+	dismissRun   func(string) error
 	templates    *template.Template
 	assets       http.Handler
 }
 
 // New constructs a server that reads live state from sylHome for every page request.
 func New(sylHome sylhome.Dir, port int) (*Server, error) {
+	return newServer(sylHome, port, nil)
+}
+
+// NewWithProcessLiveness constructs a server with an injected process check.
+func NewWithProcessLiveness(
+	sylHome sylhome.Dir,
+	port int,
+	processAlive func(int) bool,
+) (*Server, error) {
+	return newServer(sylHome, port, processAlive)
+}
+
+func newServer(
+	sylHome sylhome.Dir,
+	port int,
+	processAlive func(int) bool,
+) (*Server, error) {
 	token, err := newToken(rand.Reader)
 	if err != nil {
 		return nil, fmt.Errorf("generate ui token: %w", err)
@@ -57,6 +75,15 @@ func New(sylHome sylhome.Dir, port int) (*Server, error) {
 		return nil, fmt.Errorf("prepare web assets: %w", err)
 	}
 	reader := readmodel.NewReader(sylHome)
+	dismissRun := func(runDir string) error {
+		return readmodel.Dismiss(sylHome, runDir)
+	}
+	if processAlive != nil {
+		reader = readmodel.NewReaderWithProcessLiveness(sylHome, processAlive)
+		dismissRun = func(runDir string) error {
+			return readmodel.DismissWithProcessLiveness(sylHome, runDir, processAlive)
+		}
+	}
 	return &Server{
 		port:         port,
 		sylHome:      sylHome,
@@ -64,6 +91,7 @@ func New(sylHome sylhome.Dir, port int) (*Server, error) {
 		model:        reader.ReadOverview,
 		projectModel: reader.ReadProject,
 		runModel:     reader.ReadRun,
+		dismissRun:   dismissRun,
 		templates:    templates,
 		assets:       http.StripPrefix("/assets/", http.FileServer(http.FS(staticFiles))),
 	}, nil
@@ -528,7 +556,7 @@ func (s *Server) dismiss(writer http.ResponseWriter, request *http.Request) {
 		writer.WriteHeader(http.StatusBadRequest)
 		return
 	}
-	if err := readmodel.Dismiss(s.sylHome, runDir); err != nil {
+	if err := s.dismissRun(runDir); err != nil {
 		if errors.Is(err, readmodel.ErrRunMarkerNotFound) || errors.Is(err, readmodel.ErrRunNotInterrupted) {
 			writer.WriteHeader(http.StatusConflict)
 			return
@@ -666,34 +694,29 @@ func writeServerError(writer http.ResponseWriter, err error) {
 
 func templateFunctions() template.FuncMap {
 	return template.FuncMap{
-		"activity":           displayActivity,
-		"activityClass":      activityClass,
-		"healthClass":        healthClass,
-		"harness":            displayHarness,
-		"historyKind":        historyKind,
-		"historyStatus":      historyStatus,
-		"historyStatusClass": historyStatusClass,
-		"historyTicket":      historyTicket,
-		"historyTokens":      historyTokens,
-		"runArtifactURL":     runArtifactURL,
-		"runDuration":        displayRunDuration,
-		"runMetric":          displayRunMetric,
-		"runStatus":          displayRunStatus,
-		"verdictClass":       verdictClass,
-		"runEndTime":         displayRunEndTime,
-		"trimArtifactName":   runrecord.ArtifactLabel,
-		"runTime":            displayRunTime,
-		"runTokens":          displayRunTokens,
-		"iteration":          displayIteration,
-		"kind":               displayKind,
-		"rowClass":           rowClass,
-		"started":            displayStarted,
-		"summary":            displaySummary,
-		"ticket":             displayTicket,
-		"duration":           displayDuration,
-		"firstSeen":          displayFirstSeen,
-		"boolText":           boolText,
-		"urlquery":           url.QueryEscape,
+		"healthClass":      healthClass,
+		"harness":          displayHarness,
+		"historyKind":      historyKind,
+		"historyTicket":    historyTicket,
+		"historyTokens":    historyTokens,
+		"runArtifactURL":   runArtifactURL,
+		"runDuration":      displayRunDuration,
+		"runMetric":        displayRunMetric,
+		"status":           presentRunStatus,
+		"verdictClass":     verdictClass,
+		"runEndTime":       displayRunEndTime,
+		"trimArtifactName": runrecord.ArtifactLabel,
+		"runTime":          displayRunTime,
+		"runTokens":        displayRunTokens,
+		"iteration":        displayIteration,
+		"kind":             displayKind,
+		"started":          displayStarted,
+		"summary":          displaySummary,
+		"ticket":           displayTicket,
+		"duration":         displayDuration,
+		"firstSeen":        displayFirstSeen,
+		"boolText":         boolText,
+		"urlquery":         url.QueryEscape,
 	}
 }
 
@@ -749,16 +772,6 @@ func configSourceLineMatchesKey(line, table, key string) bool {
 
 func runArtifactURL(runDir, artifactName string) string {
 	return "/runs/artifact?path=" + url.QueryEscape(runDir) + "&artifact=" + url.QueryEscape(artifactName)
-}
-
-func displayRunStatus(run readmodel.RunDetail) string {
-	if run.Interrupted {
-		return "Interrupted"
-	}
-	if run.Status == "" {
-		return "—"
-	}
-	return run.Status
 }
 
 func displayRunTime(value time.Time) string {
@@ -823,29 +836,6 @@ func formatDuration(duration time.Duration) string {
 	return strconv.Itoa(seconds) + "s"
 }
 
-func displayActivity(run readmodel.Run) string {
-	if run.Interrupted {
-		return "Interrupted"
-	}
-	if run.Unknown {
-		return "Unknown"
-	}
-	if run.Activity != "" {
-		return run.Activity
-	}
-	return string(run.Status)
-}
-
-func activityClass(run readmodel.Run) string {
-	if run.Interrupted {
-		return "interrupted"
-	}
-	if run.Unknown {
-		return "unknown"
-	}
-	return "running"
-}
-
 func healthClass(health readmodel.Health) string {
 	switch health {
 	case readmodel.HealthOK:
@@ -879,13 +869,6 @@ func displayKind(kind runrecord.Kind) string {
 		return "Run"
 	}
 	return string(kind)
-}
-
-func rowClass(run readmodel.Run) string {
-	if run.Interrupted {
-		return "interrupted"
-	}
-	return ""
 }
 
 func displayStarted(startedAt time.Time) string {
@@ -953,26 +936,58 @@ func historyKind(kind runrecord.Kind) string {
 	return string(kind)
 }
 
-func historyStatus(status string) string {
-	return status
+type runStatusView struct {
+	Label                string
+	OverviewLabel        string
+	PillClass            string
+	ActivityClass        string
+	RowClass             string
+	ActivityApplicable   bool
+	ShowRecordedActivity bool
+	Dismissible          bool
 }
 
-func historyStatusClass(status string) string {
+func presentRunStatus(status runrecord.ObservedStatus) runStatusView {
 	switch status {
-	case "running":
-		return "running"
-	case "Interrupted", "failed":
-		return "red"
-	case "approved":
-		return "green"
-	case "exhausted":
-		return "plum"
-	case "unknown":
-		return "unknown"
-	case "completed":
-		return "completed"
+	case runrecord.ObservedRunning:
+		return runStatusView{
+			Label: "running", OverviewLabel: "running", PillClass: "running",
+			ActivityClass: "running", ActivityApplicable: true, ShowRecordedActivity: true,
+		}
+	case runrecord.ObservedInterrupted:
+		return runStatusView{
+			Label: "Interrupted", OverviewLabel: "Interrupted", PillClass: "red",
+			ActivityClass: "interrupted", RowClass: "interrupted", Dismissible: true,
+		}
+	case runrecord.ObservedApproved:
+		return runStatusView{
+			Label: "approved", OverviewLabel: "approved", PillClass: "green", ActivityClass: "running",
+			ShowRecordedActivity: true,
+		}
+	case runrecord.ObservedExhausted:
+		return runStatusView{
+			Label: "exhausted", OverviewLabel: "exhausted", PillClass: "plum", ActivityClass: "running",
+			ShowRecordedActivity: true,
+		}
+	case runrecord.ObservedFailed:
+		return runStatusView{
+			Label: "failed", OverviewLabel: "failed", PillClass: "red", ActivityClass: "running",
+			ShowRecordedActivity: true,
+		}
+	case runrecord.ObservedCancelled:
+		return runStatusView{
+			Label: "cancelled", OverviewLabel: "cancelled", PillClass: "neutral", ActivityClass: "running",
+			ShowRecordedActivity: true,
+		}
+	case runrecord.ObservedCompleted:
+		return runStatusView{
+			Label: "completed", OverviewLabel: "completed", PillClass: "completed", ActivityClass: "running",
+			ShowRecordedActivity: true,
+		}
+	case runrecord.ObservedUnknown:
+		return runStatusView{Label: "unknown", OverviewLabel: "Unknown", PillClass: "unknown", ActivityClass: "unknown"}
 	default:
-		return "neutral"
+		return runStatusView{Label: "—", OverviewLabel: "Unknown", PillClass: "neutral", ActivityClass: "unknown"}
 	}
 }
 
