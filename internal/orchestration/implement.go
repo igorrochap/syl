@@ -84,18 +84,57 @@ func RunImplement(ctx context.Context, options ImplementOptions) (returnErr erro
 	}
 	run, err := prepareImplementRun(ctx, options, originGit)
 	if err != nil {
-		if run.runState != nil {
-			run.runState.finishForError(ctx, err)
-		}
-		return err
+		return finishFailedImplementRun(ctx, options, run, err)
 	}
 	loopStarted = true
 	defer func() {
 		if returnErr != nil {
-			run.runState.finishForError(ctx, returnErr)
+			returnErr = finishFailedImplementRun(ctx, options, run, returnErr)
 		}
 	}()
 	return executeImplementRun(ctx, options, run)
+}
+
+func finishFailedImplementRun(ctx context.Context, options ImplementOptions, run implementRunState, err error) error {
+	if run.runState == nil {
+		return err
+	}
+	run.runState.finishForError(ctx, err)
+	shouldReport := run.runState.state.Status == runrecord.Failed || run.runState.state.Status == runrecord.Cancelled
+	if !shouldReport {
+		return err
+	}
+
+	// Cancellation ends the Run, but the read-only check still needs time to run.
+	checkContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	status, checkErr := run.setup.git.Run(checkContext, "status", "--porcelain", "--untracked-files=all")
+	if checkErr != nil {
+		return fmt.Errorf("%w\n\nCould not check the work root for uncommitted changes (%s)", err, options.WorkRoot)
+	}
+	if strings.TrimSpace(status) == "" {
+		return err
+	}
+	return fmt.Errorf("%w\n\n%s", err, formatUncommittedWork(options.WorkRoot, status))
+}
+
+const uncommittedWorkPathLimit = 20
+
+func formatUncommittedWork(workRoot, status string) string {
+	paths := strings.Split(strings.TrimRight(status, "\n"), "\n")
+	listed := len(paths)
+	if listed > uncommittedWorkPathLimit {
+		listed = uncommittedWorkPathLimit
+	}
+	var report strings.Builder
+	fmt.Fprintf(&report, "Uncommitted changes are kept in the work root: %s\n", workRoot)
+	for _, path := range paths[:listed] {
+		fmt.Fprintf(&report, "  %s\n", path)
+	}
+	if remaining := len(paths) - listed; remaining > 0 {
+		fmt.Fprintf(&report, "  ... and %d more paths\n", remaining)
+	}
+	return report.String()
 }
 
 func executeImplementRun(ctx context.Context, options ImplementOptions, run implementRunState) error {
@@ -413,10 +452,11 @@ func ensureImplementRunState(params implementIterationsParams) *runStateTracker 
 func runImplementReview(ctx context.Context, params implementIterationsParams, reviewParams implementReviewParams) (ReviewExecution, error) {
 	params.runState.setActivity(runrecord.Reviewing)
 	reviewRequest := harness.Request{
-		Model:  params.projectConfig.Roles.Review.Model,
-		Effort: params.projectConfig.Roles.Review.Effort,
-		Prompt: composeReviewPrompt("#"+strconv.Itoa(params.ticket.Number), &params.ticket, params.branchPoint, reviewParams.diffPath, params.reviewContext),
-		MCP:    params.projectConfig.Roles.Review.MCP,
+		Completion: harness.CompletionReviewVerdict,
+		Model:      params.projectConfig.Roles.Review.Model,
+		Effort:     params.projectConfig.Roles.Review.Effort,
+		Prompt:     composeReviewPrompt("#"+strconv.Itoa(params.ticket.Number), &params.ticket, params.branchPoint, reviewParams.diffPath, params.reviewContext),
+		MCP:        params.projectConfig.Roles.Review.MCP,
 	}
 	renderer := ui.New(params.output, ui.DetectCaps(params.output))
 	if err := writeRoleSection(params.output, "Reviewer"); err != nil {
@@ -553,8 +593,9 @@ func runImplementTurn(
 	}
 
 	implementRequest := harness.Request{
-		Model:  params.projectConfig.Roles.Implement.Model,
-		Effort: params.projectConfig.Roles.Implement.Effort,
+		Completion: harness.CompletionTurnEnd,
+		Model:      params.projectConfig.Roles.Implement.Model,
+		Effort:     params.projectConfig.Roles.Implement.Effort,
 		Prompt: composeImplementPrompt(
 			params.ticket,
 			turn.blocking,

@@ -10,7 +10,9 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -24,6 +26,7 @@ const (
 	verdictMarker       = "VERDICT:"
 	questionStartMarker = "QUESTION:\n"
 	questionEndMarker   = "\nEND QUESTION"
+	terminalTailLimit   = 2048
 )
 
 // PTYAdapter drives Claude Code sessions through a pseudo-terminal.
@@ -43,6 +46,7 @@ type sessionParams struct {
 	transcriptPath string
 	sessionID      string
 	seenEntries    int
+	completion     harness.CompletionSignal
 }
 
 type ptyStream struct {
@@ -81,7 +85,7 @@ func (a *PTYAdapter) Run(ctx context.Context, request harness.Request) (harness.
 	if err != nil {
 		return nil, err
 	}
-	return a.start(ctx, sessionID, args, transcriptStartFresh)
+	return a.start(ctx, sessionID, args, transcriptStartFresh, request.Completion)
 }
 
 func (a *PTYAdapter) Resume(
@@ -96,7 +100,7 @@ func (a *PTYAdapter) Resume(
 	if err != nil {
 		return nil, err
 	}
-	return a.start(ctx, sessionID, args, transcriptStartResume)
+	return a.start(ctx, sessionID, args, transcriptStartResume, request.Completion)
 }
 
 func (a *PTYAdapter) Attach(ctx context.Context, request harness.Request) error {
@@ -108,11 +112,16 @@ func (a *PTYAdapter) start(
 	sessionID string,
 	args []string,
 	mode transcriptStartMode,
+	completion harness.CompletionSignal,
 ) (harness.Stream, error) {
 	reader := transcript.New(a.homeDir)
 	transcriptPath, err := reader.Find(a.projectRoot, sessionID)
 	if err != nil {
 		return nil, fmt.Errorf("find Claude transcript: %w", err)
+	}
+	transcriptPath, err = filepath.Abs(transcriptPath)
+	if err != nil {
+		return nil, fmt.Errorf("resolve Claude transcript path: %w", err)
 	}
 	seenEntries := 0
 	if mode == transcriptStartResume {
@@ -127,6 +136,7 @@ func (a *PTYAdapter) start(
 		transcriptPath: transcriptPath,
 		sessionID:      sessionID,
 		seenEntries:    seenEntries,
+		completion:     completion,
 	}
 	command := a.command
 	if command == "" {
@@ -179,7 +189,8 @@ func (a *PTYAdapter) runSession(
 		processDone <- process.Wait()
 	}()
 	idleSignals := make(chan struct{}, 1)
-	go watchClaudeTerminal(terminal, idleSignals)
+	output := &terminalOutput{}
+	go watchClaudeTerminal(terminal, idleSignals, output)
 
 	events <- harness.Event{Type: harness.EventSession, SessionID: session.sessionID}
 	processExited, monitorErr := a.monitorSession(
@@ -188,6 +199,7 @@ func (a *PTYAdapter) runSession(
 		events,
 		idleSignals,
 		processDone,
+		output,
 	)
 	if !processExited {
 		if err := terminateProcess(process, processDone, a.terminateWait); err != nil {
@@ -203,7 +215,53 @@ func (a *PTYAdapter) monitorSession(
 	events chan<- harness.Event,
 	idleSignals <-chan struct{},
 	processDone <-chan error,
+	output *terminalOutput,
 ) (bool, error) {
+	pollInterval, idleTimeout := a.sessionTiming()
+	poll := time.NewTicker(pollInterval)
+	defer poll.Stop()
+	idle := time.NewTimer(idleTimeout)
+	defer idle.Stop()
+	transcripts := transcriptMonitor{
+		reader:      session.transcript,
+		path:        session.transcriptPath,
+		sessionID:   session.sessionID,
+		output:      output,
+		events:      events,
+		idle:        idle,
+		idleTimeout: idleTimeout,
+		seenEntries: session.seenEntries,
+		completion:  session.completion,
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			return false, ctx.Err()
+		case waitErr := <-processDone:
+			return true, transcripts.checkProcessExit(waitErr)
+		case <-poll.C:
+			// Polling also catches a terminal escape that arrived before the
+			// transcript reached disk, or never arrived at all.
+			finished, err := transcripts.checkCompletion()
+			if finished {
+				return false, err
+			}
+		case <-idleSignals:
+			finished, err := transcripts.checkCompletion()
+			if finished {
+				return false, err
+			}
+		case <-idle.C:
+			finished, err := transcripts.checkIdleTimeout()
+			if finished {
+				return false, err
+			}
+		}
+	}
+}
+
+func (a *PTYAdapter) sessionTiming() (time.Duration, time.Duration) {
 	pollInterval := a.pollInterval
 	if pollInterval <= 0 {
 		pollInterval = 250 * time.Millisecond
@@ -212,75 +270,7 @@ func (a *PTYAdapter) monitorSession(
 	if idleTimeout <= 0 {
 		idleTimeout = 5 * time.Minute
 	}
-	poll := time.NewTicker(pollInterval)
-	defer poll.Stop()
-	idle := time.NewTimer(idleTimeout)
-	defer idle.Stop()
-	transcripts := transcriptMonitor{
-		reader:      session.transcript,
-		path:        session.transcriptPath,
-		events:      events,
-		idle:        idle,
-		idleTimeout: idleTimeout,
-		seenEntries: session.seenEntries,
-	}
-
-	for {
-		select {
-		case <-ctx.Done():
-			return false, ctx.Err()
-		case waitErr := <-processDone:
-			progress, readErr := transcripts.checkProgress()
-			if readErr != nil {
-				return true, readErr
-			}
-			if progress.complete {
-				return true, nil
-			}
-			if waitErr != nil {
-				return true, fmt.Errorf("Claude Code exited unsuccessfully: %w", waitErr)
-			}
-			return true, errors.New("Claude Code exited before producing a review verdict")
-		case <-poll.C:
-			progress, readErr := transcripts.checkProgress()
-			if readErr != nil {
-				return false, readErr
-			}
-			// The poll is the only completion signal that always arrives. The
-			// session never exits by itself, and the terminal escape can be
-			// missed: it is emitted once, and a signal consumed before the
-			// transcript reaches disk leaves nothing to wake the run again.
-			if progress.complete {
-				return false, nil
-			}
-		case <-idleSignals:
-			progress, readErr := transcripts.checkProgress()
-			if readErr != nil {
-				return false, readErr
-			}
-			if progress.complete {
-				return false, nil
-			}
-		case <-idle.C:
-			progress, readErr := transcripts.checkProgress()
-			if readErr != nil {
-				return false, readErr
-			}
-			if progress.newEntries {
-				if progress.complete {
-					return false, nil
-				}
-				continue
-			}
-			if progress.complete {
-				return false, nil
-			}
-			return false, fmt.Errorf(
-				"Claude Code pty session was idle for %s without a review verdict",
-				idleTimeout,
-			)
-		}
-	}
+	return pollInterval, idleTimeout
 }
 
 type transcriptProgress struct {
@@ -291,16 +281,65 @@ type transcriptProgress struct {
 type transcriptMonitor struct {
 	reader      transcript.Reader
 	path        string
+	sessionID   string
+	output      *terminalOutput
 	events      chan<- harness.Event
 	seenEntries int
+	completion  harness.CompletionSignal
 	// Completion stays latched across later polls that contain no new entries.
 	complete    bool
 	idle        *time.Timer
 	idleTimeout time.Duration
 }
 
+func (m *transcriptMonitor) checkProcessExit(waitErr error) error {
+	progress, err := m.checkProgress()
+	if err != nil {
+		return err
+	}
+	if progress.complete {
+		return nil
+	}
+	if waitErr != nil {
+		return fmt.Errorf("claude code exited unsuccessfully: %w", waitErr)
+	}
+	return m.describeSessionFailure(fmt.Errorf("claude code exited before producing a %s", m.completion))
+}
+
+func (m *transcriptMonitor) checkCompletion() (bool, error) {
+	progress, err := m.checkProgress()
+	if err != nil {
+		return true, err
+	}
+	return progress.complete, nil
+}
+
+func (m *transcriptMonitor) checkIdleTimeout() (bool, error) {
+	progress, err := m.checkProgress()
+	if err != nil {
+		return true, err
+	}
+	if progress.complete {
+		return true, nil
+	}
+	if progress.newEntries {
+		return false, nil
+	}
+	err = fmt.Errorf("claude code pty session was idle for %s without a %s", m.idleTimeout, m.completion)
+	return true, m.describeSessionFailure(err)
+}
+
+func (m *transcriptMonitor) describeSessionFailure(err error) error {
+	status := ""
+	if _, statErr := os.Stat(m.path); errors.Is(statErr, os.ErrNotExist) {
+		status = " (missing: file does not exist)"
+	}
+	return fmt.Errorf("%w\nSession id: %s\nSession transcript: %s%s\n%s",
+		err, m.sessionID, m.path, status, m.output.describeTail())
+}
+
 func (m *transcriptMonitor) checkProgress() (transcriptProgress, error) {
-	entryCount, complete, err := readTranscript(m.reader, m.path, m.seenEntries, m.events)
+	entryCount, complete, err := readTranscript(m.reader, m.path, m.seenEntries, m.events, m.completion)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return transcriptProgress{}, nil
@@ -386,13 +425,122 @@ func newSessionID() (string, error) {
 	), nil
 }
 
-func watchClaudeTerminal(terminal io.Reader, idleSignals chan<- struct{}) {
+type terminalOutput struct {
+	mu    sync.Mutex
+	state terminalEscapeState
+	tail  []byte
+}
+
+type terminalEscapeState int
+
+const (
+	terminalText terminalEscapeState = iota
+	terminalEscape
+	terminalCSI
+	terminalEscapeIntermediate
+	terminalString
+	terminalStringEscape
+)
+
+func (o *terminalOutput) capture(data []byte) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	// Keep parser state across reads so split or truncated escapes never leak
+	// into the bounded tail, even when their payload exceeds the tail limit.
+	for _, value := range data {
+		o.captureByte(value)
+	}
+	if len(o.tail) > terminalTailLimit {
+		start := len(o.tail) - terminalTailLimit
+		copy(o.tail, o.tail[start:])
+		o.tail = o.tail[:terminalTailLimit]
+	}
+}
+
+func (o *terminalOutput) captureByte(value byte) {
+	switch o.state {
+	case terminalText:
+		o.captureText(value)
+	case terminalEscape:
+		o.state = beginTerminalEscape(value)
+	case terminalCSI, terminalEscapeIntermediate:
+		o.finishTerminalEscape(value)
+	case terminalString, terminalStringEscape:
+		o.finishTerminalString(value)
+	}
+}
+
+func (o *terminalOutput) captureText(value byte) {
+	if value == '\x1b' {
+		o.state = terminalEscape
+		return
+	}
+	isReadable := value >= ' ' && value != '\x7f' || value == '\n' || value == '\t'
+	if isReadable {
+		o.tail = append(o.tail, value)
+	}
+}
+
+func beginTerminalEscape(value byte) terminalEscapeState {
+	switch value {
+	case '\x1b':
+		return terminalEscape
+	case '[':
+		return terminalCSI
+	case ']', 'P', 'X', '^', '_':
+		return terminalString
+	}
+	if value >= 0x20 && value <= 0x2f {
+		return terminalEscapeIntermediate
+	}
+	return terminalText
+}
+
+func (o *terminalOutput) finishTerminalEscape(value byte) {
+	if value == '\x1b' {
+		o.state = terminalEscape
+		return
+	}
+	finalStart := byte(0x40)
+	if o.state == terminalEscapeIntermediate {
+		finalStart = 0x30
+	}
+	if value >= finalStart && value <= 0x7e {
+		o.state = terminalText
+	}
+}
+
+func (o *terminalOutput) finishTerminalString(value byte) {
+	isTerminator := value == '\x07' || o.state == terminalStringEscape && value == '\\'
+	if isTerminator {
+		o.state = terminalText
+		return
+	}
+	o.state = terminalString
+	if value == '\x1b' {
+		o.state = terminalStringEscape
+	}
+}
+
+func (o *terminalOutput) describeTail() string {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if len(o.tail) == 0 {
+		return "no terminal output was captured"
+	}
+	// A byte bound can split a UTF-8 rune at either end; omit partial runes.
+	tail := bytes.ToValidUTF8(o.tail, nil)
+	return fmt.Sprintf("Last terminal output (at most %d bytes):\n%s", terminalTailLimit, tail)
+}
+
+func watchClaudeTerminal(terminal io.Reader, idleSignals chan<- struct{}, output *terminalOutput) {
 	marker := []byte(claudeIdleEscape)
 	buffer := make([]byte, 4096)
 	var tail []byte
 	for {
 		count, err := terminal.Read(buffer)
 		if count > 0 {
+			output.capture(buffer[:count])
 			combined := append(tail, buffer[:count]...)
 			if bytes.Contains(combined, marker) {
 				select {
@@ -426,6 +574,7 @@ func readTranscript(
 	path string,
 	seenEntries int,
 	events chan<- harness.Event,
+	completion harness.CompletionSignal,
 ) (int, bool, error) {
 	entries, err := reader.Read(path)
 	if err != nil {
@@ -449,7 +598,7 @@ func readTranscript(
 			events <- event
 		}
 	}
-	return len(entries), latestCompletedTurnIsComplete(newEntries), nil
+	return len(entries), latestCompletedTurnIsComplete(newEntries, completion), nil
 }
 
 func decodeTranscriptEntry(raw json.RawMessage) ([]harness.Event, error) {
@@ -487,7 +636,7 @@ func decodeTranscriptEntry(raw json.RawMessage) ([]harness.Event, error) {
 	return events, nil
 }
 
-func latestCompletedTurnIsComplete(entries []transcript.Entry) bool {
+func latestCompletedTurnIsComplete(entries []transcript.Entry, completion harness.CompletionSignal) bool {
 	for index := len(entries) - 1; index >= 0; index-- {
 		var message transcriptMessage
 		if err := json.Unmarshal(entries[index].Raw, &message); err != nil {
@@ -496,24 +645,28 @@ func latestCompletedTurnIsComplete(entries []transcript.Entry) bool {
 		if !isAssistantTranscriptMessage(message) || message.Message.StopReason != "end_turn" {
 			continue
 		}
-		blocks, err := transcriptContentBlocks(message.Message.Content)
-		if err != nil {
-			return false
-		}
-		var assistantText strings.Builder
-		for _, block := range blocks {
-			if block.Type != "text" {
-				continue
-			}
-			assistantText.WriteString(block.Text)
-		}
-		text := assistantText.String()
-		if strings.Contains(text, verdictMarker) || containsQuestionBlock(text) {
+		if completion == harness.CompletionTurnEnd {
 			return true
 		}
-		return false
+		return containsCompletionMarker(message)
 	}
 	return false
+}
+
+func containsCompletionMarker(message transcriptMessage) bool {
+	blocks, err := transcriptContentBlocks(message.Message.Content)
+	if err != nil {
+		return false
+	}
+	var assistantText strings.Builder
+	for _, block := range blocks {
+		if block.Type != "text" {
+			continue
+		}
+		assistantText.WriteString(block.Text)
+	}
+	text := assistantText.String()
+	return strings.Contains(text, verdictMarker) || containsQuestionBlock(text)
 }
 
 func containsQuestionBlock(text string) bool {

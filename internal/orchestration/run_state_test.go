@@ -3,14 +3,18 @@ package orchestration
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/igorrochap/syl/internal/config"
 	"github.com/igorrochap/syl/internal/harness"
+	"github.com/igorrochap/syl/internal/harness/claude"
+	"github.com/igorrochap/syl/internal/harness/claude/transcript"
 	"github.com/igorrochap/syl/internal/runrecord"
 	"github.com/igorrochap/syl/internal/sylhome"
 	"github.com/igorrochap/syl/internal/tracker"
@@ -37,8 +41,18 @@ func TestRunImplementRecordsRunStateLifecycle(t *testing.T) {
 			{Type: harness.EventSession, SessionID: "implement-1"},
 			{Type: harness.EventAssistantText, Text: "revised"},
 		}},
-		runHooks:    []func(harness.Request){func(harness.Request) { observations = append(observations, readState()) }},
-		resumeHooks: []func(harness.Request){func(harness.Request) { observations = append(observations, readState()) }},
+		runHooks: []func(harness.Request){func(request harness.Request) {
+			if request.Completion != harness.CompletionTurnEnd {
+				t.Fatalf("implementer completion = %v, want turn end", request.Completion)
+			}
+			observations = append(observations, readState())
+		}},
+		resumeHooks: []func(harness.Request){func(request harness.Request) {
+			if request.Completion != harness.CompletionTurnEnd {
+				t.Fatalf("implementer completion = %v, want turn end", request.Completion)
+			}
+			observations = append(observations, readState())
+		}},
 	}
 	reviewer := &scriptedConversationAdapter{
 		runs: [][]harness.Event{{
@@ -48,8 +62,18 @@ func TestRunImplementRecordsRunStateLifecycle(t *testing.T) {
 		resumes: [][]harness.Event{{
 			{Type: harness.EventAssistantText, Text: "VERDICT: approve\nSUMMARY: Ready\nFINDINGS:\n"},
 		}},
-		runHooks:    []func(harness.Request){func(harness.Request) { observations = append(observations, readState()) }},
-		resumeHooks: []func(harness.Request){func(harness.Request) { observations = append(observations, readState()) }},
+		runHooks: []func(harness.Request){func(request harness.Request) {
+			if request.Completion != harness.CompletionReviewVerdict {
+				t.Fatalf("reviewer completion = %v, want review verdict", request.Completion)
+			}
+			observations = append(observations, readState())
+		}},
+		resumeHooks: []func(harness.Request){func(request harness.Request) {
+			if request.Completion != harness.CompletionReviewVerdict {
+				t.Fatalf("reviewer completion = %v, want review verdict", request.Completion)
+			}
+			observations = append(observations, readState())
+		}},
 	}
 	var output strings.Builder
 	err := RunImplement(context.Background(), ImplementOptions{
@@ -185,7 +209,10 @@ func TestRunImplementRecordsQuestionPauseAndResume(t *testing.T) {
 		resumes: [][]harness.Event{{
 			{Type: harness.EventAssistantText, Text: "implemented after answer"},
 		}},
-		resumeHooks: []func(harness.Request){func(harness.Request) {
+		resumeHooks: []func(harness.Request){func(request harness.Request) {
+			if request.Completion != harness.CompletionTurnEnd {
+				t.Fatalf("answered implementer completion = %v, want turn end", request.Completion)
+			}
 			resumedState = mustReadRunState(t, statePath())
 		}},
 	}
@@ -482,3 +509,57 @@ func (*errorHarnessAdapter) AttachSession(context.Context, string, harness.Reque
 var _ harness.Adapter = (*errorHarnessAdapter)(nil)
 
 var _ io.Reader = (*stateObservingReader)(nil)
+
+func TestRunImplementClaudeProseTurnContinuesToReviewer(t *testing.T) {
+	root := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	transcriptPath, err := transcript.New(home).Find(root, "session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	transcriptDir := filepath.Dir(transcriptPath)
+	commandDir := t.TempDir()
+	script := fmt.Sprintf(`#!/bin/sh
+while [ "$#" -gt 0 ]; do
+ if [ "$1" = '--session-id' ]; then session_id="$2"; break; fi
+ shift
+done
+mkdir -p %q
+trap 'exit 0' TERM
+printf '%%s\n' '{"type":"assistant","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"Implemented the ticket and verified the changes."}]}}' >> %q/"$session_id".jsonl
+while :; do sleep 0.05; done
+`, transcriptDir, transcriptDir)
+	if err := os.WriteFile(filepath.Join(commandDir, "claude"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", commandDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	reviewer := &scriptedConversationAdapter{runs: [][]harness.Event{{
+		{Type: harness.EventAssistantText, Text: "VERDICT: approve\nSUMMARY: Ready\nFINDINGS:\n"},
+	}}}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	err = RunImplement(ctx, ImplementOptions{
+		OriginRoot: root, WorkRoot: root,
+		OpenRun: NewDiskRunOpener(root, sylhome.Dir{}, io.Discard),
+		ProjectConfig: config.Config{
+			Roles: config.RolesConfig{
+				Implement: config.RoleConfig{Harness: config.HarnessClaude, Model: "claude-sonnet-5", Effort: config.EffortMedium},
+				Review:    config.RoleConfig{Harness: config.HarnessClaude},
+			}, Loop: config.LoopConfig{MaxIterations: 1},
+		},
+		IssueTracker: branchSetupTracker{}, Ticket: tracker.Ticket{Number: 212},
+		Implementer: claude.New(root), Reviewer: reviewer, Git: &implementRunGit{}, OriginGit: &implementRunGit{},
+		Input: strings.NewReader(""), Output: io.Discard,
+	})
+	if err != nil {
+		t.Fatalf("RunImplement() error = %v", err)
+	}
+	if reviewer.runCalls != 1 {
+		t.Fatalf("reviewer runs = %d, want 1", reviewer.runCalls)
+	}
+	state := mustReadRunState(t, onlyRunStatePath(t, root))
+	if state.Status != runrecord.Approved || state.Iteration != 1 {
+		t.Fatalf("final state = %#v, want approved in iteration 1", state)
+	}
+}

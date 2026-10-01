@@ -312,6 +312,13 @@ func TestImplementFailsAfterOneUnparseableReviewReaskAndSavesTranscript(t *testi
 	if code == 0 || !strings.Contains(fixture.stderr.String(), "reviewer produced no parseable verdict") {
 		t.Fatalf("implement code = %d, stderr = %q, want clear unparseable-verdict failure", code, fixture.stderr.String())
 	}
+	report := "Uncommitted changes are kept in the work root: " + fixture.root + "\n  A  change.txt"
+	if !strings.Contains(fixture.stderr.String(), report) {
+		t.Fatalf("stderr = %q, want uncommitted work report %q", fixture.stderr.String(), report)
+	}
+	if strings.Index(fixture.stderr.String(), report) < strings.Index(fixture.stderr.String(), "reviewer produced no parseable verdict") {
+		t.Fatalf("stderr = %q, want work report after original error", fixture.stderr.String())
+	}
 	if harness.resumeCount != 1 {
 		t.Fatalf("resume count = %d, want exactly one review re-ask", harness.resumeCount)
 	}
