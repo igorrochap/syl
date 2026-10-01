@@ -2,6 +2,29 @@
 
 <!-- version list -->
 
+## v1.37.0 (2026-10-01)
+
+### Bug Fixes
+
+- **harness**: Differentiate completion signals for Claude
+  ([#224](https://github.com/igorrochap/syl/pull/224),
+  [`55368db`](https://github.com/igorrochap/syl/commit/55368db8aa76106de92a0de6186d47ba652cb723))
+
+- **orchestration**: Report uncommitted work on failure
+  ([#224](https://github.com/igorrochap/syl/pull/224),
+  [`55368db`](https://github.com/igorrochap/syl/commit/55368db8aa76106de92a0de6186d47ba652cb723))
+
+- **orchestration, claude, harness**: Enhance error reporting and session lifecycle
+  ([#224](https://github.com/igorrochap/syl/pull/224),
+  [`55368db`](https://github.com/igorrochap/syl/commit/55368db8aa76106de92a0de6186d47ba652cb723))
+
+### Features
+
+- **claude**: Improve idle-timeout error reporting
+  ([#224](https://github.com/igorrochap/syl/pull/224),
+  [`55368db`](https://github.com/igorrochap/syl/commit/55368db8aa76106de92a0de6186d47ba652cb723))
+
+
 ## v1.36.0 (2026-09-30)
 
 ### Bug Fixes
