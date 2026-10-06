@@ -67,39 +67,50 @@ func TestClaudeAttachInvokesInteractivePrompt(t *testing.T) {
 }
 
 func TestClaudeAttachSessionInvokesResumeWithoutRequestSettings(t *testing.T) {
-	for _, tt := range []struct {
+	for _, sandbox := range []struct {
 		name string
-		mcp  bool
-		want []string
+		mode config.SandboxMode
 	}{
-		{name: "strict MCP", want: []string{"--resume", "session-1", "--strict-mcp-config"}},
-		{name: "inherited MCP", mcp: true, want: []string{"--resume", "session-1"}},
+		{name: "omitted sandbox"},
+		{name: "full access", mode: config.SandboxModeFullAccess},
+		{name: "workspace write", mode: config.SandboxModeWorkspaceWrite},
+		{name: "read only", mode: config.SandboxModeReadOnly},
 	} {
-		t.Run(tt.name, func(t *testing.T) {
-			root := t.TempDir()
-			argsPath := filepath.Join(root, "args")
-			command := filepath.Join(t.TempDir(), "claude")
-			script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"" + argsPath + "\"\n"
-			if err := os.WriteFile(command, []byte(script), 0o755); err != nil {
-				t.Fatal(err)
-			}
-			adapter := New(root)
-			adapter.command = command
+		for _, tt := range []struct {
+			name string
+			mcp  bool
+			want []string
+		}{
+			{name: "strict MCP", want: []string{"--resume", "session-1", "--strict-mcp-config"}},
+			{name: "inherited MCP", mcp: true, want: []string{"--resume", "session-1"}},
+		} {
+			t.Run(tt.name+"/"+sandbox.name, func(t *testing.T) {
+				root := t.TempDir()
+				argsPath := filepath.Join(root, "args")
+				command := filepath.Join(t.TempDir(), "claude")
+				script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"" + argsPath + "\"\n"
+				if err := os.WriteFile(command, []byte(script), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				adapter := New(root)
+				adapter.command = command
 
-			err := adapter.AttachSession(context.Background(), "session-1", harness.Request{
-				Model:  "ignored-model",
-				Effort: config.Effort("ignored-effort"),
-				MCP:    tt.mcp,
+				err := adapter.AttachSession(context.Background(), "session-1", harness.Request{
+					Model:       "ignored-model",
+					Effort:      config.Effort("ignored-effort"),
+					MCP:         tt.mcp,
+					SandboxMode: sandbox.mode,
+				})
+				if err != nil {
+					t.Fatalf("AttachSession() error = %v", err)
+				}
+
+				got := strings.Split(strings.TrimSpace(readClaudeFile(t, argsPath)), "\n")
+				if !reflect.DeepEqual(got, tt.want) {
+					t.Fatalf("Claude attach session args = %#v, want %#v", got, tt.want)
+				}
 			})
-			if err != nil {
-				t.Fatalf("AttachSession() error = %v", err)
-			}
-
-			got := strings.Split(strings.TrimSpace(readClaudeFile(t, argsPath)), "\n")
-			if !reflect.DeepEqual(got, tt.want) {
-				t.Fatalf("Claude attach session args = %#v, want %#v", got, tt.want)
-			}
-		})
+		}
 	}
 }
 

@@ -301,22 +301,28 @@ func TestCodexAttachInvokesInteractivePrompt(t *testing.T) {
 	}
 }
 
-func TestCodexAttachSessionInvokesResumeWithoutRequestSettings(t *testing.T) {
-	for _, mcp := range []bool{false, true} {
-		name := "MCP disabled"
-		if mcp {
-			name = "MCP enabled"
-		}
-		t.Run(name, func(t *testing.T) {
+func TestCodexAttachSessionInvokesResumeWithRequestSandboxMode(t *testing.T) {
+	for _, mode := range []struct {
+		name        string
+		sandboxMode config.SandboxMode
+		wantSandbox string
+	}{
+		{name: "omitted sandbox defaults to full access", wantSandbox: "danger-full-access"},
+		{name: "full access", sandboxMode: config.SandboxModeFullAccess, wantSandbox: "danger-full-access"},
+		{name: "workspace write", sandboxMode: config.SandboxModeWorkspaceWrite, wantSandbox: "workspace-write"},
+		{name: "read only", sandboxMode: config.SandboxModeReadOnly, wantSandbox: "read-only"},
+	} {
+		t.Run(mode.name, func(t *testing.T) {
 			root := t.TempDir()
 			argsPath := filepath.Join(root, "args")
 			command := fakeCodexCommand(t, argsPath, nil)
 			adapter := &Adapter{command: command, projectRoot: root}
 
 			err := adapter.AttachSession(context.Background(), "codex-session", harness.Request{
-				Model:  "ignored-model",
-				Effort: config.Effort("ignored-effort"),
-				MCP:    mcp,
+				Model:       "ignored-model",
+				Effort:      config.Effort("ignored-effort"),
+				MCP:         true,
+				SandboxMode: mode.sandboxMode,
 			})
 			if err != nil {
 				t.Fatalf("AttachSession() error = %v", err)
@@ -326,7 +332,7 @@ func TestCodexAttachSessionInvokesResumeWithoutRequestSettings(t *testing.T) {
 			for i := range gotArgs {
 				gotArgs[i] = strings.ReplaceAll(gotArgs[i], "\x1c", "\n")
 			}
-			wantArgs := []string{"resume", "codex-session", "--cd", root}
+			wantArgs := []string{"resume", "codex-session", "--sandbox", mode.wantSandbox, "--cd", root}
 			if !reflect.DeepEqual(gotArgs, wantArgs) {
 				t.Fatalf("Codex attach session args = %#v, want %#v", gotArgs, wantArgs)
 			}

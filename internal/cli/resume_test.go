@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/igorrochap/syl/internal/config"
 	"github.com/igorrochap/syl/internal/harness"
 )
 
@@ -216,13 +217,13 @@ func TestResumeReportsDistinctTicketAndIterationSelectionErrors(t *testing.T) {
 	}
 }
 
-func TestResumeHandsOffRecordedHarnessAtRecordedRootWithCurrentMCP(t *testing.T) {
+func TestResumeHandsOffRecordedHarnessAtRecordedRootWithCurrentMCPAndSandbox(t *testing.T) {
 	root := t.TempDir()
 	workRoot := t.TempDir()
 	writeResumeConfig(t, root)
 	runName := "20260908T150000.000000000Z-42"
 	writeResumeRun(t, root, runName, fmt.Sprintf(
-		"Work root: %s\nImplementer harness: claude\nReviewer harness: claude\n", workRoot,
+		"Work root: %s\nImplementer harness: codex\nReviewer harness: claude\n", workRoot,
 	), "iteration 1 implement: recorded-session\n", true, true)
 
 	adapter := &recordingResumeHarness{}
@@ -230,7 +231,7 @@ func TestResumeHandsOffRecordedHarnessAtRecordedRootWithCurrentMCP(t *testing.T)
 	app := New(root, root, testSylHome(t, t.TempDir()), Dependencies{
 		Harnesses: func(gotRoot string) map[string]harness.Adapter {
 			harnessRoots = append(harnessRoots, gotRoot)
-			return map[string]harness.Adapter{"claude": adapter}
+			return map[string]harness.Adapter{"codex": adapter}
 		},
 	})
 	var stdout, stderr strings.Builder
@@ -245,7 +246,7 @@ func TestResumeHandsOffRecordedHarnessAtRecordedRootWithCurrentMCP(t *testing.T)
 	if call.sessionID != "recorded-session" {
 		t.Fatalf("session id = %q, want recorded-session", call.sessionID)
 	}
-	wantRequest := harness.Request{MCP: false}
+	wantRequest := harness.Request{MCP: false, SandboxMode: config.SandboxModeFullAccess}
 	if call.request != wantRequest {
 		t.Fatalf("request = %#v, want %#v", call.request, wantRequest)
 	}
@@ -259,7 +260,7 @@ func TestResumeHandsOffRecordedHarnessAtRecordedRootWithCurrentMCP(t *testing.T)
 		"iteration:",
 		"1",
 		"harness:",
-		"claude",
+		"codex",
 		"session:",
 		"recorded-session",
 	} {
@@ -269,6 +270,48 @@ func TestResumeHandsOffRecordedHarnessAtRecordedRootWithCurrentMCP(t *testing.T)
 	}
 	if strings.Contains(stdout.String(), "did not complete") {
 		t.Fatalf("stdout = %q, want no incomplete-run warning", stdout.String())
+	}
+}
+
+func TestResumePassesReviewSandboxAndMCPToRecordedCodexSession(t *testing.T) {
+	root := t.TempDir()
+	workRoot := t.TempDir()
+	writeResumeConfig(t, root)
+	configPath := filepath.Join(root, ".syl", "config.toml")
+	contents, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	configuredReview := strings.Replace(string(contents),
+		"[roles.review]\nharness = \"claude\"",
+		"[roles.review]\nharness = \"codex\"\nsandbox = \"workspace-write\"", 1)
+	if configuredReview == string(contents) {
+		t.Fatal("review Role configuration was not updated")
+	}
+	if err := os.WriteFile(configPath, []byte(configuredReview), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeResumeRun(t, root, "20260908T150000.000000000Z-42", fmt.Sprintf(
+		"Work root: %s\nReviewer harness: codex\n", workRoot,
+	), "iteration 0 review: recorded-review-session\n", true, true)
+
+	adapter := &recordingResumeHarness{}
+	app := New(root, root, testSylHome(t, t.TempDir()), Dependencies{
+		Harnesses: func(string) map[string]harness.Adapter {
+			return map[string]harness.Adapter{"codex": adapter}
+		},
+	})
+	var stdout, stderr strings.Builder
+
+	if code := app.Run(context.Background(), []string{"resume", "review"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("resume code = %d, stderr = %q", code, stderr.String())
+	}
+	if len(adapter.calls) != 1 {
+		t.Fatalf("AttachSession calls = %d, want 1", len(adapter.calls))
+	}
+	wantRequest := harness.Request{MCP: true, SandboxMode: config.SandboxModeWorkspaceWrite}
+	if got := adapter.calls[0].request; got != wantRequest {
+		t.Fatalf("request = %#v, want %#v", got, wantRequest)
 	}
 }
 
