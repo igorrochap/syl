@@ -48,6 +48,11 @@ func TestHandlerProtectsConfigSaveWithTokenAndOrigin(t *testing.T) {
 		t.Fatal(err)
 	}
 	page := serveProject(t, server.Handler(), project, "/projects/config")
+	if !strings.Contains(page, `name="roles.plan.sandbox"`) ||
+		!strings.Contains(page, `name="roles.implement.sandbox"`) ||
+		!strings.Contains(page, `name="roles.review.sandbox"`) {
+		t.Fatalf("config page is missing a Role sandbox field: %q", page)
+	}
 	token := tokenFromPage(t, page)
 	form := configForm(t, project, token)
 	form.Del("token")
@@ -57,6 +62,45 @@ func TestHandlerProtectsConfigSaveWithTokenAndOrigin(t *testing.T) {
 	form.Set("token", token)
 	if response := postMutation(t, server.Handler(), configSaveRoute(project), form, "http://evil.example:7777"); response.Code != http.StatusForbidden {
 		t.Fatalf("foreign origin status = %d, want forbidden", response.Code)
+	}
+}
+
+func TestConfigSaveKeepsSandboxWhenOlderFormOmitsIt(t *testing.T) {
+	sylHome := t.TempDir()
+	project := t.TempDir()
+	if _, err := config.Init(project); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := config.Load(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded.Roles.Review.SandboxMode = config.SandboxModeWorkspaceWrite
+	if _, err := config.Write(project, loaded, config.OverwriteExisting); err != nil {
+		t.Fatal(err)
+	}
+	writeWebRegistry(t, sylHome, sylhome.RegisteredProject{Path: project})
+	server, err := newServer(t, sylHome)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	page := serveProject(t, server.Handler(), project, "/projects/config")
+	form := configForm(t, project, tokenFromPage(t, page))
+	form.Del("roles.plan.sandbox")
+	form.Del("roles.implement.sandbox")
+	form.Del("roles.review.sandbox")
+	response := postMutation(t, server.Handler(), configSaveRoute(project), form, "http://localhost:7777")
+	if response.Code != http.StatusSeeOther {
+		t.Fatalf("config save status = %d, want redirect", response.Code)
+	}
+
+	after, err := config.Load(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Roles.Review.SandboxMode != config.SandboxModeWorkspaceWrite {
+		t.Fatalf("saved review sandbox = %q, want workspace-write", after.Roles.Review.SandboxMode)
 	}
 }
 
@@ -742,6 +786,7 @@ func setRoleForm(form url.Values, name string, values configedit.RoleValues) {
 	form.Set(prefix+"harness", values.Harness)
 	form.Set(prefix+"model", values.Model)
 	form.Set(prefix+"effort", values.Effort)
+	form.Set(prefix+"sandbox", values.SandboxMode)
 	if values.MCP {
 		form.Set(prefix+"mcp", "true")
 	}

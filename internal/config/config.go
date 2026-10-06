@@ -196,6 +196,16 @@ func Efforts() []Effort {
 	return append([]Effort(nil), acceptedEfforts...)
 }
 
+// SandboxModes returns the sandbox values accepted by Load.
+func SandboxModes() []SandboxMode {
+	return append([]SandboxMode(nil), acceptedSandboxModes...)
+}
+
+// ParseSandboxMode validates a sandbox value using the rules accepted by Load.
+func ParseSandboxMode(field, value string) (SandboxMode, error) {
+	return parseEnum(field, value, acceptedSandboxModes, "full-access, workspace-write, or read-only")
+}
+
 func Load(projectRoot string) (Config, error) {
 	path := Path(projectRoot)
 	contents, err := os.ReadFile(path)
@@ -281,6 +291,9 @@ reviews = %q
 harness = %q
 model = %q
 effort = %q
+# Sandbox mode: full-access, workspace-write, or read-only (default: full-access).
+# Claude ignores this field. syl applies this value over ~/.codex/config.toml.
+sandbox = %q
 # mcp = true inherits user/project MCP configuration; false strips it for Claude.
 # Codex ignores this field. Omitted defaults are true for plan and implement, and false for review.
 mcp = %t
@@ -289,6 +302,9 @@ mcp = %t
 harness = %q
 model = %q
 effort = %q
+# Sandbox mode: full-access, workspace-write, or read-only (default: full-access).
+# Claude ignores this field. syl applies this value over ~/.codex/config.toml.
+sandbox = %q
 # mcp = true inherits user/project MCP configuration; false strips it for Claude.
 # Codex ignores this field. Omitted defaults are true for plan and implement, and false for review.
 mcp = %t
@@ -297,6 +313,9 @@ mcp = %t
 harness = %q
 model = %q
 effort = %q
+# Sandbox mode: full-access, workspace-write, or read-only (default: full-access).
+# Claude ignores this field. syl applies this value over ~/.codex/config.toml.
+sandbox = %q
 # mcp = true inherits user/project MCP configuration; false strips it for Claude.
 # Codex ignores this field. Omitted defaults are true for plan and implement, and false for review.
 # Hooks that require MCP may cause one blocked-then-retried tool call in lean sessions.
@@ -318,13 +337,23 @@ setup = %q
 copy = %s
 `, cfg.Tracker.Issues, cfg.Tracker.Reviews,
 		cfg.Roles.Plan.Harness, cfg.Roles.Plan.Model, cfg.Roles.Plan.Effort,
+		string(renderSandboxMode(cfg.Roles.Plan.SandboxMode)),
 		cfg.Roles.Plan.MCP,
 		cfg.Roles.Implement.Harness, cfg.Roles.Implement.Model, cfg.Roles.Implement.Effort,
+		string(renderSandboxMode(cfg.Roles.Implement.SandboxMode)),
 		cfg.Roles.Implement.MCP,
 		cfg.Roles.Review.Harness, cfg.Roles.Review.Model, cfg.Roles.Review.Effort,
+		string(renderSandboxMode(cfg.Roles.Review.SandboxMode)),
 		cfg.Roles.Review.MCP,
 		cfg.Loop.MaxIterations, cfg.Notifications.Enabled,
 		worktreeRoot(cfg.Worktree.Root), cfg.Worktree.Setup, renderStringList(cfg.Worktree.Copy))
+}
+
+func renderSandboxMode(mode SandboxMode) SandboxMode {
+	if mode == "" {
+		return SandboxModeFullAccess
+	}
+	return mode
 }
 
 func renderStringList(values []string) string {
@@ -346,9 +375,9 @@ func defaultConfigValue() Config {
 	return Config{
 		Tracker: TrackerConfig{Issues: TrackerGitHub, Reviews: TrackerLocal},
 		Roles: RolesConfig{
-			Plan:      RoleConfig{Harness: HarnessClaude, Model: "claude-opus-5", Effort: EffortHigh, MCP: true},
-			Implement: RoleConfig{Harness: HarnessCodex, Model: "gpt-5.6-luna", Effort: EffortXHigh, MCP: true},
-			Review:    RoleConfig{Harness: HarnessClaude, Model: "claude-sonnet-5", Effort: EffortMedium},
+			Plan:      RoleConfig{Harness: HarnessClaude, Model: "claude-opus-5", Effort: EffortHigh, MCP: true, SandboxMode: SandboxModeFullAccess},
+			Implement: RoleConfig{Harness: HarnessCodex, Model: "gpt-5.6-luna", Effort: EffortXHigh, MCP: true, SandboxMode: SandboxModeFullAccess},
+			Review:    RoleConfig{Harness: HarnessClaude, Model: "claude-sonnet-5", Effort: EffortMedium, SandboxMode: SandboxModeFullAccess},
 		},
 		Loop:          LoopConfig{MaxIterations: 3},
 		Notifications: NotificationsConfig{Enabled: true},
@@ -529,8 +558,7 @@ func parseRole(prefix string, raw rawRole, defaultMCP bool) (RoleConfig, error) 
 
 	sandboxMode := SandboxModeFullAccess
 	if raw.SandboxMode != nil {
-		sandboxMode, err = parseEnum(prefix+".sandbox", *raw.SandboxMode,
-			acceptedSandboxModes, "full-access, workspace-write, or read-only")
+		sandboxMode, err = ParseSandboxMode(prefix+".sandbox", *raw.SandboxMode)
 		if err != nil {
 			return RoleConfig{}, err
 		}

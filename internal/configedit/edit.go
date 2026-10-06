@@ -20,10 +20,11 @@ var ErrConflict = errors.New("config changed on disk after form loaded")
 
 // RoleValues are the editable values for one workflow Role.
 type RoleValues struct {
-	Harness string
-	Model   string
-	Effort  string
-	MCP     bool
+	Harness     string
+	Model       string
+	Effort      string
+	MCP         bool
+	SandboxMode string
 }
 
 // Values are the editable fields shown by the structured Config form.
@@ -104,14 +105,15 @@ func loadError(err error) LoadError {
 	return LoadError{Err: err}
 }
 
-// Parse converts submitted form values into editable config values.
-func Parse(form url.Values) (Values, FieldErrors) {
+// Parse converts submitted form values into editable config values. Defaults
+// supplies loaded values for fields omitted by an older dashboard form.
+func Parse(form url.Values, defaults Values) (Values, FieldErrors) {
 	values := Values{
 		TrackerIssues:        form.Get("tracker.issues"),
 		TrackerReviews:       form.Get("tracker.reviews"),
-		Plan:                 parseRole(form, "plan"),
-		Implement:            parseRole(form, "implement"),
-		Review:               parseRole(form, "review"),
+		Plan:                 parseRole(form, "plan", defaults.Plan),
+		Implement:            parseRole(form, "implement", defaults.Implement),
+		Review:               parseRole(form, "review", defaults.Review),
 		NotificationsEnabled: formBool(form, "notifications.enabled"),
 		WorktreeRoot:         form.Get("worktree.root"),
 		WorktreeSetup:        form.Get("worktree.setup"),
@@ -144,13 +146,18 @@ func nonEmptyValues(values []string) []string {
 	return filtered
 }
 
-func parseRole(form url.Values, role string) RoleValues {
+func parseRole(form url.Values, role string, defaults RoleValues) RoleValues {
 	prefix := "roles." + role + "."
+	sandboxMode := defaults.SandboxMode
+	if _, submitted := form[prefix+"sandbox"]; submitted {
+		sandboxMode = form.Get(prefix + "sandbox")
+	}
 	return RoleValues{
-		Harness: form.Get(prefix + "harness"),
-		Model:   form.Get(prefix + "model"),
-		Effort:  form.Get(prefix + "effort"),
-		MCP:     formBool(form, prefix+"mcp"),
+		Harness:     form.Get(prefix + "harness"),
+		Model:       form.Get(prefix + "model"),
+		Effort:      form.Get(prefix + "effort"),
+		MCP:         formBool(form, prefix+"mcp"),
+		SandboxMode: sandboxMode,
 	}
 }
 
@@ -168,6 +175,23 @@ func Validate(values Values) FieldErrors {
 	errors := FieldErrors{}
 	for _, fieldError := range config.ValidationErrors(values.config()) {
 		errors[fieldError.Field] = fieldError.Message
+	}
+	// Config validation permits an empty mode as the omitted default. The editor
+	// requires a concrete selection, so reject empty submitted values here.
+	for _, role := range []struct {
+		name   string
+		values RoleValues
+	}{
+		{name: "plan", values: values.Plan},
+		{name: "implement", values: values.Implement},
+		{name: "review", values: values.Review},
+	} {
+		if role.values.SandboxMode != "" {
+			continue
+		}
+		field := "roles." + role.name + ".sandbox"
+		_, err := config.ParseSandboxMode(field, role.values.SandboxMode)
+		errors[field] = err.Error()
 	}
 	return errors
 }
@@ -206,6 +230,11 @@ func EffortOptions() []string {
 	return stringOptions(config.Efforts())
 }
 
+// SandboxOptions returns the sandbox values accepted by config.Load.
+func SandboxOptions() []string {
+	return stringOptions(config.SandboxModes())
+}
+
 func stringOptions[T ~string](values []T) []string {
 	options := make([]string, len(values))
 	for index, value := range values {
@@ -230,7 +259,10 @@ func valuesFromConfig(loaded config.Config) Values {
 }
 
 func roleValuesFromConfig(role config.RoleConfig) RoleValues {
-	return RoleValues{Harness: string(role.Harness), Model: role.Model, Effort: string(role.Effort), MCP: role.MCP}
+	return RoleValues{
+		Harness: string(role.Harness), Model: role.Model, Effort: string(role.Effort), MCP: role.MCP,
+		SandboxMode: string(role.SandboxMode),
+	}
 }
 
 func (values Values) config() config.Config {
@@ -248,7 +280,10 @@ func (values Values) config() config.Config {
 }
 
 func (role RoleValues) config() config.RoleConfig {
-	return config.RoleConfig{Harness: config.Harness(role.Harness), Model: role.Model, Effort: config.Effort(role.Effort), MCP: role.MCP}
+	return config.RoleConfig{
+		Harness: config.Harness(role.Harness), Model: role.Model, Effort: config.Effort(role.Effort),
+		MCP: role.MCP, SandboxMode: config.SandboxMode(role.SandboxMode),
+	}
 }
 
 func version(contents []byte) string {

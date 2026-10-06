@@ -94,6 +94,13 @@ func TestInitBlankDirectoryScaffoldsProject(t *testing.T) {
 	if got.Roles.Review.MCP {
 		t.Fatal("review role MCP = true, want false in generated config")
 	}
+	for name, role := range map[string]config.RoleConfig{
+		"plan": got.Roles.Plan, "implement": got.Roles.Implement, "review": got.Roles.Review,
+	} {
+		if role.SandboxMode != config.SandboxModeFullAccess {
+			t.Errorf("%s role sandbox = %q, want full-access", name, role.SandboxMode)
+		}
+	}
 	generated, err := os.ReadFile(config.Path(root))
 	if err != nil {
 		t.Fatalf("read generated config: %v", err)
@@ -104,6 +111,9 @@ func TestInitBlankDirectoryScaffoldsProject(t *testing.T) {
 		"user/project MCP configuration",
 		"Codex ignores this field",
 		"blocked-then-retried tool call",
+		`sandbox = "full-access"`,
+		"Sandbox mode: full-access, workspace-write, or read-only (default: full-access).",
+		"Claude ignores this field. syl applies this value over ~/.codex/config.toml.",
 	} {
 		if !strings.Contains(string(generated), expected) {
 			t.Fatalf("generated config = %q, want %q", generated, expected)
