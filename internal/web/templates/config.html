@@ -69,15 +69,35 @@
     activeCheckbox.checked=hidden.value==='true';
     ignoredCheckbox.checked=activeCheckbox.checked;
   }
+  function syncSandboxValue(select){
+    var control=select.closest('[data-sandbox-role]');
+    if(!control){return;}
+    var hidden=control.querySelector('[data-sandbox-value]');
+    hidden.value=select.value;
+  }
+  function updateSandboxControl(select){
+    var control=document.querySelector('[data-sandbox-role="'+select.getAttribute('data-sandbox-harness')+'"]');
+    if(!control){return;}
+    var sandbox=control.querySelector('[data-sandbox-select]');
+    var ignored=control.querySelector('[data-sandbox-ignored]');
+    sandbox.disabled=select.value==='claude';
+    ignored.hidden=!sandbox.disabled;
+  }
   document.addEventListener('input',function(event){
     var field=event.target.closest('[data-config-field]');
     if(field){updateConfigField(field);}
+    var sandbox=event.target.closest('[data-sandbox-select]');
+    if(sandbox){syncSandboxValue(sandbox);}
   });
   document.addEventListener('change',function(event){
     var field=event.target.closest('[data-config-field]');
     if(field){updateConfigField(field);}
     var harness=event.target.closest('[data-mcp-harness]');
     if(harness){updateMCPControl(harness);}
+    var sandboxHarness=event.target.closest('[data-sandbox-harness]');
+    if(sandboxHarness){updateSandboxControl(sandboxHarness);}
+    var sandbox=event.target.closest('[data-sandbox-select]');
+    if(sandbox){syncSandboxValue(sandbox);}
     var checkbox=event.target.closest('[data-mcp-checkbox]');
     if(checkbox){syncMCPValue(checkbox);}
   });
@@ -126,24 +146,24 @@
 
 <fieldset class="config-card"><legend>Roles</legend><div class="roles-grid">
 <div class="role-card"><h3>Plan</h3>
-<label>Harness<select name="roles.plan.harness" data-config-field="roles.plan.harness" data-mcp-harness="plan">{{range $.HarnessOptions}}<option value="{{.}}" {{if eq . $.Values.Plan.Harness}}selected{{end}}>{{.}}</option>{{end}}</select>{{with index $.Errors "roles.plan.harness"}}<span class="config-error" data-config-error-for="roles.plan.harness">{{.}}</span>{{end}}</label>
+<label>Harness<select name="roles.plan.harness" data-config-field="roles.plan.harness" data-mcp-harness="plan" data-sandbox-harness="plan">{{range $.HarnessOptions}}<option value="{{.}}" {{if eq . $.Values.Plan.Harness}}selected{{end}}>{{.}}</option>{{end}}</select>{{with index $.Errors "roles.plan.harness"}}<span class="config-error" data-config-error-for="roles.plan.harness">{{.}}</span>{{end}}</label>
 <label>Model<input name="roles.plan.model" value="{{.Values.Plan.Model}}" data-config-field="roles.plan.model">{{with index $.Errors "roles.plan.model"}}<span class="config-error" data-config-error-for="roles.plan.model">{{.}}</span>{{end}}</label>
 <label>Effort<select name="roles.plan.effort" data-config-field="roles.plan.effort">{{range $.EffortOptions}}<option value="{{.}}" {{if eq . $.Values.Plan.Effort}}selected{{end}}>{{.}}</option>{{end}}</select>{{with index $.Errors "roles.plan.effort"}}<span class="config-error" data-config-error-for="roles.plan.effort">{{.}}</span>{{end}}</label>
-<label>Sandbox mode<select name="roles.plan.sandbox" data-config-field="roles.plan.sandbox">{{range $.SandboxOptions}}<option value="{{.}}" {{if eq . $.Values.Plan.SandboxMode}}selected{{end}}>{{.}}</option>{{end}}</select>{{with index $.Errors "roles.plan.sandbox"}}<span class="config-error" data-config-error-for="roles.plan.sandbox">{{.}}</span>{{end}}</label>
+<div class="config-sandbox-control" data-sandbox-role="plan"><input type="hidden" name="roles.plan.sandbox" value="{{.Values.Plan.SandboxMode}}" data-sandbox-value><label>Sandbox mode<select data-config-field="roles.plan.sandbox" data-sandbox-select {{if eq .Values.Plan.Harness "claude"}}disabled{{end}}>{{range $.SandboxOptions}}<option value="{{.}}" {{if eq . $.Values.Plan.SandboxMode}}selected{{end}}>{{.}}</option>{{end}}</select><span class="config-help" data-sandbox-ignored {{if ne .Values.Plan.Harness "claude"}}hidden{{end}}>(Claude ignores this)</span>{{with index $.Errors "roles.plan.sandbox"}}<span class="config-error" data-config-error-for="roles.plan.sandbox">{{.}}</span>{{end}}</label></div>
 <div class="config-mcp-control" data-mcp-role="plan"><input type="hidden" name="roles.plan.mcp" value="{{if .Values.Plan.MCP}}true{{else}}false{{end}}" data-mcp-value><label class="config-checkbox" data-mcp-active {{if eq .Values.Plan.Harness "codex"}}hidden{{end}}><input type="checkbox" data-mcp-checkbox {{if .Values.Plan.MCP}}checked{{end}}>Inherit MCP servers</label><label class="config-checkbox ignored" data-mcp-ignored {{if ne .Values.Plan.Harness "codex"}}hidden{{end}}><input type="checkbox" data-mcp-ignored-checkbox {{if .Values.Plan.MCP}}checked{{end}} disabled>Inherit MCP servers <span>(Codex ignores this)</span></label></div>
 </div>
 <div class="role-card"><h3>Implement</h3>
-<label>Harness<select name="roles.implement.harness" data-config-field="roles.implement.harness" data-mcp-harness="implement">{{range $.HarnessOptions}}<option value="{{.}}" {{if eq . $.Values.Implement.Harness}}selected{{end}}>{{.}}</option>{{end}}</select>{{with index $.Errors "roles.implement.harness"}}<span class="config-error" data-config-error-for="roles.implement.harness">{{.}}</span>{{end}}</label>
+<label>Harness<select name="roles.implement.harness" data-config-field="roles.implement.harness" data-mcp-harness="implement" data-sandbox-harness="implement">{{range $.HarnessOptions}}<option value="{{.}}" {{if eq . $.Values.Implement.Harness}}selected{{end}}>{{.}}</option>{{end}}</select>{{with index $.Errors "roles.implement.harness"}}<span class="config-error" data-config-error-for="roles.implement.harness">{{.}}</span>{{end}}</label>
 <label>Model<input name="roles.implement.model" value="{{.Values.Implement.Model}}" data-config-field="roles.implement.model">{{with index $.Errors "roles.implement.model"}}<span class="config-error" data-config-error-for="roles.implement.model">{{.}}</span>{{end}}</label>
 <label>Effort<select name="roles.implement.effort" data-config-field="roles.implement.effort">{{range $.EffortOptions}}<option value="{{.}}" {{if eq . $.Values.Implement.Effort}}selected{{end}}>{{.}}</option>{{end}}</select>{{with index $.Errors "roles.implement.effort"}}<span class="config-error" data-config-error-for="roles.implement.effort">{{.}}</span>{{end}}</label>
-<label>Sandbox mode<select name="roles.implement.sandbox" data-config-field="roles.implement.sandbox">{{range $.SandboxOptions}}<option value="{{.}}" {{if eq . $.Values.Implement.SandboxMode}}selected{{end}}>{{.}}</option>{{end}}</select>{{with index $.Errors "roles.implement.sandbox"}}<span class="config-error" data-config-error-for="roles.implement.sandbox">{{.}}</span>{{end}}</label>
+<div class="config-sandbox-control" data-sandbox-role="implement"><input type="hidden" name="roles.implement.sandbox" value="{{.Values.Implement.SandboxMode}}" data-sandbox-value><label>Sandbox mode<select data-config-field="roles.implement.sandbox" data-sandbox-select {{if eq .Values.Implement.Harness "claude"}}disabled{{end}}>{{range $.SandboxOptions}}<option value="{{.}}" {{if eq . $.Values.Implement.SandboxMode}}selected{{end}}>{{.}}</option>{{end}}</select><span class="config-help" data-sandbox-ignored {{if ne .Values.Implement.Harness "claude"}}hidden{{end}}>(Claude ignores this)</span>{{with index $.Errors "roles.implement.sandbox"}}<span class="config-error" data-config-error-for="roles.implement.sandbox">{{.}}</span>{{end}}</label></div>
 <div class="config-mcp-control" data-mcp-role="implement"><input type="hidden" name="roles.implement.mcp" value="{{if .Values.Implement.MCP}}true{{else}}false{{end}}" data-mcp-value><label class="config-checkbox" data-mcp-active {{if eq .Values.Implement.Harness "codex"}}hidden{{end}}><input type="checkbox" data-mcp-checkbox {{if .Values.Implement.MCP}}checked{{end}}>Inherit MCP servers</label><label class="config-checkbox ignored" data-mcp-ignored {{if ne .Values.Implement.Harness "codex"}}hidden{{end}}><input type="checkbox" data-mcp-ignored-checkbox {{if .Values.Implement.MCP}}checked{{end}} disabled>Inherit MCP servers <span>(Codex ignores this)</span></label></div>
 </div>
 <div class="role-card"><h3>Review</h3>
-<label>Harness<select name="roles.review.harness" data-config-field="roles.review.harness" data-mcp-harness="review">{{range $.HarnessOptions}}<option value="{{.}}" {{if eq . $.Values.Review.Harness}}selected{{end}}>{{.}}</option>{{end}}</select>{{with index $.Errors "roles.review.harness"}}<span class="config-error" data-config-error-for="roles.review.harness">{{.}}</span>{{end}}</label>
+<label>Harness<select name="roles.review.harness" data-config-field="roles.review.harness" data-mcp-harness="review" data-sandbox-harness="review">{{range $.HarnessOptions}}<option value="{{.}}" {{if eq . $.Values.Review.Harness}}selected{{end}}>{{.}}</option>{{end}}</select>{{with index $.Errors "roles.review.harness"}}<span class="config-error" data-config-error-for="roles.review.harness">{{.}}</span>{{end}}</label>
 <label>Model<input name="roles.review.model" value="{{.Values.Review.Model}}" data-config-field="roles.review.model">{{with index $.Errors "roles.review.model"}}<span class="config-error" data-config-error-for="roles.review.model">{{.}}</span>{{end}}</label>
 <label>Effort<select name="roles.review.effort" data-config-field="roles.review.effort">{{range $.EffortOptions}}<option value="{{.}}" {{if eq . $.Values.Review.Effort}}selected{{end}}>{{.}}</option>{{end}}</select>{{with index $.Errors "roles.review.effort"}}<span class="config-error" data-config-error-for="roles.review.effort">{{.}}</span>{{end}}</label>
-<label>Sandbox mode<select name="roles.review.sandbox" data-config-field="roles.review.sandbox">{{range $.SandboxOptions}}<option value="{{.}}" {{if eq . $.Values.Review.SandboxMode}}selected{{end}}>{{.}}</option>{{end}}</select>{{with index $.Errors "roles.review.sandbox"}}<span class="config-error" data-config-error-for="roles.review.sandbox">{{.}}</span>{{end}}</label>
+<div class="config-sandbox-control" data-sandbox-role="review"><input type="hidden" name="roles.review.sandbox" value="{{.Values.Review.SandboxMode}}" data-sandbox-value><label>Sandbox mode<select data-config-field="roles.review.sandbox" data-sandbox-select {{if eq .Values.Review.Harness "claude"}}disabled{{end}}>{{range $.SandboxOptions}}<option value="{{.}}" {{if eq . $.Values.Review.SandboxMode}}selected{{end}}>{{.}}</option>{{end}}</select><span class="config-help" data-sandbox-ignored {{if ne .Values.Review.Harness "claude"}}hidden{{end}}>(Claude ignores this)</span>{{with index $.Errors "roles.review.sandbox"}}<span class="config-error" data-config-error-for="roles.review.sandbox">{{.}}</span>{{end}}</label></div>
 <div class="config-mcp-control" data-mcp-role="review"><input type="hidden" name="roles.review.mcp" value="{{if .Values.Review.MCP}}true{{else}}false{{end}}" data-mcp-value><label class="config-checkbox" data-mcp-active {{if eq .Values.Review.Harness "codex"}}hidden{{end}}><input type="checkbox" data-mcp-checkbox {{if .Values.Review.MCP}}checked{{end}}>Inherit MCP servers</label><label class="config-checkbox ignored" data-mcp-ignored {{if ne .Values.Review.Harness "codex"}}hidden{{end}}><input type="checkbox" data-mcp-ignored-checkbox {{if .Values.Review.MCP}}checked{{end}} disabled>Inherit MCP servers <span>(Codex ignores this)</span></label></div>
 </div>
 </div></fieldset>
