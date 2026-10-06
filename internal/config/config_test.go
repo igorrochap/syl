@@ -723,3 +723,31 @@ func TestValidationErrorsRejectsInvalidSandboxMode(t *testing.T) {
 		t.Fatalf("ValidationErrors() = %v, want %v", got, want)
 	}
 }
+
+func TestRenderRoundTripsSandboxModesForEveryRole(t *testing.T) {
+	cfg := defaultConfigValue()
+	cfg.Roles.Plan.SandboxMode = SandboxModeFullAccess
+	cfg.Roles.Implement.SandboxMode = SandboxModeWorkspaceWrite
+	cfg.Roles.Review.SandboxMode = SandboxModeReadOnly
+
+	rendered := Render(cfg)
+	if got := strings.Count(rendered, `sandbox = "`); got != 3 {
+		t.Fatalf("Render() has %d sandbox fields, want one per Role", got)
+	}
+	if got := strings.Count(rendered, "# Sandbox mode: full-access, workspace-write, or read-only (default: full-access).\n# Claude ignores this field. syl applies this value over ~/.codex/config.toml."); got != 3 {
+		t.Fatalf("Render() sandbox explanations = %d, want one per Role", got)
+	}
+
+	root := t.TempDir()
+	writeConfig(t, root, rendered)
+	loaded, err := Load(root)
+	if err != nil {
+		t.Fatalf("Load(Render(config)) error = %v", err)
+	}
+	if loaded.Roles.Plan.SandboxMode != SandboxModeFullAccess ||
+		loaded.Roles.Implement.SandboxMode != SandboxModeWorkspaceWrite ||
+		loaded.Roles.Review.SandboxMode != SandboxModeReadOnly {
+		t.Fatalf("loaded Role sandbox modes = %q/%q/%q, want full-access/workspace-write/read-only",
+			loaded.Roles.Plan.SandboxMode, loaded.Roles.Implement.SandboxMode, loaded.Roles.Review.SandboxMode)
+	}
+}

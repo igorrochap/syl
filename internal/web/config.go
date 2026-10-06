@@ -68,7 +68,12 @@ func (s *Server) saveConfig(writer http.ResponseWriter, request *http.Request) {
 	if !ok {
 		return
 	}
-	values, fieldErrors := configedit.Parse(request.Form)
+	snapshot, err := configedit.Load(page.Project.Path)
+	if err != nil {
+		writeServerError(writer, err)
+		return
+	}
+	values, fieldErrors := configedit.Parse(request.Form, snapshot.Values)
 	version := request.Form.Get("version")
 	result := configview.Save(page, version, values, fieldErrors)
 	s.renderConfigSaveResult(writer, request, projectPath, result)
