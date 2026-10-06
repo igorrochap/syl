@@ -23,41 +23,46 @@ import (
 )
 
 func TestClaudeAttachInvokesInteractivePrompt(t *testing.T) {
-	root := t.TempDir()
-	argsPath := filepath.Join(root, "args")
-	command := filepath.Join(t.TempDir(), "claude")
-	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"" + argsPath + "\"\n"
-	if err := os.WriteFile(command, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	adapter := New(root)
-	adapter.command = command
+	for _, mode := range []config.SandboxMode{config.SandboxModeFullAccess, config.SandboxModeWorkspaceWrite, config.SandboxModeReadOnly} {
+		t.Run(string(mode), func(t *testing.T) {
+			root := t.TempDir()
+			argsPath := filepath.Join(root, "args")
+			command := filepath.Join(t.TempDir(), "claude")
+			script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"" + argsPath + "\"\n"
+			if err := os.WriteFile(command, []byte(script), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			adapter := New(root)
+			adapter.command = command
 
-	err := adapter.Attach(context.Background(), harness.Request{
-		Model:  "claude-opus-5",
-		Effort: config.EffortHigh,
-		Prompt: "/to-tickets\n\nTopic: offline mode",
-		MCP:    false,
-	})
-	if err != nil {
-		t.Fatalf("Attach() error = %v", err)
-	}
+			err := adapter.Attach(context.Background(), harness.Request{
+				Model:       "claude-opus-5",
+				Effort:      config.EffortHigh,
+				Prompt:      "/to-tickets\n\nTopic: offline mode",
+				MCP:         false,
+				SandboxMode: mode,
+			})
+			if err != nil {
+				t.Fatalf("Attach() error = %v", err)
+			}
 
-	contents, err := os.ReadFile(argsPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	gotArgs := strings.Split(strings.TrimSpace(string(contents)), "\n")
-	wantArgs := []string{
-		"--strict-mcp-config",
-		"--model", "claude-opus-5",
-		"--effort", "high",
-		"/to-tickets",
-		"",
-		"Topic: offline mode",
-	}
-	if !reflect.DeepEqual(gotArgs, wantArgs) {
-		t.Fatalf("Claude attach args = %#v, want %#v", gotArgs, wantArgs)
+			contents, err := os.ReadFile(argsPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			gotArgs := strings.Split(strings.TrimSpace(string(contents)), "\n")
+			wantArgs := []string{
+				"--strict-mcp-config",
+				"--model", "claude-opus-5",
+				"--effort", "high",
+				"/to-tickets",
+				"",
+				"Topic: offline mode",
+			}
+			if !reflect.DeepEqual(gotArgs, wantArgs) {
+				t.Fatalf("Claude attach args = %#v, want %#v", gotArgs, wantArgs)
+			}
+		})
 	}
 }
 
@@ -1034,5 +1039,33 @@ while :; do sleep 0.05; done
 	}
 	if got := eventAssistantText(events); got != "New implementation report." {
 		t.Fatalf("resumed assistant text = %q, want only the new turn", got)
+	}
+}
+
+func TestClaudeIgnoresSandboxMode(t *testing.T) {
+	for _, build := range []struct {
+		name string
+		args func(string, harness.Request) ([]string, error)
+	}{
+		{"Run", ptyRunArgs},
+		{"Resume", ptyResumeArgs},
+	} {
+		t.Run(build.name, func(t *testing.T) {
+			request := harness.Request{Model: "claude-sonnet-5", Effort: config.EffortMedium, Prompt: "noop"}
+			want, err := build.args("session-1", request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, mode := range []config.SandboxMode{config.SandboxModeFullAccess, config.SandboxModeWorkspaceWrite, config.SandboxModeReadOnly} {
+				request.SandboxMode = mode
+				got, err := build.args("session-1", request)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !reflect.DeepEqual(got, want) {
+					t.Fatalf("%s(%q) args = %v, want %v", build.name, mode, got, want)
+				}
+			}
+		})
 	}
 }

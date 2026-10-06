@@ -36,10 +36,18 @@ const (
 	EffortXHigh  Effort = "xhigh"
 )
 
+// Sandbox modes control command execution in a Role's Codex sessions.
+const (
+	SandboxModeFullAccess     SandboxMode = "full-access"
+	SandboxModeWorkspaceWrite SandboxMode = "workspace-write"
+	SandboxModeReadOnly       SandboxMode = "read-only"
+)
+
 var (
-	acceptedTrackers  = []Tracker{TrackerGitHub, TrackerLocal, TrackerGitLab}
-	acceptedHarnesses = []Harness{HarnessClaude, HarnessCodex, HarnessOpenCode}
-	acceptedEfforts   = []Effort{EffortLow, EffortMedium, EffortHigh, EffortXHigh}
+	acceptedSandboxModes = []SandboxMode{SandboxModeFullAccess, SandboxModeWorkspaceWrite, SandboxModeReadOnly}
+	acceptedTrackers     = []Tracker{TrackerGitHub, TrackerLocal, TrackerGitLab}
+	acceptedHarnesses    = []Harness{HarnessClaude, HarnessCodex, HarnessOpenCode}
+	acceptedEfforts      = []Effort{EffortLow, EffortMedium, EffortHigh, EffortXHigh}
 )
 
 const (
@@ -57,6 +65,9 @@ var ErrNotFound = errors.New("syl config not found")
 type Tracker string
 type Harness string
 type Effort string
+
+// SandboxMode is the command-execution policy for a Role's Codex sessions.
+type SandboxMode string
 
 // IsRemote reports whether the tracker stores tickets outside the local filesystem.
 func (t Tracker) IsRemote() bool {
@@ -92,10 +103,11 @@ type RolesConfig struct {
 }
 
 type RoleConfig struct {
-	Harness Harness
-	Model   string
-	Effort  Effort
-	MCP     bool
+	Harness     Harness
+	Model       string
+	Effort      Effort
+	MCP         bool
+	SandboxMode SandboxMode
 }
 
 type LoopConfig struct {
@@ -144,10 +156,11 @@ type rawRoles struct {
 }
 
 type rawRole struct {
-	Harness string `toml:"harness"`
-	Model   string `toml:"model"`
-	Effort  string `toml:"effort"`
-	MCP     any    `toml:"mcp"`
+	Harness     string  `toml:"harness"`
+	Model       string  `toml:"model"`
+	Effort      string  `toml:"effort"`
+	MCP         any     `toml:"mcp"`
+	SandboxMode *string `toml:"sandbox"`
 }
 
 type rawLoop struct {
@@ -441,6 +454,11 @@ func validateRoleConfig(prefix string, role RoleConfig) []FieldError {
 	if _, effortErr := parseEnum(prefix+".effort", string(role.Effort), acceptedEfforts, "low, medium, high, or xhigh"); effortErr != nil {
 		errors = append(errors, fieldError(prefix+".effort", effortErr))
 	}
+	if role.SandboxMode != "" {
+		if _, err := parseEnum(prefix+".sandbox", string(role.SandboxMode), acceptedSandboxModes, "full-access, workspace-write, or read-only"); err != nil {
+			errors = append(errors, fieldError(prefix+".sandbox", err))
+		}
+	}
 	return errors
 }
 
@@ -509,7 +527,16 @@ func parseRole(prefix string, raw rawRole, defaultMCP bool) (RoleConfig, error) 
 		return RoleConfig{}, err
 	}
 
-	return RoleConfig{Harness: harness, Model: raw.Model, Effort: effort, MCP: mcp}, nil
+	sandboxMode := SandboxModeFullAccess
+	if raw.SandboxMode != nil {
+		sandboxMode, err = parseEnum(prefix+".sandbox", *raw.SandboxMode,
+			acceptedSandboxModes, "full-access, workspace-write, or read-only")
+		if err != nil {
+			return RoleConfig{}, err
+		}
+	}
+
+	return RoleConfig{Harness: harness, Model: raw.Model, Effort: effort, MCP: mcp, SandboxMode: sandboxMode}, nil
 }
 
 func parseOptionalBool(key string, value any, defaultValue bool) (bool, error) {

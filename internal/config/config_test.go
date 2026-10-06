@@ -661,3 +661,65 @@ effort = %q
 		roles["review"]["harness"], roles["review"]["model"], roles["review"]["effort"],
 	)
 }
+
+func TestLoadRoleSandboxModes(t *testing.T) {
+	for _, role := range []string{"plan", "implement", "review"} {
+		for _, mode := range []string{"", "full-access", "workspace-write", "read-only"} {
+			t.Run(role+"/"+mode, func(t *testing.T) {
+				root := t.TempDir()
+				contents := configWithRoleValue("plan", "model", "claude-planner")
+				if mode != "" {
+					header := "[roles." + role + "]"
+					contents = strings.Replace(contents, header, header+"\nsandbox = "+fmt.Sprintf("%q", mode), 1)
+				}
+				writeConfig(t, root, contents)
+				got, err := Load(root)
+				if err != nil {
+					t.Fatalf("Load() error = %v", err)
+				}
+				roles := map[string]RoleConfig{"plan": got.Roles.Plan, "implement": got.Roles.Implement, "review": got.Roles.Review}
+				for name, configured := range roles {
+					want := "full-access"
+					if name == role && mode != "" {
+						want = mode
+					}
+					if string(configured.SandboxMode) != want {
+						t.Errorf("roles.%s.sandbox = %q, want %q", name, configured.SandboxMode, want)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestLoadRejectsInvalidSandboxMode(t *testing.T) {
+	for _, mode := range []string{"none", ""} {
+		t.Run(mode, func(t *testing.T) {
+			root := t.TempDir()
+			contents := strings.Replace(configWithRoleValue("plan", "model", "claude-planner"), "[roles.implement]", "[roles.implement]\nsandbox = "+fmt.Sprintf("%q", mode), 1)
+			writeConfig(t, root, contents)
+			_, err := Load(root)
+			var field FieldError
+			if !errors.As(err, &field) || field.Field != "roles.implement.sandbox" {
+				t.Fatalf("Load() error = %v, want sandbox FieldError", err)
+			}
+			if mode == "none" {
+				for _, value := range []string{"full-access", "workspace-write", "read-only"} {
+					if !strings.Contains(err.Error(), value) {
+						t.Errorf("error = %v, missing %q", err, value)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestValidationErrorsRejectsInvalidSandboxMode(t *testing.T) {
+	cfg := defaultConfigValue()
+	cfg.Roles.Implement.SandboxMode = "none"
+	got := ValidationErrors(cfg)
+	want := []FieldError{{Field: "roles.implement.sandbox", Message: `roles.implement.sandbox: invalid value "none"; want full-access, workspace-write, or read-only`}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ValidationErrors() = %v, want %v", got, want)
+	}
+}

@@ -244,9 +244,10 @@ func TestRunReviewPassesAdditionalContextToHarness(t *testing.T) {
 		ProjectConfig: config.Config{
 			Tracker: config.TrackerConfig{Reviews: config.TrackerLocal},
 			Roles: config.RolesConfig{Review: config.RoleConfig{
-				Harness: config.HarnessClaude,
-				Model:   "claude-sonnet-5",
-				Effort:  config.EffortMedium,
+				Harness:     config.HarnessClaude,
+				Model:       "claude-sonnet-5",
+				Effort:      config.EffortMedium,
+				SandboxMode: config.SandboxModeWorkspaceWrite,
 			}},
 		},
 		Ticket:    &ticket,
@@ -262,6 +263,9 @@ func TestRunReviewPassesAdditionalContextToHarness(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("RunReview() error = %v, want nil", err)
+	}
+	if adapter.request.SandboxMode != config.SandboxModeWorkspaceWrite {
+		t.Fatalf("review sandbox = %q, want workspace-write", adapter.request.SandboxMode)
 	}
 	if !strings.Contains(adapter.request.Prompt, "## Additional context supplied by the user for this run\n\nonly the parser changes matter") {
 		t.Fatalf("harness prompt = %q, want trimmed additional context", adapter.request.Prompt)

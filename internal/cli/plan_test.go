@@ -63,10 +63,11 @@ func TestPlanComposesInteractivePromptForFlags(t *testing.T) {
 				t.Fatalf("attach requests = %d, want 1", len(adapter.requests))
 			}
 			wantRequest := harness.Request{
-				Model:  "claude-opus-5",
-				Effort: config.EffortHigh,
-				Prompt: tt.want,
-				MCP:    true,
+				Model:       "claude-opus-5",
+				Effort:      config.EffortHigh,
+				Prompt:      tt.want,
+				MCP:         true,
+				SandboxMode: config.SandboxModeFullAccess,
 			}
 			if !reflect.DeepEqual(adapter.requests[0], wantRequest) {
 				t.Fatalf("Attach request = %#v, want %#v", adapter.requests[0], wantRequest)

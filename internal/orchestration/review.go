@@ -220,6 +220,7 @@ func runStandaloneReview(ctx context.Context, options ReviewOptions, preparation
 		Completion: harness.CompletionReviewVerdict,
 		Model:      options.ProjectConfig.Roles.Review.Model, Effort: options.ProjectConfig.Roles.Review.Effort,
 		Prompt: prompt, MCP: options.ProjectConfig.Roles.Review.MCP,
+		SandboxMode: options.ProjectConfig.Roles.Review.SandboxMode,
 	}, options.Output, mode, questions)
 	endedAt := time.Now().UTC()
 	return standaloneReviewRun{review: review, startedAt: startedAt, endedAt: endedAt}, err

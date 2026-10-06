@@ -42,12 +42,18 @@ func TestRunImplementRecordsRunStateLifecycle(t *testing.T) {
 			{Type: harness.EventAssistantText, Text: "revised"},
 		}},
 		runHooks: []func(harness.Request){func(request harness.Request) {
+			if request.SandboxMode != config.SandboxModeWorkspaceWrite {
+				t.Fatalf("implementer sandbox = %q, want workspace-write", request.SandboxMode)
+			}
 			if request.Completion != harness.CompletionTurnEnd {
 				t.Fatalf("implementer completion = %v, want turn end", request.Completion)
 			}
 			observations = append(observations, readState())
 		}},
 		resumeHooks: []func(harness.Request){func(request harness.Request) {
+			if request.SandboxMode != config.SandboxModeWorkspaceWrite {
+				t.Fatalf("implementer sandbox = %q, want workspace-write", request.SandboxMode)
+			}
 			if request.Completion != harness.CompletionTurnEnd {
 				t.Fatalf("implementer completion = %v, want turn end", request.Completion)
 			}
@@ -63,12 +69,18 @@ func TestRunImplementRecordsRunStateLifecycle(t *testing.T) {
 			{Type: harness.EventAssistantText, Text: "VERDICT: approve\nSUMMARY: Ready\nFINDINGS:\n"},
 		}},
 		runHooks: []func(harness.Request){func(request harness.Request) {
+			if request.SandboxMode != config.SandboxModeReadOnly {
+				t.Fatalf("reviewer sandbox = %q, want read-only", request.SandboxMode)
+			}
 			if request.Completion != harness.CompletionReviewVerdict {
 				t.Fatalf("reviewer completion = %v, want review verdict", request.Completion)
 			}
 			observations = append(observations, readState())
 		}},
 		resumeHooks: []func(harness.Request){func(request harness.Request) {
+			if request.SandboxMode != config.SandboxModeReadOnly {
+				t.Fatalf("reviewer sandbox = %q, want read-only", request.SandboxMode)
+			}
 			if request.Completion != harness.CompletionReviewVerdict {
 				t.Fatalf("reviewer completion = %v, want review verdict", request.Completion)
 			}
@@ -82,8 +94,8 @@ func TestRunImplementRecordsRunStateLifecycle(t *testing.T) {
 		OpenRun:    NewDiskRunOpener(root, sylhome.Dir{}, &output),
 		ProjectConfig: config.Config{
 			Roles: config.RolesConfig{
-				Implement: config.RoleConfig{Harness: config.HarnessCodex},
-				Review:    config.RoleConfig{Harness: config.HarnessClaude},
+				Implement: config.RoleConfig{Harness: config.HarnessCodex, SandboxMode: config.SandboxModeWorkspaceWrite},
+				Review:    config.RoleConfig{Harness: config.HarnessClaude, SandboxMode: config.SandboxModeReadOnly},
 			},
 			Loop: config.LoopConfig{MaxIterations: 2},
 		},

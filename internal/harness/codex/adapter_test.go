@@ -63,6 +63,7 @@ func TestRunInvokesCodexWithModelEffortAndComposedSkillPrompt(t *testing.T) {
 	wantArgs := []string{
 		"exec",
 		"--json",
+		"--sandbox", "danger-full-access",
 		"--model", "gpt-5.6-luna",
 		"--config", `model_reasoning_effort="xhigh"`,
 		"--cd", root,
@@ -178,6 +179,7 @@ func TestCodexResumeKeepsSessionModelEffortAndComposedSkillPrompt(t *testing.T) 
 		"--cd", root,
 		"resume",
 		"--json",
+		"--config", `sandbox_mode="danger-full-access"`,
 		"--model", "gpt-5.6-luna",
 		"--config", `model_reasoning_effort="xhigh"`,
 		"codex-session",
@@ -290,6 +292,7 @@ func TestCodexAttachInvokesInteractivePrompt(t *testing.T) {
 	wantArgs := []string{
 		"--model", "gpt-5.6-luna",
 		"--config", `model_reasoning_effort="high"`,
+		"--sandbox", "danger-full-access",
 		"--cd", root,
 		"$plan\n\nPlan the ticket.",
 	}
@@ -447,4 +450,60 @@ func readFile(t *testing.T, path string) string {
 		t.Fatal(err)
 	}
 	return string(contents)
+}
+
+func TestCodexSessionSandboxModes(t *testing.T) {
+	for _, operation := range []string{"Run", "Resume", "Attach"} {
+		for _, mode := range []struct {
+			sandboxMode config.SandboxMode
+			want        string
+		}{
+			{config.SandboxModeFullAccess, "danger-full-access"},
+			{config.SandboxModeWorkspaceWrite, "workspace-write"},
+			{config.SandboxModeReadOnly, "read-only"},
+		} {
+			t.Run(operation+"/"+string(mode.sandboxMode), func(t *testing.T) {
+				root := t.TempDir()
+				path := filepath.Join(root, "args")
+				adapter := &Adapter{command: fakeCodexCommand(t, path, nil), projectRoot: root}
+				request := harness.Request{Model: "gpt-5.6-luna", Effort: config.EffortHigh, Prompt: "noop", SandboxMode: mode.sandboxMode}
+				invokeCodexSession(t, adapter, operation, request)
+				args := strings.Split(strings.TrimSpace(readFile(t, path)), "\n")
+				flag, value := "--sandbox", mode.want
+				if operation == "Resume" {
+					flag, value = "--config", `sandbox_mode="`+mode.want+`"`
+				}
+				for index := 0; index+1 < len(args); index++ {
+					if args[index] == flag && args[index+1] == value {
+						return
+					}
+				}
+				t.Fatalf("%s args = %v, want %s %s", operation, args, flag, value)
+			})
+		}
+	}
+}
+
+func invokeCodexSession(t *testing.T, adapter *Adapter, operation string, request harness.Request) {
+	t.Helper()
+	if operation == "Attach" {
+		if err := adapter.Attach(context.Background(), request); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	var stream harness.Stream
+	var err error
+	if operation == "Resume" {
+		stream, err = adapter.Resume(context.Background(), "session-1", request)
+	} else {
+		stream, err = adapter.Run(context.Background(), request)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = collectEvents(stream)
+	if err := stream.Wait(); err != nil {
+		t.Fatal(err)
+	}
 }

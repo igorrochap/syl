@@ -45,11 +45,12 @@ func (s CompletionSignal) String() string {
 }
 
 type Request struct {
-	Completion CompletionSignal
-	Model      string
-	Effort     config.Effort
-	Prompt     string
-	MCP        bool
+	Completion  CompletionSignal
+	Model       string
+	Effort      config.Effort
+	Prompt      string
+	MCP         bool
+	SandboxMode config.SandboxMode
 }
 
 type Stream interface {
