@@ -12,6 +12,9 @@ _Avoid_: agent tool, model runner, AI CLI
 A stage of the workflow — planner, implementer, reviewer — each bound to a harness, a model, and an effort level.
 _Avoid_: stage, step, phase
 
+**Sandbox mode**:
+The command-execution policy a Role's Codex sessions run under: `full-access`, `workspace-write`, or `read-only`. Not a Worktree.
+
 **Skill set**:
 The canonical collection of skills vendored in this repo and installed into a project by `init`.
 _Avoid_: prompts, commands
