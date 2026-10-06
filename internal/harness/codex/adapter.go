@@ -75,13 +75,14 @@ func (a *Adapter) Attach(ctx context.Context, request harness.Request) error {
 func (a *Adapter) AttachSession(
 	ctx context.Context,
 	sessionID string,
-	_ harness.Request,
+	request harness.Request,
 ) error {
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" {
 		return errors.New("cannot attach to Codex session without a session id")
 	}
 	args := []string{"resume", sessionID}
+	args = append(args, "--sandbox", codexSandboxMode(request.SandboxMode))
 	args = a.withProjectRoot(args)
 	return a.runInteractive(ctx, args)
 }
