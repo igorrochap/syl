@@ -2,6 +2,31 @@
 
 <!-- version list -->
 
+## v1.38.0 (2026-10-07)
+
+### Features
+
+- **config**: Add sandbox mode configuration to roles
+  ([#233](https://github.com/igorrochap/syl/pull/233),
+  [`c3a7bac`](https://github.com/igorrochap/syl/commit/c3a7bace9cedce8cb2491d2ad6dfae267c482ea0))
+
+- **config**: Add sandbox mode for session execution
+  ([#233](https://github.com/igorrochap/syl/pull/233),
+  [`c3a7bac`](https://github.com/igorrochap/syl/commit/c3a7bace9cedce8cb2491d2ad6dfae267c482ea0))
+
+- **config**: Implement granular sandbox mode for session execution
+  ([#233](https://github.com/igorrochap/syl/pull/233),
+  [`c3a7bac`](https://github.com/igorrochap/syl/commit/c3a7bace9cedce8cb2491d2ad6dfae267c482ea0))
+
+- **harness**: Pass sandbox mode to codex sessions
+  ([#233](https://github.com/igorrochap/syl/pull/233),
+  [`c3a7bac`](https://github.com/igorrochap/syl/commit/c3a7bace9cedce8cb2491d2ad6dfae267c482ea0))
+
+- **ui**: Disable sandbox mode for Claude in config
+  ([#233](https://github.com/igorrochap/syl/pull/233),
+  [`c3a7bac`](https://github.com/igorrochap/syl/commit/c3a7bace9cedce8cb2491d2ad6dfae267c482ea0))
+
+
 ## v1.37.0 (2026-10-01)
 
 ### Bug Fixes
