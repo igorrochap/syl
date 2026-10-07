@@ -212,6 +212,9 @@ reviews = "local"
 harness = "claude"
 model = "claude-opus-5"
 effort = "high"
+# Sandbox mode: full-access, workspace-write, or read-only (default: full-access).
+# Claude ignores this field. syl applies this value over ~/.codex/config.toml.
+sandbox = "full-access"
 # mcp = true inherits user/project MCP configuration; false strips it for Claude.
 # Codex ignores this field. Omitted defaults are true for plan and implement, and false for review.
 mcp = true
@@ -220,6 +223,9 @@ mcp = true
 harness = "codex"
 model = "gpt-5.6-luna"
 effort = "xhigh"
+# Sandbox mode: full-access, workspace-write, or read-only (default: full-access).
+# Claude ignores this field. syl applies this value over ~/.codex/config.toml.
+sandbox = "full-access"
 # mcp = true inherits user/project MCP configuration; false strips it for Claude.
 # Codex ignores this field. Omitted defaults are true for plan and implement, and false for review.
 mcp = true
@@ -228,6 +234,9 @@ mcp = true
 harness = "claude"
 model = "claude-sonnet-5"
 effort = "medium"
+# Sandbox mode: full-access, workspace-write, or read-only (default: full-access).
+# Claude ignores this field. syl applies this value over ~/.codex/config.toml.
+sandbox = "full-access"
 # mcp = true inherits user/project MCP configuration; false strips it for Claude.
 # Codex ignores this field. Omitted defaults are true for plan and implement, and false for review.
 # Hooks that require MCP may cause one blocked-then-retried tool call in lean sessions.

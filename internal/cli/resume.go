@@ -97,7 +97,7 @@ func (a *App) runResumeCommand(cmd *cobra.Command, roleName string, selection re
 			return fmt.Errorf("write resume warning: %w", err)
 		}
 	}
-	request := harness.Request{MCP: roleConfig.MCP}
+	request := harness.Request{MCP: roleConfig.MCP, SandboxMode: roleConfig.SandboxMode}
 	if err := adapter.AttachSession(cmd.Context(), target.sessionID, request); err != nil {
 		return fmt.Errorf("resume %s session: %w", role, err)
 	}

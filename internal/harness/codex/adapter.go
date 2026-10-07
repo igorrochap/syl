@@ -19,6 +19,7 @@ import (
 	"os/exec"
 	"strings"
 
+	"github.com/igorrochap/syl/internal/config"
 	"github.com/igorrochap/syl/internal/harness"
 )
 
@@ -49,12 +50,14 @@ func (a *Adapter) Resume(ctx context.Context, sessionID string, request harness.
 	if err != nil {
 		return nil, err
 	}
+	// Resume accepts sandbox_mode via --config, but rejects --sandbox.
 	// --cd is an option of `codex exec`, not of its `resume` subcommand, which
 	// rejects it; it must precede the subcommand. The model and effort are
 	// repeated because a resumed thread otherwise falls back to Codex's default
 	// model.
 	args := a.withProjectRoot([]string{"exec"})
 	args = append(args, "resume", "--json")
+	args = append(args, "--config", `sandbox_mode="`+codexSandboxMode(request.SandboxMode)+`"`)
 	args = append(args, settings...)
 	args = append(args, sessionID, composePrompt(request.Prompt))
 	return a.start(ctx, args)
@@ -72,13 +75,14 @@ func (a *Adapter) Attach(ctx context.Context, request harness.Request) error {
 func (a *Adapter) AttachSession(
 	ctx context.Context,
 	sessionID string,
-	_ harness.Request,
+	request harness.Request,
 ) error {
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" {
 		return errors.New("cannot attach to Codex session without a session id")
 	}
 	args := []string{"resume", sessionID}
+	args = append(args, "--sandbox", codexSandboxMode(request.SandboxMode))
 	args = a.withProjectRoot(args)
 	return a.runInteractive(ctx, args)
 }
@@ -104,7 +108,7 @@ func (a *Adapter) runArgs(request harness.Request) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	args = append([]string{"exec", "--json"}, args...)
+	args = append([]string{"exec", "--json", "--sandbox", codexSandboxMode(request.SandboxMode)}, args...)
 	args = a.withProjectRoot(args)
 	return append(args, composePrompt(request.Prompt)), nil
 }
@@ -114,6 +118,7 @@ func (a *Adapter) attachArgs(request harness.Request) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
+	args = append(args, "--sandbox", codexSandboxMode(request.SandboxMode))
 	args = a.withProjectRoot(args)
 	return append(args, composePrompt(request.Prompt)), nil
 }
@@ -133,6 +138,14 @@ func (a *Adapter) baseArgs(request harness.Request) ([]string, error) {
 		"--model", request.Model,
 		"--config", `model_reasoning_effort="` + effort + `"`,
 	}, nil
+}
+
+func codexSandboxMode(mode config.SandboxMode) string {
+	usesFullAccess := mode == "" || mode == config.SandboxModeFullAccess
+	if usesFullAccess {
+		return "danger-full-access"
+	}
+	return string(mode)
 }
 
 func (a *Adapter) withProjectRoot(args []string) []string {

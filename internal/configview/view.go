@@ -36,6 +36,7 @@ type View struct {
 	TrackerOptions   []string
 	HarnessOptions   []string
 	EffortOptions    []string
+	SandboxOptions   []string
 	Invalid          *InvalidConfig
 }
 
@@ -153,6 +154,7 @@ func newFormView(page readmodel.ProjectPage) View {
 		TrackerOptions:   configedit.TrackerOptions(),
 		HarnessOptions:   configedit.HarnessOptions(),
 		EffortOptions:    configedit.EffortOptions(),
+		SandboxOptions:   configedit.SandboxOptions(),
 	}
 }
 

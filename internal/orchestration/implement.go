@@ -452,11 +452,12 @@ func ensureImplementRunState(params implementIterationsParams) *runStateTracker 
 func runImplementReview(ctx context.Context, params implementIterationsParams, reviewParams implementReviewParams) (ReviewExecution, error) {
 	params.runState.setActivity(runrecord.Reviewing)
 	reviewRequest := harness.Request{
-		Completion: harness.CompletionReviewVerdict,
-		Model:      params.projectConfig.Roles.Review.Model,
-		Effort:     params.projectConfig.Roles.Review.Effort,
-		Prompt:     composeReviewPrompt("#"+strconv.Itoa(params.ticket.Number), &params.ticket, params.branchPoint, reviewParams.diffPath, params.reviewContext),
-		MCP:        params.projectConfig.Roles.Review.MCP,
+		Completion:  harness.CompletionReviewVerdict,
+		Model:       params.projectConfig.Roles.Review.Model,
+		Effort:      params.projectConfig.Roles.Review.Effort,
+		Prompt:      composeReviewPrompt("#"+strconv.Itoa(params.ticket.Number), &params.ticket, params.branchPoint, reviewParams.diffPath, params.reviewContext),
+		MCP:         params.projectConfig.Roles.Review.MCP,
+		SandboxMode: params.projectConfig.Roles.Review.SandboxMode,
 	}
 	renderer := ui.New(params.output, ui.DetectCaps(params.output))
 	if err := writeRoleSection(params.output, "Reviewer"); err != nil {
@@ -604,7 +605,8 @@ func runImplementTurn(
 			turn.rolloverSeedPath,
 			params.additionalContext,
 		),
-		MCP: params.projectConfig.Roles.Implement.MCP,
+		MCP:         params.projectConfig.Roles.Implement.MCP,
+		SandboxMode: params.projectConfig.Roles.Implement.SandboxMode,
 	}
 	implementStartedAt := time.Now().UTC()
 	implementResult, err := runImplementRoleWithResumeFallback(

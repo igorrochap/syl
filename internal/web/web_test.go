@@ -48,6 +48,11 @@ func TestHandlerProtectsConfigSaveWithTokenAndOrigin(t *testing.T) {
 		t.Fatal(err)
 	}
 	page := serveProject(t, server.Handler(), project, "/projects/config")
+	if !strings.Contains(page, `name="roles.plan.sandbox"`) ||
+		!strings.Contains(page, `name="roles.implement.sandbox"`) ||
+		!strings.Contains(page, `name="roles.review.sandbox"`) {
+		t.Fatalf("config page is missing a Role sandbox field: %q", page)
+	}
 	token := tokenFromPage(t, page)
 	form := configForm(t, project, token)
 	form.Del("token")
@@ -58,6 +63,146 @@ func TestHandlerProtectsConfigSaveWithTokenAndOrigin(t *testing.T) {
 	if response := postMutation(t, server.Handler(), configSaveRoute(project), form, "http://evil.example:7777"); response.Code != http.StatusForbidden {
 		t.Fatalf("foreign origin status = %d, want forbidden", response.Code)
 	}
+}
+
+func TestConfigSaveKeepsSandboxWhenOlderFormOmitsIt(t *testing.T) {
+	sylHome := t.TempDir()
+	project := t.TempDir()
+	if _, err := config.Init(project); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := config.Load(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded.Roles.Review.SandboxMode = config.SandboxModeWorkspaceWrite
+	if _, err := config.Write(project, loaded, config.OverwriteExisting); err != nil {
+		t.Fatal(err)
+	}
+	writeWebRegistry(t, sylHome, sylhome.RegisteredProject{Path: project})
+	server, err := newServer(t, sylHome)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	page := serveProject(t, server.Handler(), project, "/projects/config")
+	form := configForm(t, project, tokenFromPage(t, page))
+	form.Del("roles.plan.sandbox")
+	form.Del("roles.implement.sandbox")
+	form.Del("roles.review.sandbox")
+	response := postMutation(t, server.Handler(), configSaveRoute(project), form, "http://localhost:7777")
+	if response.Code != http.StatusSeeOther {
+		t.Fatalf("config save status = %d, want redirect", response.Code)
+	}
+
+	after, err := config.Load(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Roles.Review.SandboxMode != config.SandboxModeWorkspaceWrite {
+		t.Fatalf("saved review sandbox = %q, want workspace-write", after.Roles.Review.SandboxMode)
+	}
+}
+
+func TestConfigSandboxControlsFollowHarnessAndSaveValues(t *testing.T) {
+	sylHome := t.TempDir()
+	project := t.TempDir()
+	if _, err := config.Init(project); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := config.Load(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded.Roles.Plan.Harness = config.HarnessCodex
+	loaded.Roles.Plan.SandboxMode = config.SandboxModeFullAccess
+	loaded.Roles.Implement.Harness = config.HarnessClaude
+	loaded.Roles.Implement.Model = "claude-sonnet-5"
+	loaded.Roles.Implement.SandboxMode = config.SandboxModeReadOnly
+	loaded.Roles.Review.Harness = config.HarnessCodex
+	loaded.Roles.Review.SandboxMode = config.SandboxModeWorkspaceWrite
+	if _, err := config.Write(project, loaded, config.OverwriteExisting); err != nil {
+		t.Fatal(err)
+	}
+	writeWebRegistry(t, sylHome, sylhome.RegisteredProject{Path: project})
+	server, err := newServer(t, sylHome)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	page := serveProject(t, server.Handler(), project, "/projects/config")
+	for _, role := range []struct {
+		name, mode string
+	}{
+		{name: "plan", mode: "full-access"},
+		{name: "implement", mode: "read-only"},
+		{name: "review", mode: "workspace-write"},
+	} {
+		control := sandboxControlMarkup(t, page, role.name)
+		if !strings.Contains(control, `name="roles.`+role.name+`.sandbox" value="`+role.mode+`"`) {
+			t.Errorf("%s sandbox hidden input does not preserve %q: %q", role.name, role.mode, control)
+		}
+		if !strings.Contains(control, `value="`+role.mode+`" selected`) {
+			t.Errorf("%s sandbox control does not select %q: %q", role.name, role.mode, control)
+		}
+		if !strings.Contains(page, `data-sandbox-harness="`+role.name+`"`) {
+			t.Errorf("%s Harness select is not wired to its sandbox control", role.name)
+		}
+	}
+	implementControl := sandboxControlMarkup(t, page, "implement")
+	if !strings.Contains(implementControl, `data-sandbox-select disabled`) ||
+		!strings.Contains(implementControl, `(Claude ignores this)`) {
+		t.Fatalf("Claude sandbox control is not disabled with its explanation: %q", implementControl)
+	}
+	planControl := sandboxControlMarkup(t, page, "plan")
+	if strings.Contains(planControl, `data-sandbox-select disabled`) ||
+		!strings.Contains(planControl, `data-sandbox-ignored hidden`) {
+		t.Fatalf("Codex sandbox control should be enabled without an ignored label: %q", planControl)
+	}
+
+	token := tokenFromPage(t, page)
+	form := configForm(t, project, token)
+	form.Set("roles.plan.sandbox", "workspace-write")
+	response := postMutation(t, server.Handler(), configSaveRoute(project), form, "http://localhost:7777")
+	if response.Code != http.StatusSeeOther {
+		t.Fatalf("config save status = %d, want redirect; body = %q", response.Code, response.Body.String())
+	}
+	after, err := config.Load(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Roles.Plan.SandboxMode != config.SandboxModeWorkspaceWrite {
+		t.Fatalf("saved plan sandbox = %q, want workspace-write", after.Roles.Plan.SandboxMode)
+	}
+	if after.Roles.Implement.SandboxMode != config.SandboxModeReadOnly {
+		t.Fatalf("saved Claude sandbox = %q, want stored read-only", after.Roles.Implement.SandboxMode)
+	}
+
+	page = serveProject(t, server.Handler(), project, "/projects/config")
+	form = configForm(t, project, tokenFromPage(t, page))
+	form.Set("roles.review.sandbox", "none")
+	invalid := rawMutation(t, server.Handler(), http.MethodPost, configSaveRoute(project), form.Encode(), tokenFromPage(t, page), true)
+	if invalid.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("invalid sandbox save status = %d, want unprocessable entity", invalid.Code)
+	}
+	reviewControl := sandboxControlMarkup(t, invalid.Body.String(), "review")
+	if !strings.Contains(reviewControl, `data-config-error-for="roles.review.sandbox"`) ||
+		!strings.Contains(reviewControl, `invalid value`) || !strings.Contains(reviewControl, `none`) {
+		t.Fatalf("review sandbox error is not shown next to the control: %q", reviewControl)
+	}
+}
+
+func sandboxControlMarkup(t *testing.T, page, role string) string {
+	t.Helper()
+	start := strings.Index(page, `<div class="config-sandbox-control" data-sandbox-role="`+role+`">`)
+	if start < 0 {
+		t.Fatalf("config page is missing the %s sandbox control", role)
+	}
+	end := strings.Index(page[start:], `</div>`)
+	if end < 0 {
+		t.Fatalf("%s sandbox control has no closing div", role)
+	}
+	return page[start : start+end+len(`</div>`)]
 }
 
 func TestHandlerConfigRoutesCoverContentFeedbackAndBadRequests(t *testing.T) {
@@ -742,6 +887,7 @@ func setRoleForm(form url.Values, name string, values configedit.RoleValues) {
 	form.Set(prefix+"harness", values.Harness)
 	form.Set(prefix+"model", values.Model)
 	form.Set(prefix+"effort", values.Effort)
+	form.Set(prefix+"sandbox", values.SandboxMode)
 	if values.MCP {
 		form.Set(prefix+"mcp", "true")
 	}

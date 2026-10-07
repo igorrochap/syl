@@ -162,9 +162,9 @@ func configFromAnswers(answers map[string]tui.Answer) (config.Config, []string, 
 		return defaults[key]
 	}
 	roles := config.RolesConfig{
-		Plan:      config.RoleConfig{Harness: config.Harness(value("plan.harness")), Model: value("plan.model"), Effort: config.Effort(value("plan.effort")), MCP: true},
-		Implement: config.RoleConfig{Harness: config.Harness(value("implement.harness")), Model: value("implement.model"), Effort: config.Effort(value("implement.effort")), MCP: true},
-		Review:    config.RoleConfig{Harness: config.Harness(value("review.harness")), Model: value("review.model"), Effort: config.Effort(value("review.effort"))},
+		Plan:      config.RoleConfig{Harness: config.Harness(value("plan.harness")), Model: value("plan.model"), Effort: config.Effort(value("plan.effort")), MCP: true, SandboxMode: config.SandboxModeFullAccess},
+		Implement: config.RoleConfig{Harness: config.Harness(value("implement.harness")), Model: value("implement.model"), Effort: config.Effort(value("implement.effort")), MCP: true, SandboxMode: config.SandboxModeFullAccess},
+		Review:    config.RoleConfig{Harness: config.Harness(value("review.harness")), Model: value("review.model"), Effort: config.Effort(value("review.effort")), SandboxMode: config.SandboxModeFullAccess},
 	}
 	return config.Config{
 		Tracker: config.TrackerConfig{Issues: config.Tracker(value("tracker.issues")), Reviews: config.Tracker(value("tracker.reviews"))},

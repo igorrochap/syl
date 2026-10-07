@@ -33,7 +33,41 @@ type PlanOptions struct {
 
 // RunPlan validates the referenced skills, attaches the planner, and reports new tickets.
 func RunPlan(ctx context.Context, options PlanOptions) error {
-	if options.WithDocs && !options.Grill {
+	if err := validatePlanOptions(options); err != nil {
+		return err
+	}
+	if options.Output == nil {
+		options.Output = io.Discard
+	}
+
+	if err := validatePlanSkills(options.WorkRoot, planSkills(options)); err != nil {
+		return err
+	}
+
+	before, err := options.IssueTracker.List(ctx)
+	if err != nil {
+		return fmt.Errorf("snapshot tickets before planning: %w", err)
+	}
+	request := harness.Request{
+		Model:       options.Role.Model,
+		Effort:      options.Role.Effort,
+		Prompt:      composePlanPrompt(options),
+		MCP:         options.Role.MCP,
+		SandboxMode: options.Role.SandboxMode,
+	}
+	if err := options.Adapter.Attach(ctx, request); err != nil {
+		return err
+	}
+	after, err := options.IssueTracker.List(ctx)
+	if err != nil {
+		return fmt.Errorf("list tickets after planning: %w", err)
+	}
+	return writeCreatedTickets(options.Output, createdTickets(before, after))
+}
+
+func validatePlanOptions(options PlanOptions) error {
+	docsWithoutGrill := options.WithDocs && !options.Grill
+	if docsWithoutGrill {
 		return errors.New("--with-docs requires --grill")
 	}
 	if strings.TrimSpace(options.Topic) == "" {
@@ -45,12 +79,12 @@ func RunPlan(ctx context.Context, options PlanOptions) error {
 	if options.Adapter == nil {
 		return errors.New("plan harness is not configured")
 	}
-	if options.Output == nil {
-		options.Output = io.Discard
-	}
+	return nil
+}
 
-	for _, name := range planSkills(options) {
-		path := filepath.Join(options.WorkRoot, ".agents", "skills", name, "SKILL.md")
+func validatePlanSkills(workRoot string, names []string) error {
+	for _, name := range names {
+		path := filepath.Join(workRoot, ".agents", "skills", name, "SKILL.md")
 		info, err := os.Stat(path)
 		if errors.Is(err, os.ErrNotExist) || err == nil && info.IsDir() {
 			return fmt.Errorf("required plan skill %q is not installed in .agents/skills", name)
@@ -60,24 +94,7 @@ func RunPlan(ctx context.Context, options PlanOptions) error {
 		}
 	}
 
-	before, err := options.IssueTracker.List(ctx)
-	if err != nil {
-		return fmt.Errorf("snapshot tickets before planning: %w", err)
-	}
-	request := harness.Request{
-		Model:  options.Role.Model,
-		Effort: options.Role.Effort,
-		Prompt: composePlanPrompt(options),
-		MCP:    options.Role.MCP,
-	}
-	if err := options.Adapter.Attach(ctx, request); err != nil {
-		return err
-	}
-	after, err := options.IssueTracker.List(ctx)
-	if err != nil {
-		return fmt.Errorf("list tickets after planning: %w", err)
-	}
-	return writeCreatedTickets(options.Output, createdTickets(before, after))
+	return nil
 }
 
 func planSkills(options PlanOptions) []string {

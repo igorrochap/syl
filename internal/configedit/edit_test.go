@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -22,6 +23,9 @@ func TestOptionsComeFromConfigAcceptedValues(t *testing.T) {
 	}
 	if got, want := configedit.EffortOptions(), stringify(config.Efforts()); !reflect.DeepEqual(got, want) {
 		t.Fatalf("effort options = %#v, want %#v", got, want)
+	}
+	if got, want := configedit.SandboxOptions(), stringify(config.SandboxModes()); !reflect.DeepEqual(got, want) {
+		t.Fatalf("sandbox options = %#v, want %#v", got, want)
 	}
 }
 
@@ -53,6 +57,113 @@ func TestLoadAndSaveRoundTripsConfig(t *testing.T) {
 	}
 	if updated.Version == snapshot.Version {
 		t.Fatal("saved config kept the old version")
+	}
+}
+
+func TestParseAndSaveKeepsLoadedSandboxWhenFormOmitsIt(t *testing.T) {
+	project := t.TempDir()
+	if _, err := config.Init(project); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := config.Load(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded.Roles.Review.SandboxMode = config.SandboxModeWorkspaceWrite
+	if _, err := config.Write(project, loaded, config.OverwriteExisting); err != nil {
+		t.Fatal(err)
+	}
+
+	snapshot, err := configedit.Load(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	form := formFromValues(snapshot.Values)
+	form.Del("roles.plan.sandbox")
+	form.Del("roles.implement.sandbox")
+	form.Del("roles.review.sandbox")
+	values, fieldErrors := configedit.Parse(form, snapshot.Values)
+	if len(fieldErrors) > 0 {
+		t.Fatalf("Parse() field errors = %#v, want none", fieldErrors)
+	}
+	if values.Review.SandboxMode != string(config.SandboxModeWorkspaceWrite) {
+		t.Fatalf("parsed review sandbox = %q, want workspace-write", values.Review.SandboxMode)
+	}
+	if err := configedit.Save(project, snapshot.Version, values); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+	after, err := config.Load(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Roles.Review.SandboxMode != config.SandboxModeWorkspaceWrite {
+		t.Fatalf("saved review sandbox = %q, want workspace-write", after.Roles.Review.SandboxMode)
+	}
+}
+
+func TestParseValidateAndSaveSandboxMode(t *testing.T) {
+	project := t.TempDir()
+	if _, err := config.Init(project); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := configedit.Load(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	form := formFromValues(snapshot.Values)
+	form.Set("roles.implement.sandbox", "read-only")
+	values, fieldErrors := configedit.Parse(form, snapshot.Values)
+	if len(fieldErrors) > 0 {
+		t.Fatalf("Parse() field errors = %#v, want none", fieldErrors)
+	}
+	if got := configedit.Validate(values); len(got) > 0 {
+		t.Fatalf("Validate() errors = %#v, want none", got)
+	}
+	if err := configedit.Save(project, snapshot.Version, values); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+	loaded, err := config.Load(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Roles.Implement.SandboxMode != config.SandboxModeReadOnly {
+		t.Fatalf("saved implement sandbox = %q, want read-only", loaded.Roles.Implement.SandboxMode)
+	}
+
+	snapshot, err = configedit.Load(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(config.Path(project))
+	if err != nil {
+		t.Fatal(err)
+	}
+	invalid := snapshot.Values
+	invalid.Implement.SandboxMode = "none"
+	if got := configedit.Validate(invalid)["roles.implement.sandbox"]; got != `roles.implement.sandbox: invalid value "none"; want full-access, workspace-write, or read-only` {
+		t.Fatalf("Validate() sandbox error = %q", got)
+	}
+	form = formFromValues(snapshot.Values)
+	form.Set("roles.implement.sandbox", "none")
+	_, fieldErrors = configedit.Parse(form, snapshot.Values)
+	if got := fieldErrors["roles.implement.sandbox"]; got != `roles.implement.sandbox: invalid value "none"; want full-access, workspace-write, or read-only` {
+		t.Fatalf("Parse() sandbox error = %q", got)
+	}
+	err = configedit.Save(project, snapshot.Version, invalid)
+	var saveErrors configedit.FieldErrors
+	if !errors.As(err, &saveErrors) {
+		t.Fatalf("Save() error = %v, want sandbox field errors", err)
+	}
+	if got := saveErrors["roles.implement.sandbox"]; got != `roles.implement.sandbox: invalid value "none"; want full-access, workspace-write, or read-only` {
+		t.Fatalf("Save() sandbox error = %q", got)
+	}
+	after, err := os.ReadFile(config.Path(project))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(after, before) {
+		t.Fatal("invalid sandbox save changed config file")
 	}
 }
 
@@ -182,7 +293,7 @@ func TestParseReportsLoadValidationMessages(t *testing.T) {
 		"loop.max_iterations":     {"0"},
 		"worktree.root":           {"~/.syl/worktrees"},
 	}
-	_, fieldErrors := configedit.Parse(form)
+	_, fieldErrors := configedit.Parse(form, sandboxDefaults())
 	if got := fieldErrors["loop.max_iterations"]; got != "loop.max_iterations must be positive; got 0" {
 		t.Fatalf("Parse() error = %q", got)
 	}
@@ -211,5 +322,44 @@ func externalConfig(values configedit.Values) config.Config {
 }
 
 func roleConfig(values configedit.RoleValues) config.RoleConfig {
-	return config.RoleConfig{Harness: config.Harness(values.Harness), Model: values.Model, Effort: config.Effort(values.Effort), MCP: values.MCP}
+	return config.RoleConfig{Harness: config.Harness(values.Harness), Model: values.Model, Effort: config.Effort(values.Effort), MCP: values.MCP, SandboxMode: config.SandboxMode(values.SandboxMode)}
+}
+
+func sandboxDefaults() configedit.Values {
+	return configedit.Values{
+		Plan:      configedit.RoleValues{SandboxMode: string(config.SandboxModeFullAccess)},
+		Implement: configedit.RoleValues{SandboxMode: string(config.SandboxModeFullAccess)},
+		Review:    configedit.RoleValues{SandboxMode: string(config.SandboxModeFullAccess)},
+	}
+}
+
+func formFromValues(values configedit.Values) url.Values {
+	form := url.Values{
+		"tracker.issues":      {values.TrackerIssues},
+		"tracker.reviews":     {values.TrackerReviews},
+		"loop.max_iterations": {strconv.Itoa(values.MaxIterations)},
+		"worktree.root":       {values.WorktreeRoot},
+		"worktree.setup":      {values.WorktreeSetup},
+	}
+	setRoleForm(form, "plan", values.Plan)
+	setRoleForm(form, "implement", values.Implement)
+	setRoleForm(form, "review", values.Review)
+	if values.NotificationsEnabled {
+		form.Set("notifications.enabled", "true")
+	}
+	for _, path := range values.WorktreeCopy {
+		form.Add("worktree.copy", path)
+	}
+	return form
+}
+
+func setRoleForm(form url.Values, name string, values configedit.RoleValues) {
+	prefix := "roles." + name + "."
+	form.Set(prefix+"harness", values.Harness)
+	form.Set(prefix+"model", values.Model)
+	form.Set(prefix+"effort", values.Effort)
+	form.Set(prefix+"sandbox", values.SandboxMode)
+	if values.MCP {
+		form.Set(prefix+"mcp", "true")
+	}
 }
