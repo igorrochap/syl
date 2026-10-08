@@ -113,19 +113,42 @@ func composeReviewResumePrompt(diffPath string, blocking []verdict.Finding, addi
 }
 
 func composePlanPrompt(options PlanOptions) string {
-	trackerName := "local"
-	if options.TrackerName == config.TrackerGitHub {
-		trackerName = "GitHub"
-	}
-	if options.TrackerName == config.TrackerGitLab {
-		trackerName = "GitLab"
-	}
+	trackerName := planTrackerDisplayName(options.TrackerName)
 	topic := strings.TrimSpace(options.Topic)
+	setupStep := planRemoteSetupStep(options)
 
-	if !options.Grill && !options.Spec {
-		return fmt.Sprintf("/to-tickets\n\nTopic: %s\n\nUse the to-tickets skill to produce tickets on the configured %s tracker.", topic, trackerName)
+	if isTicketsOnlyPlan(options) {
+		return composeTicketsOnlyPlanPrompt(topic, trackerName, setupStep)
 	}
 
+	firstSkill, steps := composePlanSteps(options, trackerName, setupStep)
+	return fmt.Sprintf("/%s\n\nTopic: %s\n\n%s", firstSkill, topic, strings.Join(steps, " "))
+}
+
+func planTrackerDisplayName(trackerName config.Tracker) string {
+	switch trackerName {
+	case config.TrackerGitHub:
+		return "GitHub"
+	case config.TrackerGitLab:
+		return "GitLab"
+	default:
+		return "local"
+	}
+}
+
+func isTicketsOnlyPlan(options PlanOptions) bool {
+	return !options.Grill && !options.Spec
+}
+
+func composeTicketsOnlyPlanPrompt(topic, trackerName, setupStep string) string {
+	toTicketsStep := fmt.Sprintf("Use the to-tickets skill to produce tickets on the configured %s tracker.", trackerName)
+	if setupStep == "" {
+		return fmt.Sprintf("/to-tickets\n\nTopic: %s\n\n%s", topic, toTicketsStep)
+	}
+	return fmt.Sprintf("/to-tickets\n\nTopic: %s\n\n%s %s", topic, setupStep, toTicketsStep)
+}
+
+func composePlanSteps(options PlanOptions, trackerName, setupStep string) (string, []string) {
 	firstSkill := "to-spec"
 	steps := make([]string, 0, 3)
 	if options.Grill {
@@ -135,9 +158,12 @@ func composePlanPrompt(options PlanOptions) string {
 		}
 		steps = append(steps, fmt.Sprintf("First use the %s skill to grill the user on this topic.", firstSkill))
 	}
+	if setupStep != "" {
+		steps = append(steps, setupStep)
+	}
 	if options.Spec {
 		prefix := "First"
-		if len(steps) > 0 {
+		if options.Grill {
 			prefix = "After the grilling is complete,"
 		}
 		steps = append(steps, fmt.Sprintf("%s use the to-spec skill to publish a spec on the configured %s tracker.", prefix, trackerName))
@@ -147,7 +173,25 @@ func composePlanPrompt(options PlanOptions) string {
 		previous = "grilling"
 	}
 	steps = append(steps, fmt.Sprintf("After the %s is complete, use the to-tickets skill to produce tickets on the configured %s tracker.", previous, trackerName))
-	return fmt.Sprintf("/%s\n\nTopic: %s\n\n%s", firstSkill, topic, strings.Join(steps, " "))
+	return firstSkill, steps
+}
+
+func planRemoteSetupStep(options PlanOptions) string {
+	if !options.NoRemote || !options.RemoteMissingAtStart {
+		return ""
+	}
+
+	createRemoteCommand := ""
+	switch options.TrackerName {
+	case config.TrackerGitHub:
+		createRemoteCommand = "gh repo create <name> --source . --remote origin --private"
+	case config.TrackerGitLab:
+		createRemoteCommand = "glab repo create <name> --private --remoteName origin"
+	default:
+		return ""
+	}
+
+	return fmt.Sprintf("Before the first tracker write, check whether this directory is a Git repository and whether it has an origin remote. If this directory is not a Git repository, offer to run `git init`. If the origin remote is missing, offer to create it with `%s`. Ask the user to confirm each command before running it. If the user declines any setup command, do not run the remaining setup commands, skip the to-spec and to-tickets steps, and end the session. Leave any local docs created by --with-docs in place.", createRemoteCommand)
 }
 
 func formatBlockingFindings(findings []verdict.Finding) string {

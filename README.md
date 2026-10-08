@@ -282,6 +282,8 @@ planning sequence:
 - `--spec` publishes a spec before producing tickets.
 - `--grill` grills the topic before producing tickets.
 - `--grill --with-docs` uses the docs-grounded grilling variant.
+- `--no-remote` lets planning start without an origin configured. This flag
+  only affects remote Issues Trackers (`github` and `gitlab`).
 
 `--with-docs` requires `--grill`. Planning always uses an attached interactive session.
 

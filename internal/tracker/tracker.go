@@ -2,7 +2,22 @@
 // ticket backends.
 package tracker
 
-import "context"
+import (
+	"context"
+	"errors"
+)
+
+// ErrNoRemote identifies remote tracker failures caused by a missing Git
+// repository or origin. Local tracker failures never use this error.
+var ErrNoRemote = errors.New("no remote configured")
+
+type noRemoteError string
+
+func (e noRemoteError) Error() string { return string(e) }
+
+func (e noRemoteError) Is(target error) bool { return target == ErrNoRemote }
+
+func newNoRemoteError(message string) error { return noRemoteError(message) }
 
 // Ticket is the tracker-neutral representation used by workflow commands.
 type Ticket struct {

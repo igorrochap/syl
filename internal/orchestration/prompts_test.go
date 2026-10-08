@@ -47,6 +47,108 @@ func TestComposePlanPromptNamesGitLabTracker(t *testing.T) {
 	assertPromptEqual(t, got, want)
 }
 
+func TestComposePlanPromptSetsUpRemoteBeforeFirstTrackerWrite(t *testing.T) {
+	tests := []struct {
+		name          string
+		options       PlanOptions
+		wantCLI       string
+		beforeTracker string
+		beforeSetup   string
+	}{
+		{
+			name: "tickets on GitHub",
+			options: PlanOptions{
+				Topic: "publish the issue tracker", TrackerName: config.TrackerGitHub,
+				NoRemote: true, RemoteMissingAtStart: true,
+			},
+			wantCLI:       "gh repo create <name> --source . --remote origin --private",
+			beforeTracker: "Use the to-tickets skill",
+		},
+		{
+			name: "spec on GitHub",
+			options: PlanOptions{
+				Topic: "publish the issue tracker", TrackerName: config.TrackerGitHub,
+				NoRemote: true, RemoteMissingAtStart: true, Spec: true,
+			},
+			wantCLI:       "gh repo create <name> --source . --remote origin --private",
+			beforeTracker: "First use the to-spec skill",
+		},
+		{
+			name: "grill with docs before setup",
+			options: PlanOptions{
+				Topic: "publish the issue tracker", TrackerName: config.TrackerGitLab,
+				NoRemote: true, RemoteMissingAtStart: true, Grill: true, WithDocs: true, Spec: true,
+			},
+			wantCLI:       "glab repo create <name> --private --remoteName origin",
+			beforeTracker: "After the grilling is complete,",
+			beforeSetup:   "First use the grill-with-docs skill",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got := composePlanPrompt(test.options)
+			setupStart := strings.Index(got, "Before the first tracker write")
+			trackerStart := strings.Index(got, test.beforeTracker)
+			if setupStart == -1 || trackerStart == -1 || setupStart >= trackerStart {
+				t.Fatalf("plan prompt = %q, want setup before %q", got, test.beforeTracker)
+			}
+			if test.beforeSetup != "" {
+				beforeSetupStart := strings.Index(got, test.beforeSetup)
+				if beforeSetupStart == -1 || beforeSetupStart >= setupStart {
+					t.Fatalf("plan prompt = %q, want %q before setup", got, test.beforeSetup)
+				}
+			}
+			for _, expected := range []string{
+				test.wantCLI,
+				"If this directory is not a Git repository, offer to run `git init`",
+				"Ask the user to confirm each command before running it",
+				"do not run the remaining setup commands",
+				"skip the to-spec and to-tickets steps, and end the session",
+				"Leave any local docs created by --with-docs in place",
+			} {
+				if !strings.Contains(got, expected) {
+					t.Fatalf("plan prompt = %q, want %q", got, expected)
+				}
+			}
+			if test.options.TrackerName == config.TrackerGitHub && strings.Contains(got, "glab repo create") {
+				t.Fatalf("GitHub plan prompt = %q, want no GitLab command", got)
+			}
+			if test.options.TrackerName == config.TrackerGitLab && strings.Contains(got, "gh repo create") {
+				t.Fatalf("GitLab plan prompt = %q, want no GitHub command", got)
+			}
+		})
+	}
+}
+
+func TestComposePlanPromptAddsRemoteSetupOnlyForMissingRemoteNoRemoteSessions(t *testing.T) {
+	for _, grill := range []bool{false, true} {
+		for _, withDocs := range []bool{false, true} {
+			for _, spec := range []bool{false, true} {
+				options := PlanOptions{
+					Topic: "publish the issue tracker", TrackerName: config.TrackerGitHub,
+					Grill: grill, WithDocs: withDocs, Spec: spec,
+				}
+				baseline := composePlanPrompt(options)
+
+				withNoRemoteFlag := options
+				withNoRemoteFlag.NoRemote = true
+				withNoRemoteButRemotePresent := composePlanPrompt(withNoRemoteFlag)
+				assertPromptEqual(t, withNoRemoteButRemotePresent, baseline)
+
+				withMissingRemoteSignal := withNoRemoteFlag
+				withMissingRemoteSignal.RemoteMissingAtStart = true
+				withoutNoRemoteFlag := options
+				withoutNoRemoteFlag.RemoteMissingAtStart = true
+				assertPromptEqual(t, composePlanPrompt(withoutNoRemoteFlag), baseline)
+				if !strings.Contains(composePlanPrompt(withMissingRemoteSignal), "Before the first tracker write") {
+					t.Fatalf("plan prompt with --no-remote and missing origin = %q, want setup instruction", composePlanPrompt(withMissingRemoteSignal))
+				}
+			}
+		}
+	}
+}
+
 func TestComposeImplementPromptRevisionWithBlockingFindings(t *testing.T) {
 	ticket := tracker.Ticket{Number: 42}
 	findings := []verdict.Finding{
