@@ -2,9 +2,11 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -151,6 +153,224 @@ func TestPlanReportsTicketsCreatedOnGitHubTracker(t *testing.T) {
 	}
 }
 
+func TestPlanWithoutNoRemoteKeepsGitHubMissingRemoteError(t *testing.T) {
+	fixture := newPlanFixture(t)
+	runner := &planGHRunner{
+		beforeErr:    errors.New("repository lookup failed"),
+		beforeOutput: "unable to determine current repository",
+	}
+	fixture.app.deps.GH = fixedGH(runner)
+	adapter := &planHarness{}
+	fixture.harnesses["claude"] = adapter
+
+	code := fixture.app.Run(context.Background(), []string{"plan", "add offline mode"}, &fixture.stdout, &fixture.stderr)
+	if code == 0 || !strings.Contains(fixture.stderr.String(), "no GitHub remote found") {
+		t.Fatalf("plan code = %d, stderr = %q, want existing no-remote error", code, fixture.stderr.String())
+	}
+	if len(adapter.requests) != 0 {
+		t.Fatalf("attach requests = %d, want 0", len(adapter.requests))
+	}
+}
+
+func TestPlanNoRemoteAttachesAfterMissingGitHubRemoteAtStart(t *testing.T) {
+	tests := []struct {
+		name   string
+		output string
+	}{
+		{name: "missing remote", output: "unable to determine current repository"},
+		{name: "not a git repository", output: "not a git repository"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newPlanFixture(t)
+			runner := &planGHRunner{beforeErr: errors.New("repository lookup failed"), beforeOutput: test.output}
+			fixture.app.deps.GH = fixedGH(runner)
+			adapter := &planHarness{}
+			fixture.harnesses["claude"] = adapter
+
+			code := fixture.app.Run(context.Background(), []string{"plan", "--no-remote", "add offline mode"}, &fixture.stdout, &fixture.stderr)
+			if code != 0 {
+				t.Fatalf("plan code = %d, stderr = %q", code, fixture.stderr.String())
+			}
+			if len(adapter.requests) != 1 {
+				t.Fatalf("attach requests = %d, want 1", len(adapter.requests))
+			}
+		})
+	}
+}
+
+func TestPlanNoRemoteStillFailsForGitHubAuthenticationAndInstallationErrors(t *testing.T) {
+	tests := []struct {
+		name       string
+		runnerErr  error
+		runnerText string
+		want       string
+	}{
+		{name: "unauthenticated", runnerErr: errors.New("gh auth status failed"), runnerText: "not logged into any GitHub hosts", want: "gh auth login"},
+		{name: "not installed", runnerErr: exec.ErrNotFound, want: "install GitHub CLI"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newPlanFixture(t)
+			fixture.app.deps.GH = fixedGH(&planGHRunner{beforeErr: test.runnerErr, beforeOutput: test.runnerText})
+			adapter := &planHarness{}
+			fixture.harnesses["claude"] = adapter
+
+			code := fixture.app.Run(context.Background(), []string{"plan", "--no-remote", "add offline mode"}, &fixture.stdout, &fixture.stderr)
+			if code == 0 || !strings.Contains(fixture.stderr.String(), test.want) {
+				t.Fatalf("plan code = %d, stderr = %q, want %q", code, fixture.stderr.String(), test.want)
+			}
+			if len(adapter.requests) != 0 {
+				t.Fatalf("attach requests = %d, want 0", len(adapter.requests))
+			}
+		})
+	}
+}
+
+func TestPlanNoRemoteReportsMissingOriginAfterGitHubSession(t *testing.T) {
+	fixture := newPlanFixture(t)
+	fixture.app.deps.GH = fixedGH(&planGHRunner{
+		afterErr:    errors.New("repository lookup failed"),
+		afterOutput: "unable to determine current repository",
+	})
+	adapter := &planHarness{}
+	fixture.harnesses["claude"] = adapter
+
+	code := fixture.app.Run(context.Background(), []string{"plan", "--no-remote", "add offline mode"}, &fixture.stdout, &fixture.stderr)
+	if code != 0 {
+		t.Fatalf("plan code = %d, stderr = %q", code, fixture.stderr.String())
+	}
+	if !strings.Contains(fixture.stdout.String(), "No tickets created (no origin configured).") {
+		t.Fatalf("stdout = %q, want missing-origin notice", fixture.stdout.String())
+	}
+	if len(adapter.requests) != 1 {
+		t.Fatalf("attach requests = %d, want 1", len(adapter.requests))
+	}
+}
+
+func TestPlanNoRemoteReportsEveryTicketWhenGitHubOriginAppears(t *testing.T) {
+	fixture := newPlanFixture(t)
+	runner := &planGHRunner{
+		beforeErr:    errors.New("repository lookup failed"),
+		beforeOutput: "unable to determine current repository",
+		after: `[{"number":1,"title":"First","body":"**Blocked by:** None","state":"OPEN","labels":[]},` +
+			`{"number":2,"title":"Second","body":"**Blocked by:** None","state":"OPEN","labels":[]}]`,
+	}
+	fixture.app.deps.GH = fixedGH(runner)
+	fixture.harnesses["claude"] = &planHarness{}
+
+	code := fixture.app.Run(context.Background(), []string{"plan", "--no-remote", "add offline mode"}, &fixture.stdout, &fixture.stderr)
+	if code != 0 {
+		t.Fatalf("plan code = %d, stderr = %q", code, fixture.stderr.String())
+	}
+	for _, want := range []string{"Created: #1, #2", "Next: syl implement 1"} {
+		if !strings.Contains(fixture.stdout.String(), want) {
+			t.Fatalf("stdout = %q, want %q", fixture.stdout.String(), want)
+		}
+	}
+}
+
+func TestPlanNoRemoteLeavesExistingGitHubRemoteOutputUnchanged(t *testing.T) {
+	outputs := make([]string, 0, 2)
+	codes := make([]int, 0, 2)
+	for _, args := range [][]string{
+		{"plan", "add offline mode"},
+		{"plan", "--no-remote", "add offline mode"},
+	} {
+		fixture := newPlanFixture(t)
+		fixture.app.deps.GH = fixedGH(&planGHRunner{})
+		fixture.harnesses["claude"] = &planHarness{}
+		codes = append(codes, fixture.app.Run(context.Background(), args, &fixture.stdout, &fixture.stderr))
+		outputs = append(outputs, fixture.stdout.String()+"\n"+fixture.stderr.String())
+	}
+	if codes[0] != codes[1] || outputs[0] != outputs[1] {
+		t.Fatalf("plan with --no-remote = (%d, %q), without = (%d, %q), want identical behavior", codes[1], outputs[1], codes[0], outputs[0])
+	}
+}
+
+func TestPlanNoRemoteHasNoEffectOnLocalTracker(t *testing.T) {
+	outputs := make([]string, 0, 2)
+	codes := make([]int, 0, 2)
+	for _, args := range [][]string{
+		{"plan", "add offline mode"},
+		{"plan", "--no-remote", "add offline mode"},
+	} {
+		fixture := newPlanFixture(t)
+		setIssueTracker(t, fixture.root, config.TrackerLocal)
+		fixture.harnesses["claude"] = &planHarness{}
+		codes = append(codes, fixture.app.Run(context.Background(), args, &fixture.stdout, &fixture.stderr))
+		outputs = append(outputs, fixture.stdout.String()+"\n"+fixture.stderr.String())
+	}
+	if codes[0] != codes[1] || outputs[0] != outputs[1] {
+		t.Fatalf("local plan with --no-remote = (%d, %q), without = (%d, %q), want identical behavior", codes[1], outputs[1], codes[0], outputs[0])
+	}
+}
+
+func TestPlanNoRemoteSupportsGitLabTracker(t *testing.T) {
+	tests := []struct {
+		name   string
+		labels []planGLabResult
+		issues []planGLabResult
+		want   []string
+	}{
+		{
+			name: "remote remains missing after session",
+			labels: []planGLabResult{
+				{output: "no GitLab project found for this directory", err: errors.New("project lookup failed")},
+				{output: "no GitLab project found for this directory", err: errors.New("project lookup failed")},
+			},
+			want: []string{"No tickets created (no origin configured)."},
+		},
+		{
+			name: "origin appears and tickets are listed",
+			labels: []planGLabResult{
+				{output: "not a git repository", err: errors.New("repository lookup failed")},
+				{output: `[{"name":"todo"},{"name":"doing"}]`},
+			},
+			issues: []planGLabResult{{output: `[{"iid":7,"title":"First","description":"**Blocked by:** None","state":"opened","labels":["todo"]},{"iid":8,"title":"Second","description":"**Blocked by:** None","state":"opened","labels":["todo"]}]`}},
+			want:   []string{"Created: #7, #8", "Next: syl implement 7"},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newPlanFixture(t)
+			setIssueTracker(t, fixture.root, config.TrackerGitLab)
+			fixture.app.deps.GLab = fixedGLab(&planGLabRunner{labels: test.labels, issues: test.issues})
+			adapter := &planHarness{}
+			fixture.harnesses["claude"] = adapter
+
+			code := fixture.app.Run(context.Background(), []string{"plan", "--no-remote", "add offline mode"}, &fixture.stdout, &fixture.stderr)
+			if code != 0 {
+				t.Fatalf("plan code = %d, stderr = %q", code, fixture.stderr.String())
+			}
+			for _, want := range test.want {
+				if !strings.Contains(fixture.stdout.String(), want) {
+					t.Fatalf("stdout = %q, want %q", fixture.stdout.String(), want)
+				}
+			}
+			if len(adapter.requests) != 1 {
+				t.Fatalf("attach requests = %d, want 1", len(adapter.requests))
+			}
+		})
+	}
+}
+
+func TestPlanHelpDescribesNoRemoteFlag(t *testing.T) {
+	fixture := newPlanFixture(t)
+	code := fixture.app.Run(context.Background(), []string{"plan", "--help"}, &fixture.stdout, &fixture.stderr)
+	if code != 0 {
+		t.Fatalf("plan --help code = %d, stderr = %q", code, fixture.stderr.String())
+	}
+	for _, want := range []string{"--no-remote", "remote trackers"} {
+		if !strings.Contains(fixture.stdout.String(), want) {
+			t.Fatalf("plan help = %q, want %q", fixture.stdout.String(), want)
+		}
+	}
+}
+
 func TestPlanOutputMatchesPlainAndStyledGoldens(t *testing.T) {
 	for _, test := range []struct {
 		name   string
@@ -259,8 +479,12 @@ func (*planHarness) AttachSession(context.Context, string, harness.Request) erro
 }
 
 type planGHRunner struct {
-	lists int
-	after string
+	lists        int
+	after        string
+	beforeErr    error
+	beforeOutput string
+	afterErr     error
+	afterOutput  string
 }
 
 func (r *planGHRunner) Run(_ context.Context, args ...string) (string, error) {
@@ -269,11 +493,50 @@ func (r *planGHRunner) Run(_ context.Context, args ...string) (string, error) {
 		return `[{"name":"todo"},{"name":"doing"}]`, nil
 	case "issue list --state all --limit 100 --json number,title,body,state,labels":
 		r.lists++
+		if r.lists == 1 && r.beforeErr != nil {
+			return r.beforeOutput, r.beforeErr
+		}
+		if r.lists > 1 && r.afterErr != nil {
+			return r.afterOutput, r.afterErr
+		}
 		if r.lists == 1 || r.after == "" {
 			return `[]`, nil
 		}
 		return r.after, nil
 	default:
 		return "", fmt.Errorf("unexpected gh command %q", strings.Join(args, " "))
+	}
+}
+
+type planGLabResult struct {
+	output string
+	err    error
+}
+
+type planGLabRunner struct {
+	labels     []planGLabResult
+	issues     []planGLabResult
+	labelCalls int
+	issueCalls int
+}
+
+func (r *planGLabRunner) Run(_ context.Context, args ...string) (string, error) {
+	switch strings.Join(args, " ") {
+	case "label list --output json --per-page 100":
+		result := planGLabResult{output: `[{"name":"todo"},{"name":"doing"}]`}
+		if r.labelCalls < len(r.labels) {
+			result = r.labels[r.labelCalls]
+		}
+		r.labelCalls++
+		return result.output, result.err
+	case "issue list --all --output json --per-page 100":
+		result := planGLabResult{output: `[]`}
+		if r.issueCalls < len(r.issues) {
+			result = r.issues[r.issueCalls]
+		}
+		r.issueCalls++
+		return result.output, result.err
+	default:
+		return "", fmt.Errorf("unexpected glab command %q", strings.Join(args, " "))
 	}
 }

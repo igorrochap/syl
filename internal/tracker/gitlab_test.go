@@ -375,10 +375,12 @@ func TestGitLabErrorsAreDistinctAndActionable(t *testing.T) {
 		runnerErr  error
 		runnerText string
 		want       string
+		noRemote   bool
 	}{
 		{name: "glab is not installed", runnerErr: exec.ErrNotFound, want: "glab is not installed"},
 		{name: "glab is unauthenticated", runnerErr: errors.New("auth status failed"), runnerText: "not logged into any GitLab hosts", want: "glab auth login"},
-		{name: "no GitLab project", runnerErr: errors.New("project lookup failed"), runnerText: "no GitLab project found for this directory", want: "no GitLab project"},
+		{name: "no GitLab project", runnerErr: errors.New("project lookup failed"), runnerText: "no GitLab project found for this directory", want: "no GitLab project", noRemote: true},
+		{name: "directory is not a git repository", runnerErr: errors.New("repository lookup failed"), runnerText: "not a git repository", want: "no GitLab project", noRemote: true},
 		{name: "issue does not exist", runnerErr: errors.New("issue lookup failed"), runnerText: "issue 42 not found", want: "issue #42 not found"},
 	}
 
@@ -398,6 +400,9 @@ func TestGitLabErrorsAreDistinctAndActionable(t *testing.T) {
 			_, err = gitLab.Resolve(context.Background(), "#42")
 			if err == nil || !strings.Contains(err.Error(), test.want) || test.runnerText != "" && !strings.Contains(err.Error(), test.runnerText) {
 				t.Fatalf("Resolve() error = %v, want %q and runner output %q", err, test.want, test.runnerText)
+			}
+			if errors.Is(err, ErrNoRemote) != test.noRemote {
+				t.Fatalf("Resolve() errors.Is(ErrNoRemote) = %t, want %t", errors.Is(err, ErrNoRemote), test.noRemote)
 			}
 		})
 	}

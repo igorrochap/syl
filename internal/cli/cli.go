@@ -545,6 +545,7 @@ func (a *App) planCommand() *cobra.Command {
 	var spec bool
 	var grill bool
 	var withDocs bool
+	var noRemote bool
 	command := &cobra.Command{
 		Use:   "plan [target]",
 		Short: "plan work in an interactive planner session",
@@ -585,13 +586,14 @@ func (a *App) planCommand() *cobra.Command {
 			return orchestration.RunPlan(cmd.Context(), orchestration.PlanOptions{
 				WorkRoot: a.workRoot, Topic: args[0], TrackerName: projectConfig.Tracker.Issues,
 				Role: projectConfig.Roles.Plan, IssueTracker: issueTracker, Adapter: adapter,
-				Output: cmd.OutOrStdout(), Spec: spec, Grill: grill, WithDocs: withDocs,
+				Output: cmd.OutOrStdout(), Spec: spec, Grill: grill, WithDocs: withDocs, NoRemote: noRemote,
 			})
 		},
 	}
 	command.Flags().BoolVar(&spec, "spec", false, "produce a spec before tickets")
 	command.Flags().BoolVar(&grill, "grill", false, "grill the topic before producing output")
 	command.Flags().BoolVar(&withDocs, "with-docs", false, "create supporting docs while grilling")
+	command.Flags().BoolVar(&noRemote, "no-remote", false, "allow planning without an origin on remote trackers")
 	return command
 }
 

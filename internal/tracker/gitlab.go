@@ -262,7 +262,7 @@ func (g *GitLab) run(ctx context.Context, operation string, args ...string) (str
 	case gitlabErrorUnauthenticated:
 		return "", fmt.Errorf("glab is not authenticated; run `glab auth login` and try again: %s", details)
 	case gitlabErrorNoProject:
-		return "", fmt.Errorf("no GitLab project was found for the current directory; run syl from a GitLab project: %s", details)
+		return "", newNoRemoteError(fmt.Sprintf("no GitLab project was found for the current directory; run syl from a GitLab project: %s", details))
 	default:
 		return "", fmt.Errorf("glab %s: %s", operation, details)
 	}

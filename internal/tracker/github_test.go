@@ -124,6 +124,7 @@ func TestGitHubErrorsAreDistinctAndActionable(t *testing.T) {
 		runnerErr  error
 		runnerText string
 		want       string
+		noRemote   bool
 	}{
 		{
 			name:      "gh is not installed",
@@ -141,6 +142,14 @@ func TestGitHubErrorsAreDistinctAndActionable(t *testing.T) {
 			runnerErr:  errors.New("repository lookup failed"),
 			runnerText: "unable to determine current repository",
 			want:       "GitHub remote",
+			noRemote:   true,
+		},
+		{
+			name:       "directory is not a git repository",
+			runnerErr:  errors.New("repository lookup failed"),
+			runnerText: "not a git repository",
+			want:       "GitHub remote",
+			noRemote:   true,
 		},
 		{
 			name:       "issue does not exist",
@@ -169,6 +178,9 @@ func TestGitHubErrorsAreDistinctAndActionable(t *testing.T) {
 			_, err = githubTracker.Resolve(context.Background(), "#42")
 			if err == nil || !strings.Contains(err.Error(), tt.want) || !strings.Contains(err.Error(), tt.runnerText) {
 				t.Fatalf("Resolve() error = %v, want %q and runner output %q", err, tt.want, tt.runnerText)
+			}
+			if errors.Is(err, ErrNoRemote) != tt.noRemote {
+				t.Fatalf("Resolve() errors.Is(ErrNoRemote) = %t, want %t", errors.Is(err, ErrNoRemote), tt.noRemote)
 			}
 		})
 	}
