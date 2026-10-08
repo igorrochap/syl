@@ -141,8 +141,12 @@ func TestRunPlanAllowsMissingRemoteAroundSession(t *testing.T) {
 			if err != nil {
 				t.Fatalf("RunPlan() error = %v", err)
 			}
-			if adapter.request.Prompt != composePlanPrompt(PlanOptions{Topic: "add offline mode", TrackerName: config.TrackerGitHub}) {
-				t.Fatalf("planner prompt = %q, want existing prompt unchanged", adapter.request.Prompt)
+			wantPrompt := composePlanPrompt(PlanOptions{
+				Topic: "add offline mode", TrackerName: config.TrackerGitHub,
+				NoRemote: true, RemoteMissingAtStart: true,
+			})
+			if adapter.request.Prompt != wantPrompt {
+				t.Fatalf("planner prompt = %q, want missing-remote setup prompt %q", adapter.request.Prompt, wantPrompt)
 			}
 			for _, want := range test.want {
 				if !strings.Contains(output.String(), want) {

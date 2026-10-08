@@ -30,8 +30,7 @@ type PlanOptions struct {
 	Grill        bool
 	WithDocs     bool
 	NoRemote     bool
-	// RemoteMissingAtStart is available to plan prompt composition for future
-	// setup guidance without changing the current prompt.
+	// RemoteMissingAtStart records whether the tracker had no origin before the plan session.
 	RemoteMissingAtStart bool
 }
 
