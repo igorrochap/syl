@@ -2,6 +2,22 @@
 
 <!-- version list -->
 
+## v1.39.0 (2026-10-08)
+
+### Features
+
+- **cli**: Add --no-remote flag for planning ([#238](https://github.com/igorrochap/syl/pull/238),
+  [`b60c594`](https://github.com/igorrochap/syl/commit/b60c594f41840d5c58864ae7c602ed772f52cd15))
+
+- **orchestration**: Add remote repository setup guidance
+  ([#238](https://github.com/igorrochap/syl/pull/238),
+  [`b60c594`](https://github.com/igorrochap/syl/commit/b60c594f41840d5c58864ae7c602ed772f52cd15))
+
+- **orchestration,cli**: Add flag and remote repository setup guidance
+  ([#238](https://github.com/igorrochap/syl/pull/238),
+  [`b60c594`](https://github.com/igorrochap/syl/commit/b60c594f41840d5c58864ae7c602ed772f52cd15))
+
+
 ## v1.38.0 (2026-10-07)
 
 ### Features
