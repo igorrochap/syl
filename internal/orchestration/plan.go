@@ -29,6 +29,10 @@ type PlanOptions struct {
 	Spec         bool
 	Grill        bool
 	WithDocs     bool
+	NoRemote     bool
+	// RemoteMissingAtStart is available to plan prompt composition for future
+	// setup guidance without changing the current prompt.
+	RemoteMissingAtStart bool
 }
 
 // RunPlan validates the referenced skills, attaches the planner, and reports new tickets.
@@ -44,10 +48,11 @@ func RunPlan(ctx context.Context, options PlanOptions) error {
 		return err
 	}
 
-	before, err := options.IssueTracker.List(ctx)
+	before, remoteMissingAtStart, err := snapshotTicketsBeforePlan(ctx, options)
 	if err != nil {
-		return fmt.Errorf("snapshot tickets before planning: %w", err)
+		return err
 	}
+	options.RemoteMissingAtStart = remoteMissingAtStart
 	request := harness.Request{
 		Model:       options.Role.Model,
 		Effort:      options.Role.Effort,
@@ -58,11 +63,51 @@ func RunPlan(ctx context.Context, options PlanOptions) error {
 	if err := options.Adapter.Attach(ctx, request); err != nil {
 		return err
 	}
-	after, err := options.IssueTracker.List(ctx)
+	after, noRemoteAfterPlanning, err := snapshotTicketsAfterPlan(ctx, options)
 	if err != nil {
-		return fmt.Errorf("list tickets after planning: %w", err)
+		return err
+	}
+	if noRemoteAfterPlanning {
+		return writeNoRemoteNotice(options.Output)
 	}
 	return writeCreatedTickets(options.Output, createdTickets(before, after))
+}
+
+func snapshotTicketsBeforePlan(ctx context.Context, options PlanOptions) ([]tracker.Ticket, bool, error) {
+	tickets, err := options.IssueTracker.List(ctx)
+	if err == nil {
+		return tickets, false, nil
+	}
+	if allowsMissingRemote(options) && errors.Is(err, tracker.ErrNoRemote) {
+		return nil, true, nil
+	}
+	return nil, false, fmt.Errorf("snapshot tickets before planning: %w", err)
+}
+
+func snapshotTicketsAfterPlan(ctx context.Context, options PlanOptions) ([]tracker.Ticket, bool, error) {
+	tickets, err := options.IssueTracker.List(ctx)
+	if err == nil {
+		return tickets, false, nil
+	}
+	if allowsMissingRemote(options) && errors.Is(err, tracker.ErrNoRemote) {
+		return nil, true, nil
+	}
+	return nil, false, fmt.Errorf("list tickets after planning: %w", err)
+}
+
+func allowsMissingRemote(options PlanOptions) bool {
+	if !options.NoRemote {
+		return false
+	}
+	isRemoteTracker := options.TrackerName == config.TrackerGitHub || options.TrackerName == config.TrackerGitLab
+	return isRemoteTracker
+}
+
+func writeNoRemoteNotice(output io.Writer) error {
+	if err := ui.New(output, ui.DetectCaps(output)).Text("No tickets created (no origin configured)."); err != nil {
+		return fmt.Errorf("write no-remote plan notice: %w", err)
+	}
+	return nil
 }
 
 func validatePlanOptions(options PlanOptions) error {
