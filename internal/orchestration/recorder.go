@@ -18,6 +18,7 @@ type RunRecorder interface {
 	RecordState(state runrecord.State)
 	RecordUsage(entry usage.Entry) error
 	RecordImplementTurn(iteration int, feed, transcript string) error
+	RecordFailure(iteration int, role, summary string) error
 	RecordReviewDiff(iteration int, diff string) (string, error)
 	RecordReviewOutput(iteration int, review ReviewExecution) error
 	RecordVerdict(iteration int, reviewVerdict verdict.Verdict) error
@@ -150,6 +151,10 @@ func (recorder *diskRunRecorder) ImplementHandoffPath(iteration int) string {
 
 func (recorder *diskRunRecorder) RecordImplementTurn(iteration int, feed, transcript string) error {
 	return recorder.writer.WriteImplementTurn(iteration, feed, transcript)
+}
+
+func (recorder *diskRunRecorder) RecordFailure(iteration int, role, summary string) error {
+	return recorder.writer.WriteFailure(iteration, role, summary)
 }
 
 func (recorder *diskRunRecorder) RecordReviewDiff(iteration int, diff string) (string, error) {

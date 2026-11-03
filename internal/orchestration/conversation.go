@@ -247,7 +247,7 @@ func runHarnessConversation(ctx context.Context, adapter harness.Adapter, start 
 	for {
 		stream, err := next(conversationContext)
 		if err != nil {
-			return harnessTranscript{}, err
+			return currentConversationTranscript(&transcript, sessionIDs, sessionID), err
 		}
 		knownSessionID, known := knownStreamSession(stream)
 		if known {
@@ -262,29 +262,36 @@ func runHarnessConversation(ctx context.Context, adapter harness.Adapter, start 
 			options.mode,
 			!known,
 		)
-		if err != nil {
-			go releaseAbandonedStream(stream)
-			return harnessTranscript{}, err
-		}
 		appendTranscript(&transcript, result.Transcript)
 		sessionIDs = append(sessionIDs, result.SessionIDs...)
 		sessionID = firstSessionID(sessionID, result.SessionIDs...)
+		if err != nil {
+			go releaseAbandonedStream(stream)
+			return currentConversationTranscript(&transcript, sessionIDs, sessionID), err
+		}
 		if !result.Blocked {
 			return harnessTranscript{Transcript: transcript.String(), SessionIDs: appendSessionID(sessionIDs, sessionID)}, nil
 		}
 		if err := questionAnswerable(options.questions, sessionID); err != nil {
-			return harnessTranscript{}, err
+			return currentConversationTranscript(&transcript, sessionIDs, sessionID), err
 		}
 
 		answer, err := options.questions.handle(ctx, options.role, result.Question)
 		if err != nil {
-			return harnessTranscript{}, err
+			return currentConversationTranscript(&transcript, sessionIDs, sessionID), err
 		}
 		next = func(resumeContext context.Context) (harness.Stream, error) {
 			resumeRequest := options.request
 			resumeRequest.Prompt = answer
 			return adapter.Resume(resumeContext, sessionID, resumeRequest)
 		}
+	}
+}
+
+func currentConversationTranscript(transcript *strings.Builder, sessionIDs []string, sessionID string) harnessTranscript {
+	return harnessTranscript{
+		Transcript: transcript.String(),
+		SessionIDs: appendSessionID(sessionIDs, sessionID),
 	}
 }
 
@@ -365,7 +372,7 @@ func consumeHarnessStreamWithArtifact(
 		parser: parser, pendingRaw: &pendingRaw, artifactPendingRaw: &artifactPendingRaw,
 	}
 	if blocked, err := consumeHarnessEvents(events, stream, &state, options); err != nil {
-		return harnessStreamResult{}, err
+		return currentHarnessStreamResult(&state, sessionIDs), err
 	} else if blocked {
 		return harnessStreamResult{
 			Transcript: state.transcript.String(), SessionIDs: sessionIDs,
@@ -374,18 +381,22 @@ func consumeHarnessStreamWithArtifact(
 	}
 
 	if err := flushHarnessStream(parser, &state, output, artifact, mode, pendingRaw, artifactPendingRaw); err != nil {
-		return harnessStreamResult{}, err
+		return currentHarnessStreamResult(&state, sessionIDs), err
 	}
 	if err := finishHarnessOutput(output); err != nil {
-		return harnessStreamResult{}, err
+		return currentHarnessStreamResult(&state, sessionIDs), err
 	}
 	if err := finishHarnessOutput(artifact); err != nil {
-		return harnessStreamResult{}, err
+		return currentHarnessStreamResult(&state, sessionIDs), err
 	}
 	if err := stream.Wait(); err != nil {
-		return harnessStreamResult{}, fmt.Errorf("read harness: %w", err)
+		return currentHarnessStreamResult(&state, sessionIDs), fmt.Errorf("read harness: %w", err)
 	}
-	return harnessStreamResult{Transcript: state.transcript.String(), SessionIDs: sessionIDs}, nil
+	return currentHarnessStreamResult(&state, sessionIDs), nil
+}
+
+func currentHarnessStreamResult(state *harnessStreamState, sessionIDs []string) harnessStreamResult {
+	return harnessStreamResult{Transcript: state.transcript.String(), SessionIDs: sessionIDs}
 }
 
 func consumeHarnessEvents(events <-chan harness.Event, stream harness.Stream, state *harnessStreamState, options streamEventOptions) (bool, error) {

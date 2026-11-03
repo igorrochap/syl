@@ -1030,7 +1030,7 @@ fi
 
 func TestPTYIdleTimeoutReportsMissingTranscriptAndSilentTerminal(t *testing.T) {
 	root, home := t.TempDir(), t.TempDir()
-	command := writeClaudeTestDouble(t, "trap 'exit 0' TERM\nwhile :; do sleep 0.05; done\n")
+	command := writeClaudeTestDouble(t, "printf '   \\n\\n\\t'\ntrap 'exit 0' TERM\nwhile :; do sleep 0.05; done\n")
 	adapter := newPTYTestAdapter(command, root, home)
 	adapter.idleTimeout = 200 * time.Millisecond
 	stream, err := adapter.Run(context.Background(), harness.Request{
@@ -1058,13 +1058,164 @@ func TestPTYIdleTimeoutReportsMissingTranscriptAndSilentTerminal(t *testing.T) {
 	if firstLine := strings.SplitN(message, "\n", 2)[0]; firstLine != wantFirstLine {
 		t.Fatalf("first line = %q, want %q", firstLine, wantFirstLine)
 	}
-	for _, want := range []string{path, sessionID, "missing", "no terminal output was captured"} {
+	for _, want := range []string{path, sessionID, "missing"} {
 		if !strings.Contains(message, want) {
 			t.Fatalf("Wait() error = %q, want %q", message, want)
 		}
 	}
 	if strings.Contains(message, "Last terminal output") {
 		t.Fatalf("silent session printed an empty terminal tail: %q", message)
+	}
+}
+
+func TestPTYIdleTimeoutReportsTranscriptDerivedSessionState(t *testing.T) {
+	root, home := t.TempDir(), t.TempDir()
+	const sessionID = "review-session"
+	requestAt := time.Now().Add(-2 * time.Minute).UTC().Format(time.RFC3339Nano)
+	transcriptPath, err := transcript.New(home).Find(root, sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(transcriptPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	contents := fmt.Sprintf(`{"type":"api-request","timestamp":%q}
+{"type":"queue-operation","operation":"enqueue","content":"<task-notification>one</task-notification>"}
+{"type":"queue-operation","operation":"enqueue","content":"<task-notification>two</task-notification>"}
+`, requestAt)
+	if err := os.WriteFile(transcriptPath, []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	subagentsDir := filepath.Join(filepath.Dir(transcriptPath), sessionID, "subagents")
+	if err := os.MkdirAll(subagentsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"agent-a.meta.json", "agent-b.meta.json"} {
+		if err := os.WriteFile(filepath.Join(subagentsDir, name), []byte(`{"finished":true}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	command := writeClaudeTestDouble(t, `
+printf '   \n\n\t'
+trap 'exit 0' TERM
+while :; do sleep 0.05; done
+`)
+	adapter := newPTYTestAdapter(command, root, home)
+	adapter.idleTimeout = 200 * time.Millisecond
+	stream, err := adapter.start(context.Background(), sessionID, nil, transcriptStartFresh, harness.CompletionReviewVerdict)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventCount := 0
+	for range stream.Events() {
+		eventCount++
+	}
+	if eventCount == 0 {
+		t.Fatal("PTY stream emitted no events")
+	}
+	err = stream.Wait()
+	if err == nil {
+		t.Fatal("Wait() succeeded, want idle-timeout error")
+	}
+	message := err.Error()
+	if sessionID == "" || !strings.Contains(message, sessionID) {
+		t.Fatalf("Wait() error = %q, want session id %q", message, sessionID)
+	}
+	if !strings.Contains(message, "Unanswered api-request age:") {
+		t.Fatalf("Wait() error lacks unanswered api-request age: %q", message)
+	}
+	for _, want := range []string{
+		"Task notifications: 2 enqueued, 0 dequeued or removed",
+		"Subagents: 2 total, 2 finished",
+	} {
+		if !strings.Contains(message, want) {
+			t.Fatalf("Wait() error = %q, want %q", message, want)
+		}
+	}
+	if strings.Contains(message, "Last terminal output") {
+		t.Fatalf("whitespace-only terminal output printed a tail section: %q", message)
+	}
+}
+
+func TestTranscriptMonitorAddsTolerantSummaryToTranscriptReadErrors(t *testing.T) {
+	root, home := t.TempDir(), t.TempDir()
+	const sessionID = "malformed-session"
+	reader := transcript.New(home)
+	path, err := reader.Find(root, sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("malformed JSON\n{\"type\":\"last-valid-entry\",\"timestamp\":\"2026-11-03T10:00:00Z\"}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	adapter := New(root)
+	adapter.homeDir = home
+	checks := []struct {
+		name  string
+		check func(*transcriptMonitor) error
+	}{
+		{
+			name: "completion check",
+			check: func(monitor *transcriptMonitor) error {
+				_, err := monitor.checkCompletion()
+				return err
+			},
+		},
+		{
+			name: "idle check",
+			check: func(monitor *transcriptMonitor) error {
+				_, err := monitor.checkIdleTimeout()
+				return err
+			},
+		},
+		{
+			name: "process exit",
+			check: func(monitor *transcriptMonitor) error {
+				return monitor.checkProcessExit(errors.New("process exited"))
+			},
+		},
+	}
+	for _, test := range checks {
+		t.Run(test.name, func(t *testing.T) {
+			monitor := transcriptMonitor{
+				reader:      reader,
+				path:        path,
+				projectRoot: root,
+				sessionID:   sessionID,
+				readState: func() (SessionState, error) {
+					return adapter.ReadSessionState(sessionID)
+				},
+				output: &terminalOutput{},
+			}
+			err := test.check(&monitor)
+			if err == nil || !strings.Contains(err.Error(), "Last main transcript entry: last-valid-entry at 2026-11-03T10:00:00Z") {
+				t.Fatalf("monitor error = %v, want tolerant transcript summary", err)
+			}
+		})
+	}
+}
+
+func TestDescribeSessionFailureIncludesReadableTailWhenSummaryReadFails(t *testing.T) {
+	cause := errors.New("session failed")
+	output := &terminalOutput{}
+	output.capture([]byte("last useful line\n"))
+	monitor := transcriptMonitor{
+		sessionID: "session",
+		path:      filepath.Join(t.TempDir(), "missing.jsonl"),
+		readState: func() (SessionState, error) {
+			return SessionState{}, errors.New("summary read failed")
+		},
+		output: output,
+	}
+	err := monitor.describeSessionFailure(cause)
+	if !errors.Is(err, cause) || !strings.Contains(err.Error(), "Session state summary unavailable: summary read failed") {
+		t.Fatalf("describeSessionFailure() error = %v, want wrapped cause and summary read issue", err)
+	}
+	if !strings.Contains(err.Error(), "Last terminal output (at most 2048 bytes):\nlast useful line") {
+		t.Fatalf("describeSessionFailure() error lacks readable terminal tail: %v", err)
 	}
 }
 

@@ -139,6 +139,15 @@ func (writer *Writer) WriteReviewOutput(iteration int, feed, transcript string) 
 	return writer.WriteArtifact(ReviewTranscript, iteration, []byte(transcript))
 }
 
+// WriteFailure writes the error and diagnostics for one failed Role turn.
+func (writer *Writer) WriteFailure(iteration int, role, contents string) error {
+	name := FailureArtifactName(iteration, role)
+	if name == "" {
+		return fmt.Errorf("invalid Run failure artifact for role %q at iteration %d", role, iteration)
+	}
+	return writer.writeFile(name, []byte(contents))
+}
+
 // WriteVerdict writes one structured verdict file.
 func (writer *Writer) WriteVerdict(iteration int, reviewVerdict verdict.Verdict) error {
 	return writer.WriteArtifact(VerdictFile, iteration, []byte(FormatVerdict(reviewVerdict)))
@@ -183,6 +192,8 @@ var standaloneArtifactNames = map[ArtifactKind]string{
 	ReviewFeed:       "review.feed",
 	ReviewTranscript: "review.transcript",
 	VerdictFile:      "verdict.txt",
+	ImplementFailure: "implement.failure.txt",
+	ReviewFailure:    "review.failure.txt",
 	SummaryFile:      summaryFile,
 	SessionsFile:     sessionsFile,
 	UsageFile:        usageFile,
@@ -197,6 +208,23 @@ var iterationArtifactFormats = map[ArtifactKind]string{
 	ReviewFeed:          "iteration-%02d-review.feed",
 	ReviewTranscript:    "iteration-%02d-review.transcript",
 	VerdictFile:         "iteration-%02d-verdict.txt",
+	ImplementFailure:    "iteration-%02d-implement.failure.txt",
+	ReviewFailure:       "iteration-%02d-review.failure.txt",
+}
+
+// FailureArtifactName returns the stable name for a failed Role artifact.
+func FailureArtifactName(iteration int, role string) string {
+	role = strings.TrimSpace(role)
+	var kind ArtifactKind
+	switch role {
+	case "implement":
+		kind = ImplementFailure
+	case "review":
+		kind = ReviewFailure
+	default:
+		return ""
+	}
+	return ArtifactName(kind, iteration)
 }
 
 // ArtifactName returns the stable name for one artifact kind and iteration.

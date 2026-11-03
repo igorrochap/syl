@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/igorrochap/syl/internal/config"
 	"github.com/igorrochap/syl/internal/harness"
@@ -337,6 +338,58 @@ func TestRunReviewSavesUnparseableReviewArtifacts(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "reviewer produced no parseable verdict") {
 		t.Fatalf("RunReview() error = %v, want unparseable-verdict failure", err)
+	}
+}
+
+func TestRecordImplementReviewFailureSavesUnparseableExecution(t *testing.T) {
+	recorder := newMemoryRunRecorder()
+	recorder.dir = t.TempDir()
+	execution := ReviewExecution{
+		Feed:       "partial review feed",
+		Transcript: "partial review transcript",
+		SessionIDs: []string{"review-session"},
+	}
+	failure := &UnparseableVerdictError{Execution: execution, Cause: errors.New("verdict missing")}
+	err := recordImplementReviewFailure(
+		implementIterationsParams{recorder: recorder, workRoot: t.TempDir()},
+		implementReviewParams{iteration: 2},
+		ReviewExecution{Transcript: "discarded execution"},
+		time.Time{},
+		time.Time{},
+		failure,
+	)
+	if err == nil || !strings.Contains(err.Error(), "full review transcript saved in run artifacts directory") {
+		t.Fatalf("recordImplementReviewFailure() error = %v, want saved transcript location", err)
+	}
+	if got := recorder.files[artifactFilename(reviewFeedArtifact, 2)]; got != execution.Feed {
+		t.Fatalf("saved review feed = %q, want execution feed %q", got, execution.Feed)
+	}
+	if got := recorder.files[artifactFilename(reviewTranscriptArtifact, 2)]; got != execution.Transcript {
+		t.Fatalf("saved review transcript = %q, want execution transcript %q", got, execution.Transcript)
+	}
+	if len(recorder.sessions) != 1 || !strings.Contains(recorder.sessions[0], "review-session") {
+		t.Fatalf("recorded sessions = %v, want review-session", recorder.sessions)
+	}
+}
+
+func TestRecordImplementReviewFailureReportsArtifactWriteError(t *testing.T) {
+	failure := errors.New("review harness failed")
+	artifactFailure := errors.New("review artifact unavailable")
+	recorder := &failingRoleArtifactRecorder{
+		memoryRunRecorder: newMemoryRunRecorder(),
+		failAt:            "review-output",
+		err:               artifactFailure,
+	}
+	err := recordImplementReviewFailure(
+		implementIterationsParams{recorder: recorder},
+		implementReviewParams{iteration: 1},
+		ReviewExecution{},
+		time.Time{},
+		time.Time{},
+		failure,
+	)
+	if !errors.Is(err, failure) || !strings.Contains(err.Error(), "save partial review artifacts") || !strings.Contains(err.Error(), artifactFailure.Error()) {
+		t.Fatalf("recordImplementReviewFailure() error = %v, want harness and artifact failures", err)
 	}
 }
 

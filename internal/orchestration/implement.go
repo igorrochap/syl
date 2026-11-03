@@ -480,23 +480,9 @@ func runImplementReview(ctx context.Context, params implementIterationsParams, r
 	reviewResult, err := runReviewExecutionWithResumeFallback(ctx, params.reviewer, reviewOptions)
 	reviewEndedAt := time.Now().UTC()
 	if err != nil {
-		var unparseable *UnparseableVerdictError
-		if errors.As(err, &unparseable) {
-			recordReviewUsage(reviewUsageParams{
-				recorder:  params.recorder,
-				iteration: reviewParams.iteration,
-				role:      params.projectConfig.Roles.Review,
-				execution: unparseable.Execution,
-				workRoot:  params.workRoot,
-				startedAt: reviewStartedAt,
-				endedAt:   reviewEndedAt,
-			})
-			if artifactErr := params.recorder.RecordReviewOutput(reviewParams.iteration, unparseable.Execution); artifactErr != nil {
-				return ReviewExecution{}, artifactErr
-			}
-			return ReviewExecution{}, reviewTranscriptSavedError(err, recorderArtifactDir(params.recorder))
-		}
-		return ReviewExecution{}, err
+		return ReviewExecution{}, recordImplementReviewFailure(
+			params, reviewParams, reviewResult, reviewStartedAt, reviewEndedAt, err,
+		)
 	}
 	recordReviewUsage(reviewUsageParams{
 		recorder:  params.recorder,
@@ -517,6 +503,36 @@ func runImplementReview(ctx context.Context, params implementIterationsParams, r
 		return ReviewExecution{}, err
 	}
 	return recordReviewSessions(params.recorder, reviewParams.iteration, reviewResult)
+}
+
+func recordImplementReviewFailure(
+	params implementIterationsParams,
+	reviewParams implementReviewParams,
+	execution ReviewExecution,
+	startedAt time.Time,
+	endedAt time.Time,
+	failure error,
+) error {
+	var unparseable *UnparseableVerdictError
+	if errors.As(failure, &unparseable) {
+		execution = unparseable.Execution
+	}
+	recordReviewUsage(reviewUsageParams{
+		recorder:  params.recorder,
+		iteration: reviewParams.iteration,
+		role:      params.projectConfig.Roles.Review,
+		execution: execution,
+		workRoot:  params.workRoot,
+		startedAt: startedAt,
+		endedAt:   endedAt,
+	})
+	if err := recordFailedReviewTurn(params.recorder, reviewParams.iteration, execution, failure); err != nil {
+		return fmt.Errorf("%w; save partial review artifacts: %v", failure, err)
+	}
+	if errors.As(failure, &unparseable) {
+		return reviewTranscriptSavedError(failure, recorderArtifactDir(params.recorder))
+	}
+	return failure
 }
 
 func recordReviewSessions(recorder RunRecorder, iteration int, review ReviewExecution) (ReviewExecution, error) {
@@ -620,6 +636,18 @@ func runImplementTurn(
 	)
 	implementEndedAt := time.Now().UTC()
 	if err != nil {
+		recordRoleUsage(params.recorder, usage.CollectInvocation(usage.Invocation{
+			Iteration:  turn.iteration,
+			Role:       "implement",
+			Harness:    string(params.projectConfig.Roles.Implement.Harness),
+			Model:      params.projectConfig.Roles.Implement.Model,
+			SessionIDs: implementResult.SessionIDs,
+			StartedAt:  implementStartedAt,
+			EndedAt:    implementEndedAt,
+		}, params.workRoot, ""))
+		if artifactErr := recordFailedImplementTurn(params.recorder, turn.iteration, implementResult, err); artifactErr != nil {
+			return implementExecution{}, fmt.Errorf("%w; save partial implement artifacts: %v", err, artifactErr)
+		}
 		return implementExecution{}, err
 	}
 	recordRoleUsage(params.recorder, usage.CollectInvocation(usage.Invocation{
@@ -721,9 +749,13 @@ func runImplementRoleWithResumeFallback(
 
 	var resumeErr *implementResumeError
 	if !errors.As(err, &resumeErr) {
-		return implementExecution{}, err
+		return result, err
 	}
-	return runImplementRole(ctx, adapter, request, output, mode, questions)
+	fresh, freshErr := runImplementRole(ctx, adapter, request, output, mode, questions)
+	if freshErr != nil {
+		return appendImplementExecutions(result, fresh), freshErr
+	}
+	return fresh, nil
 }
 
 type implementResumeError struct {
@@ -757,17 +789,45 @@ func runImplementRoleFrom(
 		sessionID: options.initialSessionID,
 	})
 	if err != nil {
+		execution := implementExecution{
+			Feed: feed.String(), Transcript: result.Transcript, SessionIDs: result.SessionIDs,
+		}
 		implementErr := fmt.Errorf("run implement harness: %w", err)
 		if options.initialSessionID != "" {
-			return implementExecution{}, &implementResumeError{cause: implementErr}
+			return execution, &implementResumeError{cause: implementErr}
 		}
-		return implementExecution{}, implementErr
+		return execution, implementErr
 	}
 	return implementExecution{
 		Feed:       feed.String(),
 		Transcript: result.Transcript,
 		SessionIDs: result.SessionIDs,
 	}, nil
+}
+
+func recordFailedImplementTurn(recorder RunRecorder, iteration int, execution implementExecution, failure error) error {
+	if err := recorder.RecordImplementTurn(iteration, execution.Feed, execution.Transcript); err != nil {
+		return err
+	}
+	if err := recorder.RecordFailure(iteration, "implement", failure.Error()); err != nil {
+		return err
+	}
+	return recorder.RecordSessions(iteration, "implement", execution.SessionIDs)
+}
+
+func appendImplementExecutions(first, next implementExecution) implementExecution {
+	return implementExecution{
+		Feed:       appendTranscriptString(first.Feed, next.Feed),
+		Transcript: appendTranscriptString(first.Transcript, next.Transcript),
+		SessionIDs: append(append([]string(nil), first.SessionIDs...), next.SessionIDs...),
+	}
+}
+
+func appendTranscriptString(first, next string) string {
+	if first != "" && next != "" && !strings.HasSuffix(first, "\n") {
+		first += "\n"
+	}
+	return first + next
 }
 
 func ensureHeadUnchanged(ctx context.Context, git GitRunner, branchPoint string) error {

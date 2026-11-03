@@ -110,6 +110,40 @@ func TestWriterRoundTripsRunRecord(t *testing.T) {
 	}
 }
 
+func TestWriteFailureUsesRoleArtifactNameAndIsRecognized(t *testing.T) {
+	directory := t.TempDir()
+	writer := NewWriter(directory)
+	const summary = "Session state:\nSubagents: 2 total, 2 finished\n"
+	if err := writer.WriteFailure(1, "review", summary); err != nil {
+		t.Fatalf("WriteFailure() error = %v", err)
+	}
+	const name = "iteration-01-review.failure.txt"
+	contents, err := os.ReadFile(filepath.Join(directory, name))
+	if err != nil {
+		t.Fatalf("read failure artifact: %v", err)
+	}
+	if string(contents) != summary {
+		t.Fatalf("failure artifact = %q, want %q", contents, summary)
+	}
+	artifact, ok := ParseArtifactName(name)
+	if !ok || artifact.Kind != ReviewFailure || artifact.Role != "review" || artifact.Iteration != 1 {
+		t.Fatalf("ParseArtifactName(%q) = (%#v, %t), want review failure artifact", name, artifact, ok)
+	}
+	if got := FailureArtifactName(0, "review"); got != "review.failure.txt" {
+		t.Fatalf("FailureArtifactName(0, review) = %q, want standalone review name", got)
+	}
+	if got := ArtifactName(ImplementFailure, 2); got != "iteration-02-implement.failure.txt" {
+		t.Fatalf("ArtifactName(ImplementFailure, 2) = %q, want implement failure name", got)
+	}
+	implementArtifact, ok := ParseArtifactName("iteration-02-implement.failure.txt")
+	if !ok || implementArtifact.Kind != ImplementFailure || implementArtifact.Role != "implement" {
+		t.Fatalf("ParseArtifactName(implement failure) = (%#v, %t), want implement failure artifact", implementArtifact, ok)
+	}
+	if err := writer.WriteFailure(1, "planner", "failure"); err == nil {
+		t.Fatal("WriteFailure() succeeded for an unsupported Role")
+	}
+}
+
 func TestReadLegacyRunFixtureWithoutRunState(t *testing.T) {
 	originRoot := t.TempDir()
 	fixture := filepath.Join("testdata", "legacy-run")
