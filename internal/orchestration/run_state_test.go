@@ -145,6 +145,86 @@ func TestRunImplementRecordsRunStateLifecycle(t *testing.T) {
 	}
 }
 
+func TestRunImplementFailedReviewWritesPartialArtifacts(t *testing.T) {
+	root := t.TempDir()
+	const partial = "Partial reviewer response."
+	const summary = "Session state:\nTask notifications: 2 enqueued, 0 dequeued or removed\nSubagents: 2 total, 2 finished"
+	err := RunImplement(context.Background(), ImplementOptions{
+		OriginRoot: root, WorkRoot: root,
+		OpenRun:      NewDiskRunOpener(root, sylhome.Dir{}, io.Discard),
+		IssueTracker: branchSetupTracker{}, Ticket: tracker.Ticket{Number: 245},
+		ProjectConfig: config.Config{
+			Roles: config.RolesConfig{
+				Implement: config.RoleConfig{Harness: config.HarnessCodex},
+				Review:    config.RoleConfig{Harness: config.HarnessClaude},
+			},
+			Loop: config.LoopConfig{MaxIterations: 1},
+		},
+		Implementer: &capturingImplementAdapter{response: "Implemented the requested changes."},
+		Reviewer: &failedConversationAdapter{
+			events: []harness.Event{
+				{Type: harness.EventSession, SessionID: "review-session"},
+				{Type: harness.EventAssistantText, Text: partial},
+			},
+			err: errors.New("idle timeout\n" + summary),
+		},
+		Git: &implementRunGit{}, OriginGit: &implementRunGit{},
+		Input: strings.NewReader(""), Output: io.Discard,
+	})
+	if err == nil || !strings.Contains(err.Error(), "Subagents: 2 total, 2 finished") {
+		t.Fatalf("RunImplement() error = %v, want reviewer failure summary", err)
+	}
+	runDir := filepath.Dir(onlyRunStatePath(t, root))
+	for name, want := range map[string]string{
+		"iteration-01-review.feed":        partial,
+		"iteration-01-review.transcript":  partial,
+		"iteration-01-review.failure.txt": summary,
+	} {
+		contents, readErr := os.ReadFile(filepath.Join(runDir, name))
+		if readErr != nil {
+			t.Fatalf("read %s: %v", name, readErr)
+		}
+		if !strings.Contains(string(contents), want) {
+			t.Fatalf("%s = %q, want %q", name, contents, want)
+		}
+	}
+}
+
+func TestRunImplementFailedImplementerWritesPartialArtifacts(t *testing.T) {
+	root := t.TempDir()
+	const partial = "Partial implementer response."
+	const summary = "Session state:\nUnanswered api-request age: 4m0s"
+	options, _ := failedImplementOptions(t)
+	options.OriginRoot = root
+	options.WorkRoot = root
+	options.OpenRun = NewDiskRunOpener(root, sylhome.Dir{}, io.Discard)
+	options.Implementer = &failedConversationAdapter{
+		events: []harness.Event{
+			{Type: harness.EventSession, SessionID: "implement-session"},
+			{Type: harness.EventAssistantText, Text: partial},
+		},
+		err: errors.New("idle timeout\n" + summary),
+	}
+	options.Reviewer = &capturingReviewAdapter{}
+	if err := RunImplement(context.Background(), options); err == nil || !strings.Contains(err.Error(), summary) {
+		t.Fatalf("RunImplement() error = %v, want implementer failure summary", err)
+	}
+	runDir := filepath.Dir(onlyRunStatePath(t, root))
+	for name, want := range map[string]string{
+		"iteration-01-implement.feed":        partial,
+		"iteration-01-implement.transcript":  partial,
+		"iteration-01-implement.failure.txt": summary,
+	} {
+		contents, err := os.ReadFile(filepath.Join(runDir, name))
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		if !strings.Contains(string(contents), want) {
+			t.Fatalf("%s = %q, want %q", name, contents, want)
+		}
+	}
+}
+
 func TestRunImplementRecordsLifecycleThroughMemoryOpenRun(t *testing.T) {
 	recorder := newMemoryRunRecorder()
 	implementer := &scriptedConversationAdapter{

@@ -107,6 +107,11 @@ func (r *memoryRunRecorder) RecordImplementTurn(iteration int, feed, transcript 
 	return nil
 }
 
+func (r *memoryRunRecorder) RecordFailure(iteration int, role, summary string) error {
+	r.files[runrecord.FailureArtifactName(iteration, role)] = summary
+	return nil
+}
+
 func (r *memoryRunRecorder) RecordReviewDiff(iteration int, diff string) (string, error) {
 	name := artifactFilename(reviewDiffArtifact, iteration)
 	r.files[name] = diff
@@ -163,6 +168,104 @@ func (r *failingSessionsRecorder) RecordSessions(iteration int, role string, ses
 		return r.err
 	}
 	return r.WriteSessions()
+}
+
+type failingRoleArtifactRecorder struct {
+	*memoryRunRecorder
+	failAt string
+	err    error
+}
+
+func (r *failingRoleArtifactRecorder) RecordImplementTurn(iteration int, feed, transcript string) error {
+	if r.failAt == "implement-turn" {
+		return r.err
+	}
+	return r.memoryRunRecorder.RecordImplementTurn(iteration, feed, transcript)
+}
+
+func (r *failingRoleArtifactRecorder) RecordReviewOutput(iteration int, review ReviewExecution) error {
+	if r.failAt == "review-output" {
+		return r.err
+	}
+	return r.memoryRunRecorder.RecordReviewOutput(iteration, review)
+}
+
+func (r *failingRoleArtifactRecorder) RecordFailure(iteration int, role, summary string) error {
+	if r.failAt == "failure" {
+		return r.err
+	}
+	return r.memoryRunRecorder.RecordFailure(iteration, role, summary)
+}
+
+func (r *failingRoleArtifactRecorder) RecordSessions(iteration int, role string, sessionIDs []string) error {
+	if r.failAt == "sessions" {
+		return r.err
+	}
+	return r.memoryRunRecorder.RecordSessions(iteration, role, sessionIDs)
+}
+
+func TestFailedRoleTurnReturnsArtifactWriteErrors(t *testing.T) {
+	failure := errors.New("artifact write failed")
+	tests := []struct {
+		name   string
+		failAt string
+		record func(RunRecorder) error
+	}{
+		{
+			name:   "implement feed and transcript",
+			failAt: "implement-turn",
+			record: func(recorder RunRecorder) error {
+				return recordFailedImplementTurn(recorder, 1, implementExecution{}, failure)
+			},
+		},
+		{
+			name:   "implement failure summary",
+			failAt: "failure",
+			record: func(recorder RunRecorder) error {
+				return recordFailedImplementTurn(recorder, 1, implementExecution{}, failure)
+			},
+		},
+		{
+			name:   "implement sessions",
+			failAt: "sessions",
+			record: func(recorder RunRecorder) error {
+				return recordFailedImplementTurn(recorder, 1, implementExecution{}, failure)
+			},
+		},
+		{
+			name:   "review feed and transcript",
+			failAt: "review-output",
+			record: func(recorder RunRecorder) error {
+				return recordFailedReviewTurn(recorder, 1, ReviewExecution{}, failure)
+			},
+		},
+		{
+			name:   "review failure summary",
+			failAt: "failure",
+			record: func(recorder RunRecorder) error {
+				return recordFailedReviewTurn(recorder, 1, ReviewExecution{}, failure)
+			},
+		},
+		{
+			name:   "review sessions",
+			failAt: "sessions",
+			record: func(recorder RunRecorder) error {
+				return recordFailedReviewTurn(recorder, 1, ReviewExecution{}, failure)
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			recorder := &failingRoleArtifactRecorder{
+				memoryRunRecorder: newMemoryRunRecorder(),
+				failAt:            test.failAt,
+				err:               failure,
+			}
+			if err := test.record(recorder); !errors.Is(err, failure) {
+				t.Fatalf("record failed Role turn error = %v, want %v", err, failure)
+			}
+		})
+	}
 }
 
 func TestRunImplementIterationsRecordsReviseThenApproveInMemory(t *testing.T) {

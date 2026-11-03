@@ -176,21 +176,25 @@ func recordStandaloneReviewVerdict(ctx context.Context, options ReviewOptions, p
 }
 
 func handleStandaloneReviewError(options ReviewOptions, preparation reviewPreparation, run standaloneReviewRun, err error) error {
+	execution := run.review
 	var unparseable *UnparseableVerdictError
-	if !errors.As(err, &unparseable) {
-		return err
+	if errors.As(err, &unparseable) {
+		execution = unparseable.Execution
 	}
 	recordStandaloneReviewUsage(
 		options,
 		preparation.recorder,
-		unparseable.Execution,
+		execution,
 		run.startedAt,
 		run.endedAt,
 	)
-	if artifactErr := recordStandaloneReviewArtifacts(preparation.recorder, unparseable.Execution); artifactErr != nil {
+	if artifactErr := recordFailedReviewTurn(preparation.recorder, 0, execution, err); artifactErr != nil {
 		return fmt.Errorf("%w; save review run artifacts: %v", err, artifactErr)
 	}
-	return reviewTranscriptSavedError(err, recorderArtifactDir(preparation.recorder))
+	if errors.As(err, &unparseable) {
+		return reviewTranscriptSavedError(err, recorderArtifactDir(preparation.recorder))
+	}
+	return err
 }
 
 func runStandaloneReview(ctx context.Context, options ReviewOptions, preparation reviewPreparation) (standaloneReviewRun, error) {
@@ -427,12 +431,12 @@ func runReviewExecutionWithResumeFallback(ctx context.Context, adapter harness.A
 
 	var resumeErr *reviewResumeError
 	if !errors.As(err, &resumeErr) {
-		return ReviewExecution{}, err
+		return review, err
 	}
 	if err := progress.EndTurn(); err != nil {
-		return ReviewExecution{}, fmt.Errorf("flush failed resumed review output: %w", err)
+		return resumeErr.execution, fmt.Errorf("flush failed resumed review output: %w", err)
 	}
-	return runReviewExecutionFrom(ctx, adapter, reviewExecutionOptions{
+	fresh, freshErr := runReviewExecutionFrom(ctx, adapter, reviewExecutionOptions{
 		request:    options.request,
 		output:     progress,
 		mode:       options.mode,
@@ -442,10 +446,15 @@ func runReviewExecutionWithResumeFallback(ctx context.Context, adapter harness.A
 			return adapter.Run(runContext, options.request)
 		},
 	})
+	if freshErr != nil {
+		return appendReviewExecutions(resumeErr.execution, fresh), freshErr
+	}
+	return fresh, nil
 }
 
 type reviewResumeError struct {
-	cause error
+	cause     error
+	execution ReviewExecution
 }
 
 func (e *reviewResumeError) Error() string {
@@ -467,14 +476,17 @@ func runReviewExecutionFrom(ctx context.Context, adapter harness.Adapter, option
 		sessionID: options.initialSessionID,
 	})
 	if err != nil {
+		execution := ReviewExecution{
+			Transcript: first.Transcript, Feed: feed.String(), SessionIDs: first.SessionIDs,
+		}
 		reviewErr := fmt.Errorf("run review harness: %w", err)
 		if options.initialSessionID != "" {
-			return ReviewExecution{}, &reviewResumeError{cause: reviewErr}
+			return execution, &reviewResumeError{cause: reviewErr, execution: execution}
 		}
-		return ReviewExecution{}, reviewErr
+		return execution, reviewErr
 	}
 	if err := endReviewTurn(options.turnOutput); err != nil {
-		return ReviewExecution{}, err
+		return ReviewExecution{Transcript: first.Transcript, Feed: feed.String(), SessionIDs: first.SessionIDs}, err
 	}
 	reviewVerdict, parseErr := verdict.Parse(first.Transcript)
 	if parseErr == nil {
@@ -497,10 +509,18 @@ func runReviewExecutionFrom(ctx context.Context, adapter harness.Adapter, option
 	retryOptions.request.Prompt = "emit the verdict block"
 	retry, err := retryReviewDetails(ctx, adapter, retryOptions)
 	if err != nil {
-		return ReviewExecution{}, err
+		return ReviewExecution{
+			Transcript: appendReviewTranscript(first.Transcript, retry.Transcript),
+			Feed:       feed.String(),
+			SessionIDs: append(append([]string(nil), first.SessionIDs...), retry.SessionIDs...),
+		}, err
 	}
 	if err := endReviewTurn(options.turnOutput); err != nil {
-		return ReviewExecution{}, err
+		return ReviewExecution{
+			Transcript: appendReviewTranscript(first.Transcript, retry.Transcript),
+			Feed:       feed.String(),
+			SessionIDs: append(append([]string(nil), first.SessionIDs...), retry.SessionIDs...),
+		}, err
 	}
 	transcript := appendReviewTranscript(first.Transcript, retry.Transcript)
 	sessions := append(append([]string(nil), first.SessionIDs...), retry.SessionIDs...)
@@ -511,6 +531,24 @@ func runReviewExecutionFrom(ctx context.Context, adapter harness.Adapter, option
 
 	execution := ReviewExecution{Transcript: transcript, Feed: feed.String(), SessionIDs: sessions}
 	return execution, &UnparseableVerdictError{Execution: execution, Cause: parseErr}
+}
+
+func appendReviewExecutions(first, next ReviewExecution) ReviewExecution {
+	return ReviewExecution{
+		Transcript: appendReviewTranscript(first.Transcript, next.Transcript),
+		Feed:       appendReviewTranscript(first.Feed, next.Feed),
+		SessionIDs: append(append([]string(nil), first.SessionIDs...), next.SessionIDs...),
+	}
+}
+
+func recordFailedReviewTurn(recorder RunRecorder, iteration int, execution ReviewExecution, failure error) error {
+	if err := recorder.RecordReviewOutput(iteration, execution); err != nil {
+		return err
+	}
+	if err := recorder.RecordFailure(iteration, "review", failure.Error()); err != nil {
+		return err
+	}
+	return recorder.RecordSessions(iteration, "review", execution.SessionIDs)
 }
 
 func endReviewTurn(turnOutput reviewTurnOutput) error {
@@ -537,7 +575,7 @@ func retryReviewDetails(ctx context.Context, adapter harness.Adapter, options co
 		return adapter.Resume(resumeContext, options.sessionID, options.request)
 	}, options)
 	if err != nil {
-		return harnessTranscript{}, fmt.Errorf("re-ask reviewer for verdict: %w", err)
+		return transcript, fmt.Errorf("re-ask reviewer for verdict: %w", err)
 	}
 	return transcript, nil
 }

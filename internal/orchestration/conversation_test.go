@@ -2,6 +2,7 @@ package orchestration
 
 import (
 	"context"
+	"errors"
 	"io"
 	"strings"
 	"testing"
@@ -11,6 +12,25 @@ import (
 )
 
 const conversationTestVerdict = "VERDICT: approve\nSUMMARY: The working tree is ready\nFINDINGS:\n"
+
+func TestRunReviewExecutionKeepsPartialOutputWhenHarnessWaitFails(t *testing.T) {
+	adapter := &failedConversationAdapter{
+		events: []harness.Event{
+			{Type: harness.EventSession, SessionID: "review-session"},
+			{Type: harness.EventAssistantText, Text: "Partial reviewer response."},
+		},
+		err: errors.New("idle timeout\nSession state: Subagents: 2 total, 2 finished"),
+	}
+
+	review, err := RunReviewExecution(context.Background(), adapter, harness.Request{}, io.Discard, ParsedHarnessOutput, nil)
+	if err == nil || !strings.Contains(err.Error(), "Subagents: 2 total, 2 finished") {
+		t.Fatalf("RunReviewExecution() error = %v, want failed stream error", err)
+	}
+	if review.Transcript != "Partial reviewer response." || strings.TrimSpace(review.Feed) != "Partial reviewer response." ||
+		len(review.SessionIDs) != 1 || review.SessionIDs[0] != "review-session" {
+		t.Fatalf("partial review = %#v, want captured transcript, feed, and session", review)
+	}
+}
 
 func TestRunReviewExecutionDoesNotDuplicateResultAfterAssistantDeltas(t *testing.T) {
 	adapter := &scriptedConversationAdapter{runs: [][]harness.Event{{
@@ -153,6 +173,40 @@ func TestRunHarnessConversationPausesOnceForQuestionWithDuplicatedResult(t *test
 	}
 	if result.Transcript != "Before the decision.\n"+conversationTestVerdict {
 		t.Fatalf("transcript = %q, want one question prefix and resumed assistant message", result.Transcript)
+	}
+}
+
+func TestRunHarnessConversationKeepsQuestionOutputWhenAnswerCannotBeProvided(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		questions *QuestionHandler
+		wantError string
+	}{
+		{name: "missing handler", wantError: "no terminal question handler"},
+		{
+			name:      "unavailable input",
+			questions: NewQuestionHandler(strings.NewReader(""), io.Discard, "review", nil, nil),
+			wantError: "terminal input is unavailable",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			adapter := &scriptedConversationAdapter{runs: [][]harness.Event{{
+				{Type: harness.EventSession, SessionID: "review-session"},
+				{Type: harness.EventAssistantText, Text: "Before the question.\nQUESTION:\nWhich database?\nEND QUESTION"},
+			}}}
+			result, err := runHarnessConversation(context.Background(), adapter, func(ctx context.Context) (harness.Stream, error) {
+				return adapter.Run(ctx, harness.Request{})
+			}, conversationOptions{
+				output: io.Discard, mode: ParsedHarnessOutput, questions: test.questions, role: "review",
+			})
+			if err == nil || !strings.Contains(err.Error(), test.wantError) {
+				t.Fatalf("runHarnessConversation() error = %v, want %q", err, test.wantError)
+			}
+			if !strings.Contains(result.Transcript, "Before the question.") ||
+				len(result.SessionIDs) != 1 || result.SessionIDs[0] != "review-session" {
+				t.Fatalf("partial question transcript = %#v, want captured output and session", result)
+			}
+		})
 	}
 }
 
@@ -334,6 +388,41 @@ type scriptedConversationAdapter struct {
 	runRequests []harness.Request
 	resumeCalls []conversationResumeCall
 }
+
+type failedConversationAdapter struct {
+	events []harness.Event
+	err    error
+}
+
+func (a *failedConversationAdapter) Run(context.Context, harness.Request) (harness.Stream, error) {
+	return failedConversationStream{events: a.events, err: a.err}, nil
+}
+
+func (a *failedConversationAdapter) Resume(context.Context, string, harness.Request) (harness.Stream, error) {
+	return failedConversationStream{events: a.events, err: a.err}, nil
+}
+
+func (*failedConversationAdapter) Attach(context.Context, harness.Request) error { return nil }
+
+func (*failedConversationAdapter) AttachSession(context.Context, string, harness.Request) error {
+	return nil
+}
+
+type failedConversationStream struct {
+	events []harness.Event
+	err    error
+}
+
+func (s failedConversationStream) Events() <-chan harness.Event {
+	channel := make(chan harness.Event, len(s.events))
+	for _, event := range s.events {
+		channel <- event
+	}
+	close(channel)
+	return channel
+}
+
+func (s failedConversationStream) Wait() error { return s.err }
 
 type conversationResumeCall struct {
 	sessionID string

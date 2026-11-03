@@ -68,6 +68,10 @@ const (
 	ReviewTranscript
 	// VerdictFile is a structured review verdict file.
 	VerdictFile
+	// ImplementFailure stores diagnostics for a failed implementer Role turn.
+	ImplementFailure
+	// ReviewFailure stores diagnostics for a failed reviewer Role turn.
+	ReviewFailure
 	// SummaryFile is a Run summary file.
 	SummaryFile
 	// SessionsFile stores role session identifiers.
@@ -536,6 +540,10 @@ func parseStandaloneArtifact(name string) (Artifact, bool) {
 		return Artifact{Kind: ReviewFeed, Name: name, Standalone: true, Iteration: 1, Role: "review", Extension: "feed"}, true
 	case "review.transcript":
 		return Artifact{Kind: ReviewTranscript, Name: name, Standalone: true, Iteration: 1, Role: "review", Extension: "transcript"}, true
+	case "review.failure.txt":
+		return Artifact{Kind: ReviewFailure, Name: name, Standalone: true, Iteration: 1, Role: "review", Extension: "failure.txt"}, true
+	case "implement.failure.txt":
+		return Artifact{Kind: ImplementFailure, Name: name, Standalone: true, Iteration: 1, Role: "implement", Extension: "failure.txt"}, true
 	case "verdict.txt":
 		return Artifact{Kind: VerdictFile, Name: name, Standalone: true, Iteration: 1}, true
 	case summaryFile:
@@ -571,6 +579,14 @@ func parseIterationArtifact(name string) (Artifact, bool) {
 	}
 	withoutPrefix := strings.TrimPrefix(name, "iteration-")
 	roleAndExtension := withoutPrefix[strings.IndexByte(withoutPrefix, '-')+1:]
+	if role, found := strings.CutSuffix(roleAndExtension, ".failure.txt"); found &&
+		(role == "implement" || role == "review") {
+		kind := ReviewFailure
+		if role == "implement" {
+			kind = ImplementFailure
+		}
+		return Artifact{Kind: kind, Name: name, Iteration: iteration, Role: role, Extension: "failure.txt"}, true
+	}
 	dot := strings.LastIndexByte(roleAndExtension, '.')
 	if dot < 1 {
 		return Artifact{}, false

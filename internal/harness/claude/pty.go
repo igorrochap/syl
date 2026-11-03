@@ -229,10 +229,13 @@ func (a *PTYAdapter) monitorSession(
 	idle := time.NewTimer(idleTimeout)
 	defer idle.Stop()
 	transcripts := transcriptMonitor{
-		reader:        session.transcript,
-		path:          session.transcriptPath,
-		projectRoot:   a.projectRoot,
-		sessionID:     session.sessionID,
+		reader:      session.transcript,
+		path:        session.transcriptPath,
+		projectRoot: a.projectRoot,
+		sessionID:   session.sessionID,
+		readState: func() (SessionState, error) {
+			return a.ReadSessionState(session.sessionID)
+		},
 		subagentSizes: session.subagentSizes,
 		output:        output,
 		events:        events,
@@ -291,6 +294,7 @@ type transcriptMonitor struct {
 	path          string
 	projectRoot   string
 	sessionID     string
+	readState     func() (SessionState, error)
 	subagentSizes map[string]int64
 	output        *terminalOutput
 	events        chan<- harness.Event
@@ -305,7 +309,7 @@ type transcriptMonitor struct {
 func (m *transcriptMonitor) checkProcessExit(waitErr error) error {
 	progress, err := m.checkProgress()
 	if err != nil {
-		return err
+		return m.describeSessionFailure(err)
 	}
 	if progress.complete {
 		return nil
@@ -319,7 +323,7 @@ func (m *transcriptMonitor) checkProcessExit(waitErr error) error {
 func (m *transcriptMonitor) checkCompletion() (bool, error) {
 	progress, err := m.checkProgress()
 	if err != nil {
-		return true, err
+		return true, m.describeSessionFailure(err)
 	}
 	return progress.complete, nil
 }
@@ -327,7 +331,7 @@ func (m *transcriptMonitor) checkCompletion() (bool, error) {
 func (m *transcriptMonitor) checkIdleTimeout() (bool, error) {
 	progress, err := m.checkProgress()
 	if err != nil {
-		return true, err
+		return true, m.describeSessionFailure(err)
 	}
 	if progress.complete {
 		return true, nil
@@ -344,8 +348,21 @@ func (m *transcriptMonitor) describeSessionFailure(err error) error {
 	if _, statErr := os.Stat(m.path); errors.Is(statErr, os.ErrNotExist) {
 		status = " (missing: file does not exist)"
 	}
-	return fmt.Errorf("%w\nSession id: %s\nSession transcript: %s%s\n%s",
-		err, m.sessionID, m.path, status, m.output.describeTail())
+	stateSummary := "Session state summary unavailable"
+	if m.readState != nil {
+		state, stateErr := m.readState()
+		if stateErr == nil {
+			stateSummary = "Session state:\n" + state.String()
+		} else {
+			stateSummary += ": " + stateErr.Error()
+		}
+	}
+	details := fmt.Sprintf("Session id: %s\nSession transcript: %s%s\n%s",
+		m.sessionID, m.path, status, stateSummary)
+	if tail := m.output.describeTail(); tail != "" {
+		details += "\n" + tail
+	}
+	return fmt.Errorf("%w\n%s", err, details)
 }
 
 func (m *transcriptMonitor) checkProgress() (transcriptProgress, error) {
@@ -586,8 +603,8 @@ func (o *terminalOutput) finishTerminalString(value byte) {
 func (o *terminalOutput) describeTail() string {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	if len(o.tail) == 0 {
-		return "no terminal output was captured"
+	if strings.TrimSpace(string(o.tail)) == "" {
+		return ""
 	}
 	// A byte bound can split a UTF-8 rune at either end; omit partial runes.
 	tail := bytes.ToValidUTF8(o.tail, nil)
