@@ -554,6 +554,143 @@ while :; do sleep 0.05; done
 	}
 }
 
+func TestPTYRunSubagentTranscriptGrowthResetsIdleTimeout(t *testing.T) {
+	root := t.TempDir()
+	home := t.TempDir()
+	transcriptDir := claudeTranscriptDir(t, home, root)
+	command := writeClaudeTestDouble(t, fmt.Sprintf(`
+session_id=''
+while [ "$#" -gt 0 ]; do
+	if [ "$1" = '--session-id' ]; then
+		session_id="$2"
+		break
+	fi
+	shift
+done
+transcript=%q/"$session_id".jsonl
+subagents=%q/"$session_id"/subagents
+mkdir -p "$subagents"
+trap 'exit 0' TERM
+printf '%%s\n' '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"subagent work 1"}]}}' >> "$subagents/agent-x.jsonl"
+sleep 0.3
+printf '%%s\n' '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"subagent work 2"}]}}' >> "$subagents/agent-x.jsonl"
+sleep 0.3
+printf '%%s\n' '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"subagent work 3"}]}}' >> "$subagents/agent-x.jsonl"
+sleep 0.3
+printf '%%s\n' '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"subagent work 4"}]}}' >> "$subagents/agent-x.jsonl"
+sleep 0.3
+printf '%%s\n' '{"type":"assistant","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"VERDICT: approve\\nSUMMARY: complete\\nFINDINGS:\\n"}]}}' >> "$transcript"
+printf '\033]9;Claude is waiting for your input\007'
+while :; do sleep 0.05; done
+`, transcriptDir, transcriptDir))
+	adapter := newPTYTestAdapter(command, root, home)
+	adapter.idleTimeout = 750 * time.Millisecond
+
+	stream, err := adapter.Run(context.Background(), harness.Request{
+		Model: "claude-sonnet-5", Effort: config.EffortMedium, Prompt: "review it",
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	var events []harness.Event
+	for event := range stream.Events() {
+		events = append(events, event)
+	}
+	if err := stream.Wait(); err != nil {
+		t.Fatalf("Wait() error = %v; subagent growth should keep the session alive", err)
+	}
+	if got := eventAssistantText(events); !strings.Contains(got, "VERDICT: approve") {
+		t.Fatalf("assistant text = %q, want main-transcript verdict", got)
+	}
+}
+
+func TestPTYRunNewEmptySubagentTranscriptResetsIdleTimeout(t *testing.T) {
+	root := t.TempDir()
+	home := t.TempDir()
+	transcriptDir := claudeTranscriptDir(t, home, root)
+	command := writeClaudeTestDouble(t, fmt.Sprintf(`
+session_id=''
+while [ "$#" -gt 0 ]; do
+	if [ "$1" = '--session-id' ]; then
+		session_id="$2"
+		break
+	fi
+	shift
+done
+transcript=%q/"$session_id".jsonl
+subagents=%q/"$session_id"/subagents
+mkdir -p "$subagents"
+trap 'exit 0' TERM
+sleep 1.8
+: > "$subagents/agent-x.jsonl"
+sleep 1.5
+printf '%%s\n' '{"type":"assistant","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"VERDICT: approve"}]}}' >> "$transcript"
+printf '\033]9;Claude is waiting for your input\007'
+while :; do sleep 0.05; done
+`, transcriptDir, transcriptDir))
+	adapter := newPTYTestAdapter(command, root, home)
+	adapter.idleTimeout = 3 * time.Second
+	stream, err := adapter.Run(context.Background(), harness.Request{
+		Model: "claude-sonnet-5", Effort: config.EffortMedium, Prompt: "review it",
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	events := collectHarnessEvents(t, stream)
+	if !strings.Contains(eventAssistantText(events), "VERDICT: approve") {
+		t.Fatalf("assistant text = %q, want main-transcript verdict", eventAssistantText(events))
+	}
+}
+
+func TestPTYRunIgnoresSubagentVerdict(t *testing.T) {
+	root := t.TempDir()
+	home := t.TempDir()
+	transcriptDir := claudeTranscriptDir(t, home, root)
+	command := writeClaudeTestDouble(t, fmt.Sprintf(`
+session_id=''
+while [ "$#" -gt 0 ]; do
+	if [ "$1" = '--session-id' ]; then
+		session_id="$2"
+		break
+	fi
+	shift
+done
+subagents=%q/"$session_id"/subagents
+mkdir -p "$subagents"
+trap 'exit 0' TERM
+printf '%%s\n' '{"type":"assistant","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"VERDICT: approve"}]}}' >> "$subagents/agent-x.jsonl"
+while :; do sleep 0.05; done
+`, transcriptDir))
+	adapter := newPTYTestAdapter(command, root, home)
+	adapter.idleTimeout = time.Second
+	stream, err := adapter.Run(context.Background(), harness.Request{
+		Model: "claude-sonnet-5", Effort: config.EffortMedium, Prompt: "review it",
+		Completion: harness.CompletionReviewVerdict,
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	var events []harness.Event
+	for event := range stream.Events() {
+		events = append(events, event)
+	}
+	err = stream.Wait()
+	if err == nil || !strings.Contains(err.Error(), "idle for 1s without a review verdict") {
+		t.Fatalf("Wait() error = %v, want idle timeout without a main-transcript verdict", err)
+	}
+	if len(events) != 1 || events[0].Type != harness.EventSession {
+		t.Fatalf("events = %#v, want only the session event", events)
+	}
+	if got := eventAssistantText(events); got != "" {
+		t.Fatalf("assistant text = %q, want no text from the subagent transcript", got)
+	}
+	subagentPath := filepath.Join(transcriptDir, eventSessionID(events), "subagents", "agent-x.jsonl")
+	contents := readClaudeFile(t, subagentPath)
+	if !strings.Contains(contents, "VERDICT: approve") {
+		t.Fatalf("subagent transcript = %q, want the verdict marker used by the test", contents)
+	}
+}
+
 func TestPTYRunIdleTimeoutCompletesWithoutTerminalEscape(t *testing.T) {
 	root := t.TempDir()
 	home := t.TempDir()
@@ -575,7 +712,7 @@ printf '%%s\n' '{"type":"assistant","message":{"role":"assistant","stop_reason":
 while :; do sleep 0.05; done
 `, transcriptDir, transcriptDir, stoppedPath))
 	adapter := newPTYTestAdapter(command, root, home)
-	adapter.idleTimeout = 750 * time.Millisecond
+	adapter.idleTimeout = 3 * time.Second
 
 	stream, err := adapter.Run(context.Background(), harness.Request{
 		Model: "claude-sonnet-5", Effort: config.EffortMedium, Prompt: "review it",

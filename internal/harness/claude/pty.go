@@ -45,6 +45,7 @@ type sessionParams struct {
 	transcript     transcript.Reader
 	transcriptPath string
 	sessionID      string
+	subagentSizes  map[string]int64
 	seenEntries    int
 	completion     harness.CompletionSignal
 }
@@ -131,10 +132,15 @@ func (a *PTYAdapter) start(
 		}
 		seenEntries = len(entries)
 	}
+	subagentSizes, err := subagentTranscriptSizes(reader, a.projectRoot, sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("read Claude subagent transcripts before start: %w", err)
+	}
 	session := sessionParams{
 		transcript:     reader,
 		transcriptPath: transcriptPath,
 		sessionID:      sessionID,
+		subagentSizes:  subagentSizes,
 		seenEntries:    seenEntries,
 		completion:     completion,
 	}
@@ -223,15 +229,17 @@ func (a *PTYAdapter) monitorSession(
 	idle := time.NewTimer(idleTimeout)
 	defer idle.Stop()
 	transcripts := transcriptMonitor{
-		reader:      session.transcript,
-		path:        session.transcriptPath,
-		sessionID:   session.sessionID,
-		output:      output,
-		events:      events,
-		idle:        idle,
-		idleTimeout: idleTimeout,
-		seenEntries: session.seenEntries,
-		completion:  session.completion,
+		reader:        session.transcript,
+		path:          session.transcriptPath,
+		projectRoot:   a.projectRoot,
+		sessionID:     session.sessionID,
+		subagentSizes: session.subagentSizes,
+		output:        output,
+		events:        events,
+		idle:          idle,
+		idleTimeout:   idleTimeout,
+		seenEntries:   session.seenEntries,
+		completion:    session.completion,
 	}
 
 	for {
@@ -274,18 +282,20 @@ func (a *PTYAdapter) sessionTiming() (time.Duration, time.Duration) {
 }
 
 type transcriptProgress struct {
-	newEntries bool
-	complete   bool
+	hasProgress bool
+	complete    bool
 }
 
 type transcriptMonitor struct {
-	reader      transcript.Reader
-	path        string
-	sessionID   string
-	output      *terminalOutput
-	events      chan<- harness.Event
-	seenEntries int
-	completion  harness.CompletionSignal
+	reader        transcript.Reader
+	path          string
+	projectRoot   string
+	sessionID     string
+	subagentSizes map[string]int64
+	output        *terminalOutput
+	events        chan<- harness.Event
+	seenEntries   int
+	completion    harness.CompletionSignal
 	// Completion stays latched across later polls that contain no new entries.
 	complete    bool
 	idle        *time.Timer
@@ -322,7 +332,7 @@ func (m *transcriptMonitor) checkIdleTimeout() (bool, error) {
 	if progress.complete {
 		return true, nil
 	}
-	if progress.newEntries {
+	if progress.hasProgress {
 		return false, nil
 	}
 	err = fmt.Errorf("claude code pty session was idle for %s without a %s", m.idleTimeout, m.completion)
@@ -341,23 +351,74 @@ func (m *transcriptMonitor) describeSessionFailure(err error) error {
 func (m *transcriptMonitor) checkProgress() (transcriptProgress, error) {
 	entryCount, complete, err := readTranscript(m.reader, m.path, m.seenEntries, m.events, m.completion)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return transcriptProgress{}, nil
+		if !errors.Is(err, os.ErrNotExist) {
+			return transcriptProgress{}, err
 		}
-		return transcriptProgress{}, err
+		entryCount = m.seenEntries
 	}
-	progress := transcriptProgress{
-		newEntries: entryCount > m.seenEntries,
+	newMainEntries := entryCount > m.seenEntries
+	if newMainEntries {
+		m.seenEntries = entryCount
 	}
 	if complete {
 		m.complete = true
 	}
-	progress.complete = m.complete
-	if progress.newEntries {
-		m.seenEntries = entryCount
+	newSubagentActivity, err := m.checkSubagentProgress()
+	if err != nil {
+		return transcriptProgress{}, err
+	}
+	progress := transcriptProgress{
+		hasProgress: newMainEntries || newSubagentActivity,
+		complete:    m.complete,
+	}
+	if progress.hasProgress {
 		resetTimer(m.idle, m.idleTimeout)
 	}
 	return progress, nil
+}
+
+func (m *transcriptMonitor) checkSubagentProgress() (bool, error) {
+	sizes, err := subagentTranscriptSizes(m.reader, m.projectRoot, m.sessionID)
+	if err != nil {
+		return false, err
+	}
+	hasProgress := false
+	for path, size := range sizes {
+		previousSize, exists := m.subagentSizes[path]
+		isNewOrGrown := !exists || size > previousSize
+		if isNewOrGrown {
+			hasProgress = true
+		}
+	}
+	m.subagentSizes = sizes
+	return hasProgress, nil
+}
+
+func subagentTranscriptSizes(reader transcript.Reader, projectRoot, sessionID string) (map[string]int64, error) {
+	paths, err := reader.FindSubagents(projectRoot, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	sizes := make(map[string]int64, len(paths))
+	for _, path := range paths {
+		name := filepath.Base(path)
+		isAgentTranscript := strings.HasPrefix(name, "agent-") && strings.HasSuffix(name, ".jsonl")
+		if !isAgentTranscript {
+			continue
+		}
+		info, err := os.Stat(path)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("stat Claude subagent transcript %s: %w", path, err)
+		}
+		if !info.Mode().IsRegular() {
+			continue
+		}
+		sizes[path] = info.Size()
+	}
+	return sizes, nil
 }
 
 func ptyRunArgs(sessionID string, request harness.Request) ([]string, error) {
