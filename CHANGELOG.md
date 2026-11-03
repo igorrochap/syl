@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v1.39.1 (2026-11-03)
+
+### Bug Fixes
+
+- **harness**: Reset idle timeout on subagent activity
+  ([#249](https://github.com/igorrochap/syl/pull/249),
+  [`a2db932`](https://github.com/igorrochap/syl/commit/a2db9323156cec1e3810724bf2e08450d07f6b1b))
+
+
 ## v1.39.0 (2026-10-08)
 
 ### Features
