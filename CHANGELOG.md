@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v1.39.2 (2026-11-03)
+
+### Bug Fixes
+
+- **harness**: Summarize session state and persist failed turns
+  ([#250](https://github.com/igorrochap/syl/pull/250),
+  [`edbc183`](https://github.com/igorrochap/syl/commit/edbc1839bc52885bef208f1c8d2e3bfc44ef0c75))
+
+
 ## v1.39.1 (2026-11-03)
 
 ### Bug Fixes
