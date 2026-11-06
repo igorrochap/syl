@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v1.39.3 (2026-11-06)
+
+### Bug Fixes
+
+- **claude**: Detect and recover stalled sessions
+  ([#251](https://github.com/igorrochap/syl/pull/251),
+  [`f44f151`](https://github.com/igorrochap/syl/commit/f44f1517e36b204b412007721263a498b37e90b8))
+
+
 ## v1.39.2 (2026-11-03)
 
 ### Bug Fixes
