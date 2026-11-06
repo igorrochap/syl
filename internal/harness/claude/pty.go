@@ -35,6 +35,7 @@ type PTYAdapter struct {
 	projectRoot   string
 	homeDir       string
 	pollInterval  time.Duration
+	stallWindow   time.Duration
 	idleTimeout   time.Duration
 	terminateWait time.Duration
 }
@@ -69,6 +70,7 @@ func New(projectRoot string) *PTYAdapter {
 		command:       "claude",
 		projectRoot:   projectRoot,
 		pollInterval:  250 * time.Millisecond,
+		stallWindow:   30 * time.Second,
 		idleTimeout:   5 * time.Minute,
 		terminateWait: 2 * time.Second,
 	}
@@ -223,7 +225,7 @@ func (a *PTYAdapter) monitorSession(
 	processDone <-chan error,
 	output *terminalOutput,
 ) (bool, error) {
-	pollInterval, idleTimeout := a.sessionTiming()
+	pollInterval, stallWindow, idleTimeout := a.sessionTiming()
 	poll := time.NewTicker(pollInterval)
 	defer poll.Stop()
 	idle := time.NewTimer(idleTimeout)
@@ -234,12 +236,13 @@ func (a *PTYAdapter) monitorSession(
 		projectRoot: a.projectRoot,
 		sessionID:   session.sessionID,
 		readState: func() (SessionState, error) {
-			return a.ReadSessionState(session.sessionID)
+			return a.ReadSessionStateSince(session.sessionID, session.seenEntries)
 		},
 		subagentSizes: session.subagentSizes,
 		output:        output,
 		events:        events,
 		idle:          idle,
+		stallWindow:   stallWindow,
 		idleTimeout:   idleTimeout,
 		seenEntries:   session.seenEntries,
 		completion:    session.completion,
@@ -272,7 +275,7 @@ func (a *PTYAdapter) monitorSession(
 	}
 }
 
-func (a *PTYAdapter) sessionTiming() (time.Duration, time.Duration) {
+func (a *PTYAdapter) sessionTiming() (time.Duration, time.Duration, time.Duration) {
 	pollInterval := a.pollInterval
 	if pollInterval <= 0 {
 		pollInterval = 250 * time.Millisecond
@@ -281,11 +284,16 @@ func (a *PTYAdapter) sessionTiming() (time.Duration, time.Duration) {
 	if idleTimeout <= 0 {
 		idleTimeout = 5 * time.Minute
 	}
-	return pollInterval, idleTimeout
+	stallWindow := a.stallWindow
+	if stallWindow <= 0 {
+		stallWindow = 30 * time.Second
+	}
+	return pollInterval, stallWindow, idleTimeout
 }
 
 type transcriptProgress struct {
 	hasProgress bool
+	mainEntry   bool
 	complete    bool
 }
 
@@ -303,6 +311,8 @@ type transcriptMonitor struct {
 	// Completion stays latched across later polls that contain no new entries.
 	complete    bool
 	idle        *time.Timer
+	stallWindow time.Duration
+	stallSince  time.Time
 	idleTimeout time.Duration
 }
 
@@ -325,7 +335,10 @@ func (m *transcriptMonitor) checkCompletion() (bool, error) {
 	if err != nil {
 		return true, m.describeSessionFailure(err)
 	}
-	return progress.complete, nil
+	if progress.complete {
+		return true, nil
+	}
+	return m.checkStalledSession(progress, time.Now().UTC())
 }
 
 func (m *transcriptMonitor) checkIdleTimeout() (bool, error) {
@@ -336,11 +349,57 @@ func (m *transcriptMonitor) checkIdleTimeout() (bool, error) {
 	if progress.complete {
 		return true, nil
 	}
+	stalled, stallErr := m.checkStalledSession(progress, time.Now().UTC())
+	if stalled || stallErr != nil {
+		return true, stallErr
+	}
 	if progress.hasProgress {
 		return false, nil
 	}
 	err = fmt.Errorf("claude code pty session was idle for %s without a %s", m.idleTimeout, m.completion)
 	return true, m.describeSessionFailure(err)
+}
+
+func (m *transcriptMonitor) checkStalledSession(progress transcriptProgress, now time.Time) (bool, error) {
+	if m.completion != harness.CompletionReviewVerdict {
+		m.stallSince = time.Time{}
+		return false, nil
+	}
+	if progress.mainEntry {
+		m.stallSince = time.Time{}
+		return false, nil
+	}
+	if m.readState == nil {
+		m.stallSince = time.Time{}
+		return false, nil
+	}
+	state, err := m.readState()
+	if err != nil {
+		m.stallSince = time.Time{}
+		return true, m.describeSessionFailure(fmt.Errorf("read session state for stall detection: %w", err))
+	}
+	if !sessionStateCanStall(state) {
+		m.stallSince = time.Time{}
+		return false, nil
+	}
+	if m.stallSince.IsZero() {
+		m.stallSince = now
+		return false, nil
+	}
+	if now.Sub(m.stallSince) < m.stallWindow {
+		return false, nil
+	}
+	return true, &harness.SessionStalledError{
+		SessionID:    m.sessionID,
+		StateSummary: state.String(),
+		Reports:      readFinishedSubagentReports(m.reader, m.projectRoot, m.sessionID),
+	}
+}
+
+func sessionStateCanStall(state SessionState) bool {
+	hasPendingTaskNotification := state.EnqueuedTaskNotifications > state.DequeuedOrRemovedTaskNotifications
+	hasFinishedSubagents := state.SubagentCount > 0 && state.SubagentCount == state.FinishedSubagentCount
+	return hasPendingTaskNotification && hasFinishedSubagents
 }
 
 func (m *transcriptMonitor) describeSessionFailure(err error) error {
@@ -386,6 +445,7 @@ func (m *transcriptMonitor) checkProgress() (transcriptProgress, error) {
 	}
 	progress := transcriptProgress{
 		hasProgress: newMainEntries || newSubagentActivity,
+		mainEntry:   newMainEntries,
 		complete:    m.complete,
 	}
 	if progress.hasProgress {

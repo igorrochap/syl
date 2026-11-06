@@ -32,6 +32,140 @@ func TestRunReviewExecutionKeepsPartialOutputWhenHarnessWaitFails(t *testing.T) 
 	}
 }
 
+func TestRunReviewExecutionRecoversStalledSessionWithFinishedSubagentReports(t *testing.T) {
+	stall := &harness.SessionStalledError{
+		SessionID:    "review-session",
+		StateSummary: "Task notifications: 2 enqueued, 0 dequeued or removed\nSubagents: 2 total, 2 finished",
+		Reports: []harness.SubagentReport{
+			{Path: "/claude/session/subagents/agent-1.jsonl", Text: "Standards report: no findings."},
+			{Path: "/claude/session/subagents/agent-2.jsonl", Text: "Spec report: missing validation."},
+		},
+	}
+	adapter := &scriptedConversationAdapter{
+		runs: [][]harness.Event{{
+			{Type: harness.EventSession, SessionID: "review-session"},
+			{Type: harness.EventAssistantText, Text: "Partial reviewer response."},
+		}},
+		resumes: [][]harness.Event{{
+			{Type: harness.EventSession, SessionID: "review-session"},
+			{Type: harness.EventAssistantText, Text: conversationTestVerdict},
+		}},
+		runWaitErrors:    []error{stall},
+		resumeWaitErrors: []error{nil},
+	}
+
+	review, err := RunReviewExecution(
+		context.Background(), adapter, harness.Request{Prompt: "original review"}, io.Discard, QuietHarnessOutput, nil,
+	)
+	if err != nil {
+		t.Fatalf("RunReviewExecution() error = %v", err)
+	}
+	if review.Verdict.Status != verdict.Approve {
+		t.Fatalf("verdict = %#v, want recovered approve verdict", review.Verdict)
+	}
+	if len(adapter.resumeCalls) != 1 || adapter.resumeCalls[0].sessionID != "review-session" {
+		t.Fatalf("resume calls = %#v, want one resume of stalled session", adapter.resumeCalls)
+	}
+	for _, want := range []string{
+		"Standards report: no findings.",
+		"Spec report: missing validation.",
+		"Merge the reports",
+		"mandatory verdict block",
+	} {
+		if !strings.Contains(adapter.resumeCalls[0].prompt, want) {
+			t.Errorf("recovery prompt = %q, want %q", adapter.resumeCalls[0].prompt, want)
+		}
+	}
+	if len(review.SessionIDs) != 2 || review.SessionIDs[0] != "review-session" || review.SessionIDs[1] != "review-session" {
+		t.Fatalf("session ids = %v, want one id recorded for each turn", review.SessionIDs)
+	}
+	for _, want := range []string{"Partial reviewer response.", conversationTestVerdict} {
+		if !strings.Contains(review.Transcript, want) || !strings.Contains(review.Feed, want) {
+			t.Errorf("review output omitted %q: %#v", want, review)
+		}
+	}
+}
+
+func TestRunReviewExecutionFailsWhenStalledRecoveryAlsoStalls(t *testing.T) {
+	firstStall := &harness.SessionStalledError{
+		SessionID: "review-session", StateSummary: "first session summary",
+	}
+	secondStall := &harness.SessionStalledError{
+		SessionID: "review-session", StateSummary: "second session summary",
+	}
+	adapter := &scriptedConversationAdapter{
+		runs: [][]harness.Event{{
+			{Type: harness.EventSession, SessionID: "review-session"},
+			{Type: harness.EventAssistantText, Text: "First turn."},
+		}},
+		resumes: [][]harness.Event{{
+			{Type: harness.EventSession, SessionID: "review-session"},
+			{Type: harness.EventAssistantText, Text: "Recovery turn."},
+		}},
+		runWaitErrors:    []error{firstStall},
+		resumeWaitErrors: []error{secondStall},
+	}
+
+	review, err := RunReviewExecution(context.Background(), adapter, harness.Request{}, io.Discard, QuietHarnessOutput, nil)
+	if err == nil || !strings.Contains(err.Error(), "second session summary") {
+		t.Fatalf("RunReviewExecution() error = %v, want second stalled-session summary", err)
+	}
+	if len(adapter.resumeCalls) != 1 {
+		t.Fatalf("resume calls = %d, want exactly one recovery attempt", len(adapter.resumeCalls))
+	}
+	for _, want := range []string{"First turn.", "Recovery turn."} {
+		if !strings.Contains(review.Transcript, want) || !strings.Contains(review.Feed, want) {
+			t.Errorf("failed review output omitted %q: %#v", want, review)
+		}
+	}
+	if len(review.SessionIDs) != 2 {
+		t.Fatalf("session ids = %v, want both turn ids", review.SessionIDs)
+	}
+}
+
+func TestRunReviewExecutionUsesReportPathsWhenRecoveryReportsAreTooLarge(t *testing.T) {
+	prompt := stalledReviewRecoveryPrompt([]harness.SubagentReport{{
+		Path:     "/claude/session/subagents/agent-large.jsonl",
+		Text:     "must not be embedded",
+		TooLarge: true,
+	}})
+	if !strings.Contains(prompt, "/claude/session/subagents/agent-large.jsonl") {
+		t.Fatalf("recovery prompt = %q, want report path", prompt)
+	}
+	if strings.Contains(prompt, "must not be embedded") {
+		t.Fatalf("recovery prompt = %q, want path in place of report text", prompt)
+	}
+	if !strings.Contains(prompt, "merge the finished subagent reports") || !strings.Contains(prompt, "mandatory verdict block") {
+		t.Fatalf("recovery prompt = %q, want report merge and verdict instructions", prompt)
+	}
+}
+
+func TestRunReviewExecutionFallsBackWhenStalledSessionResumeCannotStart(t *testing.T) {
+	stall := &harness.SessionStalledError{SessionID: "review-session", StateSummary: "finished reports queued"}
+	adapter := &scriptedConversationAdapter{
+		runs: [][]harness.Event{{
+			{Type: harness.EventSession, SessionID: "review-session"},
+			{Type: harness.EventAssistantText, Text: "Partial first review."},
+		}, {
+			{Type: harness.EventSession, SessionID: "fresh-review-session"},
+			{Type: harness.EventAssistantText, Text: conversationTestVerdict},
+		}},
+		runWaitErrors:     []error{stall, nil},
+		resumeStartErrors: []error{errors.New("session is unavailable")},
+	}
+
+	review, err := RunReviewExecution(context.Background(), adapter, harness.Request{Prompt: "original review"}, io.Discard, QuietHarnessOutput, nil)
+	if err != nil {
+		t.Fatalf("RunReviewExecution() error = %v", err)
+	}
+	if review.Verdict.Status != verdict.Approve || adapter.runCalls != 2 || len(adapter.resumeCalls) != 1 {
+		t.Fatalf("review = %#v; run calls = %d; resume calls = %d, want fresh-run fallback verdict", review, adapter.runCalls, len(adapter.resumeCalls))
+	}
+	if !strings.Contains(review.Transcript, "Partial first review.") || !strings.Contains(review.Transcript, conversationTestVerdict) {
+		t.Fatalf("transcript = %q, want stalled and fallback turns", review.Transcript)
+	}
+}
+
 func TestRunReviewExecutionDoesNotDuplicateResultAfterAssistantDeltas(t *testing.T) {
 	adapter := &scriptedConversationAdapter{runs: [][]harness.Event{{
 		{Type: harness.EventSession, SessionID: "review-session"},
@@ -380,13 +514,16 @@ func TestRunReviewExecutionRawOutputStillForwardsBothHarnessLines(t *testing.T) 
 }
 
 type scriptedConversationAdapter struct {
-	runs        [][]harness.Event
-	resumes     [][]harness.Event
-	runHooks    []func(harness.Request)
-	resumeHooks []func(harness.Request)
-	runCalls    int
-	runRequests []harness.Request
-	resumeCalls []conversationResumeCall
+	runs              [][]harness.Event
+	resumes           [][]harness.Event
+	runWaitErrors     []error
+	resumeWaitErrors  []error
+	resumeStartErrors []error
+	runHooks          []func(harness.Request)
+	resumeHooks       []func(harness.Request)
+	runCalls          int
+	runRequests       []harness.Request
+	resumeCalls       []conversationResumeCall
 }
 
 type failedConversationAdapter struct {
@@ -438,9 +575,14 @@ func (a *scriptedConversationAdapter) Run(_ context.Context, request harness.Req
 	if a.runCalls < len(a.runHooks) && a.runHooks[a.runCalls] != nil {
 		a.runHooks[a.runCalls](request)
 	}
-	events := a.runs[a.runCalls]
+	index := a.runCalls
+	events := a.runs[index]
 	a.runCalls++
-	return scriptedConversationStream{events: events}, nil
+	var waitErr error
+	if index < len(a.runWaitErrors) {
+		waitErr = a.runWaitErrors[index]
+	}
+	return scriptedConversationStream{events: events, err: waitErr}, nil
 }
 
 func (a *scriptedConversationAdapter) Resume(_ context.Context, sessionID string, request harness.Request) (harness.Stream, error) {
@@ -452,7 +594,14 @@ func (a *scriptedConversationAdapter) Resume(_ context.Context, sessionID string
 	if index < len(a.resumeHooks) && a.resumeHooks[index] != nil {
 		a.resumeHooks[index](request)
 	}
-	return scriptedConversationStream{events: a.resumes[index]}, nil
+	if index < len(a.resumeStartErrors) && a.resumeStartErrors[index] != nil {
+		return nil, a.resumeStartErrors[index]
+	}
+	var waitErr error
+	if index < len(a.resumeWaitErrors) {
+		waitErr = a.resumeWaitErrors[index]
+	}
+	return scriptedConversationStream{events: a.resumes[index], err: waitErr}, nil
 }
 
 func (*scriptedConversationAdapter) Attach(context.Context, harness.Request) error { return nil }
@@ -463,6 +612,7 @@ func (*scriptedConversationAdapter) AttachSession(context.Context, string, harne
 
 type scriptedConversationStream struct {
 	events []harness.Event
+	err    error
 }
 
 func (s scriptedConversationStream) Events() <-chan harness.Event {
@@ -474,7 +624,7 @@ func (s scriptedConversationStream) Events() <-chan harness.Event {
 	return channel
 }
 
-func (scriptedConversationStream) Wait() error { return nil }
+func (s scriptedConversationStream) Wait() error { return s.err }
 
 type scriptedConversationError struct {
 	message string

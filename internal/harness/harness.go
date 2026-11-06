@@ -3,9 +3,47 @@ package harness
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"strings"
 
 	"github.com/igorrochap/syl/internal/config"
 )
+
+// StalledSessionReportTextLimit bounds the report text included in recovery prompts.
+const StalledSessionReportTextLimit = 64 * 1024
+
+// ErrSessionStalled matches a session stalled after its subagents finished.
+var ErrSessionStalled = errors.New("session stalled")
+
+// SubagentReport contains a finished subagent's final assistant response.
+// TooLarge means the report should be read from Path instead of embedded.
+type SubagentReport struct {
+	Path     string
+	Text     string
+	TooLarge bool
+}
+
+// SessionStalledError reports a Claude session that stopped making main-thread
+// transcript progress after all queued task notifications had finished.
+type SessionStalledError struct {
+	SessionID    string
+	StateSummary string
+	Reports      []SubagentReport
+}
+
+func (e *SessionStalledError) Error() string {
+	summary := strings.TrimSpace(e.StateSummary)
+	if summary == "" {
+		summary = "unavailable"
+	}
+	return fmt.Sprintf("%s: %s\nSession state:\n%s", ErrSessionStalled, e.SessionID, summary)
+}
+
+// Is reports whether the error matches ErrSessionStalled.
+func (e *SessionStalledError) Is(target error) bool {
+	return target == ErrSessionStalled
+}
 
 type EventType string
 

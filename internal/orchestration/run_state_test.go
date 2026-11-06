@@ -60,13 +60,27 @@ func TestRunImplementRecordsRunStateLifecycle(t *testing.T) {
 			observations = append(observations, readState())
 		}},
 	}
+	var recoveryState runrecord.State
+	var nextReviewState runrecord.State
 	reviewer := &scriptedConversationAdapter{
 		runs: [][]harness.Event{{
 			{Type: harness.EventSession, SessionID: "review-1"},
-			{Type: harness.EventAssistantText, Text: "VERDICT: revise\nSUMMARY: Fix required\nFINDINGS:\n- [blocking] file.go:1 — fix it\n"},
+			{Type: harness.EventAssistantText, Text: "Standards and Spec reports are ready."},
 		}},
 		resumes: [][]harness.Event{{
+			{Type: harness.EventSession, SessionID: "review-1"},
+			{Type: harness.EventAssistantText, Text: "VERDICT: revise\nSUMMARY: Fix required\nFINDINGS:\n- [blocking] file.go:1 — fix it\n"},
+		}, {
+			{Type: harness.EventSession, SessionID: "review-1"},
 			{Type: harness.EventAssistantText, Text: "VERDICT: approve\nSUMMARY: Ready\nFINDINGS:\n"},
+		}},
+		runWaitErrors: []error{&harness.SessionStalledError{
+			SessionID:    "review-1",
+			StateSummary: "Task notifications: 2 enqueued, 0 dequeued or removed\nSubagents: 2 total, 2 finished",
+			Reports: []harness.SubagentReport{
+				{Path: "/claude/agent-standards.jsonl", Text: "No standards findings."},
+				{Path: "/claude/agent-spec.jsonl", Text: "Validation is missing."},
+			},
 		}},
 		runHooks: []func(harness.Request){func(request harness.Request) {
 			if request.SandboxMode != config.SandboxModeReadOnly {
@@ -77,15 +91,27 @@ func TestRunImplementRecordsRunStateLifecycle(t *testing.T) {
 			}
 			observations = append(observations, readState())
 		}},
-		resumeHooks: []func(harness.Request){func(request harness.Request) {
-			if request.SandboxMode != config.SandboxModeReadOnly {
-				t.Fatalf("reviewer sandbox = %q, want read-only", request.SandboxMode)
-			}
-			if request.Completion != harness.CompletionReviewVerdict {
-				t.Fatalf("reviewer completion = %v, want review verdict", request.Completion)
-			}
-			observations = append(observations, readState())
-		}},
+		resumeHooks: []func(harness.Request){
+			func(request harness.Request) {
+				if request.SandboxMode != config.SandboxModeReadOnly || request.Completion != harness.CompletionReviewVerdict {
+					t.Fatalf("review recovery request = %#v, want read-only review", request)
+				}
+				if !strings.Contains(request.Prompt, "No standards findings.") || !strings.Contains(request.Prompt, "Validation is missing.") {
+					t.Fatalf("recovery prompt = %q, want both finished reports", request.Prompt)
+				}
+				recoveryState = readState()
+			},
+			func(request harness.Request) {
+				if request.SandboxMode != config.SandboxModeReadOnly || request.Completion != harness.CompletionReviewVerdict {
+					t.Fatalf("review resume request = %#v, want read-only review", request)
+				}
+				if !strings.Contains(request.Prompt, "file.go:1") {
+					t.Fatalf("review resume prompt = %q, want iteration finding", request.Prompt)
+				}
+				nextReviewState = readState()
+				observations = append(observations, nextReviewState)
+			},
+		},
 	}
 	var output strings.Builder
 	err := RunImplement(context.Background(), ImplementOptions{
@@ -136,12 +162,30 @@ func TestRunImplementRecordsRunStateLifecycle(t *testing.T) {
 	if observations[3].Activity != runrecord.Reviewing || observations[3].Iteration != 2 {
 		t.Fatalf("second review state = %#v", observations[3])
 	}
+	if recoveryState.Activity != runrecord.Reviewing || recoveryState.Iteration != 1 {
+		t.Fatalf("recovery state = %#v, want review iteration 1", recoveryState)
+	}
+	if nextReviewState.Activity != runrecord.Reviewing || nextReviewState.Iteration != 2 {
+		t.Fatalf("next review state = %#v, want review iteration 2", nextReviewState)
+	}
 	final := readState()
 	if final.Status != runrecord.Approved || final.EndedAt == nil || final.Activity != "" || final.Question != "" {
 		t.Fatalf("final state = %#v, want approved with ended time and no live activity", final)
 	}
 	if final.Kind != runrecord.Implement || final.TicketRef != "#180" {
 		t.Fatalf("final identity = %#v", final)
+	}
+	runDir := filepath.Dir(onlyRunStatePath(t, root))
+	for _, name := range []string{"iteration-01-review.feed", "iteration-01-review.transcript"} {
+		contents, err := os.ReadFile(filepath.Join(runDir, name))
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		for _, want := range []string{"Standards and Spec reports are ready.", "VERDICT: revise"} {
+			if !strings.Contains(string(contents), want) {
+				t.Errorf("%s = %q, want both review turns including %q", name, contents, want)
+			}
+		}
 	}
 }
 
@@ -186,6 +230,65 @@ func TestRunImplementFailedReviewWritesPartialArtifacts(t *testing.T) {
 		}
 		if !strings.Contains(string(contents), want) {
 			t.Fatalf("%s = %q, want %q", name, contents, want)
+		}
+	}
+}
+
+func TestRunImplementFailsAfterSecondStalledReviewTurn(t *testing.T) {
+	root := t.TempDir()
+	firstStall := &harness.SessionStalledError{
+		SessionID: "review-session", StateSummary: "first stalled session summary",
+	}
+	secondStall := &harness.SessionStalledError{
+		SessionID: "review-session", StateSummary: "second stalled session summary",
+	}
+	reviewer := &scriptedConversationAdapter{
+		runs: [][]harness.Event{{
+			{Type: harness.EventSession, SessionID: "review-session"},
+			{Type: harness.EventAssistantText, Text: "First review turn."},
+		}},
+		resumes: [][]harness.Event{{
+			{Type: harness.EventSession, SessionID: "review-session"},
+			{Type: harness.EventAssistantText, Text: "Recovery review turn."},
+		}},
+		runWaitErrors:    []error{firstStall},
+		resumeWaitErrors: []error{secondStall},
+	}
+	err := RunImplement(context.Background(), ImplementOptions{
+		OriginRoot: root, WorkRoot: root,
+		OpenRun:      NewDiskRunOpener(root, sylhome.Dir{}, io.Discard),
+		IssueTracker: branchSetupTracker{}, Ticket: tracker.Ticket{Number: 246},
+		ProjectConfig: config.Config{
+			Roles: config.RolesConfig{
+				Implement: config.RoleConfig{Harness: config.HarnessCodex},
+				Review:    config.RoleConfig{Harness: config.HarnessClaude},
+			},
+			Loop: config.LoopConfig{MaxIterations: 1},
+		},
+		Implementer: &capturingImplementAdapter{response: "Implemented the requested changes."},
+		Reviewer:    reviewer,
+		Git:         &implementRunGit{}, OriginGit: &implementRunGit{},
+		Input: strings.NewReader(""), Output: io.Discard,
+	})
+	if err == nil || !strings.Contains(err.Error(), "second stalled session summary") {
+		t.Fatalf("RunImplement() error = %v, want second stalled-session summary", err)
+	}
+	state := mustReadRunState(t, onlyRunStatePath(t, root))
+	if state.Status != runrecord.Failed || state.Iteration != 1 {
+		t.Fatalf("final Run state = %#v, want failed at iteration 1", state)
+	}
+	runDir := filepath.Dir(onlyRunStatePath(t, root))
+	for name, want := range map[string]string{
+		"iteration-01-review.feed":        "First review turn.\nRecovery review turn.",
+		"iteration-01-review.transcript":  "First review turn.\nRecovery review turn.",
+		"iteration-01-review.failure.txt": "second stalled session summary",
+	} {
+		contents, readErr := os.ReadFile(filepath.Join(runDir, name))
+		if readErr != nil {
+			t.Fatalf("read %s: %v", name, readErr)
+		}
+		if !strings.Contains(string(contents), want) {
+			t.Errorf("%s = %q, want %q", name, contents, want)
 		}
 	}
 }

@@ -1137,6 +1137,215 @@ while :; do sleep 0.05; done
 	}
 }
 
+func TestPTYRunDetectsStalledSessionsFromTranscriptAndSubagentState(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		finished    bool
+		dequeued    bool
+		completion  harness.CompletionSignal
+		wantStalled bool
+	}{
+		{name: "finished subagent with queued notification", finished: true, wantStalled: true},
+		{name: "unfinished subagent", finished: false},
+		{name: "notification already dequeued", finished: true, dequeued: true},
+		{name: "implementer turn end", finished: true, completion: harness.CompletionTurnEnd},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root, home := t.TempDir(), t.TempDir()
+			const sessionID = "stalled-review-session"
+			transcriptPath, err := transcript.New(home).Find(root, sessionID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.MkdirAll(filepath.Dir(transcriptPath), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			contents := `{"type":"api-request","timestamp":"2026-11-06T10:00:00Z"}` + "\n" +
+				`{"type":"queue-operation","operation":"enqueue","content":"<task-notification>done</task-notification>"}` + "\n"
+			if test.dequeued {
+				contents += `{"type":"queue-operation","operation":"dequeue","content":"<task-notification>done</task-notification>"}` + "\n"
+			}
+			if err := os.WriteFile(transcriptPath, []byte(contents), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			subagentsDir := filepath.Join(filepath.Dir(transcriptPath), sessionID, "subagents")
+			if err := os.MkdirAll(subagentsDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			finished := `{"finished":false}`
+			if test.finished {
+				finished = `{"finished":true}`
+			}
+			if err := os.WriteFile(filepath.Join(subagentsDir, "agent-a.meta.json"), []byte(finished), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(subagentsDir, "agent-a.jsonl"), []byte(
+				`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Earlier report."}]}}`+"\n"+
+					`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Final report."}]}}`+"\n",
+			), 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			command := writeClaudeTestDouble(t, "trap 'exit 0' TERM\nwhile :; do sleep 0.02; done\n")
+			adapter := newPTYTestAdapter(command, root, home)
+			adapter.pollInterval = 5 * time.Millisecond
+			adapter.stallWindow = 60 * time.Millisecond
+			adapter.idleTimeout = 300 * time.Millisecond
+			stream, err := adapter.start(
+				context.Background(), sessionID, nil, transcriptStartFresh, test.completion,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			eventCount := 0
+			for range stream.Events() {
+				eventCount++
+			}
+			if eventCount == 0 {
+				t.Fatal("PTY stream emitted no events")
+			}
+			err = stream.Wait()
+			var stalled *harness.SessionStalledError
+			if test.wantStalled {
+				if !errors.As(err, &stalled) || !errors.Is(err, harness.ErrSessionStalled) {
+					t.Fatalf("Wait() error = %v, want typed stalled-session error", err)
+				}
+				if stalled.SessionID != sessionID || !strings.Contains(stalled.StateSummary, "1 total, 1 finished") {
+					t.Fatalf("stalled session details = %#v, want session id and summary", stalled)
+				}
+				if len(stalled.Reports) != 1 || stalled.Reports[0].Text != "Final report." || stalled.Reports[0].Path == "" {
+					t.Fatalf("stalled reports = %#v, want final assistant text and path", stalled.Reports)
+				}
+				return
+			}
+			if errors.As(err, &stalled) {
+				t.Fatalf("Wait() error = %v, want no stalled-session error", err)
+			}
+			if err == nil || !strings.Contains(err.Error(), "idle for") {
+				t.Fatalf("Wait() error = %v, want idle-timeout error", err)
+			}
+		})
+	}
+}
+
+func TestPTYResumeDoesNotStallOnTaskNotificationFromEarlierTurn(t *testing.T) {
+	root, home := t.TempDir(), t.TempDir()
+	const sessionID = "resumed-review-session"
+	transcriptPath, err := transcript.New(home).Find(root, sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(transcriptPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	contents := `{"type":"api-request","timestamp":"2026-11-06T10:00:00Z"}` + "\n" +
+		`{"type":"queue-operation","operation":"enqueue","content":"<task-notification>earlier task</task-notification>"}` + "\n"
+	if err := os.WriteFile(transcriptPath, []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	subagentsDir := filepath.Join(filepath.Dir(transcriptPath), sessionID, "subagents")
+	if err := os.MkdirAll(subagentsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(subagentsDir, "agent-a.meta.json"), []byte(`{"finished":true}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	command := writeClaudeTestDouble(t, "trap 'exit 0' TERM\nwhile :; do sleep 0.02; done\n")
+	adapter := newPTYTestAdapter(command, root, home)
+	adapter.pollInterval = 5 * time.Millisecond
+	adapter.stallWindow = 40 * time.Millisecond
+	adapter.idleTimeout = 160 * time.Millisecond
+	stream, err := adapter.Resume(context.Background(), sessionID, harness.Request{Prompt: "continue review"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventCount := 0
+	for range stream.Events() {
+		eventCount++
+	}
+	if eventCount == 0 {
+		t.Fatal("PTY stream emitted no events")
+	}
+	err = stream.Wait()
+	var stalled *harness.SessionStalledError
+	if errors.As(err, &stalled) {
+		t.Fatalf("Wait() error = %v, want prior-turn notification excluded from stall detection", err)
+	}
+	if err == nil || !strings.Contains(err.Error(), "idle for") {
+		t.Fatalf("Wait() error = %v, want ordinary idle-timeout error", err)
+	}
+}
+
+func TestTranscriptMonitorRestartsStallWindowOnMainTranscriptEntry(t *testing.T) {
+	state := SessionState{
+		EnqueuedTaskNotifications: 1,
+		SubagentCount:             1,
+		FinishedSubagentCount:     1,
+	}
+	monitor := transcriptMonitor{
+		reader:      transcript.New(t.TempDir()),
+		projectRoot: t.TempDir(),
+		sessionID:   "review-session",
+		readState: func() (SessionState, error) {
+			return state, nil
+		},
+		stallWindow: time.Minute,
+	}
+	start := time.Date(2026, time.November, 6, 12, 0, 0, 0, time.UTC)
+	for _, at := range []time.Time{start, start.Add(59 * time.Second)} {
+		stalled, err := monitor.checkStalledSession(transcriptProgress{}, at)
+		if stalled || err != nil {
+			t.Fatalf("checkStalledSession(%s) = (%t, %v), want window still active", at, stalled, err)
+		}
+	}
+	stalled, err := monitor.checkStalledSession(transcriptProgress{mainEntry: true}, start.Add(60*time.Second))
+	if stalled || err != nil {
+		t.Fatalf("main transcript progress check = (%t, %v), want timer reset", stalled, err)
+	}
+	stalled, err = monitor.checkStalledSession(transcriptProgress{}, start.Add(61*time.Second))
+	if stalled || err != nil {
+		t.Fatalf("check after reset = (%t, %v), want a fresh window", stalled, err)
+	}
+	stalled, err = monitor.checkStalledSession(transcriptProgress{}, start.Add(120*time.Second))
+	if stalled || err != nil {
+		t.Fatalf("check before reset window ends = (%t, %v), want no stall", stalled, err)
+	}
+	stalled, err = monitor.checkStalledSession(transcriptProgress{}, start.Add(121*time.Second))
+	if !stalled || !errors.Is(err, harness.ErrSessionStalled) {
+		t.Fatalf("check at reset window end = (%t, %v), want stalled-session error", stalled, err)
+	}
+}
+
+func TestTranscriptMonitorPropagatesSessionStateReadErrors(t *testing.T) {
+	readErr := errors.New("session state read failed")
+	root := t.TempDir()
+	monitor := transcriptMonitor{
+		reader:      transcript.New(t.TempDir()),
+		path:        filepath.Join(root, "session.jsonl"),
+		projectRoot: root,
+		sessionID:   "review-session",
+		completion:  harness.CompletionReviewVerdict,
+		readState: func() (SessionState, error) {
+			return SessionState{}, readErr
+		},
+		output: &terminalOutput{},
+	}
+	finished, err := monitor.checkStalledSession(transcriptProgress{}, time.Now().UTC())
+	if !finished || !errors.Is(err, readErr) {
+		t.Fatalf("checkStalledSession() = (%t, %v), want a finished monitor with the session-state read error", finished, err)
+	}
+	if !strings.Contains(err.Error(), "read session state for stall detection") {
+		t.Fatalf("checkStalledSession() error = %v, want stall-detection context", err)
+	}
+}
+
+func TestPTYStallWindowDefaultIsShorterThanIdleTimeout(t *testing.T) {
+	_, stallWindow, idleTimeout := New(t.TempDir()).sessionTiming()
+	if stallWindow <= 0 || stallWindow >= idleTimeout {
+		t.Fatalf("session timing = (stall %s, idle %s), want a positive shorter stall window", stallWindow, idleTimeout)
+	}
+}
+
 func TestTranscriptMonitorAddsTolerantSummaryToTranscriptReadErrors(t *testing.T) {
 	root, home := t.TempDir(), t.TempDir()
 	const sessionID = "malformed-session"
