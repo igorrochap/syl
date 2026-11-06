@@ -132,6 +132,95 @@ func TestReadSessionStateClearsAnsweredRequestsAndCountsTaskOperations(t *testin
 	}
 }
 
+func TestReadSessionStateSinceScopesPendingTasksToSessionTurn(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "transcript.jsonl")
+	contents := `{"type":"queue-operation","operation":"enqueue","content":"<task-notification>old</task-notification>"}
+{"type":"assistant","message":{"role":"assistant","content":[]}}
+{"type":"queue-operation","operation":"dequeue"}
+{"type":"queue-operation","operation":"enqueue","content":"<task-notification>new</task-notification>"}
+`
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	subagentsDir := filepath.Join(root, "subagents")
+	if err := os.MkdirAll(subagentsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(subagentsDir, "agent-a.meta.json"), []byte(`{"finished":true}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	currentTurn, err := readSessionStateSince(path, subagentsDir, time.Now().UTC(), 2)
+	if err != nil {
+		t.Fatalf("readSessionStateSince() error = %v", err)
+	}
+	if currentTurn.EnqueuedTaskNotifications != 1 || currentTurn.DequeuedOrRemovedTaskNotifications != 0 {
+		t.Fatalf("current-turn task notifications = (%d, %d), want (1, 0)",
+			currentTurn.EnqueuedTaskNotifications, currentTurn.DequeuedOrRemovedTaskNotifications)
+	}
+	if !sessionStateCanStall(currentTurn) {
+		t.Fatal("new task notification should remain pending after the old notification is dequeued")
+	}
+
+	resumedAgain, err := readSessionStateSince(path, subagentsDir, time.Now().UTC(), 4)
+	if err != nil {
+		t.Fatalf("readSessionStateSince() error = %v", err)
+	}
+	if resumedAgain.EnqueuedTaskNotifications != 0 || resumedAgain.DequeuedOrRemovedTaskNotifications != 0 {
+		t.Fatalf("new-session task notifications = (%d, %d), want (0, 0)",
+			resumedAgain.EnqueuedTaskNotifications, resumedAgain.DequeuedOrRemovedTaskNotifications)
+	}
+	if sessionStateCanStall(resumedAgain) {
+		t.Fatal("an older pending task notification should not stall a resumed turn")
+	}
+}
+
+func TestReadSessionStateSinceClearsPreBaselinePendingTasks(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "transcript.jsonl")
+	contents := `{"type":"queue-operation","operation":"enqueue","content":"<task-notification>old</task-notification>"}
+{"type":"queue-operation","operation":"enqueue","content":"<task-notification>new</task-notification>"}
+{"type":"queue-operation","operation":"dequeue"}
+`
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	state, err := readSessionStateSince(path, filepath.Join(root, "subagents"), time.Now().UTC(), 1)
+	if err != nil {
+		t.Fatalf("readSessionStateSince() error = %v", err)
+	}
+	if state.EnqueuedTaskNotifications != 1 || state.DequeuedOrRemovedTaskNotifications != 1 {
+		t.Fatalf("current-turn task notifications = (%d, %d), want (1, 1)",
+			state.EnqueuedTaskNotifications, state.DequeuedOrRemovedTaskNotifications)
+	}
+	if sessionStateCanStall(state) {
+		t.Fatal("a current-turn dequeue should resolve its notification despite an older pending enqueue")
+	}
+}
+
+func TestSessionStateCanStallRequiresAtLeastOneFinishedSubagent(t *testing.T) {
+	pendingNotification := SessionState{EnqueuedTaskNotifications: 1}
+	if sessionStateCanStall(pendingNotification) {
+		t.Fatal("pending notification without subagents should not count as a stall")
+	}
+
+	unfinishedSubagent := SessionState{
+		EnqueuedTaskNotifications: 1,
+		SubagentCount:             1,
+	}
+	if sessionStateCanStall(unfinishedSubagent) {
+		t.Fatal("pending notification with an unfinished subagent should not count as a stall")
+	}
+
+	finishedSubagent := unfinishedSubagent
+	finishedSubagent.FinishedSubagentCount = 1
+	if !sessionStateCanStall(finishedSubagent) {
+		t.Fatal("pending notification with a finished subagent should count as a stall")
+	}
+}
+
 func TestReadSessionStateHandlesMissingTranscriptAndReportsOtherReadErrors(t *testing.T) {
 	root := t.TempDir()
 	missingState, err := readSessionState(filepath.Join(root, "missing.jsonl"), filepath.Join(root, "subagents"), time.Now())

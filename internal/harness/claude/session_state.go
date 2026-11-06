@@ -2,6 +2,7 @@ package claude
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -57,26 +58,43 @@ func (state SessionState) String() string {
 // ReadSessionState reads the latest transcript state for a Claude session.
 // Malformed or unknown transcript entries are skipped so diagnostics remain useful.
 func (a *PTYAdapter) ReadSessionState(sessionID string) (SessionState, error) {
+	return a.readSessionState(sessionID, 0)
+}
+
+// ReadSessionStateSince summarizes a session while counting queue operations
+// only from the specified main-transcript entry onward.
+func (a *PTYAdapter) ReadSessionStateSince(sessionID string, firstCurrentEntry int) (SessionState, error) {
+	return a.readSessionState(sessionID, firstCurrentEntry)
+}
+
+func (a *PTYAdapter) readSessionState(sessionID string, firstCurrentEntry int) (SessionState, error) {
 	sessionID = strings.TrimSpace(sessionID)
+	if firstCurrentEntry < 0 {
+		firstCurrentEntry = 0
+	}
 	reader := transcript.New(a.homeDir)
 	path, err := reader.Find(a.projectRoot, sessionID)
 	if err != nil {
 		return SessionState{}, fmt.Errorf("find Claude transcript for session state: %w", err)
 	}
 	subagentsDir := filepath.Join(filepath.Dir(path), sessionID, "subagents")
-	return readSessionState(path, subagentsDir, time.Now().UTC())
+	return readSessionStateSince(path, subagentsDir, time.Now().UTC(), firstCurrentEntry)
 }
 
 func readSessionState(path, subagentsDir string, now time.Time) (SessionState, error) {
+	return readSessionStateSince(path, subagentsDir, now, 0)
+}
+
+func readSessionStateSince(path, subagentsDir string, now time.Time, firstCurrentEntry int) (SessionState, error) {
 	state := SessionState{}
-	if err := readMainTranscriptState(path, now, &state); err != nil {
+	if err := readMainTranscriptState(path, now, &state, firstCurrentEntry); err != nil {
 		return state, err
 	}
 	readSubagentMetadata(subagentsDir, &state)
 	return state, nil
 }
 
-func readMainTranscriptState(path string, now time.Time, state *SessionState) error {
+func readMainTranscriptState(path string, now time.Time, state *SessionState, firstCurrentEntry int) error {
 	file, err := os.Open(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
@@ -88,8 +106,17 @@ func readMainTranscriptState(path string, now time.Time, state *SessionState) er
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 64*1024), 16*1024*1024)
 	reader := transcriptStateReader{state: state}
+	entryIndex := 0
 	for scanner.Scan() {
-		reader.readEntry(scanner.Bytes())
+		raw := bytes.TrimSpace(scanner.Bytes())
+		if len(raw) == 0 {
+			continue
+		}
+		if entryIndex == firstCurrentEntry {
+			reader.pendingTaskNotifications = nil
+		}
+		reader.readEntry(raw, entryIndex >= firstCurrentEntry)
+		entryIndex++
 	}
 	if err := scanner.Err(); err != nil {
 		return fmt.Errorf("read Claude transcript for session state %s: %w", path, err)
@@ -104,7 +131,7 @@ type transcriptStateReader struct {
 	pendingTaskNotifications []bool
 }
 
-func (reader *transcriptStateReader) readEntry(raw []byte) {
+func (reader *transcriptStateReader) readEntry(raw []byte, isCurrentTurn bool) {
 	var entry map[string]json.RawMessage
 	if json.Unmarshal(raw, &entry) != nil || entry == nil {
 		return
@@ -124,7 +151,7 @@ func (reader *transcriptStateReader) readEntry(raw []byte) {
 		reader.state.HasUnansweredAPIRequestAge = false
 		reader.unansweredRequestTime = time.Time{}
 	}
-	reader.countTaskNotificationOperation(entry)
+	reader.countTaskNotificationOperation(entry, isCurrentTurn)
 }
 
 func (reader *transcriptStateReader) setUnansweredAPIRequest(rawTimestamp json.RawMessage) {
@@ -175,7 +202,7 @@ func isAssistantEntry(entryType string, rawMessage json.RawMessage) bool {
 	return json.Unmarshal(rawMessage, &message) == nil && message.Role == "assistant"
 }
 
-func (reader *transcriptStateReader) countTaskNotificationOperation(entry map[string]json.RawMessage) {
+func (reader *transcriptStateReader) countTaskNotificationOperation(entry map[string]json.RawMessage, isCurrentTurn bool) {
 	entryType := jsonString(entry["type"])
 	if entryType != "queue-operation" && entryType != "queue_operation" {
 		return
@@ -183,40 +210,55 @@ func (reader *transcriptStateReader) countTaskNotificationOperation(entry map[st
 	operation := jsonString(entry["operation"])
 	switch operation {
 	case "enqueue":
-		isTaskNotification := containsTaskNotification(entry["content"])
-		reader.pendingTaskNotifications = append(reader.pendingTaskNotifications, isTaskNotification)
-		if isTaskNotification {
-			reader.state.EnqueuedTaskNotifications++
-		}
+		reader.enqueueTaskNotification(entry["content"], isCurrentTurn)
 	case "dequeue":
-		isTaskNotification, pending := dequeueIsTaskNotification(entry["content"], reader.pendingTaskNotifications)
-		reader.pendingTaskNotifications = pending
-		if isTaskNotification {
-			reader.state.DequeuedOrRemovedTaskNotifications++
-		}
+		reader.resolveTaskNotification(entry["content"], false, isCurrentTurn)
 	case "remove":
-		isTaskNotification, pending := removeIsTaskNotification(entry["content"], reader.pendingTaskNotifications)
-		reader.pendingTaskNotifications = pending
-		if isTaskNotification {
-			reader.state.DequeuedOrRemovedTaskNotifications++
-		}
+		reader.resolveTaskNotification(entry["content"], true, isCurrentTurn)
 	}
 }
 
-func dequeueIsTaskNotification(content json.RawMessage, pendingTaskNotifications []bool) (bool, []bool) {
+func (reader *transcriptStateReader) enqueueTaskNotification(content json.RawMessage, isCurrentTurn bool) {
+	isTaskNotification := containsTaskNotification(content)
+	reader.pendingTaskNotifications = append(reader.pendingTaskNotifications, isTaskNotification)
+	if isTaskNotification && isCurrentTurn {
+		reader.state.EnqueuedTaskNotifications++
+	}
+}
+
+func (reader *transcriptStateReader) resolveTaskNotification(content json.RawMessage, remove, isCurrentTurn bool) {
+	var removed bool
+	var matched bool
+	if remove {
+		removed, matched, reader.pendingTaskNotifications = removeIsTaskNotification(content, reader.pendingTaskNotifications)
+	} else {
+		removed, matched, reader.pendingTaskNotifications = dequeueIsTaskNotification(content, reader.pendingTaskNotifications)
+	}
+	if matched && removed && isCurrentTurn {
+		reader.state.DequeuedOrRemovedTaskNotifications++
+	}
+}
+
+func dequeueIsTaskNotification(
+	content json.RawMessage,
+	pendingTaskNotifications []bool,
+) (bool, bool, []bool) {
 	if hasQueuePayload(content) {
 		isTaskNotification := containsTaskNotification(content)
-		return isTaskNotification, removePendingQueueEntry(pendingTaskNotifications, isTaskNotification)
+		return removePendingQueueEntry(pendingTaskNotifications, isTaskNotification)
 	}
 	return takeOldestPendingTaskNotification(pendingTaskNotifications)
 }
 
-func removeIsTaskNotification(content json.RawMessage, pendingTaskNotifications []bool) (bool, []bool) {
+func removeIsTaskNotification(
+	content json.RawMessage,
+	pendingTaskNotifications []bool,
+) (bool, bool, []bool) {
 	if !hasQueuePayload(content) {
-		return false, pendingTaskNotifications
+		return false, false, pendingTaskNotifications
 	}
 	isTaskNotification := containsTaskNotification(content)
-	return isTaskNotification, removePendingQueueEntry(pendingTaskNotifications, isTaskNotification)
+	return removePendingQueueEntry(pendingTaskNotifications, isTaskNotification)
 }
 
 func hasQueuePayload(content json.RawMessage) bool {
@@ -224,23 +266,27 @@ func hasQueuePayload(content json.RawMessage) bool {
 	return value != "" && value != "null"
 }
 
-func takeOldestPendingTaskNotification(pendingTaskNotifications []bool) (bool, []bool) {
+func takeOldestPendingTaskNotification(
+	pendingTaskNotifications []bool,
+) (bool, bool, []bool) {
 	if len(pendingTaskNotifications) == 0 {
-		return false, pendingTaskNotifications
+		return false, false, pendingTaskNotifications
 	}
-	isTaskNotification := pendingTaskNotifications[0]
-	return isTaskNotification, pendingTaskNotifications[1:]
+	return pendingTaskNotifications[0], true, pendingTaskNotifications[1:]
 }
 
-func removePendingQueueEntry(pendingTaskNotifications []bool, isTaskNotification bool) []bool {
+func removePendingQueueEntry(
+	pendingTaskNotifications []bool,
+	isTaskNotification bool,
+) (bool, bool, []bool) {
 	for index, pendingIsTaskNotification := range pendingTaskNotifications {
 		if pendingIsTaskNotification != isTaskNotification {
 			continue
 		}
 		copy(pendingTaskNotifications[index:], pendingTaskNotifications[index+1:])
-		return pendingTaskNotifications[:len(pendingTaskNotifications)-1]
+		return pendingIsTaskNotification, true, pendingTaskNotifications[:len(pendingTaskNotifications)-1]
 	}
-	return pendingTaskNotifications
+	return false, false, pendingTaskNotifications
 }
 
 func containsTaskNotification(raw json.RawMessage) bool {
