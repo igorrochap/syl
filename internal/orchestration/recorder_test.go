@@ -414,6 +414,92 @@ func TestRunImplementIterationsUsesWorktreeHandoffToStartFreshSeededSession(t *t
 	}
 }
 
+func TestRunImplementIterationsRollsOverAfterRecoveredImplementTurn(t *testing.T) {
+	recorder := newMemoryRunRecorder()
+	recorder.dir = t.TempDir()
+	handoffPath := recorder.ImplementHandoffPath(1)
+	ticket := tracker.Ticket{Number: 248, Title: "Recover implementation", Body: "Preserve the recovered decisions."}
+	implementer := &scriptedConversationAdapter{
+		runs: [][]harness.Event{
+			{
+				{Type: harness.EventSession, SessionID: "implement-stalled"},
+				{Type: harness.EventAssistantText, Text: "Partial implementation."},
+			},
+			{
+				{Type: harness.EventSession, SessionID: "implement-after-rollover"},
+				{Type: harness.EventAssistantText, Text: "Implementation continues."},
+			},
+		},
+		resumes: [][]harness.Event{{
+			{Type: harness.EventSession, SessionID: "implement-stalled"},
+			{Type: harness.EventAssistantText, Text: "Recovered implementation."},
+		}},
+		runWaitErrors: []error{&harness.SessionStalledError{
+			SessionID:    "implement-stalled",
+			Limit:        harness.StallWindowLimit,
+			StateSummary: "finished implementation subagent report is queued",
+		}},
+		resumeHooks: []func(harness.Request){func(harness.Request) {
+			if err := os.WriteFile(handoffPath, []byte("recovered decisions and explored files"), 0o644); err != nil {
+				t.Fatalf("write recovered handoff: %v", err)
+			}
+		}},
+	}
+	reviewer := &scriptedConversationAdapter{
+		runs: [][]harness.Event{{
+			{Type: harness.EventSession, SessionID: "review-session"},
+			{Type: harness.EventAssistantText, Text: "VERDICT: revise\nSUMMARY: Complete one finding\nFINDINGS:\n- [blocking] worker.go:10 — finish recovery handling\n"},
+		}},
+		resumes: [][]harness.Event{{
+			{Type: harness.EventSession, SessionID: "review-session"},
+			{Type: harness.EventAssistantText, Text: "VERDICT: approve\nSUMMARY: Ready\nFINDINGS:\n"},
+		}},
+	}
+
+	iterations, final, _, err := runImplementIterations(context.Background(), implementIterationsParams{
+		git:           staticImplementGit{branchPoint: "branch-point", diff: "diff --git a/worker.go b/worker.go\n"},
+		implementer:   implementer,
+		reviewer:      reviewer,
+		projectConfig: config.Config{Loop: config.LoopConfig{MaxIterations: 2}},
+		ticket:        ticket,
+		branchPoint:   "branch-point",
+		recorder:      recorder,
+		output:        io.Discard,
+	})
+	if err != nil {
+		t.Fatalf("runImplementIterations() error = %v", err)
+	}
+	if iterations != 2 || final.Status != verdict.Approve {
+		t.Fatalf("result = (%d, %q), want two iterations ending in approve", iterations, final.Status)
+	}
+	if implementer.runCalls != 2 || len(implementer.resumeCalls) != 1 ||
+		implementer.resumeCalls[0].sessionID != "implement-stalled" {
+		t.Fatalf("implementer calls = (%d runs, %#v resumes), want initial run, one same-session recovery, and fresh rollover run", implementer.runCalls, implementer.resumeCalls)
+	}
+	seededPrompt := implementer.runRequests[1].Prompt
+	for _, want := range []string{
+		handoffPath,
+		ticket.Title,
+		ticket.Body,
+		"worker.go:10",
+		"finish recovery handling",
+	} {
+		if !strings.Contains(seededPrompt, want) {
+			t.Errorf("rollover prompt = %q, want %q", seededPrompt, want)
+		}
+	}
+	wantSessions := "iteration 1 implement: implement-stalled\n" +
+		"iteration 1 review: review-session\n" +
+		"iteration 2 implement: implement-after-rollover\n" +
+		"iteration 2 review: review-session\n"
+	if got := recorder.files[artifactFilename(sessionsArtifact, 0)]; got != wantSessions {
+		t.Fatalf("recorded sessions = %q, want %q", got, wantSessions)
+	}
+	if got := recorder.files[artifactFilename(implementTranscriptArtifact, 1)]; !strings.Contains(got, "Partial implementation.") || !strings.Contains(got, "Recovered implementation.") {
+		t.Fatalf("iteration 1 implement transcript = %q, want stalled and recovered turns", got)
+	}
+}
+
 func TestRunImplementIterationsAllowsRolloverOnFinalIteration(t *testing.T) {
 	recorder := newMemoryRunRecorder()
 	recorder.dir = t.TempDir()
