@@ -562,11 +562,20 @@ func finishReviewExecution(
 	retryOptions.request.Prompt = "emit the verdict block"
 	retry, err := retryReviewDetails(ctx, adapter, retryOptions)
 	if err != nil {
-		return ReviewExecution{
+		execution := ReviewExecution{
 			Transcript: appendReviewTranscript(first.Transcript, retry.Transcript),
 			Feed:       feed.String(),
 			SessionIDs: append(append([]string(nil), first.SessionIDs...), retry.SessionIDs...),
-		}, err
+		}
+		var stalled *harness.SessionStalledError
+		if !errors.As(err, &stalled) || options.disableRecovery {
+			return execution, err
+		}
+		execution.SessionIDs = appendSessionID(execution.SessionIDs, stalled.SessionID)
+		if turnErr := endReviewTurn(options.turnOutput); turnErr != nil {
+			return execution, errors.Join(err, turnErr)
+		}
+		return recoverStalledReview(ctx, adapter, options, execution, stalled, feed, artifact)
 	}
 	if err := endReviewTurn(options.turnOutput); err != nil {
 		return ReviewExecution{
@@ -603,7 +612,7 @@ func recoverStalledReview(
 		return first, fmt.Errorf("review: stalled session has no session id: %w", stalled)
 	}
 	request := options.request
-	request.Prompt = stalledReviewRecoveryPrompt(stalled.Reports)
+	request.Prompt = stalledReviewRecoveryPrompt(stalled.Reports, stalled.Limit)
 	retryOptions := conversationOptions{
 		request:   request,
 		output:    options.output,
@@ -675,10 +684,18 @@ func appendStalledReviewTurn(first ReviewExecution, retry harnessTranscript, fee
 	}
 }
 
-func stalledReviewRecoveryPrompt(reports []harness.SubagentReport) string {
+func stalledReviewRecoveryPrompt(reports []harness.SubagentReport, limit harness.SessionStallLimit) string {
 	var prompt strings.Builder
-	prompt.WriteString("The reviewer session stalled after its subagents finished. Merge the reports below and end with the mandatory verdict block from the code-review skill.\n")
-	useReportPaths := len(reports) == 0
+	if limit == harness.NoProgressLimit {
+		prompt.WriteString("The reviewer session exceeded its no-progress limit. ")
+	} else {
+		prompt.WriteString("The reviewer session stalled after its subagents finished. ")
+	}
+	prompt.WriteString("Continue from the existing session transcript, merge the finished subagent reports when available, and end with the mandatory verdict block from the code-review skill.\n")
+	if len(reports) == 0 {
+		return prompt.String()
+	}
+	useReportPaths := false
 	var totalTextBytes int
 	for _, report := range reports {
 		totalTextBytes += len(report.Text)
@@ -691,9 +708,6 @@ func stalledReviewRecoveryPrompt(reports []harness.SubagentReport) string {
 	}
 	if useReportPaths {
 		prompt.WriteString("Read and merge the finished subagent reports at these paths:\n")
-		if len(reports) == 0 {
-			prompt.WriteString("No finished subagent report paths were available.\n")
-		}
 		for _, report := range reports {
 			prompt.WriteString("- ")
 			prompt.WriteString(report.Path)
@@ -706,7 +720,7 @@ func stalledReviewRecoveryPrompt(reports []harness.SubagentReport) string {
 	for index, report := range reports {
 		fmt.Fprintf(&prompt, "\n--- Report %d (%s) ---\n%s\n", index+1, report.Path, report.Text)
 	}
-	prompt.WriteString("Merge the reports and end with the mandatory verdict block from the code-review skill.")
+	prompt.WriteString("Merge the reports into the review.")
 	return prompt.String()
 }
 

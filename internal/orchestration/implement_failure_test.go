@@ -80,6 +80,110 @@ func TestRunImplementFailureWithCleanWorkRootLeavesErrorUnchanged(t *testing.T) 
 	assertFailedImplementState(t, options, git, runrecord.Failed)
 }
 
+func TestRunImplementFailsWhenStalledRecoveryResumeStallsAgain(t *testing.T) {
+	options, git := failedImplementOptions(t)
+	implementer := &scriptedConversationAdapter{
+		runs: [][]harness.Event{{
+			{Type: harness.EventSession, SessionID: "implement-session"},
+			{Type: harness.EventAssistantText, Text: "Partial implementation."},
+		}},
+		resumes: [][]harness.Event{{
+			{Type: harness.EventSession, SessionID: "implement-session"},
+			{Type: harness.EventAssistantText, Text: "Still working."},
+		}},
+		runWaitErrors: []error{&harness.SessionStalledError{
+			SessionID:    "implement-session",
+			Limit:        harness.NoProgressLimit,
+			StateSummary: "first stalled state",
+		}},
+		resumeWaitErrors: []error{&harness.SessionStalledError{
+			SessionID:    "implement-session",
+			Limit:        harness.NoProgressLimit,
+			StateSummary: "second stalled state summary",
+		}},
+	}
+	options.Implementer = implementer
+
+	err := RunImplement(context.Background(), options)
+	if err == nil || !strings.Contains(err.Error(), "no-progress limit") ||
+		!strings.Contains(err.Error(), "second stalled state summary") {
+		t.Fatalf("RunImplement() error = %v, want second no-progress limit and session summary", err)
+	}
+	if len(implementer.resumeCalls) != 1 {
+		t.Fatalf("implementer resume calls = %d, want exactly one stalled-session recovery", len(implementer.resumeCalls))
+	}
+	if implementer.runCalls != 1 || implementer.resumeCalls[0].sessionID != "implement-session" {
+		t.Fatalf("implementer calls = (%d runs, %#v resumes), want one run and a same-session resume", implementer.runCalls, implementer.resumeCalls)
+	}
+	if !strings.Contains(implementer.resumeCalls[0].prompt, "Continue the requested implementation") {
+		t.Fatalf("recovery prompt = %q, want implementation continuation", implementer.resumeCalls[0].prompt)
+	}
+	assertFailedImplementState(t, options, git, runrecord.Failed)
+}
+
+func TestRunImplementRecoversStalledImplementerOnce(t *testing.T) {
+	root := t.TempDir()
+	implementer := &scriptedConversationAdapter{
+		runs: [][]harness.Event{{
+			{Type: harness.EventSession, SessionID: "implement-session"},
+			{Type: harness.EventAssistantText, Text: "Partial implementation."},
+		}},
+		resumes: [][]harness.Event{{
+			{Type: harness.EventSession, SessionID: "implement-session"},
+			{Type: harness.EventAssistantText, Text: "Implementation completed."},
+		}},
+		runWaitErrors: []error{&harness.SessionStalledError{
+			SessionID:    "implement-session",
+			Limit:        harness.NoProgressLimit,
+			StateSummary: "implementation resumed after no progress",
+			Reports: []harness.SubagentReport{{
+				Path: "/claude/session/subagents/agent-implementation.jsonl",
+				Text: "The helper found the missing validation case.",
+			}},
+		}},
+	}
+	reviewer := &scriptedConversationAdapter{runs: [][]harness.Event{{
+		{Type: harness.EventSession, SessionID: "review-session"},
+		{Type: harness.EventAssistantText, Text: conversationTestVerdict},
+	}}}
+
+	err := RunImplement(context.Background(), ImplementOptions{
+		OriginRoot: root,
+		WorkRoot:   root,
+		OpenRun:    NewDiskRunOpener(root, sylhome.Dir{}, io.Discard),
+		ProjectConfig: config.Config{
+			Roles: config.RolesConfig{
+				Implement: config.RoleConfig{Harness: config.HarnessCodex},
+				Review:    config.RoleConfig{Harness: config.HarnessClaude},
+			},
+			Loop: config.LoopConfig{MaxIterations: 1},
+		},
+		IssueTracker: branchSetupTracker{},
+		Ticket:       tracker.Ticket{Number: 247},
+		Implementer:  implementer,
+		Reviewer:     reviewer,
+		Git:          &implementRunGit{},
+		OriginGit:    &implementRunGit{},
+		Input:        strings.NewReader(""),
+		Output:       io.Discard,
+	})
+	if err != nil {
+		t.Fatalf("RunImplement() error = %v, want successful recovery and review", err)
+	}
+	if implementer.runCalls != 1 || len(implementer.resumeCalls) != 1 {
+		t.Fatalf("implementer calls = (%d runs, %d resumes), want one run and one recovery resume", implementer.runCalls, len(implementer.resumeCalls))
+	}
+	if implementer.resumeCalls[0].sessionID != "implement-session" ||
+		!strings.Contains(implementer.resumeCalls[0].prompt, "no-progress limit") ||
+		!strings.Contains(implementer.resumeCalls[0].prompt, "The helper found the missing validation case.") {
+		t.Fatalf("implementer recovery = %#v, want same-session no-progress recovery", implementer.resumeCalls[0])
+	}
+	state := mustReadRunState(t, onlyRunStatePath(t, root))
+	if state.Status != runrecord.Approved || state.Iteration != 1 {
+		t.Fatalf("final Run state = %#v, want approved in iteration 1", state)
+	}
+}
+
 func TestRunImplementFailureReportsWorktreeChanges(t *testing.T) {
 	options, git := failedImplementOptions(t)
 	options.WorkRoot = t.TempDir()

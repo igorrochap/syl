@@ -13,8 +13,18 @@ import (
 // StalledSessionReportTextLimit bounds the report text included in recovery prompts.
 const StalledSessionReportTextLimit = 64 * 1024
 
-// ErrSessionStalled matches a session stalled after its subagents finished.
+// ErrSessionStalled matches a session that reached a Claude session limit.
 var ErrSessionStalled = errors.New("session stalled")
+
+// SessionStallLimit names the timer that ended a silent Claude session.
+type SessionStallLimit string
+
+const (
+	// StallWindowLimit identifies the short window for the known stalled-session pattern.
+	StallWindowLimit SessionStallLimit = "stall window"
+	// NoProgressLimit identifies the longer cap for all other silent sessions.
+	NoProgressLimit SessionStallLimit = "no-progress limit"
+)
 
 // SubagentReport contains a finished subagent's final assistant response.
 // TooLarge means the report should be read from Path instead of embedded.
@@ -24,10 +34,11 @@ type SubagentReport struct {
 	TooLarge bool
 }
 
-// SessionStalledError reports a Claude session that stopped making main-thread
-// transcript progress after all queued task notifications had finished.
+// SessionStalledError reports a Claude session that reached a stall limit.
 type SessionStalledError struct {
 	SessionID    string
+	Limit        SessionStallLimit
+	Completion   string
 	StateSummary string
 	Reports      []SubagentReport
 }
@@ -37,7 +48,14 @@ func (e *SessionStalledError) Error() string {
 	if summary == "" {
 		summary = "unavailable"
 	}
-	return fmt.Sprintf("%s: %s\nSession state:\n%s", ErrSessionStalled, e.SessionID, summary)
+	message := fmt.Sprintf("%s: %s", ErrSessionStalled, e.SessionID)
+	if e.Limit != "" {
+		message += " after " + string(e.Limit)
+	}
+	if e.Completion != "" {
+		message += " without a " + e.Completion
+	}
+	return fmt.Sprintf("%s\nSession state:\n%s", message, summary)
 }
 
 // Is reports whether the error matches ErrSessionStalled.

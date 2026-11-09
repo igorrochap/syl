@@ -76,6 +76,7 @@ func TestRunImplementRecordsRunStateLifecycle(t *testing.T) {
 		}},
 		runWaitErrors: []error{&harness.SessionStalledError{
 			SessionID:    "review-1",
+			Limit:        harness.StallWindowLimit,
 			StateSummary: "Task notifications: 2 enqueued, 0 dequeued or removed\nSubagents: 2 total, 2 finished",
 			Reports: []harness.SubagentReport{
 				{Path: "/claude/agent-standards.jsonl", Text: "No standards findings."},
@@ -237,10 +238,10 @@ func TestRunImplementFailedReviewWritesPartialArtifacts(t *testing.T) {
 func TestRunImplementFailsAfterSecondStalledReviewTurn(t *testing.T) {
 	root := t.TempDir()
 	firstStall := &harness.SessionStalledError{
-		SessionID: "review-session", StateSummary: "first stalled session summary",
+		SessionID: "review-session", Limit: harness.StallWindowLimit, StateSummary: "first stalled session summary",
 	}
 	secondStall := &harness.SessionStalledError{
-		SessionID: "review-session", StateSummary: "second stalled session summary",
+		SessionID: "review-session", Limit: harness.StallWindowLimit, StateSummary: "second stalled session summary",
 	}
 	reviewer := &scriptedConversationAdapter{
 		runs: [][]harness.Event{{
@@ -270,8 +271,11 @@ func TestRunImplementFailsAfterSecondStalledReviewTurn(t *testing.T) {
 		Git:         &implementRunGit{}, OriginGit: &implementRunGit{},
 		Input: strings.NewReader(""), Output: io.Discard,
 	})
-	if err == nil || !strings.Contains(err.Error(), "second stalled session summary") {
-		t.Fatalf("RunImplement() error = %v, want second stalled-session summary", err)
+	if err == nil || !strings.Contains(err.Error(), "stall window") || !strings.Contains(err.Error(), "second stalled session summary") {
+		t.Fatalf("RunImplement() error = %v, want second stall-window error and session summary", err)
+	}
+	if len(reviewer.resumeCalls) != 1 || reviewer.resumeCalls[0].sessionID != "review-session" {
+		t.Fatalf("reviewer resume calls = %#v, want one recovery resume of the stalled session", reviewer.resumeCalls)
 	}
 	state := mustReadRunState(t, onlyRunStatePath(t, root))
 	if state.Status != runrecord.Failed || state.Iteration != 1 {

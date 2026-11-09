@@ -15,6 +15,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/creack/pty"
 	"github.com/igorrochap/syl/internal/harness"
@@ -22,33 +24,38 @@ import (
 )
 
 const (
-	claudeIdleEscape    = "\x1b]9;Claude is waiting for your input"
-	verdictMarker       = "VERDICT:"
-	questionStartMarker = "QUESTION:\n"
-	questionEndMarker   = "\nEND QUESTION"
-	terminalTailLimit   = 2048
+	claudeIdleEscape       = "\x1b]9;Claude is waiting for your input"
+	verdictMarker          = "VERDICT:"
+	questionStartMarker    = "QUESTION:\n"
+	questionEndMarker      = "\nEND QUESTION"
+	terminalTailLimit      = 2048
+	defaultPollInterval    = 250 * time.Millisecond
+	defaultStallWindow     = 3 * time.Minute
+	defaultNoProgressLimit = 15 * time.Minute
+	defaultTerminateWait   = 2 * time.Second
 )
 
 // PTYAdapter drives Claude Code sessions through a pseudo-terminal.
 type PTYAdapter struct {
-	command       string
-	projectRoot   string
-	homeDir       string
-	pollInterval  time.Duration
-	stallWindow   time.Duration
-	idleTimeout   time.Duration
-	terminateWait time.Duration
+	command         string
+	projectRoot     string
+	homeDir         string
+	pollInterval    time.Duration
+	stallWindow     time.Duration
+	noProgressLimit time.Duration
+	terminateWait   time.Duration
 }
 
 type transcriptStartMode int
 
 type sessionParams struct {
-	transcript     transcript.Reader
-	transcriptPath string
-	sessionID      string
-	subagentSizes  map[string]int64
-	seenEntries    int
-	completion     harness.CompletionSignal
+	transcript         transcript.Reader
+	transcriptPath     string
+	sessionID          string
+	subagentSizes      map[string]int64
+	subagentStartState subagentStartState
+	seenEntries        int
+	completion         harness.CompletionSignal
 }
 
 type ptyStream struct {
@@ -67,12 +74,12 @@ var _ harness.SessionStream = ptyStream{}
 // New returns a Claude Code adapter that runs terminal sessions and reads their transcripts.
 func New(projectRoot string) *PTYAdapter {
 	return &PTYAdapter{
-		command:       "claude",
-		projectRoot:   projectRoot,
-		pollInterval:  250 * time.Millisecond,
-		stallWindow:   30 * time.Second,
-		idleTimeout:   5 * time.Minute,
-		terminateWait: 2 * time.Second,
+		command:         "claude",
+		projectRoot:     projectRoot,
+		pollInterval:    defaultPollInterval,
+		stallWindow:     defaultStallWindow,
+		noProgressLimit: defaultNoProgressLimit,
+		terminateWait:   defaultTerminateWait,
 	}
 }
 
@@ -134,17 +141,18 @@ func (a *PTYAdapter) start(
 		}
 		seenEntries = len(entries)
 	}
-	subagentSizes, err := subagentTranscriptSizes(reader, a.projectRoot, sessionID)
+	subagentStartState, err := snapshotSubagents(reader, a.projectRoot, sessionID)
 	if err != nil {
 		return nil, fmt.Errorf("read Claude subagent transcripts before start: %w", err)
 	}
 	session := sessionParams{
-		transcript:     reader,
-		transcriptPath: transcriptPath,
-		sessionID:      sessionID,
-		subagentSizes:  subagentSizes,
-		seenEntries:    seenEntries,
-		completion:     completion,
+		transcript:         reader,
+		transcriptPath:     transcriptPath,
+		sessionID:          sessionID,
+		subagentSizes:      subagentStartState.sizes,
+		subagentStartState: subagentStartState,
+		seenEntries:        seenEntries,
+		completion:         completion,
 	}
 	command := a.command
 	if command == "" {
@@ -225,11 +233,11 @@ func (a *PTYAdapter) monitorSession(
 	processDone <-chan error,
 	output *terminalOutput,
 ) (bool, error) {
-	pollInterval, stallWindow, idleTimeout := a.sessionTiming()
+	pollInterval, stallWindow, noProgressLimit := a.sessionTiming()
 	poll := time.NewTicker(pollInterval)
 	defer poll.Stop()
-	idle := time.NewTimer(idleTimeout)
-	defer idle.Stop()
+	noProgress := time.NewTimer(noProgressLimit)
+	defer noProgress.Stop()
 	transcripts := transcriptMonitor{
 		reader:      session.transcript,
 		path:        session.transcriptPath,
@@ -238,14 +246,15 @@ func (a *PTYAdapter) monitorSession(
 		readState: func() (SessionState, error) {
 			return a.ReadSessionStateSince(session.sessionID, session.seenEntries)
 		},
-		subagentSizes: session.subagentSizes,
-		output:        output,
-		events:        events,
-		idle:          idle,
-		stallWindow:   stallWindow,
-		idleTimeout:   idleTimeout,
-		seenEntries:   session.seenEntries,
-		completion:    session.completion,
+		subagentSizes:      session.subagentSizes,
+		subagentStartState: session.subagentStartState,
+		output:             output,
+		events:             events,
+		noProgress:         noProgress,
+		stallWindow:        stallWindow,
+		noProgressLimit:    noProgressLimit,
+		seenEntries:        session.seenEntries,
+		completion:         session.completion,
 	}
 
 	for {
@@ -266,8 +275,8 @@ func (a *PTYAdapter) monitorSession(
 			if finished {
 				return false, err
 			}
-		case <-idle.C:
-			finished, err := transcripts.checkIdleTimeout()
+		case <-noProgress.C:
+			finished, err := transcripts.checkNoProgressLimit()
 			if finished {
 				return false, err
 			}
@@ -278,42 +287,45 @@ func (a *PTYAdapter) monitorSession(
 func (a *PTYAdapter) sessionTiming() (time.Duration, time.Duration, time.Duration) {
 	pollInterval := a.pollInterval
 	if pollInterval <= 0 {
-		pollInterval = 250 * time.Millisecond
+		pollInterval = defaultPollInterval
 	}
-	idleTimeout := a.idleTimeout
-	if idleTimeout <= 0 {
-		idleTimeout = 5 * time.Minute
+	noProgressLimit := a.noProgressLimit
+	if noProgressLimit <= 0 {
+		noProgressLimit = defaultNoProgressLimit
 	}
 	stallWindow := a.stallWindow
 	if stallWindow <= 0 {
-		stallWindow = 30 * time.Second
+		stallWindow = defaultStallWindow
 	}
-	return pollInterval, stallWindow, idleTimeout
+	return pollInterval, stallWindow, noProgressLimit
 }
 
 type transcriptProgress struct {
-	hasProgress bool
-	mainEntry   bool
-	complete    bool
+	hasProgress      bool
+	mainEntry        bool
+	terminalActivity bool
+	complete         bool
 }
 
 type transcriptMonitor struct {
-	reader        transcript.Reader
-	path          string
-	projectRoot   string
-	sessionID     string
-	readState     func() (SessionState, error)
-	subagentSizes map[string]int64
-	output        *terminalOutput
-	events        chan<- harness.Event
-	seenEntries   int
-	completion    harness.CompletionSignal
+	reader             transcript.Reader
+	path               string
+	projectRoot        string
+	sessionID          string
+	readState          func() (SessionState, error)
+	subagentSizes      map[string]int64
+	subagentStartState subagentStartState
+	output             *terminalOutput
+	events             chan<- harness.Event
+	seenEntries        int
+	completion         harness.CompletionSignal
 	// Completion stays latched across later polls that contain no new entries.
-	complete    bool
-	idle        *time.Timer
-	stallWindow time.Duration
-	stallSince  time.Time
-	idleTimeout time.Duration
+	complete              bool
+	noProgress            *time.Timer
+	stallWindow           time.Duration
+	stallSince            time.Time
+	noProgressLimit       time.Duration
+	terminalActivityCount int64
 }
 
 func (m *transcriptMonitor) checkProcessExit(waitErr error) error {
@@ -341,7 +353,7 @@ func (m *transcriptMonitor) checkCompletion() (bool, error) {
 	return m.checkStalledSession(progress, time.Now().UTC())
 }
 
-func (m *transcriptMonitor) checkIdleTimeout() (bool, error) {
+func (m *transcriptMonitor) checkNoProgressLimit() (bool, error) {
 	progress, err := m.checkProgress()
 	if err != nil {
 		return true, m.describeSessionFailure(err)
@@ -356,11 +368,28 @@ func (m *transcriptMonitor) checkIdleTimeout() (bool, error) {
 	if progress.hasProgress {
 		return false, nil
 	}
-	err = fmt.Errorf("claude code pty session was idle for %s without a %s", m.idleTimeout, m.completion)
-	return true, m.describeSessionFailure(err)
+	stateSummary := "unavailable"
+	if m.readState != nil {
+		state, stateErr := m.readState()
+		if stateErr == nil {
+			stateSummary = state.String()
+		} else {
+			stateSummary = "unavailable: " + stateErr.Error()
+		}
+	}
+	limitError := &harness.SessionStalledError{
+		SessionID:    m.sessionID,
+		Limit:        harness.NoProgressLimit,
+		Completion:   m.completion.String(),
+		StateSummary: stateSummary,
+		Reports:      readFinishedSubagentReports(m.reader, m.projectRoot, m.sessionID, m.path, m.subagentStartState),
+	}
+	return true, m.describeSessionFailure(limitError)
 }
 
 func (m *transcriptMonitor) checkStalledSession(progress transcriptProgress, now time.Time) (bool, error) {
+	// The queued-subagent pattern is checked only for review sessions. Implementer
+	// sessions use the no-progress limit until their own detector is added.
 	if m.completion != harness.CompletionReviewVerdict {
 		m.stallSince = time.Time{}
 		return false, nil
@@ -376,7 +405,9 @@ func (m *transcriptMonitor) checkStalledSession(progress transcriptProgress, now
 	state, err := m.readState()
 	if err != nil {
 		m.stallSince = time.Time{}
-		return true, m.describeSessionFailure(fmt.Errorf("read session state for stall detection: %w", err))
+		// Defer state read failures to the no-progress limit so recovery receives
+		// a typed stall error with a tolerant summary.
+		return false, nil
 	}
 	if !sessionStateCanStall(state) {
 		m.stallSince = time.Time{}
@@ -389,14 +420,17 @@ func (m *transcriptMonitor) checkStalledSession(progress transcriptProgress, now
 	if now.Sub(m.stallSince) < m.stallWindow {
 		return false, nil
 	}
-	return true, &harness.SessionStalledError{
+	stalled := &harness.SessionStalledError{
 		SessionID:    m.sessionID,
+		Limit:        harness.StallWindowLimit,
 		StateSummary: state.String(),
-		Reports:      readFinishedSubagentReports(m.reader, m.projectRoot, m.sessionID),
+		Reports:      readFinishedSubagentReports(m.reader, m.projectRoot, m.sessionID, m.path, m.subagentStartState),
 	}
+	return true, m.describeSessionFailure(stalled)
 }
 
 func sessionStateCanStall(state SessionState) bool {
+	// The queued-subagent pattern requires a pending notification and finished subagents.
 	hasPendingTaskNotification := state.EnqueuedTaskNotifications > state.DequeuedOrRemovedTaskNotifications
 	hasFinishedSubagents := state.SubagentCount > 0 && state.SubagentCount == state.FinishedSubagentCount
 	return hasPendingTaskNotification && hasFinishedSubagents
@@ -407,19 +441,28 @@ func (m *transcriptMonitor) describeSessionFailure(err error) error {
 	if _, statErr := os.Stat(m.path); errors.Is(statErr, os.ErrNotExist) {
 		status = " (missing: file does not exist)"
 	}
-	stateSummary := "Session state summary unavailable"
-	if m.readState != nil {
-		state, stateErr := m.readState()
-		if stateErr == nil {
-			stateSummary = "Session state:\n" + state.String()
-		} else {
-			stateSummary += ": " + stateErr.Error()
+	var stalled *harness.SessionStalledError
+	stateSummary := ""
+	if !errors.As(err, &stalled) {
+		stateSummary = "Session state summary unavailable"
+		if m.readState != nil {
+			state, stateErr := m.readState()
+			if stateErr == nil {
+				stateSummary = "Session state:\n" + state.String()
+			} else {
+				stateSummary += ": " + stateErr.Error()
+			}
 		}
 	}
-	details := fmt.Sprintf("Session id: %s\nSession transcript: %s%s\n%s",
-		m.sessionID, m.path, status, stateSummary)
-	if tail := m.output.describeTail(); tail != "" {
-		details += "\n" + tail
+	details := fmt.Sprintf("Session id: %s\nSession transcript: %s%s",
+		m.sessionID, m.path, status)
+	if stateSummary != "" {
+		details += "\n" + stateSummary
+	}
+	if m.output != nil {
+		if tail := m.output.describeTail(); tail != "" {
+			details += "\n" + tail
+		}
 	}
 	return fmt.Errorf("%w\n%s", err, details)
 }
@@ -443,13 +486,20 @@ func (m *transcriptMonitor) checkProgress() (transcriptProgress, error) {
 	if err != nil {
 		return transcriptProgress{}, err
 	}
+	terminalActivityCount := m.terminalActivityCount
+	if m.output != nil {
+		terminalActivityCount = m.output.activityCountValue()
+	}
+	newTerminalActivity := terminalActivityCount > m.terminalActivityCount
+	m.terminalActivityCount = terminalActivityCount
 	progress := transcriptProgress{
-		hasProgress: newMainEntries || newSubagentActivity,
-		mainEntry:   newMainEntries,
-		complete:    m.complete,
+		hasProgress:      newMainEntries || newSubagentActivity || newTerminalActivity,
+		mainEntry:        newMainEntries,
+		terminalActivity: newTerminalActivity,
+		complete:         m.complete,
 	}
 	if progress.hasProgress {
-		resetTimer(m.idle, m.idleTimeout)
+		resetTimer(m.noProgress, m.noProgressLimit)
 	}
 	return progress, nil
 }
@@ -564,9 +614,15 @@ func newSessionID() (string, error) {
 }
 
 type terminalOutput struct {
-	mu    sync.Mutex
-	state terminalEscapeState
-	tail  []byte
+	mu                sync.Mutex
+	state             terminalEscapeState
+	escapeSequence    []byte
+	tail              []byte
+	activityCount     int64
+	activitySegment   []byte
+	synchronizedFrame []byte
+	synchronized      bool
+	frameTooLarge     bool
 }
 
 type terminalEscapeState int
@@ -588,11 +644,18 @@ func (o *terminalOutput) capture(data []byte) {
 	for _, value := range data {
 		o.captureByte(value)
 	}
+	o.flushActivitySegment()
 	if len(o.tail) > terminalTailLimit {
 		start := len(o.tail) - terminalTailLimit
 		copy(o.tail, o.tail[start:])
 		o.tail = o.tail[:terminalTailLimit]
 	}
+}
+
+func (o *terminalOutput) activityCountValue() int64 {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.activityCount
 }
 
 func (o *terminalOutput) captureByte(value byte) {
@@ -601,7 +664,12 @@ func (o *terminalOutput) captureByte(value byte) {
 		o.captureText(value)
 	case terminalEscape:
 		o.state = beginTerminalEscape(value)
-	case terminalCSI, terminalEscapeIntermediate:
+		if o.state == terminalCSI {
+			o.escapeSequence = o.escapeSequence[:0]
+		}
+	case terminalCSI:
+		o.captureCSIByte(value)
+	case terminalEscapeIntermediate:
 		o.finishTerminalEscape(value)
 	case terminalString, terminalStringEscape:
 		o.finishTerminalString(value)
@@ -613,10 +681,123 @@ func (o *terminalOutput) captureText(value byte) {
 		o.state = terminalEscape
 		return
 	}
-	isReadable := value >= ' ' && value != '\x7f' || value == '\n' || value == '\t'
-	if isReadable {
-		o.tail = append(o.tail, value)
+	if value == '\r' {
+		if !o.synchronized {
+			o.finishActivitySegment()
+		}
+		return
 	}
+	if value == '\n' || value == '\t' {
+		if !o.synchronized {
+			o.finishActivitySegment()
+		}
+		o.tail = append(o.tail, value)
+		return
+	}
+	o.capturePrintable(value)
+}
+
+func (o *terminalOutput) capturePrintable(value byte) {
+	if value < ' ' || value == '\x7f' {
+		o.finishActivitySegment()
+		return
+	}
+	o.tail = append(o.tail, value)
+	if o.synchronized {
+		if len(o.synchronizedFrame) < terminalActivitySegmentLimit {
+			o.synchronizedFrame = append(o.synchronizedFrame, value)
+		} else {
+			o.frameTooLarge = true
+		}
+		return
+	}
+	o.activitySegment = append(o.activitySegment, value)
+	if len(o.activitySegment) >= terminalActivitySegmentLimit {
+		o.finishActivitySegment()
+	}
+}
+
+const terminalActivitySegmentLimit = 4096
+
+// The held-request capture shows spinner glyphs and elapsed-time counters in
+// synchronized frames. Match their visible characters so cursor geometry,
+// read boundaries, and missing synchronization markers do not affect progress.
+func (o *terminalOutput) finishActivitySegment() {
+	if len(o.activitySegment) == 0 {
+		return
+	}
+	heartbeat, complete := capturedHeldRequestHeartbeat(o.activitySegment)
+	if heartbeat {
+		if complete {
+			o.activitySegment = o.activitySegment[:0]
+		}
+		return
+	}
+	o.activityCount++
+	o.activitySegment = o.activitySegment[:0]
+}
+
+func (o *terminalOutput) flushActivitySegment() {
+	if o.synchronized {
+		return
+	}
+	o.finishActivitySegment()
+}
+
+func (o *terminalOutput) captureCSIByte(value byte) {
+	if value == '\x1b' {
+		o.escapeSequence = o.escapeSequence[:0]
+		o.state = terminalEscape
+		return
+	}
+	if len(o.escapeSequence) < 8 {
+		o.escapeSequence = append(o.escapeSequence, value)
+	}
+	if value < 0x40 || value > 0x7e {
+		return
+	}
+	switch string(o.escapeSequence) {
+	case "?2026h":
+		o.finishActivitySegment()
+		o.synchronized = true
+		o.synchronizedFrame = o.synchronizedFrame[:0]
+		o.frameTooLarge = false
+	case "?2026l":
+		if o.synchronized {
+			if o.frameTooLarge || !isCapturedHeldRequestHeartbeat(o.synchronizedFrame) {
+				o.activityCount++
+			}
+			o.synchronized = false
+			o.synchronizedFrame = o.synchronizedFrame[:0]
+			o.frameTooLarge = false
+		}
+	}
+	o.escapeSequence = o.escapeSequence[:0]
+	o.state = terminalText
+}
+
+func isCapturedHeldRequestHeartbeat(frame []byte) bool {
+	heartbeat, complete := capturedHeldRequestHeartbeat(frame)
+	return heartbeat && complete
+}
+
+func capturedHeldRequestHeartbeat(frame []byte) (heartbeat, complete bool) {
+	for len(frame) > 0 {
+		if !utf8.FullRune(frame) {
+			return true, false
+		}
+		r, size := utf8.DecodeRune(frame)
+		if !isHeldRequestHeartbeatRune(r) {
+			return false, true
+		}
+		frame = frame[size:]
+	}
+	return true, true
+}
+
+func isHeldRequestHeartbeatRune(value rune) bool {
+	return unicode.Is(unicode.So, value) || unicode.IsSpace(value) || value == 'h' || value == 'm' || value == 's' ||
+		value == '(' || value == ')' || value >= '0' && value <= '9' || value == '·'
 }
 
 func beginTerminalEscape(value byte) terminalEscapeState {
