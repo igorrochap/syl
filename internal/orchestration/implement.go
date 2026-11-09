@@ -832,10 +832,11 @@ func recoverStalledImplementer(
 	}
 
 	request := options.request
-	request.Prompt = "The implementer session stopped making progress. Continue the requested implementation from the existing session and return the result when the work is complete."
+	request.Prompt = "The implementer session stopped making progress. "
 	if stalled.Limit != "" {
-		request.Prompt = fmt.Sprintf("The implementer session hit its %s. Continue the requested implementation from the existing session and return the result when the work is complete.", stalled.Limit)
+		request.Prompt = fmt.Sprintf("The implementer session hit its %s. ", stalled.Limit)
 	}
+	request.Prompt += "Continue the requested implementation from the existing session. End your turn normally when the work is complete."
 	request.Prompt = appendImplementerReports(request.Prompt, stalled.Reports)
 	var recoveryFeed bytes.Buffer
 	recoveryArtifact := newPlainHarnessOutput(&recoveryFeed, options.mode)

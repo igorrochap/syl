@@ -139,6 +139,9 @@ func TestRunImplementRecoversStalledImplementerOnce(t *testing.T) {
 			Reports: []harness.SubagentReport{{
 				Path: "/claude/session/subagents/agent-implementation.jsonl",
 				Text: "The helper found the missing validation case.",
+			}, {
+				Path: "/claude/session/subagents/agent-tests.jsonl",
+				Text: "The helper added a regression test.",
 			}},
 		}},
 	}
@@ -153,7 +156,7 @@ func TestRunImplementRecoversStalledImplementerOnce(t *testing.T) {
 		OpenRun:    NewDiskRunOpener(root, sylhome.Dir{}, io.Discard),
 		ProjectConfig: config.Config{
 			Roles: config.RolesConfig{
-				Implement: config.RoleConfig{Harness: config.HarnessCodex},
+				Implement: config.RoleConfig{Harness: config.HarnessClaude},
 				Review:    config.RoleConfig{Harness: config.HarnessClaude},
 			},
 			Loop: config.LoopConfig{MaxIterations: 1},
@@ -173,14 +176,35 @@ func TestRunImplementRecoversStalledImplementerOnce(t *testing.T) {
 	if implementer.runCalls != 1 || len(implementer.resumeCalls) != 1 {
 		t.Fatalf("implementer calls = (%d runs, %d resumes), want one run and one recovery resume", implementer.runCalls, len(implementer.resumeCalls))
 	}
-	if implementer.resumeCalls[0].sessionID != "implement-session" ||
-		!strings.Contains(implementer.resumeCalls[0].prompt, "no-progress limit") ||
-		!strings.Contains(implementer.resumeCalls[0].prompt, "The helper found the missing validation case.") {
-		t.Fatalf("implementer recovery = %#v, want same-session no-progress recovery", implementer.resumeCalls[0])
+	if implementer.resumeCalls[0].sessionID != "implement-session" {
+		t.Fatalf("recovery session = %q, want implement-session", implementer.resumeCalls[0].sessionID)
+	}
+	for _, want := range []string{
+		"no-progress limit",
+		"Continue the requested implementation",
+		"End your turn normally",
+		"The helper found the missing validation case.",
+		"The helper added a regression test.",
+	} {
+		if !strings.Contains(implementer.resumeCalls[0].prompt, want) {
+			t.Errorf("implementer recovery prompt = %q, want %q", implementer.resumeCalls[0].prompt, want)
+		}
+	}
+	if reviewer.runCalls != 1 {
+		t.Fatalf("reviewer run calls = %d, want review after recovered implementation", reviewer.runCalls)
 	}
 	state := mustReadRunState(t, onlyRunStatePath(t, root))
 	if state.Status != runrecord.Approved || state.Iteration != 1 {
 		t.Fatalf("final Run state = %#v, want approved in iteration 1", state)
+	}
+	sessionsPath := filepath.Join(filepath.Dir(onlyRunStatePath(t, root)), artifactFilename(sessionsArtifact, 0))
+	sessions, err := os.ReadFile(sessionsPath)
+	if err != nil {
+		t.Fatalf("read recorded sessions: %v", err)
+	}
+	if !strings.Contains(string(sessions), "iteration 1 implement: implement-session") ||
+		strings.Contains(string(sessions), "iteration 2 implement:") {
+		t.Fatalf("recorded sessions = %q, want recovered implement turn in iteration 1", sessions)
 	}
 }
 
