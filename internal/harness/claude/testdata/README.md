@@ -1,0 +1,7 @@
+# Claude terminal capture provenance
+
+`claude-held-v1-messages.ansi.b64` is the base64 encoding of a real PTY capture from Claude Code 2.1.319 (Sonnet 5.5, Claude Pro), made on 2026-11-07. A temporary local TLS proxy accepted the complete `POST /v1/messages?beta=true` request body (56,395 bytes) and withheld the HTTP response for 133.7 seconds before the CLI was stopped. The proxy recorded only the request method, path, body length, and that it withheld the response; it did not save request headers or body.
+
+The fixture includes the initial PTY output and the full held-request interval, including 711 synchronized screen frames and the `1m 0s)` timer rollover. Adapter tests select the repaint frames starting at `(16s)` so startup text does not count as progress. The request was started in a temporary work directory with the prompt `Reply with exactly one word: OK.`. The temporary proxy and certificate were removed after the capture; no API response was received.
+
+To reproduce it, run `claude --model sonnet --permission-mode bypassPermissions "Reply with exactly one word: OK."` in a trusted temporary directory with `HTTP_PROXY` and `HTTPS_PROXY` set to a local HTTPS `CONNECT` proxy, and `NODE_EXTRA_CA_CERTS` set to a temporary certificate for `api.anthropic.com`. Have the proxy consume the complete `POST /v1/messages` body without sending an HTTP response. The capture was taken from the PTY after the proxy confirmed the held request; only those ANSI bytes were base64-encoded into the fixture.

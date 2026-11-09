@@ -792,6 +792,9 @@ func runImplementRoleFrom(
 		execution := implementExecution{
 			Feed: feed.String(), Transcript: result.Transcript, SessionIDs: result.SessionIDs,
 		}
+		if errors.Is(err, harness.ErrSessionStalled) {
+			return recoverStalledImplementer(ctx, adapter, options, execution, err, visibleOutput)
+		}
 		implementErr := fmt.Errorf("run implement harness: %w", err)
 		if options.initialSessionID != "" {
 			return execution, &implementResumeError{cause: implementErr}
@@ -803,6 +806,93 @@ func runImplementRoleFrom(
 		Transcript: result.Transcript,
 		SessionIDs: result.SessionIDs,
 	}, nil
+}
+
+func recoverStalledImplementer(
+	ctx context.Context,
+	adapter harness.Adapter,
+	options implementExecutionOptions,
+	first implementExecution,
+	stallErr error,
+	output io.Writer,
+) (implementExecution, error) {
+	var stalled *harness.SessionStalledError
+	if !errors.As(stallErr, &stalled) {
+		return first, fmt.Errorf("run implement harness: %w", stallErr)
+	}
+	sessionID := stalled.SessionID
+	if sessionID == "" {
+		sessionID = options.initialSessionID
+	}
+	if sessionID == "" {
+		sessionID = lastUsableSessionID(first.SessionIDs)
+	}
+	if sessionID == "" {
+		return first, fmt.Errorf("run implement harness: stalled session has no session id: %w", stallErr)
+	}
+
+	request := options.request
+	request.Prompt = "The implementer session stopped making progress. Continue the requested implementation from the existing session and return the result when the work is complete."
+	if stalled.Limit != "" {
+		request.Prompt = fmt.Sprintf("The implementer session hit its %s. Continue the requested implementation from the existing session and return the result when the work is complete.", stalled.Limit)
+	}
+	request.Prompt = appendImplementerReports(request.Prompt, stalled.Reports)
+	var recoveryFeed bytes.Buffer
+	recoveryArtifact := newPlainHarnessOutput(&recoveryFeed, options.mode)
+	recovery, err := runHarnessConversation(ctx, adapter, func(runContext context.Context) (harness.Stream, error) {
+		return adapter.Resume(runContext, sessionID, request)
+	}, conversationOptions{
+		request:   request,
+		output:    output,
+		artifact:  recoveryArtifact,
+		mode:      options.mode,
+		questions: options.questions,
+		role:      "implement",
+		sessionID: sessionID,
+	})
+	resumed := implementExecution{
+		Feed: recoveryFeed.String(), Transcript: recovery.Transcript, SessionIDs: recovery.SessionIDs,
+	}
+	combined := appendImplementExecutions(first, resumed)
+	if err != nil {
+		return combined, fmt.Errorf("resume stalled implementer session: %w", err)
+	}
+	return combined, nil
+}
+
+func appendImplementerReports(prompt string, reports []harness.SubagentReport) string {
+	if len(reports) == 0 {
+		return prompt
+	}
+
+	var reportBytes int
+	usePaths := false
+	for _, report := range reports {
+		reportBytes += len(report.Text)
+		if report.TooLarge || report.Text == "" {
+			usePaths = true
+		}
+	}
+	if reportBytes > harness.StalledSessionReportTextLimit {
+		usePaths = true
+	}
+
+	var recovery strings.Builder
+	recovery.WriteString(prompt)
+	if usePaths {
+		recovery.WriteString("\nRead the finished subagent reports at these paths before continuing:\n")
+		for _, report := range reports {
+			fmt.Fprintf(&recovery, "- %s\n", report.Path)
+		}
+		return recovery.String()
+	}
+
+	recovery.WriteString("\nFinished subagent reports:\n")
+	for index, report := range reports {
+		fmt.Fprintf(&recovery, "\n--- Report %d (%s) ---\n%s\n", index+1, report.Path, report.Text)
+	}
+	recovery.WriteString("Use these reports when continuing the implementation.")
+	return recovery.String()
 }
 
 func recordFailedImplementTurn(recorder RunRecorder, iteration int, execution implementExecution, failure error) error {

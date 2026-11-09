@@ -1,7 +1,9 @@
 package claude
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -512,7 +514,7 @@ while :; do sleep 0.05; done
 	}
 }
 
-func TestPTYRunTranscriptEntriesWithoutToolCallsResetIdleTimeout(t *testing.T) {
+func TestPTYRunTranscriptEntriesWithoutToolCallsResetNoProgressLimit(t *testing.T) {
 	root := t.TempDir()
 	home := t.TempDir()
 	transcriptDir := claudeTranscriptDir(t, home, root)
@@ -539,7 +541,7 @@ printf '\033]9;Claude is waiting for your input\007'
 while :; do sleep 0.05; done
 `, transcriptDir, transcriptDir))
 	adapter := newPTYTestAdapter(command, root, home)
-	adapter.idleTimeout = 750 * time.Millisecond
+	adapter.noProgressLimit = 750 * time.Millisecond
 
 	stream, err := adapter.Run(context.Background(), harness.Request{
 		Model: "claude-sonnet-5", Effort: config.EffortMedium, Prompt: "review it",
@@ -547,14 +549,19 @@ while :; do sleep 0.05; done
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
+	eventCount := 0
 	for range stream.Events() {
+		eventCount++
+	}
+	if eventCount == 0 {
+		t.Fatal("PTY stream emitted no session event")
 	}
 	if err := stream.Wait(); err != nil {
 		t.Fatalf("Wait() error = %v; transcript entries without tool calls should keep the run alive", err)
 	}
 }
 
-func TestPTYRunSubagentTranscriptGrowthResetsIdleTimeout(t *testing.T) {
+func TestPTYRunSubagentTranscriptGrowthResetsNoProgressLimit(t *testing.T) {
 	root := t.TempDir()
 	home := t.TempDir()
 	transcriptDir := claudeTranscriptDir(t, home, root)
@@ -584,7 +591,7 @@ printf '\033]9;Claude is waiting for your input\007'
 while :; do sleep 0.05; done
 `, transcriptDir, transcriptDir))
 	adapter := newPTYTestAdapter(command, root, home)
-	adapter.idleTimeout = 750 * time.Millisecond
+	adapter.noProgressLimit = 750 * time.Millisecond
 
 	stream, err := adapter.Run(context.Background(), harness.Request{
 		Model: "claude-sonnet-5", Effort: config.EffortMedium, Prompt: "review it",
@@ -604,7 +611,446 @@ while :; do sleep 0.05; done
 	}
 }
 
-func TestPTYRunNewEmptySubagentTranscriptResetsIdleTimeout(t *testing.T) {
+func TestPTYRunTerminalOutputResetsNoProgressLimit(t *testing.T) {
+	root, home := t.TempDir(), t.TempDir()
+	transcriptDir := claudeTranscriptDir(t, home, root)
+	command := writeClaudeTestDouble(t, fmt.Sprintf(`
+session_id=''
+while [ "$#" -gt 0 ]; do
+	if [ "$1" = '--session-id' ]; then session_id="$2"; break; fi
+	shift
+done
+transcript=%q/"$session_id".jsonl
+mkdir -p %q
+trap 'exit 0' TERM
+printf '.'
+sleep 0.5
+printf '.'
+sleep 0.5
+printf '.'
+sleep 0.5
+printf '%%s\n' '{"type":"assistant","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"VERDICT: approve\\nSUMMARY: complete\\nFINDINGS:\\n"}]}}' >> "$transcript"
+printf '\033]9;Claude is waiting for your input\007'
+while :; do sleep 0.05; done
+`, transcriptDir, transcriptDir))
+	adapter := newPTYTestAdapter(command, root, home)
+	adapter.noProgressLimit = time.Second
+	adapter.pollInterval = 5 * time.Millisecond
+
+	started := time.Now()
+	stream, err := adapter.Run(context.Background(), harness.Request{
+		Model: "claude-sonnet-5", Prompt: "review", Effort: config.EffortMedium,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := collectHarnessEvents(t, stream)
+	if elapsed := time.Since(started); elapsed <= adapter.noProgressLimit {
+		t.Fatalf("session completed after %s, want terminal output to keep it alive past %s", elapsed, adapter.noProgressLimit)
+	}
+	if !strings.Contains(eventAssistantText(events), "SUMMARY: complete") {
+		t.Fatalf("assistant text = %q, want completion after terminal-only progress", eventAssistantText(events))
+	}
+}
+
+func TestPTYRunHealthySilentSessionCompletesBeforeNoProgressLimit(t *testing.T) {
+	root, home := t.TempDir(), t.TempDir()
+	transcriptDir := claudeTranscriptDir(t, home, root)
+	command := writeClaudeTestDouble(t, fmt.Sprintf(`
+session_id=''
+while [ "$#" -gt 0 ]; do
+	if [ "$1" = '--session-id' ]; then session_id="$2"; break; fi
+	shift
+done
+transcript=%q/"$session_id".jsonl
+mkdir -p %q
+trap 'exit 0' TERM
+sleep 1.2
+printf '%%s\n' '{"type":"assistant","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"VERDICT: approve\\nSUMMARY: healthy response\\nFINDINGS:\\n"}]}}' >> "$transcript"
+printf '\033]9;Claude is waiting for your input\007'
+while :; do sleep 0.05; done
+`, transcriptDir, transcriptDir))
+	adapter := newPTYTestAdapter(command, root, home)
+	adapter.noProgressLimit = 2 * time.Second
+	adapter.stallWindow = 100 * time.Millisecond
+	adapter.pollInterval = 5 * time.Millisecond
+
+	started := time.Now()
+	stream, err := adapter.Run(context.Background(), harness.Request{
+		Model: "claude-sonnet-5", Prompt: "review", Effort: config.EffortMedium,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := collectHarnessEvents(t, stream)
+	if elapsed := time.Since(started); elapsed <= time.Second {
+		t.Fatalf("session completed after %s, want a silent response longer than the old idle window", elapsed)
+	}
+	if !strings.Contains(eventAssistantText(events), "SUMMARY: healthy response") {
+		t.Fatalf("assistant text = %q, want healthy session response", eventAssistantText(events))
+	}
+}
+
+func TestPTYRunNoProgressLimitReportsUnansweredAPIRequest(t *testing.T) {
+	root, home := t.TempDir(), t.TempDir()
+	const sessionID = "unanswered-api-request"
+	transcriptPath, err := transcript.New(home).Find(root, sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(transcriptPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(transcriptPath, []byte(`{"type":"api-request","timestamp":"2026-11-06T10:00:00Z"}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	command := writeClaudeTestDouble(t, "trap 'exit 0' TERM\nwhile :; do sleep 0.02; done\n")
+	adapter := newPTYTestAdapter(command, root, home)
+	adapter.stallWindow = 40 * time.Millisecond
+	adapter.noProgressLimit = 120 * time.Millisecond
+	adapter.pollInterval = 5 * time.Millisecond
+	started := time.Now()
+	stream, err := adapter.start(context.Background(), sessionID, nil, transcriptStartFresh, harness.CompletionReviewVerdict)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventCount := 0
+	for range stream.Events() {
+		eventCount++
+	}
+	if eventCount == 0 {
+		t.Fatal("PTY stream emitted no events")
+	}
+	err = stream.Wait()
+	if !errors.Is(err, harness.ErrSessionStalled) {
+		t.Fatalf("Wait() error = %v, want ErrSessionStalled", err)
+	}
+	if !strings.Contains(err.Error(), "no-progress limit") || !strings.Contains(err.Error(), "Unanswered api-request age:") {
+		t.Fatalf("Wait() error = %v, want no-progress limit and session-state summary", err)
+	}
+	if elapsed := time.Since(started); elapsed < adapter.noProgressLimit {
+		t.Fatalf("Wait() returned after %s, before the no-progress limit %s", elapsed, adapter.noProgressLimit)
+	}
+}
+
+func TestPTYResumeNoProgressIncludesFinishedReportsNotPreviouslyDelivered(t *testing.T) {
+	root, home := t.TempDir(), t.TempDir()
+	const sessionID = "review-awaiting-verdict"
+	reader := transcript.New(home)
+	transcriptPath, err := reader.Find(root, sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(transcriptPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	priorTurn := `{"type":"user","message":{"role":"user","content":"review this change"}}` + "\n" +
+		`{"type":"assistant","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"Review completed without a verdict."}]}}` + "\n"
+	if err := os.WriteFile(transcriptPath, []byte(priorTurn), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	subagentsDir := filepath.Join(filepath.Dir(transcriptPath), sessionID, "subagents")
+	if err := os.MkdirAll(subagentsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	reportPath := writeFinishedSubagent(t, subagentsDir, "agent-review", "Finished review report.")
+	command := writeClaudeTestDouble(t, fmt.Sprintf(`
+printf '%%s\n' '{"type":"user","message":{"role":"user","content":"emit the verdict block"}}' >> %q
+trap 'exit 0' TERM
+while :; do sleep 0.02; done
+`, transcriptPath))
+	adapter := newPTYTestAdapter(command, root, home)
+	adapter.noProgressLimit = 120 * time.Millisecond
+	adapter.pollInterval = 5 * time.Millisecond
+	stream, err := adapter.Resume(context.Background(), sessionID, harness.Request{
+		Model: "claude-sonnet-5", Effort: config.EffortMedium, Prompt: "emit the verdict block",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventCount := 0
+	for range stream.Events() {
+		eventCount++
+	}
+	if eventCount == 0 {
+		t.Fatal("PTY stream emitted no resume event")
+	}
+	err = stream.Wait()
+	var stalled *harness.SessionStalledError
+	if !errors.As(err, &stalled) || len(stalled.Reports) != 1 || stalled.Reports[0].Path != reportPath {
+		t.Fatalf("Wait() error = %v, reports = %#v; want the finished report not yet delivered to this session", err, stalled)
+	}
+}
+
+func TestPTYRunHeldRequestRepaintsStillHitNoProgressLimit(t *testing.T) {
+	root, home := t.TempDir(), t.TempDir()
+	const sessionID = "held-request-no-progress"
+	writeAPIRequestTranscript(t, root, home, sessionID)
+	fixturePath := writeHeldRequestFixture(t)
+	command := writeClaudeTestDouble(t, fmt.Sprintf(`trap 'exit 0' TERM
+while :; do cat %q; sleep 0.02; done
+`, fixturePath))
+	adapter := newPTYTestAdapter(command, root, home)
+	adapter.noProgressLimit = 160 * time.Millisecond
+	adapter.stallWindow = 60 * time.Millisecond
+	adapter.pollInterval = 5 * time.Millisecond
+	started := time.Now()
+	stream, err := adapter.start(context.Background(), sessionID, nil, transcriptStartFresh, harness.CompletionTurnEnd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventCount := 0
+	for range stream.Events() {
+		eventCount++
+	}
+	if eventCount == 0 {
+		t.Fatal("PTY stream emitted no session event")
+	}
+	err = stream.Wait()
+	var stalled *harness.SessionStalledError
+	if !errors.As(err, &stalled) || stalled.Limit != harness.NoProgressLimit {
+		t.Fatalf("Wait() error = %v, want no-progress limit after held-request spinner repaints", err)
+	}
+	if elapsed := time.Since(started); elapsed < adapter.noProgressLimit {
+		t.Fatalf("Wait() returned after %s, before the no-progress limit %s", elapsed, adapter.noProgressLimit)
+	}
+	if !strings.Contains(err.Error(), "Unanswered api-request age:") ||
+		!strings.Contains(err.Error(), "Subagents: 0 total, 0 finished") {
+		t.Fatalf("Wait() error = %v, want unanswered request and no-subagent summary", err)
+	}
+}
+
+func TestPTYRunHeldRequestRepaintsStillHitStallWindow(t *testing.T) {
+	root, home := t.TempDir(), t.TempDir()
+	const sessionID = "held-request-stall-window"
+	transcriptPath := writeAPIRequestTranscript(t, root, home, sessionID)
+	appendTranscriptEntry(t, transcriptPath, `{"type":"queue-operation","operation":"enqueue","content":"<task-notification>done</task-notification>"}`)
+	subagentsDir := filepath.Join(filepath.Dir(transcriptPath), sessionID, "subagents")
+	if err := os.MkdirAll(subagentsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(subagentsDir, "agent-a.jsonl"), []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(subagentsDir, "agent-a.meta.json"), []byte(`{"finished":true}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fixturePath := writeHeldRequestFixture(t)
+	command := writeClaudeTestDouble(t, fmt.Sprintf(`trap 'exit 0' TERM
+while :; do cat %q; sleep 0.02; done
+`, fixturePath))
+	adapter := newPTYTestAdapter(command, root, home)
+	adapter.stallWindow = 80 * time.Millisecond
+	adapter.noProgressLimit = 500 * time.Millisecond
+	adapter.pollInterval = 5 * time.Millisecond
+	started := time.Now()
+	stream, err := adapter.start(context.Background(), sessionID, nil, transcriptStartFresh, harness.CompletionReviewVerdict)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventCount := 0
+	for range stream.Events() {
+		eventCount++
+	}
+	if eventCount == 0 {
+		t.Fatal("PTY stream emitted no session event")
+	}
+	err = stream.Wait()
+	var stalled *harness.SessionStalledError
+	if !errors.As(err, &stalled) || stalled.Limit != harness.StallWindowLimit {
+		t.Fatalf("Wait() error = %v, want stall-window error despite repainting output", err)
+	}
+	if elapsed := time.Since(started); elapsed < adapter.stallWindow || elapsed >= adapter.noProgressLimit {
+		t.Fatalf("Wait() returned after %s, want between stall window %s and no-progress limit %s", elapsed, adapter.stallWindow, adapter.noProgressLimit)
+	}
+}
+
+func writeAPIRequestTranscript(t *testing.T, root, home, sessionID string) string {
+	t.Helper()
+	transcriptPath, err := transcript.New(home).Find(root, sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(transcriptPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	requestAt := time.Now().Add(-time.Minute).UTC().Format(time.RFC3339Nano)
+	contents := fmt.Sprintf("{\"type\":\"api-request\",\"timestamp\":%q}\n", requestAt)
+	if err := os.WriteFile(transcriptPath, []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return transcriptPath
+}
+
+func appendTranscriptEntry(t *testing.T, path, entry string) {
+	t.Helper()
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fmt.Fprintln(file, entry); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeHeldRequestFixture(t *testing.T) string {
+	t.Helper()
+	fixture := readHeldRequestHeartbeatFixture(t)
+	path := filepath.Join(t.TempDir(), "held-v1-messages.ansi")
+	if err := os.WriteFile(path, fixture, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	path, err := filepath.Abs(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestTerminalOutputCountsRepeatedPrintableOutput(t *testing.T) {
+	output := &terminalOutput{}
+	for _, text := range []string{".", ".", "same word", "same word"} {
+		before := output.activityCountValue()
+		output.capture([]byte(text))
+		if got := output.activityCountValue(); got <= before {
+			t.Fatalf("activity count after %q = %d, want greater than %d", text, got, before)
+		}
+	}
+}
+
+func TestTerminalOutputIgnoresHeldRequestHeartbeatAcrossReadSplits(t *testing.T) {
+	captured := readHeldRequestHeartbeatFixture(t)
+	output := &terminalOutput{}
+	for _, value := range captured {
+		output.capture([]byte{value})
+	}
+	if got := output.activityCountValue(); got != 0 {
+		t.Fatalf("activity count for held-request heartbeat = %d, want zero", got)
+	}
+
+	output.capture([]byte("\x1b[?2026h(123s)\x1b[?2026l"))
+	if got := output.activityCountValue(); got != 0 {
+		t.Fatalf("activity count for captured elapsed-seconds counter = %d, want zero", got)
+	}
+
+	for _, repaintText := range []string{
+		"Retrying request id 9f83c1 123s",
+		"New response content",
+	} {
+		before := output.activityCountValue()
+		output.capture([]byte("\x1b[?2026h" + repaintText + "\x1b[?2026l"))
+		if got := output.activityCountValue(); got <= before {
+			t.Fatalf("activity count for synchronized text %q = %d, want greater than %d", repaintText, got, before)
+		}
+	}
+}
+
+func TestTerminalOutputIgnoresUnsynchronizedSpinnerAndMinuteCounter(t *testing.T) {
+	output := &terminalOutput{}
+	for _, frame := range []string{"\x1b[31m◐ 1m 0s)\r", "123s"} {
+		for _, value := range []byte(frame) {
+			output.capture([]byte{value})
+		}
+	}
+	if got := output.activityCountValue(); got != 0 {
+		t.Fatalf("activity count for unsynchronized spinner frame = %d, want zero", got)
+	}
+}
+
+func readHeldRequestFixture(t *testing.T) []byte {
+	t.Helper()
+	encoded, err := os.ReadFile("testdata/claude-held-v1-messages.ansi.b64")
+	if err != nil {
+		t.Fatalf("read held-model-request capture fixture: %v", err)
+	}
+	captured, err := base64.StdEncoding.DecodeString(strings.TrimSpace(string(encoded)))
+	if err != nil {
+		t.Fatalf("decode held-model-request capture fixture: %v", err)
+	}
+	return captured
+}
+
+func readHeldRequestHeartbeatFixture(t *testing.T) []byte {
+	t.Helper()
+	captured := readHeldRequestFixture(t)
+	marker := []byte("(16s)")
+	position := bytes.Index(captured, marker)
+	if position < 0 {
+		t.Fatal("held-request capture has no elapsed-seconds frame")
+	}
+	start := bytes.LastIndex(captured[:position], []byte("\x1b[?2026h"))
+	if start < 0 {
+		t.Fatal("held-request capture has no synchronized-frame boundary")
+	}
+	return captured[start:]
+}
+
+func TestHeldRequestCaptureCoversMoreThanTwoMinutes(t *testing.T) {
+	captured := readHeldRequestFixture(t)
+	frameCount := bytes.Count(captured, []byte("\x1b[?2026h"))
+	if frameCount < 700 {
+		t.Fatalf("held-request capture has %d synchronized frames, want at least 700", frameCount)
+	}
+	if !bytes.Contains(captured, []byte("1m 0s)")) {
+		t.Fatal("held-request capture has no minute-rollover counter")
+	}
+}
+
+func TestPTYNoProgressLimitIncludesFinishedSubagentReports(t *testing.T) {
+	root, home := t.TempDir(), t.TempDir()
+	const sessionID = "stalled-with-finished-subagent"
+	reader := transcript.New(home)
+	transcriptPath, err := reader.Find(root, sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(transcriptPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(transcriptPath, []byte(`{"type":"api-request"}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	subagentsDir := filepath.Join(filepath.Dir(transcriptPath), sessionID, "subagents")
+	if err := os.MkdirAll(subagentsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	subagentPath := filepath.Join(subagentsDir, "agent-finished.jsonl")
+	report := `{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Finished report."}]}}` + "\n"
+	if err := os.WriteFile(subagentPath, []byte(report), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(subagentsDir, "agent-finished.meta.json"), []byte(`{"finished":true}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(subagentPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	monitor := transcriptMonitor{
+		reader:          reader,
+		path:            transcriptPath,
+		projectRoot:     root,
+		sessionID:       sessionID,
+		seenEntries:     1,
+		subagentSizes:   map[string]int64{subagentPath: info.Size()},
+		completion:      harness.CompletionReviewVerdict,
+		noProgressLimit: time.Minute,
+	}
+	finished, err := monitor.checkNoProgressLimit()
+	var stalled *harness.SessionStalledError
+	if !finished || !errors.As(err, &stalled) || !errors.Is(err, harness.ErrSessionStalled) {
+		t.Fatalf("checkNoProgressLimit() = (%t, %v), want typed stalled-session error", finished, err)
+	}
+	if len(stalled.Reports) != 1 || stalled.Reports[0].Text != "Finished report." {
+		t.Fatalf("stalled reports = %#v, want finished subagent report", stalled.Reports)
+	}
+}
+
+func TestPTYRunNewEmptySubagentTranscriptResetsNoProgressLimit(t *testing.T) {
 	root := t.TempDir()
 	home := t.TempDir()
 	transcriptDir := claudeTranscriptDir(t, home, root)
@@ -629,7 +1075,7 @@ printf '\033]9;Claude is waiting for your input\007'
 while :; do sleep 0.05; done
 `, transcriptDir, transcriptDir))
 	adapter := newPTYTestAdapter(command, root, home)
-	adapter.idleTimeout = 3 * time.Second
+	adapter.noProgressLimit = 3 * time.Second
 	stream, err := adapter.Run(context.Background(), harness.Request{
 		Model: "claude-sonnet-5", Effort: config.EffortMedium, Prompt: "review it",
 	})
@@ -662,7 +1108,7 @@ printf '%%s\n' '{"type":"assistant","message":{"role":"assistant","stop_reason":
 while :; do sleep 0.05; done
 `, transcriptDir))
 	adapter := newPTYTestAdapter(command, root, home)
-	adapter.idleTimeout = time.Second
+	adapter.noProgressLimit = time.Second
 	stream, err := adapter.Run(context.Background(), harness.Request{
 		Model: "claude-sonnet-5", Effort: config.EffortMedium, Prompt: "review it",
 		Completion: harness.CompletionReviewVerdict,
@@ -675,8 +1121,8 @@ while :; do sleep 0.05; done
 		events = append(events, event)
 	}
 	err = stream.Wait()
-	if err == nil || !strings.Contains(err.Error(), "idle for 1s without a review verdict") {
-		t.Fatalf("Wait() error = %v, want idle timeout without a main-transcript verdict", err)
+	if !errors.Is(err, harness.ErrSessionStalled) || !strings.Contains(err.Error(), "no-progress limit") {
+		t.Fatalf("Wait() error = %v, want no-progress limit without a main-transcript verdict", err)
 	}
 	if len(events) != 1 || events[0].Type != harness.EventSession {
 		t.Fatalf("events = %#v, want only the session event", events)
@@ -691,7 +1137,7 @@ while :; do sleep 0.05; done
 	}
 }
 
-func TestPTYRunIdleTimeoutCompletesWithoutTerminalEscape(t *testing.T) {
+func TestPTYRunNoProgressLimitCompletesWithoutTerminalEscape(t *testing.T) {
 	root := t.TempDir()
 	home := t.TempDir()
 	stoppedPath := filepath.Join(t.TempDir(), "stopped")
@@ -712,7 +1158,7 @@ printf '%%s\n' '{"type":"assistant","message":{"role":"assistant","stop_reason":
 while :; do sleep 0.05; done
 `, transcriptDir, transcriptDir, stoppedPath))
 	adapter := newPTYTestAdapter(command, root, home)
-	adapter.idleTimeout = 3 * time.Second
+	adapter.noProgressLimit = 3 * time.Second
 
 	stream, err := adapter.Run(context.Background(), harness.Request{
 		Model: "claude-sonnet-5", Effort: config.EffortMedium, Prompt: "review it",
@@ -726,7 +1172,7 @@ while :; do sleep 0.05; done
 		t.Fatalf("Wait() error = %v", err)
 	}
 	if _, err := os.Stat(stoppedPath); err != nil {
-		t.Fatalf("idle timeout did not stop Claude: %v", err)
+		t.Fatalf("completion check did not stop Claude: %v", err)
 	}
 }
 
@@ -751,10 +1197,9 @@ printf '%%s\n' '{"type":"assistant","message":{"role":"assistant","stop_reason":
 while :; do sleep 0.05; done
 `, transcriptDir, transcriptDir, stoppedPath))
 	adapter := newPTYTestAdapter(command, root, home)
-	// The idle timeout is long and the test double never writes the terminal
-	// escape, so only the poll can end this run. A run that waits for the idle
-	// timeout is the defect this test guards.
-	adapter.idleTimeout = 30 * time.Second
+	// The no-progress limit is long and the test double never writes the
+	// terminal escape, so only the poll can end this run.
+	adapter.noProgressLimit = 30 * time.Second
 	adapter.pollInterval = 25 * time.Millisecond
 
 	started := time.Now()
@@ -770,7 +1215,7 @@ while :; do sleep 0.05; done
 		t.Fatalf("Wait() error = %v", err)
 	}
 	if elapsed := time.Since(started); elapsed > 10*time.Second {
-		t.Fatalf("run took %s; it waited for the idle timeout instead of the poll", elapsed)
+		t.Fatalf("run took %s; it waited for the no-progress limit instead of the poll", elapsed)
 	}
 	if _, err := os.Stat(stoppedPath); err != nil {
 		t.Fatalf("run did not stop Claude: %v", err)
@@ -798,10 +1243,9 @@ printf '%%s\n' '{"type":"assistant","message":{"role":"assistant","stop_reason":
 while :; do sleep 0.05; done
 `, transcriptDir, transcriptDir, stoppedPath))
 	adapter := newPTYTestAdapter(command, root, home)
-	// The idle timeout is long and the test double never writes the terminal
-	// escape, so only the poll can end this run. A run that waits for the idle
-	// timeout is the defect this test guards.
-	adapter.idleTimeout = 30 * time.Second
+	// The no-progress limit is long and the test double never writes the
+	// terminal escape, so only the poll can end this run.
+	adapter.noProgressLimit = 30 * time.Second
 	adapter.pollInterval = 25 * time.Millisecond
 
 	started := time.Now()
@@ -816,7 +1260,7 @@ while :; do sleep 0.05; done
 		t.Fatalf("assistant text = %q, want the prose report", got)
 	}
 	if elapsed := time.Since(started); elapsed > 10*time.Second {
-		t.Fatalf("run took %s; it waited for the idle timeout instead of the poll", elapsed)
+		t.Fatalf("run took %s; it waited for the no-progress limit instead of the poll", elapsed)
 	}
 	if _, err := os.Stat(stoppedPath); err != nil {
 		t.Fatalf("run did not stop Claude: %v", err)
@@ -887,12 +1331,12 @@ func TestPTYRunRefusesClaudeChildSession(t *testing.T) {
 
 func newPTYTestAdapter(command, projectRoot, home string) *PTYAdapter {
 	return &PTYAdapter{
-		command:       command,
-		projectRoot:   projectRoot,
-		homeDir:       home,
-		pollInterval:  10 * time.Millisecond,
-		idleTimeout:   2 * time.Second,
-		terminateWait: 200 * time.Millisecond,
+		command:         command,
+		projectRoot:     projectRoot,
+		homeDir:         home,
+		pollInterval:    10 * time.Millisecond,
+		noProgressLimit: 2 * time.Second,
+		terminateWait:   200 * time.Millisecond,
 	}
 }
 
@@ -988,9 +1432,9 @@ fi
 %s
 `, transcriptDir, tt.stopReason, tt.stopReason, transcriptDir, ending))
 			adapter := newPTYTestAdapter(command, root, home)
-			adapter.idleTimeout = 2 * time.Second
+			adapter.noProgressLimit = 2 * time.Second
 			if tt.exits {
-				adapter.idleTimeout = 5 * time.Second
+				adapter.noProgressLimit = 5 * time.Second
 			}
 			started := time.Now()
 			stream, err := adapter.Run(context.Background(), harness.Request{
@@ -1021,18 +1465,18 @@ fi
 					t.Fatalf("Wait() error = %q, want %q", err, want)
 				}
 			}
-			if !tt.exits && time.Since(started) < adapter.idleTimeout {
-				t.Fatal("turn completed before the idle timeout")
+			if !tt.exits && time.Since(started) < adapter.noProgressLimit {
+				t.Fatal("turn completed before the no-progress limit")
 			}
 		})
 	}
 }
 
-func TestPTYIdleTimeoutReportsMissingTranscriptAndSilentTerminal(t *testing.T) {
+func TestPTYNoProgressLimitReportsMissingTranscriptAndSilentTerminal(t *testing.T) {
 	root, home := t.TempDir(), t.TempDir()
 	command := writeClaudeTestDouble(t, "printf '   \\n\\n\\t'\ntrap 'exit 0' TERM\nwhile :; do sleep 0.05; done\n")
 	adapter := newPTYTestAdapter(command, root, home)
-	adapter.idleTimeout = 200 * time.Millisecond
+	adapter.noProgressLimit = 200 * time.Millisecond
 	stream, err := adapter.Run(context.Background(), harness.Request{
 		Model: "claude-sonnet-5", Prompt: "review", Effort: config.EffortMedium,
 	})
@@ -1054,9 +1498,8 @@ func TestPTYIdleTimeoutReportsMissingTranscriptAndSilentTerminal(t *testing.T) {
 		t.Fatalf("invalid session transcript path %q or session id %q", path, sessionID)
 	}
 	message := err.Error()
-	wantFirstLine := "claude code pty session was idle for 200ms without a review verdict"
-	if firstLine := strings.SplitN(message, "\n", 2)[0]; firstLine != wantFirstLine {
-		t.Fatalf("first line = %q, want %q", firstLine, wantFirstLine)
+	if !errors.Is(err, harness.ErrSessionStalled) || !strings.Contains(message, "no-progress limit") {
+		t.Fatalf("Wait() error = %v, want no-progress limit error", err)
 	}
 	for _, want := range []string{path, sessionID, "missing"} {
 		if !strings.Contains(message, want) {
@@ -1068,7 +1511,7 @@ func TestPTYIdleTimeoutReportsMissingTranscriptAndSilentTerminal(t *testing.T) {
 	}
 }
 
-func TestPTYIdleTimeoutReportsTranscriptDerivedSessionState(t *testing.T) {
+func TestPTYNoProgressLimitReportsTranscriptDerivedSessionState(t *testing.T) {
 	root, home := t.TempDir(), t.TempDir()
 	const sessionID = "review-session"
 	requestAt := time.Now().Add(-2 * time.Minute).UTC().Format(time.RFC3339Nano)
@@ -1101,7 +1544,7 @@ trap 'exit 0' TERM
 while :; do sleep 0.05; done
 `)
 	adapter := newPTYTestAdapter(command, root, home)
-	adapter.idleTimeout = 200 * time.Millisecond
+	adapter.noProgressLimit = 200 * time.Millisecond
 	stream, err := adapter.start(context.Background(), sessionID, nil, transcriptStartFresh, harness.CompletionReviewVerdict)
 	if err != nil {
 		t.Fatal(err)
@@ -1148,7 +1591,7 @@ func TestPTYRunDetectsStalledSessionsFromTranscriptAndSubagentState(t *testing.T
 		{name: "finished subagent with queued notification", finished: true, wantStalled: true},
 		{name: "unfinished subagent", finished: false},
 		{name: "notification already dequeued", finished: true, dequeued: true},
-		{name: "implementer turn end", finished: true, completion: harness.CompletionTurnEnd},
+		{name: "implementer turn end uses no-progress limit", finished: true, completion: harness.CompletionTurnEnd},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			root, home := t.TempDir(), t.TempDir()
@@ -1190,7 +1633,8 @@ func TestPTYRunDetectsStalledSessionsFromTranscriptAndSubagentState(t *testing.T
 			adapter := newPTYTestAdapter(command, root, home)
 			adapter.pollInterval = 5 * time.Millisecond
 			adapter.stallWindow = 60 * time.Millisecond
-			adapter.idleTimeout = 300 * time.Millisecond
+			adapter.noProgressLimit = 300 * time.Millisecond
+			started := time.Now()
 			stream, err := adapter.start(
 				context.Background(), sessionID, nil, transcriptStartFresh, test.completion,
 			)
@@ -1213,16 +1657,23 @@ func TestPTYRunDetectsStalledSessionsFromTranscriptAndSubagentState(t *testing.T
 				if stalled.SessionID != sessionID || !strings.Contains(stalled.StateSummary, "1 total, 1 finished") {
 					t.Fatalf("stalled session details = %#v, want session id and summary", stalled)
 				}
+				elapsed := time.Since(started)
+				if elapsed < adapter.stallWindow || elapsed >= adapter.noProgressLimit {
+					t.Fatalf("stalled session returned after %s, want between limits %s and %s", elapsed, adapter.stallWindow, adapter.noProgressLimit)
+				}
+				if !strings.Contains(err.Error(), "stall window") {
+					t.Fatalf("Wait() error = %v, want fired stall window named", err)
+				}
 				if len(stalled.Reports) != 1 || stalled.Reports[0].Text != "Final report." || stalled.Reports[0].Path == "" {
 					t.Fatalf("stalled reports = %#v, want final assistant text and path", stalled.Reports)
 				}
 				return
 			}
-			if errors.As(err, &stalled) {
+			if errors.As(err, &stalled) && stalled.Limit == harness.StallWindowLimit {
 				t.Fatalf("Wait() error = %v, want no stalled-session error", err)
 			}
-			if err == nil || !strings.Contains(err.Error(), "idle for") {
-				t.Fatalf("Wait() error = %v, want idle-timeout error", err)
+			if !errors.Is(err, harness.ErrSessionStalled) || !strings.Contains(err.Error(), "no-progress limit") {
+				t.Fatalf("Wait() error = %v, want no-progress limit error", err)
 			}
 		})
 	}
@@ -1254,7 +1705,7 @@ func TestPTYResumeDoesNotStallOnTaskNotificationFromEarlierTurn(t *testing.T) {
 	adapter := newPTYTestAdapter(command, root, home)
 	adapter.pollInterval = 5 * time.Millisecond
 	adapter.stallWindow = 40 * time.Millisecond
-	adapter.idleTimeout = 160 * time.Millisecond
+	adapter.noProgressLimit = 160 * time.Millisecond
 	stream, err := adapter.Resume(context.Background(), sessionID, harness.Request{Prompt: "continue review"})
 	if err != nil {
 		t.Fatal(err)
@@ -1268,11 +1719,11 @@ func TestPTYResumeDoesNotStallOnTaskNotificationFromEarlierTurn(t *testing.T) {
 	}
 	err = stream.Wait()
 	var stalled *harness.SessionStalledError
-	if errors.As(err, &stalled) {
+	if errors.As(err, &stalled) && stalled.Limit == harness.StallWindowLimit {
 		t.Fatalf("Wait() error = %v, want prior-turn notification excluded from stall detection", err)
 	}
-	if err == nil || !strings.Contains(err.Error(), "idle for") {
-		t.Fatalf("Wait() error = %v, want ordinary idle-timeout error", err)
+	if !errors.Is(err, harness.ErrSessionStalled) || !strings.Contains(err.Error(), "no-progress limit") {
+		t.Fatalf("Wait() error = %v, want ordinary no-progress limit error", err)
 	}
 }
 
@@ -1316,7 +1767,51 @@ func TestTranscriptMonitorRestartsStallWindowOnMainTranscriptEntry(t *testing.T)
 	}
 }
 
-func TestTranscriptMonitorPropagatesSessionStateReadErrors(t *testing.T) {
+func TestTranscriptMonitorStallWindowIgnoresTerminalActivity(t *testing.T) {
+	root, home := t.TempDir(), t.TempDir()
+	output := &terminalOutput{}
+	noProgress := time.NewTimer(time.Hour)
+	defer noProgress.Stop()
+	state := SessionState{
+		EnqueuedTaskNotifications: 1,
+		SubagentCount:             1,
+		FinishedSubagentCount:     1,
+	}
+	monitor := transcriptMonitor{
+		reader:          transcript.New(home),
+		path:            filepath.Join(root, "missing.jsonl"),
+		projectRoot:     root,
+		sessionID:       "review-session",
+		readState:       func() (SessionState, error) { return state, nil },
+		output:          output,
+		noProgress:      noProgress,
+		stallWindow:     time.Minute,
+		noProgressLimit: time.Hour,
+	}
+	start := time.Date(2026, time.November, 7, 12, 0, 0, 0, time.UTC)
+	stalled, err := monitor.checkStalledSession(transcriptProgress{}, start)
+	if stalled || err != nil {
+		t.Fatalf("initial checkStalledSession() = (%t, %v), want active stall window", stalled, err)
+	}
+	output.capture([]byte("model response\n"))
+	progress, err := monitor.checkProgress()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !progress.terminalActivity {
+		t.Fatal("model response text was not reported as terminal activity")
+	}
+	stalled, err = monitor.checkStalledSession(progress, start.Add(30*time.Second))
+	if stalled || err != nil || !monitor.stallSince.Equal(start) {
+		t.Fatalf("terminal activity check = (%t, %v), stall since %s; want the original stall start %s", stalled, err, monitor.stallSince, start)
+	}
+	stalled, err = monitor.checkStalledSession(transcriptProgress{}, start.Add(time.Minute))
+	if !stalled || !errors.Is(err, harness.ErrSessionStalled) {
+		t.Fatalf("check at stall window end = (%t, %v), want stall-window error", stalled, err)
+	}
+}
+
+func TestTranscriptMonitorDefersSessionStateReadErrorsToNoProgressLimit(t *testing.T) {
 	readErr := errors.New("session state read failed")
 	root := t.TempDir()
 	monitor := transcriptMonitor{
@@ -1331,18 +1826,27 @@ func TestTranscriptMonitorPropagatesSessionStateReadErrors(t *testing.T) {
 		output: &terminalOutput{},
 	}
 	finished, err := monitor.checkStalledSession(transcriptProgress{}, time.Now().UTC())
-	if !finished || !errors.Is(err, readErr) {
-		t.Fatalf("checkStalledSession() = (%t, %v), want a finished monitor with the session-state read error", finished, err)
+	if finished || err != nil {
+		t.Fatalf("checkStalledSession() = (%t, %v), want the no-progress limit to handle the read error", finished, err)
 	}
-	if !strings.Contains(err.Error(), "read session state for stall detection") {
-		t.Fatalf("checkStalledSession() error = %v, want stall-detection context", err)
+	monitor.noProgressLimit = time.Minute
+	finished, err = monitor.checkNoProgressLimit()
+	var stalled *harness.SessionStalledError
+	if !finished || !errors.As(err, &stalled) || !errors.Is(err, harness.ErrSessionStalled) {
+		t.Fatalf("checkNoProgressLimit() = (%t, %v), want typed stalled-session error", finished, err)
+	}
+	if stalled.Limit != harness.NoProgressLimit || stalled.StateSummary != "unavailable: session state read failed" {
+		t.Fatalf("stalled error = %#v, want no-progress limit and tolerant state summary", stalled)
 	}
 }
 
-func TestPTYStallWindowDefaultIsShorterThanIdleTimeout(t *testing.T) {
-	_, stallWindow, idleTimeout := New(t.TempDir()).sessionTiming()
-	if stallWindow <= 0 || stallWindow >= idleTimeout {
-		t.Fatalf("session timing = (stall %s, idle %s), want a positive shorter stall window", stallWindow, idleTimeout)
+func TestPTYSessionLimitDefaults(t *testing.T) {
+	_, stallWindow, noProgressLimit := New(t.TempDir()).sessionTiming()
+	if stallWindow != 3*time.Minute {
+		t.Fatalf("stall window = %s, want 3m0s", stallWindow)
+	}
+	if noProgressLimit != 15*time.Minute {
+		t.Fatalf("no-progress limit = %s, want 15m0s", noProgressLimit)
 	}
 }
 
@@ -1376,7 +1880,7 @@ func TestTranscriptMonitorAddsTolerantSummaryToTranscriptReadErrors(t *testing.T
 		{
 			name: "idle check",
 			check: func(monitor *transcriptMonitor) error {
-				_, err := monitor.checkIdleTimeout()
+				_, err := monitor.checkNoProgressLimit()
 				return err
 			},
 		},
@@ -1428,7 +1932,7 @@ func TestDescribeSessionFailureIncludesReadableTailWhenSummaryReadFails(t *testi
 	}
 }
 
-func TestPTYIdleTimeoutReportsBoundedReadableTerminalTail(t *testing.T) {
+func TestPTYNoProgressLimitReportsBoundedReadableTerminalTail(t *testing.T) {
 	for _, tt := range []struct {
 		name   string
 		output string
@@ -1474,7 +1978,7 @@ trap 'exit 0' TERM
 while :; do sleep 0.05; done
 `, transcriptDir, transcriptDir, tt.output))
 			adapter := newPTYTestAdapter(command, root, home)
-			adapter.idleTimeout = time.Second
+			adapter.noProgressLimit = 3 * time.Second
 			stream, err := adapter.Run(context.Background(), harness.Request{
 				Model: "claude-sonnet-5", Prompt: "review", Effort: config.EffortMedium,
 			})
@@ -1531,7 +2035,7 @@ printf '%%s\n' '{"type":"assistant","message":{"role":"assistant","stop_reason":
 while :; do sleep 0.05; done
 `, path))
 	adapter := newPTYTestAdapter(command, root, home)
-	adapter.idleTimeout = 30 * time.Second
+	adapter.noProgressLimit = 30 * time.Second
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	started := time.Now()

@@ -35,6 +35,7 @@ func TestRunReviewExecutionKeepsPartialOutputWhenHarnessWaitFails(t *testing.T) 
 func TestRunReviewExecutionRecoversStalledSessionWithFinishedSubagentReports(t *testing.T) {
 	stall := &harness.SessionStalledError{
 		SessionID:    "review-session",
+		Limit:        harness.StallWindowLimit,
 		StateSummary: "Task notifications: 2 enqueued, 0 dequeued or removed\nSubagents: 2 total, 2 finished",
 		Reports: []harness.SubagentReport{
 			{Path: "/claude/session/subagents/agent-1.jsonl", Text: "Standards report: no findings."},
@@ -88,10 +89,10 @@ func TestRunReviewExecutionRecoversStalledSessionWithFinishedSubagentReports(t *
 
 func TestRunReviewExecutionFailsWhenStalledRecoveryAlsoStalls(t *testing.T) {
 	firstStall := &harness.SessionStalledError{
-		SessionID: "review-session", StateSummary: "first session summary",
+		SessionID: "review-session", Limit: harness.StallWindowLimit, StateSummary: "first session summary",
 	}
 	secondStall := &harness.SessionStalledError{
-		SessionID: "review-session", StateSummary: "second session summary",
+		SessionID: "review-session", Limit: harness.NoProgressLimit, StateSummary: "second session summary",
 	}
 	adapter := &scriptedConversationAdapter{
 		runs: [][]harness.Event{{
@@ -107,8 +108,8 @@ func TestRunReviewExecutionFailsWhenStalledRecoveryAlsoStalls(t *testing.T) {
 	}
 
 	review, err := RunReviewExecution(context.Background(), adapter, harness.Request{}, io.Discard, QuietHarnessOutput, nil)
-	if err == nil || !strings.Contains(err.Error(), "second session summary") {
-		t.Fatalf("RunReviewExecution() error = %v, want second stalled-session summary", err)
+	if err == nil || !strings.Contains(err.Error(), "no-progress limit") || !strings.Contains(err.Error(), "second session summary") {
+		t.Fatalf("RunReviewExecution() error = %v, want second no-progress limit and session summary", err)
 	}
 	if len(adapter.resumeCalls) != 1 {
 		t.Fatalf("resume calls = %d, want exactly one recovery attempt", len(adapter.resumeCalls))
@@ -123,12 +124,54 @@ func TestRunReviewExecutionFailsWhenStalledRecoveryAlsoStalls(t *testing.T) {
 	}
 }
 
+func TestRunReviewExecutionResumesAfterNoProgressLimit(t *testing.T) {
+	stall := &harness.SessionStalledError{
+		SessionID:    "review-session",
+		Limit:        harness.NoProgressLimit,
+		StateSummary: "Unanswered api-request age: 15m0s",
+		Reports: []harness.SubagentReport{{
+			Path: "/claude/session/subagents/agent-standards.jsonl",
+			Text: "Finished report: no standards findings.",
+		}},
+	}
+	adapter := &scriptedConversationAdapter{
+		runs: [][]harness.Event{{
+			{Type: harness.EventSession, SessionID: "review-session"},
+			{Type: harness.EventAssistantText, Text: "Partial reviewer response."},
+		}},
+		resumes: [][]harness.Event{{
+			{Type: harness.EventSession, SessionID: "review-session"},
+			{Type: harness.EventAssistantText, Text: conversationTestVerdict},
+		}},
+		runWaitErrors: []error{stall},
+	}
+
+	review, err := RunReviewExecution(context.Background(), adapter, harness.Request{}, io.Discard, QuietHarnessOutput, nil)
+	if err != nil {
+		t.Fatalf("RunReviewExecution() error = %v", err)
+	}
+	if review.Verdict.Status != verdict.Approve || len(adapter.resumeCalls) != 1 {
+		t.Fatalf("review = %#v, resume calls = %d; want recovered approve verdict after one resume", review, len(adapter.resumeCalls))
+	}
+	for _, want := range []string{
+		"no-progress limit",
+		"existing session transcript",
+		"merge the finished subagent reports",
+		"Finished report: no standards findings.",
+		"mandatory verdict block",
+	} {
+		if !strings.Contains(adapter.resumeCalls[0].prompt, want) {
+			t.Errorf("recovery prompt = %q, want %q", adapter.resumeCalls[0].prompt, want)
+		}
+	}
+}
+
 func TestRunReviewExecutionUsesReportPathsWhenRecoveryReportsAreTooLarge(t *testing.T) {
 	prompt := stalledReviewRecoveryPrompt([]harness.SubagentReport{{
 		Path:     "/claude/session/subagents/agent-large.jsonl",
 		Text:     "must not be embedded",
 		TooLarge: true,
-	}})
+	}}, harness.StallWindowLimit)
 	if !strings.Contains(prompt, "/claude/session/subagents/agent-large.jsonl") {
 		t.Fatalf("recovery prompt = %q, want report path", prompt)
 	}
@@ -246,6 +289,66 @@ func TestRunReviewExecutionFailsAfterOneUnparseableVerdictReask(t *testing.T) {
 	}
 	if !strings.Contains(review.Transcript, "Still no structured verdict.") {
 		t.Fatalf("transcript = %q, want the full failed review transcript", review.Transcript)
+	}
+}
+
+func TestRunReviewExecutionRecoversWhenVerdictReaskStalls(t *testing.T) {
+	stall := &harness.SessionStalledError{
+		SessionID:    "review-session",
+		Limit:        harness.NoProgressLimit,
+		StateSummary: "Unanswered api-request age: 15m0s",
+		Reports: []harness.SubagentReport{{
+			Path: "/claude/session/subagents/agent-standards.jsonl",
+			Text: "Finished report not included in the verdict re-ask.",
+		}},
+	}
+	adapter := &scriptedConversationAdapter{
+		runs: [][]harness.Event{{
+			{Type: harness.EventSession, SessionID: "review-session"},
+			{Type: harness.EventAssistantText, Text: "The review is complete, but the verdict is missing."},
+		}},
+		resumes: [][]harness.Event{{
+			{Type: harness.EventSession, SessionID: "review-session"},
+			{Type: harness.EventAssistantText, Text: "The verdict re-ask stalled."},
+		}, {
+			{Type: harness.EventSession, SessionID: "review-session"},
+			{Type: harness.EventAssistantText, Text: conversationTestVerdict},
+		}},
+		resumeWaitErrors: []error{stall, nil},
+	}
+
+	review, err := RunReviewExecution(context.Background(), adapter, harness.Request{}, io.Discard, QuietHarnessOutput, nil)
+	if err != nil {
+		t.Fatalf("RunReviewExecution() error = %v, want recovery after stalled verdict re-ask", err)
+	}
+	if review.Verdict.Status != verdict.Approve {
+		t.Fatalf("verdict = %#v, want approve after recovery", review.Verdict)
+	}
+	if len(adapter.resumeCalls) != 2 {
+		t.Fatalf("resume calls = %d, want verdict re-ask and one recovery", len(adapter.resumeCalls))
+	}
+	for _, call := range adapter.resumeCalls {
+		if call.sessionID != "review-session" {
+			t.Errorf("resume session = %q, want stalled review session", call.sessionID)
+		}
+	}
+	if adapter.resumeCalls[0].prompt != "emit the verdict block" {
+		t.Errorf("first resume prompt = %q, want verdict re-ask", adapter.resumeCalls[0].prompt)
+	}
+	for _, want := range []string{
+		"no-progress limit",
+		"existing session transcript",
+		"Finished report not included in the verdict re-ask.",
+		"mandatory verdict block",
+	} {
+		if !strings.Contains(adapter.resumeCalls[1].prompt, want) {
+			t.Errorf("recovery prompt = %q, want %q", adapter.resumeCalls[1].prompt, want)
+		}
+	}
+	for _, want := range []string{"The review is complete, but the verdict is missing.", "The verdict re-ask stalled.", conversationTestVerdict} {
+		if !strings.Contains(review.Transcript, want) {
+			t.Errorf("transcript = %q, want %q", review.Transcript, want)
+		}
 	}
 }
 
