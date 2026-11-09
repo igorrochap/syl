@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v1.39.4 (2026-11-09)
+
+### Bug Fixes
+
+- **harness**: Replace idle timeout with no-progress limit
+  ([#252](https://github.com/igorrochap/syl/pull/252),
+  [`2b571d6`](https://github.com/igorrochap/syl/commit/2b571d68cde97d9a39cc1dcf45e47c55563df0e7))
+
+
 ## v1.39.3 (2026-11-06)
 
 ### Bug Fixes
