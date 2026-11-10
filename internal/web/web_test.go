@@ -66,6 +66,44 @@ func TestHandlerProtectsConfigSaveWithTokenAndOrigin(t *testing.T) {
 	}
 }
 
+func TestConfigEditorShowsAndSavesPublishLanguage(t *testing.T) {
+	sylHome := t.TempDir()
+	project := t.TempDir()
+	if _, err := config.Init(project); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := config.Load(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded.Publish.Language = "pt_br"
+	if _, err := config.Write(project, loaded, config.OverwriteExisting); err != nil {
+		t.Fatal(err)
+	}
+	writeWebRegistry(t, sylHome, sylhome.RegisteredProject{Path: project})
+	server, err := newServer(t, sylHome)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	page := serveProject(t, server.Handler(), project, "/projects/config")
+	if !strings.Contains(page, `name="publish.language" value="pt_br"`) {
+		t.Fatalf("config page is missing the publish language value: %q", page)
+	}
+	form := configForm(t, project, tokenFromPage(t, page))
+	response := postMutation(t, server.Handler(), configSaveRoute(project), form, "http://localhost:7777")
+	if response.Code != http.StatusSeeOther {
+		t.Fatalf("config save status = %d, want redirect; body = %q", response.Code, response.Body.String())
+	}
+	after, err := config.Load(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Publish.Language != "pt_br" {
+		t.Fatalf("saved publish language = %q, want pt_br", after.Publish.Language)
+	}
+}
+
 func TestConfigSaveKeepsSandboxWhenOlderFormOmitsIt(t *testing.T) {
 	sylHome := t.TempDir()
 	project := t.TempDir()
@@ -927,6 +965,7 @@ func configForm(t *testing.T, projectPath, token string) url.Values {
 	form.Set("version", snapshot.Version)
 	form.Set("tracker.issues", snapshot.Values.TrackerIssues)
 	form.Set("tracker.reviews", snapshot.Values.TrackerReviews)
+	form.Set("publish.language", snapshot.Values.PublishLanguage)
 	setRoleForm(form, "plan", snapshot.Values.Plan)
 	setRoleForm(form, "implement", snapshot.Values.Implement)
 	setRoleForm(form, "review", snapshot.Values.Review)

@@ -305,6 +305,67 @@ enabled = false
 	}
 }
 
+func TestLoadPublishLanguage(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		language string
+		want     string
+	}{
+		{name: "omitted"},
+		{name: "configured", language: "pt_br", want: "pt_br"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			contents := configWithRoleValue("plan", "model", "claude-planner")
+			if test.language != "" {
+				contents += "\n[publish]\nlanguage = " + fmt.Sprintf("%q", test.language) + "\n"
+			}
+			writeConfig(t, root, contents)
+
+			got, err := Load(root)
+			if err != nil {
+				t.Fatalf("Load() error = %v", err)
+			}
+			if got.Publish.Language != test.want {
+				t.Fatalf("Publish.Language = %q, want %q", got.Publish.Language, test.want)
+			}
+		})
+	}
+}
+
+func TestLoadRejectsEmptyPublishLanguage(t *testing.T) {
+	for _, value := range []string{"", "  \t"} {
+		t.Run(fmt.Sprintf("%q", value), func(t *testing.T) {
+			root := t.TempDir()
+			contents := configWithRoleValue("plan", "model", "claude-planner") +
+				"\n[publish]\nlanguage = " + fmt.Sprintf("%q", value) + "\n"
+			writeConfig(t, root, contents)
+
+			_, err := Load(root)
+			var fieldError FieldError
+			if !errors.As(err, &fieldError) || fieldError.Field != "publish.language" {
+				t.Fatalf("Load() error = %#v, want FieldError for publish.language", err)
+			}
+		})
+	}
+}
+
+func TestInitRendersCommentedPublishLanguageExample(t *testing.T) {
+	root := t.TempDir()
+	if _, err := Init(root); err != nil {
+		t.Fatal(err)
+	}
+	contents, err := os.ReadFile(Path(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{"[publish]", "# language = \"pt_br\"", "commitgen's configured default"} {
+		if !strings.Contains(string(contents), expected) {
+			t.Errorf("generated config is missing %q: %s", expected, contents)
+		}
+	}
+}
+
 func TestLoadHonorsExplicitMCPDisableForNonReviewRole(t *testing.T) {
 	root := t.TempDir()
 	contents := strings.Replace(configWithRoleValue("plan", "model", "claude-planner"),

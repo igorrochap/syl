@@ -96,9 +96,9 @@ func commitApprovedImplementation(
 		return "", err
 	}
 
-	_, commandErr := options.Commitgen.Run(ctx, options.WorkRoot,
-		"--agent", "--context", fmt.Sprintf("Ticket #%d: %s", options.Ticket.Number, options.Ticket.Title),
-	)
+	args := []string{"--agent", "--context", fmt.Sprintf("Ticket #%d: %s", options.Ticket.Number, options.Ticket.Title)}
+	args = commitgenLanguageArguments(args, options.ProjectConfig.Publish.Language)
+	_, commandErr := options.Commitgen.Run(ctx, options.WorkRoot, args...)
 	completeCommit, headMoved, verifyErr := commitgenCreatedOneCompleteCommit(ctx, setup.git, snapshot.head, snapshot.tree)
 	if commandErr == nil && verifyErr == nil && completeCommit {
 		return "", nil
@@ -136,7 +136,7 @@ func snapshotStagedPublication(ctx context.Context, git GitRunner) (stagedPublic
 func commitgenFallbackNotice(commandErr, verifyErr error, headMoved bool) string {
 	switch {
 	case commandErr != nil:
-		return "commitgen failed; used fallback commit message"
+		return fmt.Sprintf("commitgen failed; used fallback commit message: %v", commandErr)
 	case verifyErr != nil:
 		return "commitgen commit could not be verified; used fallback commit message"
 	case headMoved:
@@ -224,9 +224,11 @@ func commitgenPullRequest(
 		base = strings.TrimSpace(base)
 	}
 
-	output, err := options.Commitgen.Run(ctx, options.WorkRoot, "pr", "--agent", "--base", base, "--head", setup.branch)
+	args := []string{"pr", "--agent", "--base", base, "--head", setup.branch}
+	args = commitgenLanguageArguments(args, options.ProjectConfig.Publish.Language)
+	output, err := options.Commitgen.Run(ctx, options.WorkRoot, args...)
 	if err != nil {
-		return pullRequestWithBase(fallback, base), "commitgen pr failed; used fallback pull request text"
+		return pullRequestWithBase(fallback, base), fmt.Sprintf("commitgen pr failed; used fallback pull request text: %v", err)
 	}
 	title, description, ok := parseCommitgenPullRequest(output)
 	if !ok {
@@ -240,6 +242,14 @@ func commitgenPullRequest(
 		Head:  setup.branch,
 		Base:  base,
 	}, ""
+}
+
+func commitgenLanguageArguments(args []string, language string) []string {
+	language = strings.TrimSpace(language)
+	if language == "" {
+		return args
+	}
+	return append(args, "--language", language)
 }
 
 func pullRequestWithBase(request tracker.PullRequest, base string) tracker.PullRequest {

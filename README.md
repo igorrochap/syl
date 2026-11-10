@@ -248,6 +248,11 @@ max_iterations = 3
 [notifications]
 enabled = true
 
+[publish]
+# Language for generated commit messages and pull request text.
+# Omit this setting to use commitgen's configured default.
+# language = "pt_br"
+
 [worktree]
 root = "~/.syl/worktrees"
 # A shell command used to provision dependencies in a fresh worktree.
@@ -446,6 +451,7 @@ then submit it with an empty line or end-of-file (Ctrl-D).
 | `roles.<role>.mcp` | `true`, `false` | Whether Claude sessions inherit user/project MCP configuration. Defaults to `true` for plan and implement, `false` for review. Codex ignores it. |
 | `loop.max_iterations` | integer | Cap on implement/review iterations for `syl implement`. |
 | `notifications.enabled` | `true`, `false` | Send a desktop or terminal-bell notification on completion or on a `QUESTION`. |
+| `publish.language` | non-empty string | Language passed to commitgen for generated commit messages and pull request text. Omit it to use commitgen's configured default; unsupported values trigger the English fallback text. |
 | `worktree.root` | path | Central root for implementation worktrees. Defaults to `~/.syl/worktrees`. |
 | `worktree.setup` | shell command string | Run after a fresh `--worktree` checkout is provisioned, with that worktree as cwd, to regenerate its dependencies. Omitted or empty means no setup step. |
 | `worktree.copy` | list of paths | Copy these additional paths from the origin checkout into a fresh `--worktree` checkout. Use for ignored, non-reproducible artifacts; untracked-and-unignored copies are refused. Do not use for derivable dependency directories such as `node_modules`, `vendor`, or `.venv`. |

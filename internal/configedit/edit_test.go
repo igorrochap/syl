@@ -39,6 +39,7 @@ func TestLoadAndSaveRoundTripsConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	snapshot.Values.MaxIterations = 8
+	snapshot.Values.PublishLanguage = "pt_br"
 	snapshot.Values.WorktreeCopy = []string{".env", ".env.local"}
 
 	if err := configedit.Save(project, snapshot.Version, snapshot.Values); err != nil {
@@ -48,7 +49,7 @@ func TestLoadAndSaveRoundTripsConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if loaded.Loop.MaxIterations != 8 || !reflect.DeepEqual(loaded.Worktree.Copy, snapshot.Values.WorktreeCopy) {
+	if loaded.Loop.MaxIterations != 8 || loaded.Publish.Language != "pt_br" || !reflect.DeepEqual(loaded.Worktree.Copy, snapshot.Values.WorktreeCopy) {
 		t.Fatalf("loaded config = %#v, want edited values", loaded)
 	}
 	updated, err := configedit.Load(project)
@@ -57,6 +58,21 @@ func TestLoadAndSaveRoundTripsConfig(t *testing.T) {
 	}
 	if updated.Version == snapshot.Version {
 		t.Fatal("saved config kept the old version")
+	}
+}
+
+func TestValidateRejectsWhitespacePublishLanguage(t *testing.T) {
+	values := sandboxDefaults()
+	values.PublishLanguage = " \t"
+	if got := configedit.Validate(values)["publish.language"]; got != "publish.language: must not be empty" {
+		t.Fatalf("Validate() publish.language error = %q, want empty-language error", got)
+	}
+
+	form := formFromValues(sandboxDefaults())
+	form.Set("publish.language", " \t")
+	_, fieldErrors := configedit.Parse(form, sandboxDefaults())
+	if got := fieldErrors["publish.language"]; got != "publish.language: must not be empty" {
+		t.Fatalf("Parse() publish.language error = %q, want empty-language error", got)
 	}
 }
 
@@ -337,6 +353,7 @@ func formFromValues(values configedit.Values) url.Values {
 	form := url.Values{
 		"tracker.issues":      {values.TrackerIssues},
 		"tracker.reviews":     {values.TrackerReviews},
+		"publish.language":    {values.PublishLanguage},
 		"loop.max_iterations": {strconv.Itoa(values.MaxIterations)},
 		"worktree.root":       {values.WorktreeRoot},
 		"worktree.setup":      {values.WorktreeSetup},
