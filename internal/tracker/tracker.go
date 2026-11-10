@@ -50,3 +50,9 @@ type PullRequest struct {
 type PullRequestCreator interface {
 	CreatePullRequest(ctx context.Context, request PullRequest) (string, error)
 }
+
+// PullRequestBaseResolver resolves the forge default branch used when a Run
+// starts from a detached or raw revision.
+type PullRequestBaseResolver interface {
+	DefaultPullRequestBase(ctx context.Context) (string, error)
+}

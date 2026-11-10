@@ -15,7 +15,7 @@ not permitted.
 | Layer | Package | May import |
 | --- | --- | --- |
 | Composition | `cmd/syl` | every package under `internal/`, plus `scripts` and `skills` |
-| Command | `internal/cli` | `internal/adapters/git`, `internal/adapters/notify`, `internal/config`, `internal/harness`, `internal/initializer`, `internal/orchestration`, `internal/pageview`, `internal/readmodel`, `internal/runrecord`, `internal/sylhome`, `internal/tracker`, `internal/ui`, `internal/updater`, `internal/usage`, `internal/version`, `internal/web` |
+| Command | `internal/cli` | `internal/adapters/commitgen`, `internal/adapters/git`, `internal/adapters/notify`, `internal/config`, `internal/harness`, `internal/initializer`, `internal/orchestration`, `internal/pageview`, `internal/readmodel`, `internal/runrecord`, `internal/sylhome`, `internal/tracker`, `internal/ui`, `internal/updater`, `internal/usage`, `internal/version`, `internal/web` |
 | Application | `internal/orchestration` | `internal/config`, `internal/harness`, `internal/runrecord`, `internal/sylhome`, `internal/tracker`, `internal/ui`, `internal/usage`, `internal/verdict` |
 | Application support | `internal/initializer` | `internal/config`, `internal/tui`, `internal/ui`, `scripts`, `skills` |
 | Application support | `internal/updater` | `scripts` |
@@ -28,7 +28,7 @@ not permitted.
 | Support | `internal/config`, `internal/sylhome` | `internal/atomicfile` |
 | Support | `internal/runrecord` | `internal/atomicfile`, `internal/verdict` |
 | Support with no project-package edges | `internal/atomicfile` | none |
-| Support with no project-package edges | `internal/adapters/git`, `internal/adapters/notify`, `internal/harness/claude/transcript`, `internal/tracker`, `internal/tui`, `internal/verdict`, `internal/version`, `scripts`, `skills` | none |
+| Support with no project-package edges | `internal/adapters/commitgen`, `internal/adapters/git`, `internal/adapters/notify`, `internal/harness/claude/transcript`, `internal/tracker`, `internal/tui`, `internal/verdict`, `internal/version`, `scripts`, `skills` | none |
 | Support with no project-package edges | `internal/ui` | none |
 | Application support | `internal/readmodel` | `internal/config`, `internal/runrecord`, `internal/sylhome`, `internal/usage`, `internal/verdict` |
 | Application support | `internal/configedit` | `internal/config` |
@@ -46,6 +46,8 @@ call exceptions:
 - `internal/cli` imports `internal/adapters/git` and
   `internal/adapters/notify` because the in-process CLI owns the defaults for
   those collaborators while still allowing callers to inject replacements.
+- `cmd/syl` supplies the commitgen process adapter through the orchestration
+  port, so optional command execution stays outside the application layer.
 - `internal/cli` imports `internal/readmodel` because the foreground `ui`
   command prints a startup snapshot before the web server begins serving.
 - `internal/initializer` and `internal/updater` import `scripts` and
