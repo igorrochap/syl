@@ -97,6 +97,9 @@ func TestGitHubCreateAppliesTodoLabelAndReturnsCreatedIssue(t *testing.T) {
 
 func TestGitHubCreatePullRequestOpensDraftWithHeadAndOptionalBase(t *testing.T) {
 	runner := &scriptedGitHubRunner{responses: map[string]githubResponse{
+		"pr list --head feat/ship-it --state open --json url --limit 1": {
+			output: "[]",
+		},
 		"pr create --draft --title Ship it --body Closes #7 --head feat/ship-it --base main": {
 			output: "https://github.com/example/project/pull/23\n",
 		},
@@ -120,8 +123,34 @@ func TestGitHubCreatePullRequestOpensDraftWithHeadAndOptionalBase(t *testing.T) 
 	}
 }
 
+func TestGitHubCreatePullRequestReturnsExistingPullRequest(t *testing.T) {
+	const existingURL = "https://github.com/example/project/pull/23"
+	runner := &scriptedGitHubRunner{responses: map[string]githubResponse{
+		"pr list --head feat/ship-it --state open --json url --limit 1": {
+			output: `[{"url":"` + existingURL + `"}]`,
+		},
+	}}
+	githubTracker, err := NewGitHub(runner)
+	if err != nil {
+		t.Fatalf("NewGitHub() error = %v", err)
+	}
+
+	url, err := githubTracker.CreatePullRequest(context.Background(), PullRequest{
+		Title: "Ship it", Body: "Closes #7", Head: "feat/ship-it", Base: "main",
+	})
+	if err != nil || url != existingURL {
+		t.Fatalf("CreatePullRequest() = (%q, %v), want existing URL and no error", url, err)
+	}
+	if runner.hasCall("pr create --draft --title Ship it --body Closes #7 --head feat/ship-it --base main") {
+		t.Fatalf("gh calls = %#v, want existing pull request to skip creation", runner.calls)
+	}
+}
+
 func TestGitHubCreatePullRequestOmitsBaseWhenUnspecified(t *testing.T) {
 	runner := &scriptedGitHubRunner{responses: map[string]githubResponse{
+		"pr list --head feat/ship-it --state open --json url --limit 1": {
+			output: "[]",
+		},
 		"pr create --draft --title Ship it --body Closes #7 --head feat/ship-it": {
 			output: "https://github.com/example/project/pull/23\n",
 		},

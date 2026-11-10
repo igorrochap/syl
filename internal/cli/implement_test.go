@@ -2128,6 +2128,8 @@ func (r *loopGHRunner) Run(_ context.Context, args ...string) (string, error) {
 		return "https://github.com/example/project/pull/23\n", nil
 	}
 	switch call {
+	case "pr list --head feat/add-resilient-workflow --state open --json url --limit 1":
+		return "[]", nil
 	case "label list --limit 100 --json name":
 		return `[{"name":"todo"},{"name":"doing"}]`, nil
 	case "issue view 42 --json number,title,body,state,labels":

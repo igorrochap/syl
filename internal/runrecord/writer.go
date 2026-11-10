@@ -34,6 +34,7 @@ type SummaryInput struct {
 	DiffStat       string
 	WorktreePath   string
 	PullRequestURL string
+	Publication    Publication
 }
 
 type sessionKey struct {
@@ -279,8 +280,24 @@ func FormatSummary(summary SummaryInput) string {
 			summary.WorktreePath, summary.WorktreePath,
 		)
 	}
-	if summary.PullRequestURL != "" {
-		fmt.Fprintf(&builder, "Pull request: %s\n", summary.PullRequestURL)
+	if summary.Publication.Status != "" {
+		fmt.Fprintf(&builder, "Publication: %s\n", summary.Publication.Status)
+		if summary.Publication.Step != "" {
+			fmt.Fprintf(&builder, "Publication step: %s\n", summary.Publication.Step)
+		}
+		if summary.Publication.Error != "" {
+			builder.WriteString("Publication error:\n")
+			for _, line := range strings.Split(strings.ReplaceAll(summary.Publication.Error, "\r\n", "\n"), "\n") {
+				fmt.Fprintf(&builder, "  %s\n", line)
+			}
+		}
+	}
+	pullRequestURL := summary.Publication.URL
+	if pullRequestURL == "" {
+		pullRequestURL = summary.PullRequestURL
+	}
+	if pullRequestURL != "" {
+		fmt.Fprintf(&builder, "Pull request: %s\n", pullRequestURL)
 	}
 	fmt.Fprintf(&builder, "Diff stat:\n%s\n", strings.TrimRight(summary.DiffStat, " \t\r\n"))
 	return builder.String()

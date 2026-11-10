@@ -111,6 +111,36 @@ func TestWriterRoundTripsRunRecord(t *testing.T) {
 	}
 }
 
+func TestWriterAndReaderRoundTripPublicationOutcomes(t *testing.T) {
+	tests := []struct {
+		name        string
+		publication Publication
+	}{
+		{name: "not requested", publication: Publication{Status: PublicationNotRequested}},
+		{name: "skipped", publication: Publication{Status: PublicationSkipped}},
+		{name: "published", publication: Publication{Status: PublicationPublished, URL: "https://github.com/example/project/pull/23"}},
+		{name: "failed", publication: Publication{
+			Status: PublicationFailed, Step: PublicationStepPush, Error: "push failed\npermission denied",
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			writer := NewWriter(t.TempDir())
+			if err := writer.WriteSummary(SummaryInput{Publication: test.publication}); err != nil {
+				t.Fatalf("WriteSummary() error = %v", err)
+			}
+
+			got, err := NewReader(nil).ReadSummary(writer.Directory())
+			if err != nil {
+				t.Fatalf("ReadSummary() error = %v", err)
+			}
+			if !reflect.DeepEqual(got.Publication, test.publication) {
+				t.Fatalf("ReadSummary().Publication = %#v, want %#v", got.Publication, test.publication)
+			}
+		})
+	}
+}
+
 func TestWriteFailureUsesRoleArtifactNameAndIsRecognized(t *testing.T) {
 	directory := t.TempDir()
 	writer := NewWriter(directory)
