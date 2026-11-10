@@ -2175,6 +2175,7 @@ func newImplementLoopFixture(t *testing.T) *implementLoopFixture {
 		t.Fatal(err)
 	}
 	commitWorkingTree(t, base.root, "fixture")
+	gitOutput(t, base.root, "branch", "-M", "main")
 	harnesses := map[string]harness.Adapter{
 		"claude":   nil,
 		"codex":    nil,
