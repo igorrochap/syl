@@ -182,6 +182,13 @@ func (g *GitHub) CreatePullRequest(ctx context.Context, request PullRequest) (st
 	if head == "" {
 		return "", errors.New("cannot create a GitHub pull request without a head branch")
 	}
+	existingURL, err := g.findExistingPullRequestURL(ctx, head)
+	if err != nil {
+		return "", err
+	}
+	if existingURL != "" {
+		return existingURL, nil
+	}
 
 	args := []string{"pr", "create", "--draft", "--title", title, "--body", request.Body, "--head", head}
 	if base := strings.TrimSpace(request.Base); base != "" {
@@ -194,6 +201,27 @@ func (g *GitHub) CreatePullRequest(ctx context.Context, request PullRequest) (st
 	url := strings.TrimSpace(output)
 	if url == "" {
 		return "", errors.New("gh pr create returned an empty pull request URL")
+	}
+	return url, nil
+}
+
+func (g *GitHub) findExistingPullRequestURL(ctx context.Context, head string) (string, error) {
+	output, err := g.run(ctx, "find existing pull request", "pr", "list", "--head", head, "--state", "open", "--json", "url", "--limit", "1")
+	if err != nil {
+		return "", err
+	}
+	var pullRequests []struct {
+		URL string `json:"url"`
+	}
+	if err := json.Unmarshal([]byte(output), &pullRequests); err != nil {
+		return "", fmt.Errorf("decode existing GitHub pull request list: %w", err)
+	}
+	if len(pullRequests) == 0 {
+		return "", nil
+	}
+	url := strings.TrimSpace(pullRequests[0].URL)
+	if url == "" {
+		return "", errors.New("existing GitHub pull request has no URL")
 	}
 	return url, nil
 }

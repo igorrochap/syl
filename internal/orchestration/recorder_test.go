@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	gitadapter "github.com/igorrochap/syl/internal/adapters/git"
 	"github.com/igorrochap/syl/internal/config"
 	"github.com/igorrochap/syl/internal/harness"
 	"github.com/igorrochap/syl/internal/runrecord"
@@ -929,6 +930,10 @@ func TestRunImplementPublishesApprovedDiffAndSkipsEmptyDiff(t *testing.T) {
 				t.Fatal("RunSpec.PublishOnApprove = false, want true")
 			}
 			if test.changed {
+				publication := runrecord.ParseSummary([]byte(recorder.files[artifactFilename(summaryArtifact, 0)])).Publication
+				if publication.Status != runrecord.PublicationPublished || publication.URL != "https://github.com/example/project/pull/23" {
+					t.Fatalf("recorded publication = %#v, want published with pull request URL", publication)
+				}
 				if publisher.request == nil || publisher.request.Head != "feat/add-resilient-workflow" || publisher.request.Base != "main" {
 					t.Fatalf("pull request = %#v, want branch head and start branch base", publisher.request)
 				}
@@ -945,6 +950,10 @@ func TestRunImplementPublishesApprovedDiffAndSkipsEmptyDiff(t *testing.T) {
 					t.Fatalf("notifications = %v, want pull request URL", notifier.messages)
 				}
 			} else {
+				publication := runrecord.ParseSummary([]byte(recorder.files[artifactFilename(summaryArtifact, 0)])).Publication
+				if publication.Status != runrecord.PublicationSkipped {
+					t.Fatalf("recorded publication = %#v, want skipped", publication)
+				}
 				if publisher.request != nil {
 					t.Fatalf("pull request = %#v, want none for an empty diff", publisher.request)
 				}
@@ -964,15 +973,240 @@ func TestRunImplementPublishesApprovedDiffAndSkipsEmptyDiff(t *testing.T) {
 	}
 }
 
+func TestRunImplementRecordsPublicationNotRequested(t *testing.T) {
+	git := &publishingTestGit{branchPoint: "branch-point", changed: true}
+	recorder := newMemoryRunRecorder()
+	options := approvedPublicationOptions(t, git, &recordingPullRequestTracker{}, recorder, io.Discard)
+	options.PublishOnApprove = false
+	if err := RunImplement(context.Background(), options); err != nil {
+		t.Fatalf("RunImplement() error = %v", err)
+	}
+	publication := runrecord.ParseSummary([]byte(recorder.files[artifactFilename(summaryArtifact, 0)])).Publication
+	if publication.Status != runrecord.PublicationNotRequested {
+		t.Fatalf("recorded publication = %#v, want not requested", publication)
+	}
+	if slices.Contains(git.calls, "add -A") || slices.Contains(git.calls, "push -u origin feat/add-resilient-workflow") {
+		t.Fatalf("git calls = %v, want no publication steps", git.calls)
+	}
+}
+
+func TestRunImplementTreatsExistingPullRequestAsPublished(t *testing.T) {
+	const existingURL = "https://github.com/example/project/pull/23"
+	ghRunner := &existingPullRequestGitHubRunner{output: `[{"url":"` + existingURL + `"}]`}
+	githubTracker, err := tracker.NewGitHub(ghRunner)
+	if err != nil {
+		t.Fatalf("NewGitHub() error = %v", err)
+	}
+	git := &publishingTestGit{branchPoint: "branch-point", changed: true}
+	recorder := newMemoryRunRecorder()
+	var output strings.Builder
+	options := approvedPublicationOptions(t, git, &existingPullRequestTracker{creator: githubTracker}, recorder, &output)
+	if err := RunImplement(context.Background(), options); err != nil {
+		t.Fatalf("RunImplement() error = %v, want existing pull request to count as success", err)
+	}
+	if !strings.Contains(output.String(), existingURL) {
+		t.Fatalf("implement output = %q, want existing pull request URL", output.String())
+	}
+	publication := runrecord.ParseSummary([]byte(recorder.files[artifactFilename(summaryArtifact, 0)])).Publication
+	if publication.Status != runrecord.PublicationPublished || publication.URL != existingURL {
+		t.Fatalf("recorded publication = %#v, want published with existing URL", publication)
+	}
+	if len(ghRunner.calls) != 1 || ghRunner.calls[0] != "pr list --head feat/add-resilient-workflow --state open --json url --limit 1" {
+		t.Fatalf("gh calls = %v, want existing pull request lookup only", ghRunner.calls)
+	}
+}
+
+func TestRunImplementReportsCommitFailureAndRemainingCommands(t *testing.T) {
+	git := &publishingTestGit{
+		branchPoint: "branch-point", changed: true,
+		failCommand: "commit -m feat: Add resilient workflow (#42)", failure: errors.New("hook rejected commit"),
+	}
+	recorder := newMemoryRunRecorder()
+	var output strings.Builder
+	err := RunImplement(context.Background(), approvedPublicationOptions(t, git, &recordingPullRequestTracker{}, recorder, &output))
+	if err == nil || !strings.Contains(err.Error(), "publication failed during commit:") || !strings.Contains(err.Error(), "hook rejected commit") {
+		t.Fatalf("RunImplement() error = %v, want named commit failure", err)
+	}
+	for _, command := range []string{
+		"git add -A", "git commit -m 'feat: Add resilient workflow (#42)'",
+		"git push -u origin feat/add-resilient-workflow", "gh pr create --draft",
+	} {
+		if !strings.Contains(output.String(), command) {
+			t.Errorf("publication output = %q, want command %q", output.String(), command)
+		}
+	}
+	assertPublicationFailureRun(t, recorder, runrecord.PublicationStepCommit)
+}
+
+func TestRunImplementReportsPullRequestFailureCommandOnly(t *testing.T) {
+	git := &publishingTestGit{branchPoint: "branch-point", changed: true}
+	trackerFailure := &failingPullRequestTracker{err: errors.New("GitHub is unavailable")}
+	recorder := newMemoryRunRecorder()
+	var output strings.Builder
+	err := RunImplement(context.Background(), approvedPublicationOptions(t, git, trackerFailure, recorder, &output))
+	if err == nil || !strings.Contains(err.Error(), "publication failed during pull request:") || !strings.Contains(err.Error(), "GitHub is unavailable") {
+		t.Fatalf("RunImplement() error = %v, want named pull request failure", err)
+	}
+	for _, command := range []string{"gh pr create --draft", "--head feat/add-resilient-workflow", "--base main"} {
+		if !strings.Contains(output.String(), command) {
+			t.Errorf("publication output = %q, want pull request command fragment %q", output.String(), command)
+		}
+	}
+	if strings.Contains(output.String(), "git push -u origin") || strings.Contains(output.String(), "git commit -m") {
+		t.Fatalf("publication output = %q, want only the failed pull request command", output.String())
+	}
+	assertPublicationFailureRun(t, recorder, runrecord.PublicationStepPullRequest)
+}
+
+func TestRunImplementPushFailureKeepsApprovedCommitAndPrintsRemainingCommands(t *testing.T) {
+	root, branchPoint, git := newPublicationTestRepository(t)
+	implementation := &writingImplementAdapter{
+		capturingImplementAdapter: &capturingImplementAdapter{response: "Implemented the ticket."},
+		root:                      root,
+	}
+	var output strings.Builder
+	err := RunImplement(context.Background(), ImplementOptions{
+		OriginRoot: root, WorkRoot: root, OpenRun: NewDiskRunOpener(root, sylhome.Dir{}, io.Discard),
+		ProjectConfig: config.Config{
+			Tracker: config.TrackerConfig{Issues: config.TrackerGitHub},
+			Roles: config.RolesConfig{
+				Implement: config.RoleConfig{Harness: config.HarnessCodex},
+				Review:    config.RoleConfig{Harness: config.HarnessClaude},
+			},
+			Loop: config.LoopConfig{MaxIterations: 1},
+		},
+		IssueTracker: &recordingPullRequestTracker{},
+		Ticket:       tracker.Ticket{Number: 42, Title: "Add resilient workflow"},
+		Implementer:  implementation,
+		Reviewer:     &capturingImplementAdapter{response: "VERDICT: approve\nSUMMARY: Reviewed implementation.\nFINDINGS:\n"},
+		Git:          git, OriginGit: git, Input: strings.NewReader(""), Output: &output, PublishOnApprove: true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "publication failed during push:") {
+		t.Fatalf("RunImplement() error = %v, want push publication failure", err)
+	}
+	for _, want := range []string{"git push -u origin feat/add-resilient-workflow", "gh pr create --draft"} {
+		if !strings.Contains(output.String(), want) {
+			t.Errorf("publication output = %q, want %q", output.String(), want)
+		}
+	}
+	if strings.Contains(output.String(), "git commit -m") {
+		t.Fatalf("publication output = %q, want only push and pull request commands", output.String())
+	}
+
+	commits := gitOutput(t, git, "rev-list", "--count", branchPoint+"..HEAD")
+	if commits != "1" {
+		t.Fatalf("commits after branch point = %q, want 1; push failure must keep the commit", commits)
+	}
+	runDirs, err := runrecord.NewReader(nil).Directories(root)
+	if err != nil || len(runDirs) != 1 {
+		t.Fatalf("Run directories = %v, error = %v, want one recorded Run", runDirs, err)
+	}
+	state, err := runrecord.Read(runrecord.Path(runDirs[0]))
+	if err != nil || state.Status != runrecord.Approved {
+		t.Fatalf("Run state = %#v, error = %v, want approved after push failure", state, err)
+	}
+	summary, err := runrecord.NewReader(nil).ReadSummary(runDirs[0])
+	if err != nil || summary.Publication.Status != runrecord.PublicationFailed ||
+		summary.Publication.Step != runrecord.PublicationStepPush || !strings.Contains(summary.Publication.Error, "push implementation branch") {
+		t.Fatalf("recorded publication = %#v, error = %v, want push failure details", summary.Publication, err)
+	}
+}
+
+func newPublicationTestRepository(t *testing.T) (string, string, gitadapter.ExecGitRunner) {
+	t.Helper()
+	root := t.TempDir()
+	git := gitadapter.ExecGitRunner{Dir: root}
+	for _, args := range [][]string{
+		{"init"}, {"config", "user.email", "test@example.com"}, {"config", "user.name", "Syl Test"},
+	} {
+		if _, err := git.Run(context.Background(), args...); err != nil {
+			t.Fatalf("git %v: %v", args, err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(root, "base.txt"), []byte("base\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"add", "base.txt"}, {"commit", "-m", "base"}, {"branch", "-M", "main"}} {
+		if _, err := git.Run(context.Background(), args...); err != nil {
+			t.Fatalf("git %v: %v", args, err)
+		}
+	}
+	branchPoint := strings.TrimSpace(gitOutput(t, git, "rev-parse", "HEAD"))
+	return root, branchPoint, git
+}
+
+func gitOutput(t *testing.T, git GitRunner, args ...string) string {
+	t.Helper()
+	output, err := git.Run(context.Background(), args...)
+	if err != nil {
+		t.Fatalf("git %v: %v", args, err)
+	}
+	return strings.TrimSpace(output)
+}
+
+type writingImplementAdapter struct {
+	*capturingImplementAdapter
+	root string
+}
+
+func (adapter *writingImplementAdapter) Run(ctx context.Context, request harness.Request) (harness.Stream, error) {
+	if err := os.WriteFile(filepath.Join(adapter.root, "change.txt"), []byte("implementation\n"), 0o600); err != nil {
+		return nil, err
+	}
+	return adapter.capturingImplementAdapter.Run(ctx, request)
+}
+
+func approvedPublicationOptions(
+	t *testing.T,
+	git *publishingTestGit,
+	issueTracker tracker.Tracker,
+	recorder *memoryRunRecorder,
+	output io.Writer,
+) ImplementOptions {
+	t.Helper()
+	return ImplementOptions{
+		OriginRoot: t.TempDir(), WorkRoot: t.TempDir(),
+		OpenRun: func(RunSpec) (RunRecorder, error) { return recorder, nil },
+		ProjectConfig: config.Config{
+			Tracker: config.TrackerConfig{Issues: config.TrackerGitHub},
+			Roles: config.RolesConfig{
+				Implement: config.RoleConfig{Harness: config.HarnessCodex},
+				Review:    config.RoleConfig{Harness: config.HarnessClaude},
+			},
+			Loop: config.LoopConfig{MaxIterations: 1},
+		},
+		IssueTracker: issueTracker, Ticket: tracker.Ticket{Number: 42, Title: "Add resilient workflow"},
+		Implementer: &capturingImplementAdapter{response: "Implemented the ticket."},
+		Reviewer:    &capturingImplementAdapter{response: "VERDICT: approve\nSUMMARY: Reviewed implementation.\nFINDINGS:\n"},
+		Git:         git, OriginGit: git, Input: strings.NewReader(""), Output: output, PublishOnApprove: true,
+	}
+}
+
+func assertPublicationFailureRun(t *testing.T, recorder *memoryRunRecorder, step runrecord.PublicationStep) {
+	t.Helper()
+	if len(recorder.states) == 0 || recorder.states[len(recorder.states)-1].Status != runrecord.Approved {
+		t.Fatalf("final Run state = %#v, want approved after publication failure", recorder.states)
+	}
+	publication := runrecord.ParseSummary([]byte(recorder.files[artifactFilename(summaryArtifact, 0)])).Publication
+	if publication.Status != runrecord.PublicationFailed || publication.Step != step || publication.Error == "" {
+		t.Fatalf("recorded publication = %#v, want failed at %q with an error", publication, step)
+	}
+}
+
 type publishingTestGit struct {
 	branchPoint string
 	changed     bool
 	calls       []string
+	failCommand string
+	failure     error
 }
 
 func (g *publishingTestGit) Run(_ context.Context, args ...string) (string, error) {
 	command := strings.Join(args, " ")
 	g.calls = append(g.calls, command)
+	if command == g.failCommand {
+		return "", g.failure
+	}
 	switch command {
 	case "status --porcelain --untracked-files=all":
 		return "", nil
@@ -1011,6 +1245,38 @@ type recordingPullRequestTracker struct {
 func (tracker *recordingPullRequestTracker) CreatePullRequest(_ context.Context, request tracker.PullRequest) (string, error) {
 	tracker.request = &request
 	return "https://github.com/example/project/pull/23", nil
+}
+
+type failingPullRequestTracker struct {
+	branchSetupTracker
+	err error
+}
+
+func (publisher *failingPullRequestTracker) CreatePullRequest(context.Context, tracker.PullRequest) (string, error) {
+	return "", publisher.err
+}
+
+type existingPullRequestTracker struct {
+	branchSetupTracker
+	creator tracker.PullRequestCreator
+}
+
+func (publisher *existingPullRequestTracker) CreatePullRequest(ctx context.Context, request tracker.PullRequest) (string, error) {
+	return publisher.creator.CreatePullRequest(ctx, request)
+}
+
+type existingPullRequestGitHubRunner struct {
+	calls  []string
+	output string
+}
+
+func (runner *existingPullRequestGitHubRunner) Run(_ context.Context, args ...string) (string, error) {
+	command := strings.Join(args, " ")
+	runner.calls = append(runner.calls, command)
+	if command == "pr list --head feat/add-resilient-workflow --state open --json url --limit 1" {
+		return runner.output, nil
+	}
+	return "", fmt.Errorf("unexpected gh command %q", command)
 }
 
 type recordingImplementNotifier struct {

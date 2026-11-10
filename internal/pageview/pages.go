@@ -240,16 +240,20 @@ func buildProjectRun(run readmodel.HistoryRun, now time.Time) ProjectRun {
 
 // Run is the display-ready content for one Run page.
 type Run struct {
-	Chrome        PageChrome
-	Run           RunDetail
-	Metadata      RunMetadata
-	Summary       string
-	SummaryExists bool
-	DiffStat      string
-	DiffStatKnown bool
-	Iterations    []RunIteration
-	Usage         []RoleUsage
-	Resume        []string
+	Chrome            PageChrome
+	Run               RunDetail
+	Metadata          RunMetadata
+	Summary           string
+	SummaryExists     bool
+	PublicationStatus string
+	PublicationStep   string
+	PublicationError  string
+	PublicationURL    string
+	DiffStat          string
+	DiffStatKnown     bool
+	Iterations        []RunIteration
+	Usage             []RoleUsage
+	Resume            []string
 }
 
 // RunDetail contains display-ready values shown in the Run page header.
@@ -340,15 +344,19 @@ type RoleUsage struct {
 // BuildRun builds display-ready values for a Run page.
 func BuildRun(model readmodel.RunPage) Run {
 	page := Run{
-		Run:           buildRunDetail(model.Run),
-		Metadata:      buildRunMetadata(model.Metadata),
-		Summary:       model.Summary,
-		SummaryExists: model.SummaryExists,
-		DiffStat:      model.DiffStat,
-		DiffStatKnown: model.DiffStatKnown,
-		Iterations:    make([]RunIteration, 0, len(model.Iterations)),
-		Usage:         make([]RoleUsage, 0, len(model.Usage)),
-		Resume:        make([]string, 0, len(model.Resume)),
+		Run:               buildRunDetail(model.Run),
+		Metadata:          buildRunMetadata(model.Metadata),
+		Summary:           model.Summary,
+		SummaryExists:     model.SummaryExists,
+		PublicationStatus: string(model.Publication.Status),
+		PublicationStep:   string(model.Publication.Step),
+		PublicationError:  model.Publication.Error,
+		PublicationURL:    model.Publication.URL,
+		DiffStat:          model.DiffStat,
+		DiffStatKnown:     model.DiffStatKnown,
+		Iterations:        make([]RunIteration, 0, len(model.Iterations)),
+		Usage:             make([]RoleUsage, 0, len(model.Usage)),
+		Resume:            make([]string, 0, len(model.Resume)),
 	}
 	page.Chrome = runChrome(page.Run)
 	if page.SummaryExists && page.Summary == "" {

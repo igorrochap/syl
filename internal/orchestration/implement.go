@@ -37,6 +37,7 @@ type implementSummary struct {
 	worktreePath   string
 	pullRequestURL string
 	publishNotice  string
+	publication    runrecord.Publication
 }
 
 type ImplementOptions struct {
@@ -175,17 +176,27 @@ func executeImplementRun(ctx context.Context, options ImplementOptions, run impl
 		diffStat:     diffStat,
 		worktreePath: run.setup.worktreePath,
 	}
+	var publicationErr error
+	if !options.PublishOnApprove {
+		summary.publication.Status = runrecord.PublicationNotRequested
+	}
 	if options.PublishOnApprove && final.Status == verdict.Approve {
-		pullRequestURL, noChanges, err := publishApprovedImplement(ctx, options, run.setup, summary)
-		if err != nil {
-			return err
-		}
-		summary.pullRequestURL = pullRequestURL
-		if noChanges {
+		summary.publication = publishApprovedImplement(ctx, options, run.setup, summary)
+		switch summary.publication.Status {
+		case runrecord.PublicationPublished:
+			summary.pullRequestURL = summary.publication.URL
+		case runrecord.PublicationSkipped:
 			summary.publishNotice = "No changes to publish; skipped commit, push, and pull request."
+		case runrecord.PublicationFailed:
+			commands := publicationCommands(summary.publication.Step, options, run.setup, summary)
+			summary.publishNotice = formatPublicationFailure(summary.publication, commands)
+			publicationErr = errors.New(summary.publishNotice)
 		}
 	}
-	return completeImplementRun(ctx, options, run, summary)
+	if err := completeImplementRun(ctx, options, run, summary); err != nil {
+		return err
+	}
+	return publicationErr
 }
 
 func prepareImplementRun(ctx context.Context, options ImplementOptions, originGit GitRunner) (implementRunState, error) {
@@ -276,10 +287,15 @@ func completeImplementRun(ctx context.Context, options ImplementOptions, run imp
 		return err
 	}
 	renderer := ui.New(options.Output, ui.DetectCaps(options.Output))
+	publicationStatus := ""
+	if options.PublishOnApprove {
+		publicationStatus = string(summary.publication.Status)
+	}
 	if err := renderer.RunSummary(ui.RunSummary{
 		Iterations: summary.iterations, FinalVerdict: string(summary.final.Status), Summary: summary.final.Summary,
 		NitFindings: toUIFindings(summary.nits), WorktreePath: summary.worktreePath, DiffStat: summary.diffStat,
 		PullRequestURL: summary.pullRequestURL, PublishNotice: summary.publishNotice,
+		PublicationStatus: publicationStatus,
 	}); err != nil {
 		return fmt.Errorf("write implement summary: %w", err)
 	}
@@ -1025,6 +1041,7 @@ func formatImplementSummary(summary implementSummary) string {
 	return runrecord.FormatSummary(runrecord.SummaryInput{
 		Iterations: summary.iterations, Final: summary.final, Nits: summary.nits,
 		DiffStat: summary.diffStat, WorktreePath: summary.worktreePath, PullRequestURL: summary.pullRequestURL,
+		Publication: summary.publication,
 	})
 }
 

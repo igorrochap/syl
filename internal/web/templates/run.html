@@ -15,6 +15,14 @@
 <section class="section run-card" aria-labelledby="summary-heading"><h2 id="summary-heading">Summary</h2><p class="run-summary">{{.Page.Summary}}</p></section>
 {{end}}
 
+{{if .Page.PublicationStatus}}
+<section class="section run-card" aria-labelledby="publication-heading"><h2 id="publication-heading">Publication</h2><p>Outcome: {{.Page.PublicationStatus}}</p>
+{{if .Page.PublicationURL}}<p>Pull request: <a href="{{.Page.PublicationURL}}">{{.Page.PublicationURL}}</a></p>{{end}}
+{{if .Page.PublicationStep}}<p>Failed at: {{.Page.PublicationStep}}</p>{{end}}
+{{if .Page.PublicationError}}<p>Error: {{.Page.PublicationError}}</p>{{end}}
+</section>
+{{end}}
+
 <section class="section run-card" aria-labelledby="iterations-heading"><h2 id="iterations-heading">Iterations</h2>
 {{if .Page.Iterations}}
 <div class="run-timeline">

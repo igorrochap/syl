@@ -25,6 +25,7 @@ type RunPage struct {
 	Metadata      RunMetadata
 	Summary       string
 	SummaryExists bool
+	Publication   runrecord.Publication
 	DiffStat      string
 	DiffStatKnown bool
 	Iterations    []Iteration
@@ -141,6 +142,7 @@ func (reader *Reader) ReadRun(runDir string) (RunPage, error) {
 		Metadata:      buildRunMetadata(path, metadata, sessions),
 		Summary:       record.Summary.Text,
 		SummaryExists: record.SummaryExists,
+		Publication:   runPublication(detail.Kind, metadata.PublishOnApprove, record.Summary.Publication),
 		DiffStat:      record.Summary.DiffStat,
 		DiffStatKnown: record.SummaryExists,
 	}
@@ -148,6 +150,13 @@ func (reader *Reader) ReadRun(runDir string) (RunPage, error) {
 	page.Usage = buildRoleUsage(artifact, page.Iterations, metadata)
 	page.Resume = buildResumeCommands(detail.TicketRef, sessions)
 	return page, nil
+}
+
+func runPublication(kind runrecord.Kind, requested bool, publication runrecord.Publication) runrecord.Publication {
+	if publication.Status != "" || kind != runrecord.Implement || requested {
+		return publication
+	}
+	return runrecord.Publication{Status: runrecord.PublicationNotRequested}
 }
 
 // ReadRun reads one Run directory using a fresh operating-system reader.

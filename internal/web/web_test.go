@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -376,6 +377,65 @@ func TestHandlerDoesNotPollEndedRunAndServesRawArtifacts(t *testing.T) {
 	server.Handler().ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusOK || recorder.Header().Get("Content-Type") != "text/plain; charset=utf-8" || recorder.Body.String() != "feed is plain text" {
 		t.Fatalf("artifact response = %d/%q/%q", recorder.Code, recorder.Header().Get("Content-Type"), recorder.Body.String())
+	}
+}
+
+func TestRunPageShowsPublicationOutcomes(t *testing.T) {
+	project := t.TempDir()
+	started := time.Date(2026, time.November, 10, 20, 0, 0, 0, time.UTC)
+	ended := started.Add(time.Minute)
+	tests := []struct {
+		name    string
+		summary string
+		want    []string
+	}{
+		{
+			name:    "not requested",
+			summary: "Iterations: 1\nFinal verdict: approve\nSummary: Ready\nPublication: not requested\nDiff stat:\n",
+			want:    []string{"Outcome: not requested"},
+		},
+		{
+			name:    "skipped",
+			summary: "Iterations: 1\nFinal verdict: approve\nSummary: Ready\nPublication: skipped\nDiff stat:\n",
+			want:    []string{"Outcome: skipped"},
+		},
+		{
+			name:    "published",
+			summary: "Iterations: 1\nFinal verdict: approve\nSummary: Ready\nPublication: published\nPull request: https://github.com/example/project/pull/23\nDiff stat:\n",
+			want:    []string{"Outcome: published", "https://github.com/example/project/pull/23"},
+		},
+		{
+			name:    "failed",
+			summary: "Iterations: 1\nFinal verdict: approve\nSummary: Ready\nPublication: failed\nPublication step: push\nPublication error:\n  remote denied\nDiff stat:\n",
+			want:    []string{"Outcome: failed", "Failed at: push", "Error: remote denied"},
+		},
+	}
+	for index, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			runDir := filepath.Join(project, ".syl", "runs", fmt.Sprintf("20261110T200000.%09dZ-%d", index, 240+index))
+			if err := os.MkdirAll(runDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := runrecord.Write(runrecord.Path(runDir), runrecord.State{
+				Status: runrecord.Approved, Iteration: 1, MaxIterations: 1, StartedAt: started, EndedAt: &ended,
+				Kind: runrecord.Implement, TicketRef: "#240",
+			}); err != nil {
+				t.Fatal(err)
+			}
+			writeWebArtifact(t, runDir, "metadata.txt", "Branch: feat/pr-on-approve-failure-report\nPublish on approve: true\n")
+			writeWebArtifact(t, runDir, "summary.txt", test.summary)
+
+			server, err := newServer(t, t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			body := serveRun(t, server.Handler(), runDir, "/runs")
+			for _, want := range test.want {
+				if !strings.Contains(body, want) {
+					t.Errorf("Run page = %q, want publication text %q", body, want)
+				}
+			}
+		})
 	}
 }
 

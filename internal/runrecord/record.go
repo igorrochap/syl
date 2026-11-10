@@ -50,6 +50,41 @@ type Summary struct {
 	Text           string
 	DiffStat       string
 	PullRequestURL string
+	Publication    Publication
+}
+
+// PublicationStatus is the outcome of publishing an approved implementation.
+type PublicationStatus string
+
+const (
+	// PublicationNotRequested means the Run did not request publication after approval.
+	PublicationNotRequested PublicationStatus = "not requested"
+	// PublicationSkipped means the approved implementation had no changes to publish.
+	PublicationSkipped PublicationStatus = "skipped"
+	// PublicationPublished means a pull request exists for the implementation branch.
+	PublicationPublished PublicationStatus = "published"
+	// PublicationFailed means a publication step failed after approval.
+	PublicationFailed PublicationStatus = "failed"
+)
+
+// PublicationStep is one publication operation that can fail.
+type PublicationStep string
+
+const (
+	// PublicationStepCommit identifies the commit operation.
+	PublicationStepCommit PublicationStep = "commit"
+	// PublicationStepPush identifies the branch push operation.
+	PublicationStepPush PublicationStep = "push"
+	// PublicationStepPullRequest identifies pull request creation.
+	PublicationStepPullRequest PublicationStep = "pull request"
+)
+
+// Publication records the outcome of publishing an approved implementation.
+type Publication struct {
+	Status PublicationStatus
+	URL    string
+	Step   PublicationStep
+	Error  string
 }
 
 // ArtifactKind identifies a durable artifact without exposing its file name.
@@ -485,10 +520,38 @@ func ParseSummary(contents []byte) Summary {
 	if index := firstLineIndex(lines, "Pull request:"); index >= 0 {
 		summary.PullRequestURL = fieldValue(lines[index], "Pull request:")
 	}
+	summary.Publication = parseSummaryPublication(lines)
+	if summary.Publication.Status == PublicationPublished && summary.Publication.URL == "" {
+		summary.Publication.URL = summary.PullRequestURL
+	}
 	if index := firstLineIndex(lines, "Diff stat:"); index >= 0 {
 		summary.DiffStat = strings.TrimSpace(strings.Join(lines[index+1:], "\n"))
 	}
 	return summary
+}
+
+func parseSummaryPublication(lines []string) Publication {
+	publication := Publication{}
+	for index, line := range lines {
+		if strings.HasPrefix(line, "Publication:") && publication.Status == "" {
+			publication.Status = PublicationStatus(fieldValue(line, "Publication:"))
+		}
+		if strings.HasPrefix(line, "Publication step:") && publication.Step == "" {
+			publication.Step = PublicationStep(fieldValue(line, "Publication step:"))
+		}
+		if !strings.HasPrefix(line, "Publication error:") || publication.Error != "" {
+			continue
+		}
+		var errorLines []string
+		for _, continuation := range lines[index+1:] {
+			if !strings.HasPrefix(continuation, "  ") {
+				break
+			}
+			errorLines = append(errorLines, strings.TrimPrefix(continuation, "  "))
+		}
+		publication.Error = strings.Join(errorLines, "\n")
+	}
+	return publication
 }
 
 // firstPositiveIterations skips Iterations lines that are not positive numbers.
