@@ -176,7 +176,7 @@ func (recorder *diskRunRecorder) RecordSessions(iteration int, role string, sess
 func (recorder *diskRunRecorder) WriteSummary(summary implementSummary) error {
 	return recorder.writer.WriteSummary(runrecord.SummaryInput{
 		Iterations: summary.iterations, Final: summary.final, Nits: summary.nits,
-		DiffStat: summary.diffStat, WorktreePath: summary.worktreePath,
+		DiffStat: summary.diffStat, WorktreePath: summary.worktreePath, PullRequestURL: summary.pullRequestURL,
 	})
 }
 

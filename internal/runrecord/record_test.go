@@ -17,6 +17,7 @@ func TestWriterRoundTripsRunRecord(t *testing.T) {
 		Kind: Implement, TicketRef: "#204", MaxIterations: 2,
 		Branch: "refactor/run-record-module", BranchPoint: "abc123", WorkRoot: originRoot,
 		ImplementerHarness: "codex", ReviewerHarness: "claude",
+		PublishOnApprove: true,
 		ImplementContext: "Preserve the format.\nKeep context blocks.",
 		ReviewContext:    "Check the reader and writer.",
 	}
@@ -79,7 +80,7 @@ func TestWriterRoundTripsRunRecord(t *testing.T) {
 		Branch: spec.Branch, BranchPoint: spec.BranchPoint, WorkRoot: spec.WorkRoot,
 		ImplementerHarness: spec.ImplementerHarness, ReviewerHarness: spec.ReviewerHarness,
 		ImplementContext: spec.ImplementContext, ReviewContext: spec.ReviewContext,
-		Kind: Implement,
+		Kind: Implement, PublishOnApprove: true,
 	}
 	if !reflect.DeepEqual(record.Metadata, wantMetadata) {
 		t.Fatalf("metadata = %#v, want %#v", record.Metadata, wantMetadata)

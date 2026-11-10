@@ -148,6 +148,286 @@ func TestImplementLoopApprovesOnFirstIteration(t *testing.T) {
 	}
 }
 
+func TestImplementPrOnApproveRejectsLocalTrackerBeforeHarnessStarts(t *testing.T) {
+	fixture := newImplementLoopFixture(t)
+	configPath := filepath.Join(fixture.root, ".syl", "config.toml")
+	configContents, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	configContents = []byte(strings.Replace(string(configContents), `issues = "github"`, `issues = "local"`, 1))
+	if err := os.WriteFile(configPath, configContents, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ticketPath := filepath.Join(fixture.root, ".scratch", "feature-a", "issues", "42-local-workflow.md")
+	if err := os.MkdirAll(filepath.Dir(ticketPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(ticketPath, []byte("# 42 — Add resilient workflow\n\n**Status:** todo\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	commitWorkingTree(t, fixture.root, "local tracker fixture")
+	loop := &loopHarness{root: fixture.root}
+	fixture.harnesses["codex"] = loop
+	fixture.harnesses["claude"] = loop
+
+	code := fixture.app.Run(context.Background(), []string{"implement", "42", "--pr-on-approve"}, &fixture.stdout, &fixture.stderr)
+	if code == 0 || !strings.Contains(fixture.stderr.String(), "GitHub or GitLab Tracker") {
+		t.Fatalf("implement code = %d, stderr = %q, want supported Tracker explanation", code, fixture.stderr.String())
+	}
+	if len(loop.requests) != 0 {
+		t.Fatalf("harness requests = %d, want none", len(loop.requests))
+	}
+}
+
+func TestImplementPrOnApproveRequiresOriginBeforeHarnessStarts(t *testing.T) {
+	fixture := newImplementLoopFixture(t)
+	loop := &loopHarness{root: fixture.root}
+	fixture.harnesses["codex"] = loop
+	fixture.harnesses["claude"] = loop
+	fixture.app.deps.GH = fixedGH(&loopGHRunner{})
+
+	code := fixture.app.Run(context.Background(), []string{"implement", "42", "--pr-on-approve"}, &fixture.stdout, &fixture.stderr)
+	if code == 0 || !strings.Contains(fixture.stderr.String(), "--pr-on-approve requires an origin remote") {
+		t.Fatalf("implement code = %d, stderr = %q, want missing-origin error", code, fixture.stderr.String())
+	}
+	if len(loop.requests) != 0 {
+		t.Fatalf("harness requests = %d, want none", len(loop.requests))
+	}
+}
+
+func TestImplementPrOnApprovePublishesApprovedChanges(t *testing.T) {
+	fixture := newImplementLoopFixture(t)
+	bareRemote := createBareOrigin(t, fixture.root)
+	branchPoint := gitOutput(t, fixture.root, "rev-parse", "HEAD")
+	startBranch := gitOutput(t, fixture.root, "symbolic-ref", "--quiet", "--short", "HEAD")
+	loop := &loopHarness{
+		root: fixture.root,
+		streams: [][]harness.Event{
+			{{Type: harness.EventSession, SessionID: "implement-session"}},
+			{{Type: harness.EventSession, SessionID: "review-session"}, {Type: harness.EventAssistantText, Text: approveVerdictWithNitText}},
+		},
+	}
+	fixture.harnesses["codex"] = loop
+	fixture.harnesses["claude"] = loop
+	gh := &loopGHRunner{}
+	fixture.app.deps.GH = fixedGH(gh)
+	notifier := &recordingNotifier{}
+	fixture.app.deps.Notifier = notifier
+
+	code := fixture.app.Run(context.Background(), []string{"implement", "42", "--pr-on-approve"}, &fixture.stdout, &fixture.stderr)
+	if code != 0 {
+		t.Fatalf("implement code = %d, stderr = %q", code, fixture.stderr.String())
+	}
+	branch := "feat/add-resilient-workflow"
+	if got := gitOutput(t, fixture.root, "rev-list", "--count", branchPoint+"..HEAD"); got != "1" {
+		t.Fatalf("commits since branch point = %q, want exactly one", got)
+	}
+	if got := gitOutput(t, fixture.root, "log", "-1", "--format=%s"); got != "feat: Add resilient workflow (#42)" {
+		t.Fatalf("commit message = %q, want fallback conventional message", got)
+	}
+	if got := gitOutput(t, fixture.root, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"); got != "origin/"+branch {
+		t.Fatalf("upstream = %q, want origin/%s", got, branch)
+	}
+	if got := gitOutput(t, fixture.root, "--git-dir="+bareRemote, "show-ref", "--verify", "refs/heads/"+branch); got == "" {
+		t.Fatal("bare origin does not contain the implementation branch")
+	}
+	if got := gitOutput(t, fixture.root, "status", "--porcelain"); got != "" {
+		t.Fatalf("working tree = %q, want clean after publication", got)
+	}
+	if !strings.Contains(fixture.stdout.String(), "Pull request: https://github.com/example/project/pull/23") {
+		t.Fatalf("stdout = %q, want pull request URL in summary", fixture.stdout.String())
+	}
+	if len(notifier.messages) != 1 || !strings.Contains(notifier.messages[0], "https://github.com/example/project/pull/23") {
+		t.Fatalf("notifications = %v, want pull request URL", notifier.messages)
+	}
+	if len(gh.calls) == 0 || !strings.HasPrefix(gh.calls[len(gh.calls)-1], "pr create --draft ") {
+		t.Fatalf("GitHub calls = %#v, want draft PR as final Tracker operation", gh.calls)
+	}
+	prCall := gh.calls[len(gh.calls)-1]
+	for _, expected := range []string{
+		"--title Add resilient workflow",
+		"Closes #42\n\nThe implementation meets the ticket.\n\n- [ ] internal/example.go:9 — Rename this helper.",
+		"--head " + branch,
+		"--base " + startBranch,
+	} {
+		if !strings.Contains(prCall, expected) {
+			t.Errorf("draft PR call = %q, want %q", prCall, expected)
+		}
+	}
+	for index, call := range gh.calls {
+		if strings.Contains(call, "issue edit 42") && index > 0 && index >= len(gh.calls)-1 {
+			t.Fatalf("GitHub calls = %#v, want no status update after PR creation", gh.calls)
+		}
+	}
+	runDirs, err := filepath.Glob(filepath.Join(fixture.root, ".syl", "runs", "*-42"))
+	if err != nil || len(runDirs) != 1 {
+		t.Fatalf("Run directories = %v, error = %v; want one Run", runDirs, err)
+	}
+	metadata, err := os.ReadFile(filepath.Join(runDirs[0], "metadata.txt"))
+	if err != nil || !strings.Contains(string(metadata), "Publish on approve: true") {
+		t.Fatalf("metadata = %q, error = %v; want Publish on approve", metadata, err)
+	}
+	summary, err := os.ReadFile(filepath.Join(runDirs[0], "summary.txt"))
+	if err != nil || !strings.Contains(string(summary), "Pull request: https://github.com/example/project/pull/23") {
+		t.Fatalf("summary = %q, error = %v; want pull request URL", summary, err)
+	}
+}
+
+func TestImplementPrOnApproveSkipsPublicationForEmptyDiff(t *testing.T) {
+	fixture := newImplementLoopFixture(t)
+	bareRemote := createBareOrigin(t, fixture.root)
+	branchPoint := gitOutput(t, fixture.root, "rev-parse", "HEAD")
+	loop := &loopHarness{
+		root: fixture.root, noChanges: true,
+		streams: [][]harness.Event{
+			{{Type: harness.EventSession, SessionID: "implement-session"}},
+			{{Type: harness.EventSession, SessionID: "review-session"}, {Type: harness.EventAssistantText, Text: approveVerdictText}},
+		},
+	}
+	fixture.harnesses["codex"] = loop
+	fixture.harnesses["claude"] = loop
+	gh := &loopGHRunner{}
+	fixture.app.deps.GH = fixedGH(gh)
+
+	code := fixture.app.Run(context.Background(), []string{"implement", "42", "--pr-on-approve"}, &fixture.stdout, &fixture.stderr)
+	if code != 0 {
+		t.Fatalf("implement code = %d, stderr = %q", code, fixture.stderr.String())
+	}
+	if got := gitOutput(t, fixture.root, "rev-list", "--count", branchPoint+"..HEAD"); got != "0" {
+		t.Fatalf("commits since branch point = %q, want zero", got)
+	}
+	if got := gitOutput(t, fixture.root, "status", "--porcelain"); got != "" {
+		t.Fatalf("working tree = %q, want clean", got)
+	}
+	if strings.Contains(strings.Join(gh.calls, "\n"), "pr create") {
+		t.Fatalf("GitHub calls = %#v, want no pull request operation", gh.calls)
+	}
+	if strings.Contains(gitOutput(t, fixture.root, "--git-dir="+bareRemote, "for-each-ref", "--format=%(refname)", "refs/heads"), "feat/add-resilient-workflow") {
+		t.Fatal("bare origin contains an implementation branch after an empty diff")
+	}
+	if !strings.Contains(fixture.stdout.String(), "No changes to publish; skipped commit, push, and pull request.") {
+		t.Fatalf("stdout = %q, want empty-diff notice", fixture.stdout.String())
+	}
+}
+
+func TestImplementPrOnApproveUsesNoBaseForDetachedStart(t *testing.T) {
+	fixture := newImplementLoopFixture(t)
+	createBareOrigin(t, fixture.root)
+	gitOutput(t, fixture.root, "switch", "--detach", "HEAD")
+	loop := &loopHarness{
+		root: fixture.root,
+		streams: [][]harness.Event{
+			{{Type: harness.EventSession, SessionID: "implement-session"}},
+			{{Type: harness.EventSession, SessionID: "review-session"}, {Type: harness.EventAssistantText, Text: approveVerdictText}},
+		},
+	}
+	fixture.harnesses["codex"] = loop
+	fixture.harnesses["claude"] = loop
+	gh := &loopGHRunner{}
+	fixture.app.deps.GH = fixedGH(gh)
+
+	code := fixture.app.Run(context.Background(), []string{"implement", "42", "--pr-on-approve"}, &fixture.stdout, &fixture.stderr)
+	if code != 0 {
+		t.Fatalf("implement code = %d, stderr = %q", code, fixture.stderr.String())
+	}
+	prCall := gh.calls[len(gh.calls)-1]
+	if !strings.HasPrefix(prCall, "pr create --draft ") || strings.Contains(prCall, "--base ") {
+		t.Fatalf("draft PR call = %q, want no base for detached start", prCall)
+	}
+}
+
+func TestImplementPrOnApproveUsesExplicitWorktreeBase(t *testing.T) {
+	fixture := newImplementLoopFixture(t)
+	bareRemote := createBareOrigin(t, fixture.root)
+	gitOutput(t, fixture.root, "branch", "-M", "main")
+	gitOutput(t, fixture.root, "push", "-u", "origin", "main")
+	gitOutput(t, fixture.root, "fetch", "origin", "main")
+	worktreeRoot := filepath.Join(t.TempDir(), "worktrees")
+	configureWorktreeRoot(t, fixture.root, worktreeRoot)
+	loop := &loopHarness{
+		streams: [][]harness.Event{
+			{{Type: harness.EventSession, SessionID: "worktree-implement"}},
+			{{Type: harness.EventSession, SessionID: "worktree-review"}, {Type: harness.EventAssistantText, Text: approveVerdictText}},
+		},
+	}
+	var worktreePath string
+	fixture.app.deps.Harnesses = func(root string) map[string]harness.Adapter {
+		worktreePath = root
+		loop.root = root
+		return map[string]harness.Adapter{"codex": loop, "claude": loop}
+	}
+	gh := &loopGHRunner{}
+	fixture.app.deps.GH = fixedGH(gh)
+
+	code := fixture.app.Run(context.Background(), []string{"implement", "42", "--pr-on-approve", "--worktree", "--base", "origin/main"}, &fixture.stdout, &fixture.stderr)
+	if code != 0 {
+		t.Fatalf("implement worktree code = %d, stderr = %q", code, fixture.stderr.String())
+	}
+	if worktreePath == "" {
+		t.Fatal("worktree harness did not run")
+	}
+	prCall := gh.calls[len(gh.calls)-1]
+	if !strings.Contains(prCall, "--base main") || strings.Contains(prCall, "--base origin/main") {
+		t.Fatalf("draft PR call = %q, want normalized base main", prCall)
+	}
+	branch := "feat/add-resilient-workflow"
+	if got := gitOutput(t, worktreePath, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"); got != "origin/"+branch {
+		t.Fatalf("worktree upstream = %q, want origin/%s", got, branch)
+	}
+	if got := gitOutput(t, fixture.root, "--git-dir="+bareRemote, "show-ref", "--verify", "refs/heads/"+branch); got == "" {
+		t.Fatal("bare origin does not contain the worktree implementation branch")
+	}
+}
+
+func TestImplementPrOnApproveDoesNotPublishExhaustedRun(t *testing.T) {
+	fixture := newImplementLoopFixture(t)
+	bareRemote := createBareOrigin(t, fixture.root)
+	branchPoint := gitOutput(t, fixture.root, "rev-parse", "HEAD")
+	loop := &loopHarness{
+		root: fixture.root,
+		streams: [][]harness.Event{
+			{{Type: harness.EventSession, SessionID: "implement-1"}},
+			{{Type: harness.EventSession, SessionID: "review-1"}, {Type: harness.EventAssistantText, Text: reviseVerdictText}},
+			{{Type: harness.EventSession, SessionID: "implement-2"}},
+			{{Type: harness.EventSession, SessionID: "review-2"}, {Type: harness.EventAssistantText, Text: reviseVerdictText}},
+			{{Type: harness.EventSession, SessionID: "implement-3"}},
+			{{Type: harness.EventSession, SessionID: "review-3"}, {Type: harness.EventAssistantText, Text: reviseVerdictText}},
+		},
+	}
+	fixture.harnesses["codex"] = loop
+	fixture.harnesses["claude"] = loop
+	gh := &loopGHRunner{}
+	fixture.app.deps.GH = fixedGH(gh)
+
+	code := fixture.app.Run(context.Background(), []string{"implement", "42", "--pr-on-approve"}, &fixture.stdout, &fixture.stderr)
+	if code == 0 || len(loop.requests) != 6 {
+		t.Fatalf("implement code = %d, harness requests = %d, want exhausted failure after three iterations", code, len(loop.requests))
+	}
+	if got := gitOutput(t, fixture.root, "rev-list", "--count", branchPoint+"..HEAD"); got != "0" {
+		t.Fatalf("commits since branch point = %q, want zero", got)
+	}
+	if strings.Contains(strings.Join(gh.calls, "\n"), "pr create") {
+		t.Fatalf("GitHub calls = %#v, want no pull request operation", gh.calls)
+	}
+	if refs := gitOutput(t, fixture.root, "--git-dir="+bareRemote, "for-each-ref", "--format=%(refname)", "refs/heads"); strings.Contains(refs, "feat/add-resilient-workflow") {
+		t.Fatalf("bare origin refs = %q, want no implementation branch", refs)
+	}
+}
+
+func createBareOrigin(t *testing.T, root string) string {
+	t.Helper()
+	bareRemote := filepath.Join(t.TempDir(), "origin.git")
+	command := exec.Command("git", "init", "--bare", "--quiet", bareRemote)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("create bare origin: %v\n%s", err, output)
+	}
+	gitOutput(t, root, "config", "user.name", "syl test")
+	gitOutput(t, root, "config", "user.email", "syl@example.test")
+	gitOutput(t, root, "remote", "add", "origin", bareRemote)
+	return bareRemote
+}
+
 func TestBareImplementDoesNotRunWorktreeSetup(t *testing.T) {
 	fixture := newImplementLoopFixture(t)
 	worktreeRoot := filepath.Join(t.TempDir(), "worktrees")
@@ -1657,7 +1937,10 @@ type loopHarness struct {
 	streams               [][]harness.Event
 	requests              []harness.Request
 	leaveChangesUntracked bool
+	noChanges             bool
 }
+
+const approveVerdictWithNitText = "VERDICT: approve\nSUMMARY: The implementation meets the ticket.\nFINDINGS:\n- [nit] internal/example.go:9 — Rename this helper.\n"
 
 type setupCheckingLoopHarness struct {
 	*loopHarness
@@ -1806,7 +2089,7 @@ func (*unparseableReviewImplementHarness) AttachSession(context.Context, string,
 func (h *loopHarness) Run(_ context.Context, request harness.Request) (harness.Stream, error) {
 	h.requests = append(h.requests, request)
 	index := len(h.requests) - 1
-	if index%2 == 0 {
+	if index%2 == 0 && !h.noChanges {
 		if err := os.WriteFile(filepath.Join(h.root, "change.txt"), []byte(fmt.Sprintf("implemented-%d\n", index/2+1)), 0o644); err != nil {
 			return nil, err
 		}
@@ -1841,6 +2124,9 @@ type loopGHRunner struct {
 func (r *loopGHRunner) Run(_ context.Context, args ...string) (string, error) {
 	call := strings.Join(args, " ")
 	r.calls = append(r.calls, call)
+	if strings.HasPrefix(call, "pr create --draft ") {
+		return "https://github.com/example/project/pull/23\n", nil
+	}
 	switch call {
 	case "label list --limit 100 --json name":
 		return `[{"name":"todo"},{"name":"doing"}]`, nil

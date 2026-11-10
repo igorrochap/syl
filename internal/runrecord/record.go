@@ -32,6 +32,7 @@ type Metadata struct {
 	ReviewContext      string
 	TicketRef          string
 	Kind               Kind
+	PublishOnApprove   bool
 }
 
 // Session is one role session recorded in sessions.txt.
@@ -43,11 +44,12 @@ type Session struct {
 
 // Summary contains the interpreted values stored in summary.txt.
 type Summary struct {
-	Contents     string
-	Iterations   int
-	FinalVerdict string
-	Text         string
-	DiffStat     string
+	Contents       string
+	Iterations     int
+	FinalVerdict   string
+	Text           string
+	DiffStat       string
+	PullRequestURL string
 }
 
 // ArtifactKind identifies a durable artifact without exposing its file name.
@@ -372,6 +374,9 @@ var metadataFields = map[string]func(metadata *Metadata, value string){
 		metadata.ReviewerHarness = value
 		metadata.inferKind(Review)
 	},
+	"publish on approve": func(metadata *Metadata, value string) {
+		metadata.PublishOnApprove = strings.EqualFold(value, "true")
+	},
 }
 
 // contextRoles maps a metadata.txt context header to the field its block fills.
@@ -476,6 +481,9 @@ func ParseSummary(contents []byte) Summary {
 	}
 	if index := firstLineIndex(lines, "Summary:"); index >= 0 {
 		summary.Text = fieldValue(lines[index], "Summary:")
+	}
+	if index := firstLineIndex(lines, "Pull request:"); index >= 0 {
+		summary.PullRequestURL = fieldValue(lines[index], "Pull request:")
 	}
 	if index := firstLineIndex(lines, "Diff stat:"); index >= 0 {
 		summary.DiffStat = strings.TrimSpace(strings.Join(lines[index+1:], "\n"))

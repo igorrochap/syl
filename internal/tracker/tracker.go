@@ -37,3 +37,16 @@ type Tracker interface {
 	AddComment(ctx context.Context, number int, note string) error
 	Create(ctx context.Context, title, body string) (Ticket, error)
 }
+
+// PullRequest describes the values used to create a draft pull request.
+type PullRequest struct {
+	Title string
+	Body  string
+	Head  string
+	Base  string
+}
+
+// PullRequestCreator is implemented by Trackers that can publish pull requests.
+type PullRequestCreator interface {
+	CreatePullRequest(ctx context.Context, request PullRequest) (string, error)
+}

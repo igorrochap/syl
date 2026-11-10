@@ -2,6 +2,7 @@ package orchestration
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -126,6 +127,43 @@ func TestResolveBranchName(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestPullRequestBaseIncludesOnlyNamedBranches(t *testing.T) {
+	tests := []struct {
+		name string
+		ref  string
+		refs map[string]bool
+		want string
+	}{
+		{name: "remote branch", ref: "origin/main", refs: map[string]bool{"refs/remotes/origin/main": true}, want: "main"},
+		{name: "local branch", ref: "main", refs: map[string]bool{"refs/heads/main": true}, want: "main"},
+		{name: "full remote ref", ref: "refs/remotes/origin/main", refs: map[string]bool{"refs/remotes/origin/main": true}, want: "main"},
+		{name: "abbreviated SHA", ref: "abc1234"},
+		{name: "full SHA-1", ref: strings.Repeat("a", 40)},
+		{name: "full SHA-256", ref: strings.Repeat("b", 64)},
+		{name: "HEAD", ref: "HEAD", refs: map[string]bool{"refs/remotes/origin/HEAD": true}},
+		{name: "HEAD parent", ref: "HEAD~1"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			git := &branchRefGit{refs: test.refs}
+			if got := pullRequestBase(context.Background(), git, test.ref); got != test.want {
+				t.Fatalf("pullRequestBase(%q) = %q, want %q", test.ref, got, test.want)
+			}
+		})
+	}
+}
+
+type branchRefGit struct {
+	refs map[string]bool
+}
+
+func (git *branchRefGit) Run(_ context.Context, args ...string) (string, error) {
+	if len(args) == 4 && args[0] == "show-ref" && args[1] == "--verify" && args[2] == "--quiet" && git.refs[args[3]] {
+		return "", nil
+	}
+	return "", errors.New("ref not found")
 }
 
 func TestPrepareImplementUsesResolvedBranchName(t *testing.T) {

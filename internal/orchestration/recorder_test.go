@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -870,6 +871,155 @@ func TestRunImplementPassesContextToImplementer(t *testing.T) {
 	if strings.Contains(reviewer.request.Prompt, additionalContext) {
 		t.Fatalf("reviewer prompt = %q, want no implementer context %q", reviewer.request.Prompt, additionalContext)
 	}
+}
+
+func TestRunImplementPublishesApprovedDiffAndSkipsEmptyDiff(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		changed   bool
+		wantCalls []string
+	}{
+		{
+			name:    "non-empty diff",
+			changed: true,
+			wantCalls: []string{
+				"add -A", "diff --cached --name-only branch-point", "commit -m feat: Add resilient workflow (#42)",
+				"push -u origin feat/add-resilient-workflow",
+			},
+		},
+		{
+			name:      "empty diff",
+			wantCalls: []string{"add -A", "diff --cached --name-only branch-point"},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			git := &publishingTestGit{branchPoint: "branch-point", changed: test.changed}
+			publisher := &recordingPullRequestTracker{}
+			notifier := &recordingImplementNotifier{}
+			recorder := newMemoryRunRecorder()
+			var spec RunSpec
+			var output strings.Builder
+			err := RunImplement(context.Background(), ImplementOptions{
+				OriginRoot: t.TempDir(), WorkRoot: t.TempDir(),
+				OpenRun: func(value RunSpec) (RunRecorder, error) {
+					spec = value
+					return recorder, nil
+				},
+				ProjectConfig: config.Config{
+					Tracker: config.TrackerConfig{Issues: config.TrackerGitHub},
+					Roles: config.RolesConfig{
+						Implement: config.RoleConfig{Harness: config.HarnessCodex},
+						Review:    config.RoleConfig{Harness: config.HarnessClaude},
+					},
+					Loop:          config.LoopConfig{MaxIterations: 1},
+					Notifications: config.NotificationsConfig{Enabled: true},
+				},
+				IssueTracker: publisher,
+				Ticket:       tracker.Ticket{Number: 42, Title: "Add resilient workflow"},
+				Implementer:  &capturingImplementAdapter{response: "Implemented the ticket."},
+				Reviewer: &capturingImplementAdapter{response: "VERDICT: approve\nSUMMARY: Reviewed implementation.\n" +
+					"FINDINGS:\n- [nit] internal/example.go:9 — Rename this helper.\n"},
+				Git: git, OriginGit: git, Notifier: notifier, Input: strings.NewReader(""),
+				Output: &output, PublishOnApprove: true,
+			})
+			if err != nil {
+				t.Fatalf("RunImplement() error = %v", err)
+			}
+			if !spec.PublishOnApprove {
+				t.Fatal("RunSpec.PublishOnApprove = false, want true")
+			}
+			if test.changed {
+				if publisher.request == nil || publisher.request.Head != "feat/add-resilient-workflow" || publisher.request.Base != "main" {
+					t.Fatalf("pull request = %#v, want branch head and start branch base", publisher.request)
+				}
+				if publisher.request.Body != "Closes #42\n\nReviewed implementation.\n\n- [ ] internal/example.go:9 — Rename this helper." {
+					t.Fatalf("pull request body = %q, want summary and nit task", publisher.request.Body)
+				}
+				if !strings.Contains(output.String(), "Pull request: https://github.com/example/project/pull/23") {
+					t.Fatalf("summary output = %q, want pull request URL", output.String())
+				}
+				if !strings.Contains(recorder.files[artifactFilename(summaryArtifact, 0)], "Pull request: https://github.com/example/project/pull/23") {
+					t.Fatalf("summary artifact = %q, want pull request URL", recorder.files[artifactFilename(summaryArtifact, 0)])
+				}
+				if len(notifier.messages) != 1 || !strings.Contains(notifier.messages[0], "https://github.com/example/project/pull/23") {
+					t.Fatalf("notifications = %v, want pull request URL", notifier.messages)
+				}
+			} else {
+				if publisher.request != nil {
+					t.Fatalf("pull request = %#v, want none for an empty diff", publisher.request)
+				}
+				if !strings.Contains(output.String(), "No changes to publish") {
+					t.Fatalf("summary output = %q, want empty-diff notice", output.String())
+				}
+			}
+			for _, expected := range test.wantCalls {
+				if !slices.Contains(git.calls, expected) {
+					t.Errorf("git calls = %v, want %q", git.calls, expected)
+				}
+			}
+			if !test.changed && (slices.Contains(git.calls, "commit -m feat: Add resilient workflow (#42)") || slices.Contains(git.calls, "push -u origin feat/add-resilient-workflow")) {
+				t.Fatalf("git calls = %v, want no commit or push for an empty diff", git.calls)
+			}
+		})
+	}
+}
+
+type publishingTestGit struct {
+	branchPoint string
+	changed     bool
+	calls       []string
+}
+
+func (g *publishingTestGit) Run(_ context.Context, args ...string) (string, error) {
+	command := strings.Join(args, " ")
+	g.calls = append(g.calls, command)
+	switch command {
+	case "status --porcelain --untracked-files=all":
+		return "", nil
+	case "rev-parse HEAD":
+		return g.branchPoint, nil
+	case "symbolic-ref --quiet --short HEAD":
+		return "main\n", nil
+	case "diff " + g.branchPoint:
+		if g.changed {
+			return "diff --git a/change.go b/change.go\n+implemented\n", nil
+		}
+		return "", nil
+	case "ls-files --others --exclude-standard -z":
+		return "", nil
+	case "diff --stat " + g.branchPoint:
+		return " change.go | 1 +\n", nil
+	case "add -A", "diff --cached --name-only " + g.branchPoint,
+		"commit -m feat: Add resilient workflow (#42)", "push -u origin feat/add-resilient-workflow":
+		if strings.HasPrefix(command, "diff --cached") && g.changed {
+			return "change.go\n", nil
+		}
+		return "", nil
+	default:
+		if strings.HasPrefix(command, "switch -c ") {
+			return "", nil
+		}
+		return "", fmt.Errorf("unexpected git command %q", command)
+	}
+}
+
+type recordingPullRequestTracker struct {
+	branchSetupTracker
+	request *tracker.PullRequest
+}
+
+func (tracker *recordingPullRequestTracker) CreatePullRequest(_ context.Context, request tracker.PullRequest) (string, error) {
+	tracker.request = &request
+	return "https://github.com/example/project/pull/23", nil
+}
+
+type recordingImplementNotifier struct {
+	messages []string
+}
+
+func (notifier *recordingImplementNotifier) Notify(_ context.Context, message string) error {
+	notifier.messages = append(notifier.messages, message)
+	return nil
 }
 
 func TestImplementRunRecorderRecordsRoleContexts(t *testing.T) {

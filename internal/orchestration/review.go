@@ -899,6 +899,10 @@ func writeLocalReviewLog(originRoot, ticketRef, branchPoint string, timestamp ti
 }
 
 func computeReviewDiff(ctx context.Context, git GitRunner, branchPoint string) (string, error) {
+	return computeReviewDiffWithEmpty(ctx, git, branchPoint, false)
+}
+
+func computeReviewDiffWithEmpty(ctx context.Context, git GitRunner, branchPoint string, allowEmpty bool) (string, error) {
 	trackedDiff, err := git.Run(ctx, "diff", branchPoint)
 	if err != nil {
 		return "", fmt.Errorf("compute review diff against %s: %w", branchPoint, err)
@@ -919,6 +923,9 @@ func computeReviewDiff(ctx context.Context, git GitRunner, branchPoint string) (
 	diff.WriteString(untrackedDiff)
 	completeDiff := diff.String()
 	if strings.TrimSpace(completeDiff) == "" {
+		if allowEmpty {
+			return completeDiff, nil
+		}
 		return "", fmt.Errorf("pre-computed diff against %s is empty", branchPoint)
 	}
 	return completeDiff, nil
