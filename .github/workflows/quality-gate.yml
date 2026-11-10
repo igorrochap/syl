@@ -5,13 +5,40 @@ on:
   push:
     branches:
       - main
+  workflow_call:
 
 permissions:
   contents: read
 
 jobs:
-  quality-gate:
+  gate-list:
+    name: List gates
     runs-on: ubuntu-latest
+    outputs:
+      gates: ${{ steps.list.outputs.gates }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Read quality gates
+        id: list
+        run: |
+          gates="$(scripts/quality.sh --list)"
+          if [[ -z "$gates" ]]; then
+            echo "scripts/quality.sh --list returned no gates" >&2
+            exit 1
+          fi
+          matrix="$(printf '%s\n' "$gates" | python3 -c 'import json, sys; print(json.dumps(sys.stdin.read().splitlines()))')"
+          printf 'gates=%s\n' "$matrix" >> "$GITHUB_OUTPUT"
+
+  gate:
+    name: Gate (${{ matrix.gate }})
+    needs: gate-list
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        gate: ${{ fromJSON(needs.gate-list.outputs.gates) }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -32,5 +59,23 @@ jobs:
           curl -sSfL https://golangci-lint.run/install.sh | sh -s -- -b "$(go env GOPATH)/bin" v2.13.1
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
-      - name: Run quality gate
-        run: scripts/quality.sh
+      - name: Run ${{ matrix.gate }} gate
+        run: scripts/quality.sh "${{ matrix.gate }}"
+
+  # The "main protection" ruleset requires a check named "quality-gate"; this
+  # job reports it once every gate in the matrix has finished.
+  quality-gate:
+    name: quality-gate
+    needs: [gate-list, gate]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every gate to pass
+        env:
+          GATE_LIST_RESULT: ${{ needs.gate-list.result }}
+          GATE_RESULT: ${{ needs.gate.result }}
+        run: |
+          if [[ "$GATE_LIST_RESULT" != success || "$GATE_RESULT" != success ]]; then
+            echo "Quality gates did not all pass: gate-list=$GATE_LIST_RESULT gate=$GATE_RESULT" >&2
+            exit 1
+          fi
