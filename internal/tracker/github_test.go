@@ -95,6 +95,52 @@ func TestGitHubCreateAppliesTodoLabelAndReturnsCreatedIssue(t *testing.T) {
 	}
 }
 
+func TestGitHubCreatePullRequestOpensDraftWithHeadAndOptionalBase(t *testing.T) {
+	runner := &scriptedGitHubRunner{responses: map[string]githubResponse{
+		"pr create --draft --title Ship it --body Closes #7 --head feat/ship-it --base main": {
+			output: "https://github.com/example/project/pull/23\n",
+		},
+	}}
+	githubTracker, err := NewGitHub(runner)
+	if err != nil {
+		t.Fatalf("NewGitHub() error = %v", err)
+	}
+
+	url, err := githubTracker.CreatePullRequest(context.Background(), PullRequest{
+		Title: "Ship it", Body: "Closes #7", Head: "feat/ship-it", Base: "main",
+	})
+	if err != nil {
+		t.Fatalf("CreatePullRequest() error = %v", err)
+	}
+	if url != "https://github.com/example/project/pull/23" {
+		t.Fatalf("CreatePullRequest() URL = %q, want the created pull request URL", url)
+	}
+	if !runner.hasCall("pr create --draft --title Ship it --body Closes #7 --head feat/ship-it --base main") {
+		t.Fatalf("CreatePullRequest() calls = %#v, want draft PR arguments", runner.calls)
+	}
+}
+
+func TestGitHubCreatePullRequestOmitsBaseWhenUnspecified(t *testing.T) {
+	runner := &scriptedGitHubRunner{responses: map[string]githubResponse{
+		"pr create --draft --title Ship it --body Closes #7 --head feat/ship-it": {
+			output: "https://github.com/example/project/pull/23\n",
+		},
+	}}
+	githubTracker, err := NewGitHub(runner)
+	if err != nil {
+		t.Fatalf("NewGitHub() error = %v", err)
+	}
+
+	if _, err := githubTracker.CreatePullRequest(context.Background(), PullRequest{
+		Title: "Ship it", Body: "Closes #7", Head: "feat/ship-it",
+	}); err != nil {
+		t.Fatalf("CreatePullRequest() error = %v", err)
+	}
+	if !runner.hasCall("pr create --draft --title Ship it --body Closes #7 --head feat/ship-it") {
+		t.Fatalf("CreatePullRequest() calls = %#v, want no base argument", runner.calls)
+	}
+}
+
 func TestGitHubListReturnsAllIssueMetadata(t *testing.T) {
 	runner := &scriptedGitHubRunner{responses: map[string]githubResponse{
 		"label list --limit 100 --json name": {

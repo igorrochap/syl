@@ -69,6 +69,7 @@ type GitHub struct {
 }
 
 var _ Tracker = (*GitHub)(nil)
+var _ PullRequestCreator = (*GitHub)(nil)
 
 // NewGitHub creates a GitHub tracker backed by runner.
 func NewGitHub(runner GHRunner) (*GitHub, error) {
@@ -169,6 +170,32 @@ func (g *GitHub) Create(ctx context.Context, title, body string) (Ticket, error)
 		return Ticket{}, err
 	}
 	return g.Resolve(ctx, "#"+strconv.Itoa(number))
+}
+
+// CreatePullRequest opens a draft pull request for an already-pushed branch.
+func (g *GitHub) CreatePullRequest(ctx context.Context, request PullRequest) (string, error) {
+	title := strings.TrimSpace(request.Title)
+	if title == "" {
+		return "", errors.New("cannot create a GitHub pull request without a title")
+	}
+	head := strings.TrimSpace(request.Head)
+	if head == "" {
+		return "", errors.New("cannot create a GitHub pull request without a head branch")
+	}
+
+	args := []string{"pr", "create", "--draft", "--title", title, "--body", request.Body, "--head", head}
+	if base := strings.TrimSpace(request.Base); base != "" {
+		args = append(args, "--base", base)
+	}
+	output, err := g.run(ctx, "create draft pull request", args...)
+	if err != nil {
+		return "", err
+	}
+	url := strings.TrimSpace(output)
+	if url == "" {
+		return "", errors.New("gh pr create returned an empty pull request URL")
+	}
+	return url, nil
 }
 
 func (g *GitHub) ensureLabels(ctx context.Context) error {
