@@ -14,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	commitgenadapter "github.com/igorrochap/syl/internal/adapters/commitgen"
+	"github.com/igorrochap/syl/internal/config"
 	"github.com/igorrochap/syl/internal/harness"
 	"github.com/igorrochap/syl/internal/harness/codex"
 	"github.com/igorrochap/syl/internal/usage"
@@ -333,6 +335,153 @@ func TestImplementPrOnApproveUsesCommitgenForCommitAndPullRequestText(t *testing
 	if strings.Contains(fixture.stdout.String(), "commitgen") {
 		t.Fatalf("stdout = %q, want no fallback notice when commitgen succeeds", fixture.stdout.String())
 	}
+}
+
+func TestImplementPrOnApprovePassesProjectLanguageToCommitgen(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		language string
+	}{
+		{name: "commitgen default"},
+		{name: "project override", language: "pt_br"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newImplementLoopFixture(t)
+			createBareOrigin(t, fixture.root)
+			configureApprovedPublicationHarness(fixture)
+			if test.language != "" {
+				projectConfig, err := config.Load(fixture.root)
+				if err != nil {
+					t.Fatal(err)
+				}
+				projectConfig.Publish.Language = test.language
+				if _, err := config.Write(fixture.root, projectConfig, config.OverwriteExisting); err != nil {
+					t.Fatal(err)
+				}
+				commitWorkingTree(t, fixture.root, "configure publication language")
+			}
+			logPath := installCommitgenScript(t, false)
+			fixture.app.deps.Commitgen = commitgenadapter.Runner{}
+
+			code := fixture.app.Run(context.Background(), []string{"implement", "42", "--pr-on-approve"}, &fixture.stdout, &fixture.stderr)
+			if code != 0 {
+				t.Fatalf("implement code = %d, stderr = %q", code, fixture.stderr.String())
+			}
+			calls := readCommitgenScriptCalls(t, logPath)
+			if len(calls) != 2 {
+				t.Fatalf("commitgen calls = %#v, want commit and PR calls", calls)
+			}
+			for index, args := range calls {
+				languageIndex := slices.Index(args, "--language")
+				if test.language == "" {
+					if languageIndex >= 0 {
+						t.Errorf("commitgen call %d arguments = %#v, want no --language", index, args)
+					}
+					continue
+				}
+				if languageIndex < 0 || languageIndex+1 >= len(args) || args[languageIndex+1] != test.language {
+					t.Errorf("commitgen call %d arguments = %#v, want --language %s", index, args, test.language)
+				}
+			}
+		})
+	}
+}
+
+func TestImplementPrOnApproveIncludesCommitgenLanguageFailureInFallbackNotice(t *testing.T) {
+	fixture := newImplementLoopFixture(t)
+	createBareOrigin(t, fixture.root)
+	gh := configureApprovedPublicationHarness(fixture)
+	gh.issueTitle = "Adicionar suporte à publicação"
+	projectConfig, err := config.Load(fixture.root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	projectConfig.Publish.Language = "xx"
+	if _, err := config.Write(fixture.root, projectConfig, config.OverwriteExisting); err != nil {
+		t.Fatal(err)
+	}
+	commitWorkingTree(t, fixture.root, "configure publication language")
+	logPath := installCommitgenScript(t, true)
+	fixture.app.deps.Commitgen = commitgenadapter.Runner{}
+
+	code := fixture.app.Run(context.Background(), []string{"implement", "42", "--pr-on-approve"}, &fixture.stdout, &fixture.stderr)
+	if code != 0 {
+		t.Fatalf("implement code = %d, stderr = %q", code, fixture.stderr.String())
+	}
+	if got := gitOutput(t, fixture.root, "log", "-1", "--format=%s"); got != "feat: Adicionar suporte à publicação (#42)" {
+		t.Fatalf("fallback commit message = %q, want ticket title preserved", got)
+	}
+	for _, expected := range []string{
+		"used fallback commit message",
+		"used fallback pull request text",
+		"language xx not supported",
+	} {
+		if !strings.Contains(fixture.stdout.String(), expected) {
+			t.Errorf("stdout = %q, want %q", fixture.stdout.String(), expected)
+		}
+	}
+	prCall := gh.calls[len(gh.calls)-1]
+	if !strings.Contains(prCall, "--title Adicionar suporte à publicação") ||
+		!strings.Contains(prCall, "The implementation meets the ticket.") {
+		t.Fatalf("draft PR call = %q, want original ticket title and English fallback body", prCall)
+	}
+	if calls := readCommitgenScriptCalls(t, logPath); len(calls) != 2 {
+		t.Fatalf("commitgen calls = %#v, want failed commit and PR calls", calls)
+	}
+}
+
+func installCommitgenScript(t *testing.T, failUnsupported bool) string {
+	t.Helper()
+	bin := t.TempDir()
+	logPath := filepath.Join(t.TempDir(), "commitgen-args.log")
+	script := `#!/bin/sh
+printf 'CALL\n' >> "$COMMITGEN_LOG"
+printf '%s\n' "$@" >> "$COMMITGEN_LOG"
+printf 'END\n' >> "$COMMITGEN_LOG"
+if [ "$COMMITGEN_FAIL_UNSUPPORTED" = "true" ]; then
+  case " $* " in
+    *" --language xx "*) printf '%s\n' 'language xx not supported' >&2; exit 1 ;;
+  esac
+fi
+if [ "$1" = "pr" ]; then
+  printf '%s\n' 'Title: feat: generated PR' '' 'Generated details.'
+  exit 0
+fi
+git commit -m 'feat: generated publication' >/dev/null
+`
+	path := filepath.Join(bin, "commitgen")
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("COMMITGEN_LOG", logPath)
+	if failUnsupported {
+		t.Setenv("COMMITGEN_FAIL_UNSUPPORTED", "true")
+	} else {
+		t.Setenv("COMMITGEN_FAIL_UNSUPPORTED", "false")
+	}
+	return logPath
+}
+
+func readCommitgenScriptCalls(t *testing.T, path string) [][]string {
+	t.Helper()
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var calls [][]string
+	var current []string
+	for _, line := range strings.Split(strings.TrimSpace(string(contents)), "\n") {
+		switch line {
+		case "CALL":
+			current = []string{}
+		case "END":
+			calls = append(calls, current)
+		default:
+			current = append(current, line)
+		}
+	}
+	return calls
 }
 
 func TestImplementPrOnApproveFallsBackWhenCommitgenCannotCommit(t *testing.T) {
@@ -2389,7 +2538,8 @@ func (*loopHarness) AttachSession(context.Context, string, harness.Request) erro
 }
 
 type loopGHRunner struct {
-	calls []string
+	calls      []string
+	issueTitle string
 }
 
 func (r *loopGHRunner) Run(_ context.Context, args ...string) (string, error) {
@@ -2397,6 +2547,9 @@ func (r *loopGHRunner) Run(_ context.Context, args ...string) (string, error) {
 	r.calls = append(r.calls, call)
 	if strings.HasPrefix(call, "pr create --draft ") {
 		return "https://github.com/example/project/pull/23\n", nil
+	}
+	if strings.HasPrefix(call, "pr list --head ") {
+		return "[]", nil
 	}
 	switch call {
 	case "repo view --json defaultBranchRef --jq .defaultBranchRef.name":
@@ -2406,7 +2559,11 @@ func (r *loopGHRunner) Run(_ context.Context, args ...string) (string, error) {
 	case "label list --limit 100 --json name":
 		return `[{"name":"todo"},{"name":"doing"}]`, nil
 	case "issue view 42 --json number,title,body,state,labels":
-		return `{"number":42,"title":"Add resilient workflow","body":"Acceptance criteria: leave a working implementation.","state":"OPEN","labels":[{"name":"todo"}]}`, nil
+		title := r.issueTitle
+		if title == "" {
+			title = "Add resilient workflow"
+		}
+		return fmt.Sprintf(`{"number":42,"title":%q,"body":"Acceptance criteria: leave a working implementation.","state":"OPEN","labels":[{"name":"todo"}]}`, title), nil
 	case "issue edit 42 --add-label doing --remove-label todo":
 		return "", nil
 	default:

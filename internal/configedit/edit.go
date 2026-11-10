@@ -38,6 +38,7 @@ type Values struct {
 
 	MaxIterations        int
 	NotificationsEnabled bool
+	PublishLanguage      string
 
 	WorktreeRoot  string
 	WorktreeSetup string
@@ -108,6 +109,10 @@ func loadError(err error) LoadError {
 // Parse converts submitted form values into editable config values. Defaults
 // supplies loaded values for fields omitted by an older dashboard form.
 func Parse(form url.Values, defaults Values) (Values, FieldErrors) {
+	publishLanguage := defaults.PublishLanguage
+	if _, submitted := form["publish.language"]; submitted {
+		publishLanguage = form.Get("publish.language")
+	}
 	values := Values{
 		TrackerIssues:        form.Get("tracker.issues"),
 		TrackerReviews:       form.Get("tracker.reviews"),
@@ -115,6 +120,7 @@ func Parse(form url.Values, defaults Values) (Values, FieldErrors) {
 		Implement:            parseRole(form, "implement", defaults.Implement),
 		Review:               parseRole(form, "review", defaults.Review),
 		NotificationsEnabled: formBool(form, "notifications.enabled"),
+		PublishLanguage:      publishLanguage,
 		WorktreeRoot:         form.Get("worktree.root"),
 		WorktreeSetup:        form.Get("worktree.setup"),
 		WorktreeCopy:         nonEmptyValues(form["worktree.copy"]),
@@ -252,6 +258,7 @@ func valuesFromConfig(loaded config.Config) Values {
 		Review:               roleValuesFromConfig(loaded.Roles.Review),
 		MaxIterations:        loaded.Loop.MaxIterations,
 		NotificationsEnabled: loaded.Notifications.Enabled,
+		PublishLanguage:      loaded.Publish.Language,
 		WorktreeRoot:         loaded.Worktree.Root,
 		WorktreeSetup:        loaded.Worktree.Setup,
 		WorktreeCopy:         append([]string(nil), loaded.Worktree.Copy...),
@@ -275,6 +282,7 @@ func (values Values) config() config.Config {
 		},
 		Loop:          config.LoopConfig{MaxIterations: values.MaxIterations},
 		Notifications: config.NotificationsConfig{Enabled: values.NotificationsEnabled},
+		Publish:       config.PublishConfig{Language: values.PublishLanguage},
 		Worktree:      config.WorktreeConfig{Root: values.WorktreeRoot, Setup: values.WorktreeSetup, Copy: append([]string(nil), values.WorktreeCopy...)},
 	}
 }
