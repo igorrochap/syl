@@ -170,6 +170,42 @@ func TestGitHubCreatePullRequestOmitsBaseWhenUnspecified(t *testing.T) {
 	}
 }
 
+func TestGitHubDefaultPullRequestBaseReadsForgeBranch(t *testing.T) {
+	const command = "repo view --json defaultBranchRef --jq .defaultBranchRef.name"
+	runner := &scriptedGitHubRunner{responses: map[string]githubResponse{
+		command: {output: " main \n"},
+	}}
+	githubTracker, err := NewGitHub(runner)
+	if err != nil {
+		t.Fatalf("NewGitHub() error = %v", err)
+	}
+	base, err := githubTracker.DefaultPullRequestBase(context.Background())
+	if err != nil || base != "main" {
+		t.Fatalf("DefaultPullRequestBase() = (%q, %v), want main and no error", base, err)
+	}
+	if !runner.hasCall(command) {
+		t.Fatalf("GitHub calls = %#v, want forge default branch lookup", runner.calls)
+	}
+}
+
+func TestGitHubDefaultPullRequestBaseReportsLookupFailureAndEmptyBranch(t *testing.T) {
+	for _, response := range []githubResponse{
+		{err: errors.New("repository lookup failed")},
+		{output: " \n"},
+	} {
+		runner := &scriptedGitHubRunner{responses: map[string]githubResponse{
+			"repo view --json defaultBranchRef --jq .defaultBranchRef.name": response,
+		}}
+		githubTracker, err := NewGitHub(runner)
+		if err != nil {
+			t.Fatalf("NewGitHub() error = %v", err)
+		}
+		if base, err := githubTracker.DefaultPullRequestBase(context.Background()); err == nil || base != "" {
+			t.Fatalf("DefaultPullRequestBase() = (%q, %v), want empty base and an error", base, err)
+		}
+	}
+}
+
 func TestGitHubListReturnsAllIssueMetadata(t *testing.T) {
 	runner := &scriptedGitHubRunner{responses: map[string]githubResponse{
 		"label list --limit 100 --json name": {

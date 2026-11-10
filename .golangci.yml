@@ -35,6 +35,7 @@ linters:
             - "!**/internal/configview/*.go"
             - "!**/internal/pageview/*.go"
             - "!**/internal/web/*.go"
+            - "!**/internal/adapters/commitgen/*.go"
             - "!**/internal/adapters/gh/*.go"
             - "!**/internal/adapters/glab/*.go"
             - "!**/internal/adapters/git/*.go"
@@ -79,6 +80,7 @@ linters:
             - github.com
             - golang.org
             - github.com/igorrochap/syl/internal/adapters/git$
+            - github.com/igorrochap/syl/internal/adapters/commitgen$
             - github.com/igorrochap/syl/internal/adapters/notify$
             - github.com/igorrochap/syl/internal/config$
             - github.com/igorrochap/syl/internal/harness$
@@ -294,6 +296,7 @@ linters:
               desc: external adapters implement ports and must not depend on application callers
         no-project-dependencies:
           files:
+            - "**/internal/adapters/commitgen/*.go"
             - "**/internal/adapters/git/*.go"
             - "**/internal/adapters/notify/*.go"
             - "**/internal/harness/claude/transcript/*.go"

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/igorrochap/syl/internal/adapters/commitgen"
 	"github.com/igorrochap/syl/internal/adapters/gh"
 	"github.com/igorrochap/syl/internal/adapters/git"
 	"github.com/igorrochap/syl/internal/adapters/glab"
@@ -38,6 +39,7 @@ func main() {
 		Git: func(root string) orchestration.GitRunner {
 			return git.ExecGitRunner{Dir: root}
 		},
+		Commitgen: commitgen.Runner{},
 		Harnesses: func(root string) map[string]harness.Adapter {
 			return map[string]harness.Adapter{
 				"claude": claude.New(root),

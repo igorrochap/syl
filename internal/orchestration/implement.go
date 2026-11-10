@@ -51,6 +51,7 @@ type ImplementOptions struct {
 	Reviewer             harness.Adapter
 	Git                  GitRunner
 	OriginGit            GitRunner
+	Commitgen            CommitgenRunner
 	Notifier             Notifier
 	Input                io.Reader
 	Output               io.Writer
@@ -176,27 +177,45 @@ func executeImplementRun(ctx context.Context, options ImplementOptions, run impl
 		diffStat:     diffStat,
 		worktreePath: run.setup.worktreePath,
 	}
-	var publicationErr error
-	if !options.PublishOnApprove {
-		summary.publication.Status = runrecord.PublicationNotRequested
-	}
-	if options.PublishOnApprove && final.Status == verdict.Approve {
-		summary.publication = publishApprovedImplement(ctx, options, run.setup, summary)
-		switch summary.publication.Status {
-		case runrecord.PublicationPublished:
-			summary.pullRequestURL = summary.publication.URL
-		case runrecord.PublicationSkipped:
-			summary.publishNotice = "No changes to publish; skipped commit, push, and pull request."
-		case runrecord.PublicationFailed:
-			commands := publicationCommands(summary.publication.Step, options, run.setup, summary)
-			summary.publishNotice = formatPublicationFailure(summary.publication, commands)
-			publicationErr = errors.New(summary.publishNotice)
-		}
-	}
+	publicationErr := publishApprovedSummary(ctx, options, run.setup, &summary)
 	if err := completeImplementRun(ctx, options, run, summary); err != nil {
 		return err
 	}
 	return publicationErr
+}
+
+func publishApprovedSummary(
+	ctx context.Context,
+	options ImplementOptions,
+	setup implementSetup,
+	summary *implementSummary,
+) error {
+	if !options.PublishOnApprove {
+		summary.publication.Status = runrecord.PublicationNotRequested
+		return nil
+	}
+	if summary.final.Status != verdict.Approve {
+		return nil
+	}
+
+	var notices []string
+	summary.publication, notices = publishApprovedImplement(ctx, options, setup, *summary)
+	summary.publishNotice = strings.Join(notices, "\n")
+	switch summary.publication.Status {
+	case runrecord.PublicationPublished:
+		summary.pullRequestURL = summary.publication.URL
+	case runrecord.PublicationSkipped:
+		summary.publishNotice = "No changes to publish; skipped commit, push, and pull request."
+	case runrecord.PublicationFailed:
+		commands := publicationCommands(summary.publication.Step, options, setup, *summary)
+		failureNotice := formatPublicationFailure(summary.publication, commands)
+		if summary.publishNotice != "" {
+			summary.publishNotice += "\n"
+		}
+		summary.publishNotice += failureNotice
+		return errors.New(failureNotice)
+	}
+	return nil
 }
 
 func prepareImplementRun(ctx context.Context, options ImplementOptions, originGit GitRunner) (implementRunState, error) {

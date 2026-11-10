@@ -7,6 +7,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -274,6 +276,230 @@ func TestImplementPrOnApprovePublishesApprovedChanges(t *testing.T) {
 	}
 }
 
+func TestImplementPrOnApproveUsesCommitgenForCommitAndPullRequestText(t *testing.T) {
+	fixture := newImplementLoopFixture(t)
+	createBareOrigin(t, fixture.root)
+	branchPoint := gitOutput(t, fixture.root, "rev-parse", "HEAD")
+	gh := configureApprovedPublicationHarness(fixture)
+	commitgen := &fakeCommitgenRunner{
+		available: true,
+		prOutput:  "Title: feat: add x\n\nGenerated details.\n\nCloses #42",
+		commit: func(ctx context.Context, workRoot string) error {
+			_, err := fixture.app.gitRunner(workRoot).Run(ctx, "commit", "-m", "feat: generated publication")
+			return err
+		},
+	}
+	fixture.app.deps.Commitgen = commitgen
+
+	code := fixture.app.Run(context.Background(), []string{"implement", "42", "--pr-on-approve"}, &fixture.stdout, &fixture.stderr)
+	if code != 0 {
+		t.Fatalf("implement code = %d, stderr = %q", code, fixture.stderr.String())
+	}
+	if got := gitOutput(t, fixture.root, "rev-list", "--count", branchPoint+"..HEAD"); got != "1" {
+		t.Fatalf("commits since branch point = %q, want exactly one commitgen commit", got)
+	}
+	if got := gitOutput(t, fixture.root, "log", "-1", "--format=%s"); got != "feat: generated publication" {
+		t.Fatalf("commit message = %q, want commitgen-created message", got)
+	}
+	if len(commitgen.calls) != 2 || commitgen.calls[0].workRoot != fixture.root || commitgen.calls[1].workRoot != fixture.root {
+		t.Fatalf("commitgen calls = %#v, want commit and PR in the work root", commitgen.calls)
+	}
+	if !reflect.DeepEqual(commitgen.calls[0].args, []string{"--agent", "--context", "Ticket #42: Add resilient workflow"}) {
+		t.Fatalf("commitgen commit arguments = %#v", commitgen.calls[0].args)
+	}
+	if !reflect.DeepEqual(commitgen.calls[1].args, []string{"pr", "--agent", "--base", "main", "--head", "feat/add-resilient-workflow"}) {
+		t.Fatalf("commitgen PR arguments = %#v", commitgen.calls[1].args)
+	}
+	for _, forbidden := range []string{"--provider", "--model", "--language"} {
+		if slices.Contains(commitgen.calls[0].args, forbidden) || slices.Contains(commitgen.calls[1].args, forbidden) {
+			t.Fatalf("commitgen arguments contain %q: %#v", forbidden, commitgen.calls)
+		}
+	}
+	prCall := gh.calls[len(gh.calls)-1]
+	for _, expected := range []string{
+		"--title feat: add x",
+		"Generated details.\n\nCloses #42\n\n- [ ] internal/example.go:9 — Rename this helper.",
+		"--base main",
+	} {
+		if !strings.Contains(prCall, expected) {
+			t.Errorf("draft PR call = %q, want %q", prCall, expected)
+		}
+	}
+	bodyEnd := strings.Index(prCall, " --head ")
+	if strings.Count(prCall, "Closes #42") != 1 || bodyEnd < 0 ||
+		!strings.HasSuffix(prCall[:bodyEnd], "- [ ] internal/example.go:9 — Rename this helper.") {
+		t.Fatalf("draft PR call = %q, want one close reference and nit checklist at the end", prCall)
+	}
+	if strings.Contains(fixture.stdout.String(), "commitgen") {
+		t.Fatalf("stdout = %q, want no fallback notice when commitgen succeeds", fixture.stdout.String())
+	}
+}
+
+func TestImplementPrOnApproveFallsBackWhenCommitgenCannotCommit(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		mode string
+	}{
+		{name: "exits non-zero", mode: "fail"},
+		{name: "commits then exits non-zero", mode: "fail-after-commit"},
+		{name: "leaves HEAD unchanged", mode: "noop"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newImplementLoopFixture(t)
+			createBareOrigin(t, fixture.root)
+			branchPoint := gitOutput(t, fixture.root, "rev-parse", "HEAD")
+			gh := configureApprovedPublicationHarness(fixture)
+			commitgen := &fakeCommitgenRunner{
+				available: true,
+				prOutput:  "Title: feat: generated PR\n\nGenerated description.",
+			}
+			if test.mode == "fail" {
+				commitgen.commitErr = fmt.Errorf("simulated commitgen failure")
+			}
+			if test.mode == "fail-after-commit" {
+				commitgen.commit = func(ctx context.Context, workRoot string) error {
+					if _, err := fixture.app.gitRunner(workRoot).Run(ctx, "commit", "-m", "feat: generated publication"); err != nil {
+						return err
+					}
+					return fmt.Errorf("simulated commitgen failure after commit")
+				}
+			}
+			fixture.app.deps.Commitgen = commitgen
+
+			code := fixture.app.Run(context.Background(), []string{"implement", "42", "--pr-on-approve"}, &fixture.stdout, &fixture.stderr)
+			if code != 0 {
+				t.Fatalf("implement code = %d, stderr = %q", code, fixture.stderr.String())
+			}
+			if got := gitOutput(t, fixture.root, "rev-list", "--count", branchPoint+"..HEAD"); got != "1" {
+				t.Fatalf("commits since branch point = %q, want one fallback commit", got)
+			}
+			if got := gitOutput(t, fixture.root, "log", "-1", "--format=%s"); got != "feat: Add resilient workflow (#42)" {
+				t.Fatalf("commit message = %q, want fallback commit message", got)
+			}
+			if !strings.Contains(fixture.stdout.String(), "used fallback commit message") {
+				t.Fatalf("stdout = %q, want commitgen fallback notice", fixture.stdout.String())
+			}
+			if strings.Contains(fixture.stdout.String(), "used fallback pull request text") {
+				t.Fatalf("stdout = %q, want generated pull request text", fixture.stdout.String())
+			}
+			if len(gh.calls) == 0 || !strings.Contains(gh.calls[len(gh.calls)-1], "--title feat: generated PR") {
+				t.Fatalf("GitHub calls = %#v, want commitgen pull request title", gh.calls)
+			}
+			prCall := gh.calls[len(gh.calls)-1]
+			bodyEnd := strings.Index(prCall, " --head ")
+			if strings.Count(prCall, "Closes #42") != 1 || bodyEnd < 0 ||
+				!strings.HasSuffix(prCall[:bodyEnd], "- [ ] internal/example.go:9 — Rename this helper.") {
+				t.Fatalf("draft PR call = %q, want one appended close reference and nit checklist at the end", prCall)
+			}
+		})
+	}
+}
+
+func TestImplementPrOnApproveFallsBackWhenCommitgenPRTextIsUnusable(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		output string
+		exit   string
+	}{
+		{name: "command fails", output: "Title: ignored", exit: "1"},
+		{name: "no title", output: " \n\t\n", exit: "0"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newImplementLoopFixture(t)
+			createBareOrigin(t, fixture.root)
+			gh := configureApprovedPublicationHarness(fixture)
+			commitgen := &fakeCommitgenRunner{
+				available: true,
+				prOutput:  test.output,
+				commit: func(ctx context.Context, workRoot string) error {
+					_, err := fixture.app.gitRunner(workRoot).Run(ctx, "commit", "-m", "feat: generated publication")
+					return err
+				},
+			}
+			if test.exit == "1" {
+				commitgen.prErr = fmt.Errorf("simulated commitgen pr failure")
+			}
+			fixture.app.deps.Commitgen = commitgen
+
+			code := fixture.app.Run(context.Background(), []string{"implement", "42", "--pr-on-approve"}, &fixture.stdout, &fixture.stderr)
+			if code != 0 {
+				t.Fatalf("implement code = %d, stderr = %q", code, fixture.stderr.String())
+			}
+			if !strings.Contains(fixture.stdout.String(), "used fallback pull request text") {
+				t.Fatalf("stdout = %q, want pull request fallback notice", fixture.stdout.String())
+			}
+			prCall := gh.calls[len(gh.calls)-1]
+			bodyEnd := strings.Index(prCall, " --head ")
+			if !strings.Contains(prCall, "--title Add resilient workflow") ||
+				!strings.Contains(prCall, "Closes #42\n\nThe implementation meets the ticket.") ||
+				bodyEnd < 0 || !strings.HasSuffix(prCall[:bodyEnd], "- [ ] internal/example.go:9 — Rename this helper.") {
+				t.Fatalf("draft PR call = %q, want fallback title, body, and nit checklist", prCall)
+			}
+		})
+	}
+}
+
+func TestImplementPrOnApproveUsesForgeDefaultBaseForCommitgenFromDetachedStart(t *testing.T) {
+	fixture := newImplementLoopFixture(t)
+	createBareOrigin(t, fixture.root)
+	gitOutput(t, fixture.root, "switch", "--detach", "HEAD")
+	loopGH := configureApprovedPublicationHarness(fixture)
+	commitgen := &fakeCommitgenRunner{
+		available: true,
+		prOutput:  "Titulo: feat: add x\n\nGenerated description.",
+		commit: func(ctx context.Context, workRoot string) error {
+			_, err := fixture.app.gitRunner(workRoot).Run(ctx, "commit", "-m", "feat: generated publication")
+			return err
+		},
+	}
+	fixture.app.deps.Commitgen = commitgen
+
+	code := fixture.app.Run(context.Background(), []string{"implement", "42", "--pr-on-approve"}, &fixture.stdout, &fixture.stderr)
+	if code != 0 {
+		t.Fatalf("implement code = %d, stderr = %q", code, fixture.stderr.String())
+	}
+	if len(commitgen.calls) != 2 || !reflect.DeepEqual(commitgen.calls[1].args, []string{
+		"pr", "--agent", "--base", "main", "--head", "feat/add-resilient-workflow",
+	}) {
+		t.Fatalf("commitgen calls = %#v, want forge default base", commitgen.calls)
+	}
+	prCall := loopGH.calls[len(loopGH.calls)-1]
+	if !strings.Contains(prCall, "--base main") || !strings.Contains(prCall, "--title feat: add x") {
+		t.Fatalf("draft PR call = %q, want generated title and the same forge default base", prCall)
+	}
+}
+
+func TestImplementPrOnApproveFallsBackWhenCommitgenIsUnavailable(t *testing.T) {
+	fixture := newImplementLoopFixture(t)
+	createBareOrigin(t, fixture.root)
+	branchPoint := gitOutput(t, fixture.root, "rev-parse", "HEAD")
+	configureApprovedPublicationHarness(fixture)
+	commitgen := &fakeCommitgenRunner{}
+	fixture.app.deps.Commitgen = commitgen
+
+	code := fixture.app.Run(context.Background(), []string{"implement", "42", "--pr-on-approve"}, &fixture.stdout, &fixture.stderr)
+	if code != 0 {
+		t.Fatalf("implement code = %d, stderr = %q", code, fixture.stderr.String())
+	}
+	if got := gitOutput(t, fixture.root, "rev-list", "--count", branchPoint+"..HEAD"); got != "1" {
+		t.Fatalf("commits since branch point = %q, want one fallback commit", got)
+	}
+	if got := gitOutput(t, fixture.root, "log", "-1", "--format=%s"); got != "feat: Add resilient workflow (#42)" {
+		t.Fatalf("commit message = %q, want fallback commit message", got)
+	}
+	for _, notice := range []string{
+		"commitgen unavailable; used fallback commit message",
+		"commitgen unavailable; used fallback pull request text",
+	} {
+		if !strings.Contains(fixture.stdout.String(), notice) {
+			t.Errorf("stdout = %q, want %q", fixture.stdout.String(), notice)
+		}
+	}
+	if len(commitgen.calls) != 0 {
+		t.Fatalf("commitgen calls = %#v, want none when the runner is unavailable", commitgen.calls)
+	}
+}
+
 func TestImplementPrOnApproveSkipsPublicationForEmptyDiff(t *testing.T) {
 	fixture := newImplementLoopFixture(t)
 	bareRemote := createBareOrigin(t, fixture.root)
@@ -426,6 +652,50 @@ func createBareOrigin(t *testing.T, root string) string {
 	gitOutput(t, root, "config", "user.email", "syl@example.test")
 	gitOutput(t, root, "remote", "add", "origin", bareRemote)
 	return bareRemote
+}
+
+func configureApprovedPublicationHarness(fixture *implementLoopFixture) *loopGHRunner {
+	loop := &loopHarness{
+		root: fixture.root,
+		streams: [][]harness.Event{
+			{{Type: harness.EventSession, SessionID: "implement-session"}},
+			{{Type: harness.EventSession, SessionID: "review-session"}, {Type: harness.EventAssistantText, Text: approveVerdictWithNitText}},
+		},
+	}
+	fixture.harnesses["codex"] = loop
+	fixture.harnesses["claude"] = loop
+	gh := &loopGHRunner{}
+	fixture.app.deps.GH = fixedGH(gh)
+	return gh
+}
+
+type fakeCommitgenCall struct {
+	workRoot string
+	args     []string
+}
+
+type fakeCommitgenRunner struct {
+	available bool
+	calls     []fakeCommitgenCall
+	commit    func(context.Context, string) error
+	commitErr error
+	prOutput  string
+	prErr     error
+}
+
+func (r *fakeCommitgenRunner) Available() bool { return r.available }
+
+func (r *fakeCommitgenRunner) Run(ctx context.Context, workRoot string, args ...string) (string, error) {
+	r.calls = append(r.calls, fakeCommitgenCall{workRoot: workRoot, args: append([]string(nil), args...)})
+	if len(args) > 0 && args[0] == "pr" {
+		return r.prOutput, r.prErr
+	}
+	if r.commit != nil {
+		if err := r.commit(ctx, workRoot); err != nil {
+			return "", err
+		}
+	}
+	return "", r.commitErr
 }
 
 func TestBareImplementDoesNotRunWorktreeSetup(t *testing.T) {
@@ -2128,6 +2398,8 @@ func (r *loopGHRunner) Run(_ context.Context, args ...string) (string, error) {
 		return "https://github.com/example/project/pull/23\n", nil
 	}
 	switch call {
+	case "repo view --json defaultBranchRef --jq .defaultBranchRef.name":
+		return "main\n", nil
 	case "pr list --head feat/add-resilient-workflow --state open --json url --limit 1":
 		return "[]", nil
 	case "label list --limit 100 --json name":

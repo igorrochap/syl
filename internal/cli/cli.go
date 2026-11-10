@@ -35,6 +35,7 @@ type Dependencies struct {
 	GH            func(root string) tracker.GHRunner
 	GLab          func(root string) tracker.GLabRunner
 	Git           func(root string) orchestration.GitRunner
+	Commitgen     orchestration.CommitgenRunner
 	Updater       updater.Runner
 	BrowserOpener func(url string) error
 	Listen        func(network, address string) (net.Listener, error)
@@ -364,7 +365,8 @@ func (a *App) runImplementLoop(
 	return orchestration.RunImplement(cmd.Context(), orchestration.ImplementOptions{
 		OriginRoot: a.originRoot, WorkRoot: workRoot, OpenRun: orchestration.NewDiskRunOpener(a.originRoot, a.sylHome, cmd.ErrOrStderr()), ProjectConfig: projectConfig, IssueTracker: statusTracker, Ticket: ticket,
 		Implementer: implementer, Reviewer: reviewer, Git: a.gitRunner(workRoot), OriginGit: a.gitRunner(a.originRoot),
-		Notifier: a.notifier(projectConfig.Notifications.Enabled), Input: cmd.InOrStdin(), Output: cmd.OutOrStdout(),
+		Commitgen: a.deps.Commitgen,
+		Notifier:  a.notifier(projectConfig.Notifications.Enabled), Input: cmd.InOrStdin(), Output: cmd.OutOrStdout(),
 		Context:             commandOptions.additionalContext,
 		ReviewContext:       commandOptions.reviewContext,
 		Verbose:             commandOptions.verbose,

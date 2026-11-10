@@ -70,6 +70,7 @@ type GitHub struct {
 
 var _ Tracker = (*GitHub)(nil)
 var _ PullRequestCreator = (*GitHub)(nil)
+var _ PullRequestBaseResolver = (*GitHub)(nil)
 
 // NewGitHub creates a GitHub tracker backed by runner.
 func NewGitHub(runner GHRunner) (*GitHub, error) {
@@ -203,6 +204,19 @@ func (g *GitHub) CreatePullRequest(ctx context.Context, request PullRequest) (st
 		return "", errors.New("gh pr create returned an empty pull request URL")
 	}
 	return url, nil
+}
+
+// DefaultPullRequestBase returns the repository's forge-configured default branch.
+func (g *GitHub) DefaultPullRequestBase(ctx context.Context) (string, error) {
+	output, err := g.run(ctx, "read default pull request base", "repo", "view", "--json", "defaultBranchRef", "--jq", ".defaultBranchRef.name")
+	if err != nil {
+		return "", err
+	}
+	base := strings.TrimSpace(output)
+	if base == "" {
+		return "", errors.New("GitHub returned an empty default branch")
+	}
+	return base, nil
 }
 
 func (g *GitHub) findExistingPullRequestURL(ctx context.Context, head string) (string, error) {
