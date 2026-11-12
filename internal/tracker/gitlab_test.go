@@ -411,6 +411,9 @@ func TestGitLabCreatePullRequestOpensDraftAndTargetsOptionalBase(t *testing.T) {
 			if !runner.hasCall(test.createCall) {
 				t.Fatalf("glab calls = %#v, want %q", runner.calls, test.createCall)
 			}
+			if got := strings.Join(gitLab.CreatePullRequestCommand(request), " "); got != "glab "+test.createCall {
+				t.Fatalf("CreatePullRequestCommand() = %q, want manual draft merge request command", got)
+			}
 		})
 	}
 }

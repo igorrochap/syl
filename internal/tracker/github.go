@@ -191,10 +191,7 @@ func (g *GitHub) CreatePullRequest(ctx context.Context, request PullRequest) (st
 		return existingURL, nil
 	}
 
-	args := []string{"pr", "create", "--draft", "--title", title, "--body", request.Body, "--head", head}
-	if base := strings.TrimSpace(request.Base); base != "" {
-		args = append(args, "--base", base)
-	}
+	args := g.CreatePullRequestCommand(request)[1:]
 	output, err := g.run(ctx, "create draft pull request", args...)
 	if err != nil {
 		return "", err
@@ -204,6 +201,18 @@ func (g *GitHub) CreatePullRequest(ctx context.Context, request PullRequest) (st
 		return "", errors.New("gh pr create returned an empty pull request URL")
 	}
 	return url, nil
+}
+
+// CreatePullRequestCommand builds the manual command for opening a draft pull request.
+func (*GitHub) CreatePullRequestCommand(request PullRequest) []string {
+	args := []string{
+		"gh", "pr", "create", "--draft", "--title", strings.TrimSpace(request.Title),
+		"--body", request.Body, "--head", strings.TrimSpace(request.Head),
+	}
+	if base := strings.TrimSpace(request.Base); base != "" {
+		args = append(args, "--base", base)
+	}
+	return args
 }
 
 // DefaultPullRequestBase returns the repository's forge-configured default branch.

@@ -190,19 +190,24 @@ func (g *GitLab) CreatePullRequest(ctx context.Context, request PullRequest) (st
 		return existingURL, nil
 	}
 
-	args := []string{
-		"mr", "create", "--draft", "--title", title, "--description", request.Body,
-		"--source-branch", head,
-	}
-	if base := strings.TrimSpace(request.Base); base != "" {
-		args = append(args, "--target-branch", base)
-	}
-	args = append(args, "--yes")
+	args := g.CreatePullRequestCommand(request)[1:]
 	output, err := g.run(ctx, "create draft merge request", args...)
 	if err != nil {
 		return "", err
 	}
 	return createdGitLabMergeRequestURL(output)
+}
+
+// CreatePullRequestCommand builds the manual command for opening a draft merge request.
+func (*GitLab) CreatePullRequestCommand(request PullRequest) []string {
+	args := []string{
+		"glab", "mr", "create", "--draft", "--title", strings.TrimSpace(request.Title),
+		"--description", request.Body, "--source-branch", strings.TrimSpace(request.Head),
+	}
+	if base := strings.TrimSpace(request.Base); base != "" {
+		args = append(args, "--target-branch", base)
+	}
+	return append(args, "--yes")
 }
 
 // DefaultPullRequestBase returns the GitLab project's configured default branch.

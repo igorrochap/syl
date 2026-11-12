@@ -49,6 +49,15 @@ type PullRequest struct {
 // PullRequestCreator is implemented by Trackers that can publish pull requests.
 type PullRequestCreator interface {
 	CreatePullRequest(ctx context.Context, request PullRequest) (string, error)
+	CreatePullRequestCommand(request PullRequest) []string
+}
+
+// RequirePullRequestCreator rejects a Tracker that cannot publish approved implementations.
+func RequirePullRequestCreator(issueTracker Tracker) error {
+	if _, ok := issueTracker.(PullRequestCreator); ok {
+		return nil
+	}
+	return errors.New("--pr-on-approve requires a GitHub or GitLab Tracker")
 }
 
 // PullRequestBaseResolver resolves the forge default branch used when a Run

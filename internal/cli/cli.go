@@ -418,15 +418,17 @@ func (a *App) resolveImplementTarget(ctx context.Context, args []string, stderr 
 	if err != nil {
 		return config.Config{}, nil, tracker.Ticket{}, err
 	}
-	if publishOnApprove && projectConfig.Tracker.Issues == config.TrackerLocal {
-		return config.Config{}, nil, tracker.Ticket{}, errors.New("--pr-on-approve requires a GitHub or GitLab Tracker")
-	}
 	if len(args) == 0 {
 		return config.Config{}, nil, tracker.Ticket{}, errors.New("implement requires an issue reference (N or #N)")
 	}
 	issueTracker, err := a.newIssueTracker(projectConfig)
 	if err != nil {
 		return config.Config{}, nil, tracker.Ticket{}, err
+	}
+	if publishOnApprove {
+		if err := tracker.RequirePullRequestCreator(issueTracker); err != nil {
+			return config.Config{}, nil, tracker.Ticket{}, err
+		}
 	}
 	ticket, err := issueTracker.Resolve(ctx, args[0])
 	if err != nil {

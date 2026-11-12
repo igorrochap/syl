@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/igorrochap/syl/internal/config"
 	"github.com/igorrochap/syl/internal/runrecord"
 	"github.com/igorrochap/syl/internal/tracker"
 	"github.com/igorrochap/syl/internal/verdict"
@@ -370,22 +369,23 @@ func publicationCommands(
 }
 
 func pullRequestCommand(options ImplementOptions, setup implementSetup, summary implementSummary) string {
-	if options.ProjectConfig.Tracker.Issues == config.TrackerGitLab {
-		command := "glab mr create --draft --title " + shellQuote(options.Ticket.Title) +
-			" --description " + shellQuote(pullRequestBody(options.Ticket.Number, summary)) +
-			" --source-branch " + shellArgument(setup.branch)
-		if setup.baseBranch != "" {
-			command += " --target-branch " + shellArgument(setup.baseBranch)
-		}
-		return command + " --yes"
+	publisher, ok := options.IssueTracker.(tracker.PullRequestCreator)
+	if !ok {
+		return ""
 	}
-	command := "gh pr create --draft --title " + shellQuote(options.Ticket.Title) +
-		" --body " + shellQuote(pullRequestBody(options.Ticket.Number, summary)) +
-		" --head " + shellArgument(setup.branch)
-	if setup.baseBranch != "" {
-		command += " --base " + shellArgument(setup.baseBranch)
+	request := tracker.PullRequest{
+		Title: options.Ticket.Title, Body: pullRequestBody(options.Ticket.Number, summary),
+		Head: setup.branch, Base: setup.baseBranch,
 	}
-	return command
+	return shellCommand(publisher.CreatePullRequestCommand(request))
+}
+
+func shellCommand(arguments []string) string {
+	quotedArguments := make([]string, 0, len(arguments))
+	for _, argument := range arguments {
+		quotedArguments = append(quotedArguments, shellArgument(argument))
+	}
+	return strings.Join(quotedArguments, " ")
 }
 
 func formatPublicationFailure(publication runrecord.Publication, commands []string) string {

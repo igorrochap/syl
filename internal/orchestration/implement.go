@@ -253,13 +253,8 @@ func validateImplementOptions(options ImplementOptions) error {
 		return fmt.Errorf("review harness %q is not configured", options.ProjectConfig.Roles.Review.Harness)
 	}
 	if options.PublishOnApprove {
-		trackerCanPublish := options.ProjectConfig.Tracker.Issues == config.TrackerGitHub ||
-			options.ProjectConfig.Tracker.Issues == config.TrackerGitLab
-		if !trackerCanPublish {
-			return errors.New("--pr-on-approve requires a GitHub or GitLab Tracker")
-		}
-		if _, ok := options.IssueTracker.(tracker.PullRequestCreator); !ok {
-			return errors.New("implement: Tracker cannot create pull requests")
+		if err := tracker.RequirePullRequestCreator(options.IssueTracker); err != nil {
+			return err
 		}
 	}
 	return nil
