@@ -369,6 +369,107 @@ func TestGitLabCreateAppliesTodoLabelAndResolvesCreatedIssue(t *testing.T) {
 	}
 }
 
+func TestGitLabCreatePullRequestOpensDraftAndTargetsOptionalBase(t *testing.T) {
+	tests := []struct {
+		name       string
+		base       string
+		createCall string
+	}{
+		{
+			name:       "targets start branch",
+			base:       "main",
+			createCall: "mr create --draft --title feat: add workflow --description Closes #42\n\nReviewed implementation.\n\n- [ ] internal/example.go:9 — Rename this helper. --source-branch feat/add-workflow --target-branch main --yes",
+		},
+		{
+			name:       "omits detached start target",
+			createCall: "mr create --draft --title feat: add workflow --description Closes #42\n\nReviewed implementation.\n\n- [ ] internal/example.go:9 — Rename this helper. --source-branch feat/add-workflow --yes",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			request := PullRequest{
+				Title: "feat: add workflow", Body: "Closes #42\n\nReviewed implementation.\n\n- [ ] internal/example.go:9 — Rename this helper.",
+				Head: "feat/add-workflow", Base: test.base,
+			}
+			runner := &scriptedGitLabRunner{responses: map[string]gitLabResponse{
+				"mr list --source-branch feat/add-workflow --output json --per-page 1": {output: "[]"},
+				test.createCall: {output: "!23 Draft: feat: add workflow (feat/add-workflow)\n https://gitlab.com/group/project/-/merge_requests/23\n"},
+			}}
+			gitLab, err := NewGitLab(runner)
+			if err != nil {
+				t.Fatalf("NewGitLab() error = %v", err)
+			}
+
+			url, err := gitLab.CreatePullRequest(context.Background(), request)
+			if err != nil {
+				t.Fatalf("CreatePullRequest() error = %v", err)
+			}
+			if url != "https://gitlab.com/group/project/-/merge_requests/23" {
+				t.Fatalf("CreatePullRequest() URL = %q, want created merge request URL", url)
+			}
+			if !runner.hasCall(test.createCall) {
+				t.Fatalf("glab calls = %#v, want %q", runner.calls, test.createCall)
+			}
+		})
+	}
+}
+
+func TestGitLabCreatePullRequestReturnsExistingMergeRequest(t *testing.T) {
+	const existingURL = "https://gitlab.com/group/project/-/merge_requests/17"
+	runner := &scriptedGitLabRunner{responses: map[string]gitLabResponse{
+		"mr list --source-branch feat/add-workflow --output json --per-page 1": {
+			output: `[{"web_url":"` + existingURL + `"}]`,
+		},
+	}}
+	gitLab, err := NewGitLab(runner)
+	if err != nil {
+		t.Fatalf("NewGitLab() error = %v", err)
+	}
+
+	url, err := gitLab.CreatePullRequest(context.Background(), PullRequest{
+		Title: "feat: add workflow", Head: "feat/add-workflow",
+	})
+	if err != nil || url != existingURL {
+		t.Fatalf("CreatePullRequest() = (%q, %v), want existing URL and no error", url, err)
+	}
+	if len(runner.calls) != 1 {
+		t.Fatalf("glab calls = %#v, want existing merge request lookup only", runner.calls)
+	}
+}
+
+func TestGitLabDefaultPullRequestBaseReadsForgeBranch(t *testing.T) {
+	runner := &scriptedGitLabRunner{responses: map[string]gitLabResponse{
+		"repo view --output json --jq .default_branch": {output: "main\n"},
+	}}
+	gitLab, err := NewGitLab(runner)
+	if err != nil {
+		t.Fatalf("NewGitLab() error = %v", err)
+	}
+
+	base, err := gitLab.DefaultPullRequestBase(context.Background())
+	if err != nil || base != "main" {
+		t.Fatalf("DefaultPullRequestBase() = (%q, %v), want main and no error", base, err)
+	}
+}
+
+func TestGitLabCreatePullRequestReportsMissingGLab(t *testing.T) {
+	runner := &scriptedGitLabRunner{responses: map[string]gitLabResponse{
+		"mr list --source-branch feat/add-workflow --output json --per-page 1": {err: exec.ErrNotFound},
+	}}
+	gitLab, err := NewGitLab(runner)
+	if err != nil {
+		t.Fatalf("NewGitLab() error = %v", err)
+	}
+
+	_, err = gitLab.CreatePullRequest(context.Background(), PullRequest{
+		Title: "feat: add workflow", Head: "feat/add-workflow",
+	})
+	if err == nil || !strings.Contains(err.Error(), "glab is not installed") {
+		t.Fatalf("CreatePullRequest() error = %v, want GitLab CLI not-installed guidance", err)
+	}
+}
+
 func TestGitLabErrorsAreDistinctAndActionable(t *testing.T) {
 	tests := []struct {
 		name       string

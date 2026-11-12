@@ -421,9 +421,6 @@ func (a *App) resolveImplementTarget(ctx context.Context, args []string, stderr 
 	if publishOnApprove && projectConfig.Tracker.Issues == config.TrackerLocal {
 		return config.Config{}, nil, tracker.Ticket{}, errors.New("--pr-on-approve requires a GitHub or GitLab Tracker")
 	}
-	if publishOnApprove && projectConfig.Tracker.Issues == config.TrackerGitLab {
-		return config.Config{}, nil, tracker.Ticket{}, errors.New("--pr-on-approve with a GitLab Tracker is not supported yet")
-	}
 	if len(args) == 0 {
 		return config.Config{}, nil, tracker.Ticket{}, errors.New("implement requires an issue reference (N or #N)")
 	}

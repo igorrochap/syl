@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/igorrochap/syl/internal/config"
 	"github.com/igorrochap/syl/internal/runrecord"
 	"github.com/igorrochap/syl/internal/tracker"
 	"github.com/igorrochap/syl/internal/verdict"
@@ -369,6 +370,15 @@ func publicationCommands(
 }
 
 func pullRequestCommand(options ImplementOptions, setup implementSetup, summary implementSummary) string {
+	if options.ProjectConfig.Tracker.Issues == config.TrackerGitLab {
+		command := "glab mr create --draft --title " + shellQuote(options.Ticket.Title) +
+			" --description " + shellQuote(pullRequestBody(options.Ticket.Number, summary)) +
+			" --source-branch " + shellArgument(setup.branch)
+		if setup.baseBranch != "" {
+			command += " --target-branch " + shellArgument(setup.baseBranch)
+		}
+		return command + " --yes"
+	}
 	command := "gh pr create --draft --title " + shellQuote(options.Ticket.Title) +
 		" --body " + shellQuote(pullRequestBody(options.Ticket.Number, summary)) +
 		" --head " + shellArgument(setup.branch)
