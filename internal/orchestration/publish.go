@@ -369,13 +369,23 @@ func publicationCommands(
 }
 
 func pullRequestCommand(options ImplementOptions, setup implementSetup, summary implementSummary) string {
-	command := "gh pr create --draft --title " + shellQuote(options.Ticket.Title) +
-		" --body " + shellQuote(pullRequestBody(options.Ticket.Number, summary)) +
-		" --head " + shellArgument(setup.branch)
-	if setup.baseBranch != "" {
-		command += " --base " + shellArgument(setup.baseBranch)
+	publisher, ok := options.IssueTracker.(tracker.PullRequestCreator)
+	if !ok {
+		return ""
 	}
-	return command
+	request := tracker.PullRequest{
+		Title: options.Ticket.Title, Body: pullRequestBody(options.Ticket.Number, summary),
+		Head: setup.branch, Base: setup.baseBranch,
+	}
+	return shellCommand(publisher.CreatePullRequestCommand(request))
+}
+
+func shellCommand(arguments []string) string {
+	quotedArguments := make([]string, 0, len(arguments))
+	for _, argument := range arguments {
+		quotedArguments = append(quotedArguments, shellArgument(argument))
+	}
+	return strings.Join(quotedArguments, " ")
 }
 
 func formatPublicationFailure(publication runrecord.Publication, commands []string) string {

@@ -109,9 +109,10 @@ func TestGitHubCreatePullRequestOpensDraftWithHeadAndOptionalBase(t *testing.T) 
 		t.Fatalf("NewGitHub() error = %v", err)
 	}
 
-	url, err := githubTracker.CreatePullRequest(context.Background(), PullRequest{
+	request := PullRequest{
 		Title: "Ship it", Body: "Closes #7", Head: "feat/ship-it", Base: "main",
-	})
+	}
+	url, err := githubTracker.CreatePullRequest(context.Background(), request)
 	if err != nil {
 		t.Fatalf("CreatePullRequest() error = %v", err)
 	}
@@ -120,6 +121,9 @@ func TestGitHubCreatePullRequestOpensDraftWithHeadAndOptionalBase(t *testing.T) 
 	}
 	if !runner.hasCall("pr create --draft --title Ship it --body Closes #7 --head feat/ship-it --base main") {
 		t.Fatalf("CreatePullRequest() calls = %#v, want draft PR arguments", runner.calls)
+	}
+	if got := strings.Join(githubTracker.CreatePullRequestCommand(request), " "); got != "gh pr create --draft --title Ship it --body Closes #7 --head feat/ship-it --base main" {
+		t.Fatalf("CreatePullRequestCommand() = %q, want manual draft PR command", got)
 	}
 }
 

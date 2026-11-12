@@ -1473,6 +1473,10 @@ func (tracker *recordingPullRequestTracker) CreatePullRequest(_ context.Context,
 	return "https://github.com/example/project/pull/23", nil
 }
 
+func (*recordingPullRequestTracker) CreatePullRequestCommand(request tracker.PullRequest) []string {
+	return githubPullRequestTestCommand(request)
+}
+
 type failingPullRequestTracker struct {
 	branchSetupTracker
 	err error
@@ -1482,6 +1486,10 @@ func (publisher *failingPullRequestTracker) CreatePullRequest(context.Context, t
 	return "", publisher.err
 }
 
+func (*failingPullRequestTracker) CreatePullRequestCommand(request tracker.PullRequest) []string {
+	return githubPullRequestTestCommand(request)
+}
+
 type existingPullRequestTracker struct {
 	branchSetupTracker
 	creator tracker.PullRequestCreator
@@ -1489,6 +1497,18 @@ type existingPullRequestTracker struct {
 
 func (publisher *existingPullRequestTracker) CreatePullRequest(ctx context.Context, request tracker.PullRequest) (string, error) {
 	return publisher.creator.CreatePullRequest(ctx, request)
+}
+
+func (publisher *existingPullRequestTracker) CreatePullRequestCommand(request tracker.PullRequest) []string {
+	return publisher.creator.CreatePullRequestCommand(request)
+}
+
+func githubPullRequestTestCommand(request tracker.PullRequest) []string {
+	args := []string{"gh", "pr", "create", "--draft", "--title", request.Title, "--body", request.Body, "--head", request.Head}
+	if request.Base != "" {
+		args = append(args, "--base", request.Base)
+	}
+	return args
 }
 
 type existingPullRequestGitHubRunner struct {

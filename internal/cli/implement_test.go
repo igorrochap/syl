@@ -278,6 +278,129 @@ func TestImplementPrOnApprovePublishesApprovedChanges(t *testing.T) {
 	}
 }
 
+func TestImplementPrOnApprovePublishesGitLabDraftMergeRequest(t *testing.T) {
+	fixture := newImplementLoopFixture(t)
+	setIssueTracker(t, fixture.root, config.TrackerGitLab)
+	commitWorkingTree(t, fixture.root, "GitLab tracker fixture")
+	createBareOrigin(t, fixture.root)
+	branch := gitOutput(t, fixture.root, "symbolic-ref", "--quiet", "--short", "HEAD")
+	glab := configureApprovedGitLabPublicationHarness(fixture)
+	notifier := &recordingNotifier{}
+	fixture.app.deps.Notifier = notifier
+
+	code := fixture.app.Run(context.Background(), []string{"implement", "42", "--pr-on-approve"}, &fixture.stdout, &fixture.stderr)
+	if code != 0 {
+		t.Fatalf("implement code = %d, stderr = %q", code, fixture.stderr.String())
+	}
+	const mergeRequestURL = "https://gitlab.com/group/project/-/merge_requests/23"
+	if !strings.Contains(fixture.stdout.String(), "Pull request: "+mergeRequestURL) {
+		t.Fatalf("stdout = %q, want merge request URL in summary", fixture.stdout.String())
+	}
+	if len(notifier.messages) != 1 || !strings.Contains(notifier.messages[0], mergeRequestURL) {
+		t.Fatalf("notifications = %v, want merge request URL", notifier.messages)
+	}
+	createCall := "mr create --draft --title Add resilient workflow --description Closes #42\n\nThe implementation meets the ticket.\n\n- [ ] internal/example.go:9 — Rename this helper. --source-branch feat/add-resilient-workflow --target-branch " + branch + " --yes"
+	if !glab.hasCall(createCall) {
+		t.Fatalf("GitLab calls = %#v, want draft merge request arguments", glab.calls)
+	}
+	runDirs, err := filepath.Glob(filepath.Join(fixture.root, ".syl", "runs", "*-42"))
+	if err != nil || len(runDirs) != 1 {
+		t.Fatalf("Run directories = %v, error = %v; want one Run", runDirs, err)
+	}
+	summary, err := os.ReadFile(filepath.Join(runDirs[0], "summary.txt"))
+	if err != nil || !strings.Contains(string(summary), "Pull request: "+mergeRequestURL) ||
+		!strings.Contains(string(summary), "Publication: published") {
+		t.Fatalf("summary = %q, error = %v; want published Run record with merge request URL", summary, err)
+	}
+}
+
+func TestImplementPrOnApproveReportsExistingGitLabMergeRequest(t *testing.T) {
+	fixture := newImplementLoopFixture(t)
+	setIssueTracker(t, fixture.root, config.TrackerGitLab)
+	commitWorkingTree(t, fixture.root, "GitLab tracker fixture")
+	createBareOrigin(t, fixture.root)
+	const mergeRequestURL = "https://gitlab.com/group/project/-/merge_requests/17"
+	glab := configureApprovedGitLabPublicationHarness(fixture)
+	glab.existingURL = mergeRequestURL
+
+	code := fixture.app.Run(context.Background(), []string{"implement", "42", "--pr-on-approve"}, &fixture.stdout, &fixture.stderr)
+	if code != 0 || !strings.Contains(fixture.stdout.String(), mergeRequestURL) {
+		t.Fatalf("implement code = %d, stdout = %q, stderr = %q; want successful existing merge request URL", code, fixture.stdout.String(), fixture.stderr.String())
+	}
+	if glab.hasCreateCall() {
+		t.Fatalf("GitLab calls = %#v, want existing merge request lookup without creation", glab.calls)
+	}
+}
+
+func TestImplementPrOnApproveOmitsGitLabTargetForDetachedStart(t *testing.T) {
+	fixture := newImplementLoopFixture(t)
+	setIssueTracker(t, fixture.root, config.TrackerGitLab)
+	commitWorkingTree(t, fixture.root, "GitLab tracker fixture")
+	createBareOrigin(t, fixture.root)
+	gitOutput(t, fixture.root, "switch", "--detach", "HEAD")
+	glab := configureApprovedGitLabPublicationHarness(fixture)
+
+	code := fixture.app.Run(context.Background(), []string{"implement", "42", "--pr-on-approve"}, &fixture.stdout, &fixture.stderr)
+	if code != 0 {
+		t.Fatalf("implement code = %d, stderr = %q", code, fixture.stderr.String())
+	}
+	createCall := glab.createCall()
+	if !strings.HasPrefix(createCall, "mr create --draft ") || strings.Contains(createCall, "--target-branch ") {
+		t.Fatalf("draft merge request call = %q, want detached start without target branch", createCall)
+	}
+}
+
+func TestImplementPrOnApproveUsesGitLabDefaultBaseWithCommitgenFromDetachedStart(t *testing.T) {
+	fixture := newImplementLoopFixture(t)
+	setIssueTracker(t, fixture.root, config.TrackerGitLab)
+	commitWorkingTree(t, fixture.root, "GitLab tracker fixture")
+	createBareOrigin(t, fixture.root)
+	gitOutput(t, fixture.root, "switch", "--detach", "HEAD")
+	glab := configureApprovedGitLabPublicationHarness(fixture)
+	commitgen := &fakeCommitgenRunner{
+		available: true,
+		prOutput:  "Title: feat: generated GitLab title\n\nGenerated GitLab description.",
+		commit: func(ctx context.Context, workRoot string) error {
+			_, err := fixture.app.gitRunner(workRoot).Run(ctx, "commit", "-m", "feat: generated publication")
+			return err
+		},
+	}
+	fixture.app.deps.Commitgen = commitgen
+
+	code := fixture.app.Run(context.Background(), []string{"implement", "42", "--pr-on-approve"}, &fixture.stdout, &fixture.stderr)
+	if code != 0 {
+		t.Fatalf("implement code = %d, stderr = %q", code, fixture.stderr.String())
+	}
+	if len(commitgen.calls) != 2 || !reflect.DeepEqual(commitgen.calls[1].args, []string{
+		"pr", "--agent", "--base", "main", "--head", "feat/add-resilient-workflow",
+	}) {
+		t.Fatalf("commitgen calls = %#v, want GitLab forge default base", commitgen.calls)
+	}
+	createCall := glab.createCall()
+	if !strings.Contains(createCall, "--title feat: generated GitLab title") || !strings.Contains(createCall, "--target-branch main") {
+		t.Fatalf("draft merge request call = %q, want generated title and forge default base", createCall)
+	}
+}
+
+func TestImplementPrOnApproveReportsGitLabMergeRequestFailureCommand(t *testing.T) {
+	fixture := newImplementLoopFixture(t)
+	setIssueTracker(t, fixture.root, config.TrackerGitLab)
+	commitWorkingTree(t, fixture.root, "GitLab tracker fixture")
+	createBareOrigin(t, fixture.root)
+	glab := configureApprovedGitLabPublicationHarness(fixture)
+	glab.createError = exec.ErrNotFound
+
+	code := fixture.app.Run(context.Background(), []string{"implement", "42", "--pr-on-approve"}, &fixture.stdout, &fixture.stderr)
+	if code == 0 || !strings.Contains(fixture.stderr.String(), "publication failed during pull request") ||
+		!strings.Contains(fixture.stderr.String(), "glab is not installed") ||
+		!strings.Contains(fixture.stderr.String(), "glab mr create --draft") {
+		t.Fatalf("implement code = %d, stderr = %q, want GitLab merge request recovery command", code, fixture.stderr.String())
+	}
+	if strings.Contains(fixture.stderr.String(), "gh pr create") {
+		t.Fatalf("stderr = %q, want GitLab recovery command only", fixture.stderr.String())
+	}
+}
+
 func TestImplementPrOnApproveUsesCommitgenForCommitAndPullRequestText(t *testing.T) {
 	fixture := newImplementLoopFixture(t)
 	createBareOrigin(t, fixture.root)
@@ -816,6 +939,77 @@ func configureApprovedPublicationHarness(fixture *implementLoopFixture) *loopGHR
 	gh := &loopGHRunner{}
 	fixture.app.deps.GH = fixedGH(gh)
 	return gh
+}
+
+func configureApprovedGitLabPublicationHarness(fixture *implementLoopFixture) *publishingGitLabRunner {
+	loop := &loopHarness{
+		root: fixture.root,
+		streams: [][]harness.Event{
+			{{Type: harness.EventSession, SessionID: "implement-session"}},
+			{{Type: harness.EventSession, SessionID: "review-session"}, {Type: harness.EventAssistantText, Text: approveVerdictWithNitText}},
+		},
+	}
+	fixture.harnesses["codex"] = loop
+	fixture.harnesses["claude"] = loop
+	glab := &publishingGitLabRunner{}
+	fixture.app.deps.GLab = fixedGLab(glab)
+	return glab
+}
+
+type publishingGitLabRunner struct {
+	calls       []string
+	existingURL string
+	createError error
+}
+
+func (runner *publishingGitLabRunner) Run(_ context.Context, args ...string) (string, error) {
+	call := strings.Join(args, " ")
+	runner.calls = append(runner.calls, call)
+	switch call {
+	case "label list --output json --per-page 100":
+		return `[{"name":"todo"},{"name":"doing"}]`, nil
+	case "issue view 42 --output json":
+		return `{"id":9042,"iid":42,"title":"Add resilient workflow","description":"Acceptance criteria: leave a working implementation.","state":"opened","labels":["todo"]}`, nil
+	case "api --method PUT projects/:fullpath/issues/42 --raw-field labels=doing":
+		return "", nil
+	case "mr list --source-branch feat/add-resilient-workflow --output json --per-page 1":
+		if runner.existingURL != "" {
+			return fmt.Sprintf(`[{"web_url":%q}]`, runner.existingURL), nil
+		}
+		return "[]", nil
+	case "repo view --output json --jq .default_branch":
+		return "main\n", nil
+	default:
+		if strings.HasPrefix(call, "mr create --draft ") {
+			if runner.createError != nil {
+				return "", runner.createError
+			}
+			return "!23 Draft: Add resilient workflow (feat/add-resilient-workflow)\n https://gitlab.com/group/project/-/merge_requests/23\n", nil
+		}
+		return "", fmt.Errorf("unexpected glab command %q", call)
+	}
+}
+
+func (runner *publishingGitLabRunner) hasCall(want string) bool {
+	for _, call := range runner.calls {
+		if call == want {
+			return true
+		}
+	}
+	return false
+}
+
+func (runner *publishingGitLabRunner) hasCreateCall() bool {
+	return runner.createCall() != ""
+}
+
+func (runner *publishingGitLabRunner) createCall() string {
+	for _, call := range runner.calls {
+		if strings.HasPrefix(call, "mr create --draft ") {
+			return call
+		}
+	}
+	return ""
 }
 
 type fakeCommitgenCall struct {

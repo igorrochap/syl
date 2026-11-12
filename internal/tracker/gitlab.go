@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -48,6 +49,8 @@ var gitlabErrorClassifiers = []gitlabErrorClassifier{
 	}},
 }
 
+var gitLabMergeRequestURLPattern = regexp.MustCompile(`https?://[^[:space:]]+/-/merge_requests/[0-9]+`)
+
 // GLabRunner is the external boundary used by the GitLab tracker. Production
 // code supplies a runner backed by the glab executable; tests can supply a
 // scripted runner without making network calls.
@@ -64,6 +67,8 @@ type GitLab struct {
 }
 
 var _ Tracker = (*GitLab)(nil)
+var _ PullRequestCreator = (*GitLab)(nil)
+var _ PullRequestBaseResolver = (*GitLab)(nil)
 
 // NewGitLab creates a GitLab tracker backed by runner.
 func NewGitLab(runner GLabRunner) (*GitLab, error) {
@@ -165,6 +170,86 @@ func (g *GitLab) Create(ctx context.Context, title, body string) (Ticket, error)
 		return Ticket{}, err
 	}
 	return g.Resolve(ctx, "#"+strconv.Itoa(number))
+}
+
+// CreatePullRequest opens a draft merge request for an already-pushed branch.
+func (g *GitLab) CreatePullRequest(ctx context.Context, request PullRequest) (string, error) {
+	title := strings.TrimSpace(request.Title)
+	if title == "" {
+		return "", errors.New("cannot create a GitLab merge request without a title")
+	}
+	head := strings.TrimSpace(request.Head)
+	if head == "" {
+		return "", errors.New("cannot create a GitLab merge request without a source branch")
+	}
+	existingURL, err := g.findExistingMergeRequestURL(ctx, head)
+	if err != nil {
+		return "", err
+	}
+	if existingURL != "" {
+		return existingURL, nil
+	}
+
+	args := g.CreatePullRequestCommand(request)[1:]
+	output, err := g.run(ctx, "create draft merge request", args...)
+	if err != nil {
+		return "", err
+	}
+	return createdGitLabMergeRequestURL(output)
+}
+
+// CreatePullRequestCommand builds the manual command for opening a draft merge request.
+func (*GitLab) CreatePullRequestCommand(request PullRequest) []string {
+	args := []string{
+		"glab", "mr", "create", "--draft", "--title", strings.TrimSpace(request.Title),
+		"--description", request.Body, "--source-branch", strings.TrimSpace(request.Head),
+	}
+	if base := strings.TrimSpace(request.Base); base != "" {
+		args = append(args, "--target-branch", base)
+	}
+	return append(args, "--yes")
+}
+
+// DefaultPullRequestBase returns the GitLab project's configured default branch.
+func (g *GitLab) DefaultPullRequestBase(ctx context.Context) (string, error) {
+	output, err := g.run(ctx, "read default merge request base", "repo", "view", "--output", "json", "--jq", ".default_branch")
+	if err != nil {
+		return "", err
+	}
+	base := strings.TrimSpace(output)
+	if base == "" {
+		return "", errors.New("GitLab returned an empty default branch")
+	}
+	return base, nil
+}
+
+func (g *GitLab) findExistingMergeRequestURL(ctx context.Context, head string) (string, error) {
+	output, err := g.run(ctx, "find existing merge request", "mr", "list", "--source-branch", head, "--output", "json", "--per-page", "1")
+	if err != nil {
+		return "", err
+	}
+	var mergeRequests []struct {
+		WebURL string `json:"web_url"`
+	}
+	if err := json.Unmarshal([]byte(output), &mergeRequests); err != nil {
+		return "", fmt.Errorf("decode existing GitLab merge request list: %w", err)
+	}
+	if len(mergeRequests) == 0 {
+		return "", nil
+	}
+	url := strings.TrimSpace(mergeRequests[0].WebURL)
+	if url == "" {
+		return "", errors.New("existing GitLab merge request has no URL")
+	}
+	return url, nil
+}
+
+func createdGitLabMergeRequestURL(output string) (string, error) {
+	url := gitLabMergeRequestURLPattern.FindString(strings.TrimSpace(output))
+	if url == "" {
+		return "", fmt.Errorf("glab mr create returned no merge request URL: %q", strings.TrimSpace(output))
+	}
+	return url, nil
 }
 
 func (g *GitLab) ensureLabels(ctx context.Context) error {
