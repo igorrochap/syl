@@ -2,6 +2,43 @@
 
 <!-- version list -->
 
+## v1.40.0 (2026-11-17)
+
+### Bug Fixes
+
+- **cli**: Configure default main branch in tests
+  ([#260](https://github.com/igorrochap/syl/pull/260),
+  [`5f52109`](https://github.com/igorrochap/syl/commit/5f52109d6b6d4bcc0040fd48bcc5170f4092de91))
+
+### Features
+
+- Generate the publication commit and pull request text with commitgen
+  ([#260](https://github.com/igorrochap/syl/pull/260),
+  [`5f52109`](https://github.com/igorrochap/syl/commit/5f52109d6b6d4bcc0040fd48bcc5170f4092de91))
+
+- Report --pr-on-approve publication failures step by step (#240)
+  ([#260](https://github.com/igorrochap/syl/pull/260),
+  [`5f52109`](https://github.com/igorrochap/syl/commit/5f52109d6b6d4bcc0040fd48bcc5170f4092de91))
+
+- **cli**: Add pull request publishing on approval
+  ([#260](https://github.com/igorrochap/syl/pull/260),
+  [`5f52109`](https://github.com/igorrochap/syl/commit/5f52109d6b6d4bcc0040fd48bcc5170f4092de91))
+
+- **cli**: Support draft merge requests for GitLab tracker
+  ([#260](https://github.com/igorrochap/syl/pull/260),
+  [`5f52109`](https://github.com/igorrochap/syl/commit/5f52109d6b6d4bcc0040fd48bcc5170f4092de91))
+
+- **config**: Add publication language per project
+  ([#260](https://github.com/igorrochap/syl/pull/260),
+  [`5f52109`](https://github.com/igorrochap/syl/commit/5f52109d6b6d4bcc0040fd48bcc5170f4092de91))
+
+### Refactoring
+
+- **tracker**: Extract pull request command generation
+  ([#260](https://github.com/igorrochap/syl/pull/260),
+  [`5f52109`](https://github.com/igorrochap/syl/commit/5f52109d6b6d4bcc0040fd48bcc5170f4092de91))
+
+
 ## v1.39.5 (2026-11-10)
 
 ### Bug Fixes
