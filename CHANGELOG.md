@@ -2,6 +2,24 @@
 
 <!-- version list -->
 
+## v1.39.5 (2026-11-10)
+
+### Bug Fixes
+
+- **ci**: Report required quality-gate check after parallel gates
+  ([#254](https://github.com/igorrochap/syl/pull/254),
+  [`a36a869`](https://github.com/igorrochap/syl/commit/a36a8690ad3329913ccf35554141a7ba578356a8))
+
+### Refactoring
+
+- **ci**: Parallelize quality gate checks ([#254](https://github.com/igorrochap/syl/pull/254),
+  [`a36a869`](https://github.com/igorrochap/syl/commit/a36a8690ad3329913ccf35554141a7ba578356a8))
+
+- **orchestration**: Improve stalled session recovery prompt
+  ([#253](https://github.com/igorrochap/syl/pull/253),
+  [`b68a80f`](https://github.com/igorrochap/syl/commit/b68a80f82187c6541251c04dd50b4962d6926235))
+
+
 ## v1.39.4 (2026-11-09)
 
 ### Bug Fixes
