@@ -25,15 +25,19 @@ type implementSetup struct {
 	git          GitRunner
 	branch       string
 	branchPoint  string
+	baseBranch   string
 	worktreePath string
 }
 
 type implementSummary struct {
-	iterations   int
-	final        verdict.Verdict
-	nits         []verdict.Finding
-	diffStat     string
-	worktreePath string
+	iterations     int
+	final          verdict.Verdict
+	nits           []verdict.Finding
+	diffStat       string
+	worktreePath   string
+	pullRequestURL string
+	publishNotice  string
+	publication    runrecord.Publication
 }
 
 type ImplementOptions struct {
@@ -47,12 +51,14 @@ type ImplementOptions struct {
 	Reviewer             harness.Adapter
 	Git                  GitRunner
 	OriginGit            GitRunner
+	Commitgen            CommitgenRunner
 	Notifier             Notifier
 	Input                io.Reader
 	Output               io.Writer
 	Context              string
 	ReviewContext        string
 	Verbose              bool
+	PublishOnApprove     bool
 	ProvisionedWorktree  *Worktree
 	IdentificationBanner func(artifactDir string) error
 }
@@ -154,6 +160,7 @@ func executeImplementRun(ctx context.Context, options ImplementOptions, run impl
 		additionalContext:    options.Context,
 		reviewContext:        options.ReviewContext,
 		verbose:              options.Verbose,
+		allowEmptyDiff:       options.PublishOnApprove,
 	})
 	if err != nil {
 		return err
@@ -170,7 +177,45 @@ func executeImplementRun(ctx context.Context, options ImplementOptions, run impl
 		diffStat:     diffStat,
 		worktreePath: run.setup.worktreePath,
 	}
-	return completeImplementRun(ctx, options, run, summary)
+	publicationErr := publishApprovedSummary(ctx, options, run.setup, &summary)
+	if err := completeImplementRun(ctx, options, run, summary); err != nil {
+		return err
+	}
+	return publicationErr
+}
+
+func publishApprovedSummary(
+	ctx context.Context,
+	options ImplementOptions,
+	setup implementSetup,
+	summary *implementSummary,
+) error {
+	if !options.PublishOnApprove {
+		summary.publication.Status = runrecord.PublicationNotRequested
+		return nil
+	}
+	if summary.final.Status != verdict.Approve {
+		return nil
+	}
+
+	var notices []string
+	summary.publication, notices = publishApprovedImplement(ctx, options, setup, *summary)
+	summary.publishNotice = strings.Join(notices, "\n")
+	switch summary.publication.Status {
+	case runrecord.PublicationPublished:
+		summary.pullRequestURL = summary.publication.URL
+	case runrecord.PublicationSkipped:
+		summary.publishNotice = "No changes to publish; skipped commit, push, and pull request."
+	case runrecord.PublicationFailed:
+		commands := publicationCommands(summary.publication.Step, options, setup, *summary)
+		failureNotice := formatPublicationFailure(summary.publication, commands)
+		if summary.publishNotice != "" {
+			summary.publishNotice += "\n"
+		}
+		summary.publishNotice += failureNotice
+		return errors.New(failureNotice)
+	}
+	return nil
 }
 
 func prepareImplementRun(ctx context.Context, options ImplementOptions, originGit GitRunner) (implementRunState, error) {
@@ -184,7 +229,9 @@ func prepareImplementRun(ctx context.Context, options ImplementOptions, originGi
 	if options.ProvisionedWorktree != nil {
 		setup, err = prepareProvisionedImplement(ctx, options.Git, options.IssueTracker, options.Ticket, *options.ProvisionedWorktree)
 	} else {
-		setup, err = prepareImplementWithGit(ctx, options.Git, originGit, options.IssueTracker, options.Ticket)
+		setup, err = prepareImplementWithPullRequestBase(
+			ctx, options.Git, originGit, options.IssueTracker, options.Ticket, options.PublishOnApprove,
+		)
 	}
 	if err != nil {
 		return implementRunState{}, err
@@ -205,6 +252,11 @@ func validateImplementOptions(options ImplementOptions) error {
 	if options.Reviewer == nil {
 		return fmt.Errorf("review harness %q is not configured", options.ProjectConfig.Roles.Review.Harness)
 	}
+	if options.PublishOnApprove {
+		if err := tracker.RequirePullRequestCreator(options.IssueTracker); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -220,6 +272,7 @@ func initializeImplementRun(options ImplementOptions, setup implementSetup) (imp
 		ReviewerHarness:    string(options.ProjectConfig.Roles.Review.Harness),
 		ImplementContext:   options.Context,
 		ReviewContext:      options.ReviewContext,
+		PublishOnApprove:   options.PublishOnApprove,
 	}
 	recorder, err := options.OpenRun(spec)
 	if err != nil {
@@ -250,9 +303,15 @@ func completeImplementRun(ctx context.Context, options ImplementOptions, run imp
 		return err
 	}
 	renderer := ui.New(options.Output, ui.DetectCaps(options.Output))
+	publicationStatus := ""
+	if options.PublishOnApprove {
+		publicationStatus = string(summary.publication.Status)
+	}
 	if err := renderer.RunSummary(ui.RunSummary{
 		Iterations: summary.iterations, FinalVerdict: string(summary.final.Status), Summary: summary.final.Summary,
 		NitFindings: toUIFindings(summary.nits), WorktreePath: summary.worktreePath, DiffStat: summary.diffStat,
+		PullRequestURL: summary.pullRequestURL, PublishNotice: summary.publishNotice,
+		PublicationStatus: publicationStatus,
 	}); err != nil {
 		return fmt.Errorf("write implement summary: %w", err)
 	}
@@ -260,7 +319,11 @@ func completeImplementRun(ctx context.Context, options ImplementOptions, run imp
 		return err
 	}
 	if run.notifier != nil {
-		_ = run.notifier.Notify(ctx, fmt.Sprintf("implement #%d finished: %s", options.Ticket.Number, summary.final.Status))
+		message := fmt.Sprintf("implement #%d finished: %s", options.Ticket.Number, summary.final.Status)
+		if summary.pullRequestURL != "" {
+			message += " — " + summary.pullRequestURL
+		}
+		_ = run.notifier.Notify(ctx, message)
 	}
 	if summary.final.Status == verdict.Revise {
 		run.runState.finish(runrecord.Exhausted)
@@ -274,12 +337,13 @@ func prepareImplement(ctx context.Context, git GitRunner, issueTracker tracker.T
 	return prepareImplementWithGit(ctx, git, git, issueTracker, ticket)
 }
 
-func prepareImplementWithGit(
+func prepareImplementWithGitConfigured(
 	ctx context.Context,
 	workGit GitRunner,
 	originGit GitRunner,
 	issueTracker tracker.Tracker,
 	ticket tracker.Ticket,
+	captureBase bool,
 ) (implementSetup, error) {
 	status, err := workGit.Run(ctx, "status", "--porcelain", "--untracked-files=all")
 	if err != nil {
@@ -297,6 +361,10 @@ func prepareImplementWithGit(
 	if branchPoint == "" {
 		return implementSetup{}, errors.New("record branch point: git returned an empty ref")
 	}
+	baseBranch := ""
+	if captureBase {
+		baseBranch = currentBranch(ctx, workGit)
+	}
 	branch := resolveBranchName(ticket)
 	if _, err := originGit.Run(ctx, "switch", "-c", branch); err != nil {
 		return implementSetup{}, fmt.Errorf("create implementation branch %q: %w", branch, err)
@@ -304,7 +372,28 @@ func prepareImplementWithGit(
 	if err := issueTracker.UpdateStatus(ctx, ticket.Number, "doing"); err != nil {
 		return implementSetup{}, fmt.Errorf("mark ticket #%d as doing: %w", ticket.Number, err)
 	}
-	return implementSetup{git: workGit, branch: branch, branchPoint: branchPoint}, nil
+	return implementSetup{git: workGit, branch: branch, branchPoint: branchPoint, baseBranch: baseBranch}, nil
+}
+
+func prepareImplementWithGit(
+	ctx context.Context,
+	workGit GitRunner,
+	originGit GitRunner,
+	issueTracker tracker.Tracker,
+	ticket tracker.Ticket,
+) (implementSetup, error) {
+	return prepareImplementWithGitConfigured(ctx, workGit, originGit, issueTracker, ticket, false)
+}
+
+func prepareImplementWithPullRequestBase(
+	ctx context.Context,
+	workGit GitRunner,
+	originGit GitRunner,
+	issueTracker tracker.Tracker,
+	ticket tracker.Ticket,
+	captureBase bool,
+) (implementSetup, error) {
+	return prepareImplementWithGitConfigured(ctx, workGit, originGit, issueTracker, ticket, captureBase)
 }
 
 func prepareProvisionedImplement(
@@ -332,7 +421,10 @@ func prepareProvisionedImplement(
 	if err := issueTracker.UpdateStatus(ctx, ticket.Number, "doing"); err != nil {
 		return implementSetup{}, fmt.Errorf("mark ticket #%d as doing: %w", ticket.Number, err)
 	}
-	return implementSetup{git: workGit, branch: branch, branchPoint: branchPoint, worktreePath: worktree.Path}, nil
+	return implementSetup{
+		git: workGit, branch: branch, branchPoint: branchPoint,
+		baseBranch: worktree.Base, worktreePath: worktree.Path,
+	}, nil
 }
 
 type implementIterationsParams struct {
@@ -351,6 +443,7 @@ type implementIterationsParams struct {
 	additionalContext    string
 	reviewContext        string
 	verbose              bool
+	allowEmptyDiff       bool
 }
 
 type implementReviewParams struct {
@@ -543,7 +636,7 @@ func recordReviewSessions(recorder RunRecorder, iteration int, review ReviewExec
 }
 
 func prepareIterationReviewDiff(ctx context.Context, params implementIterationsParams, iteration int) (string, error) {
-	diff, err := computeReviewDiff(ctx, params.git, params.branchPoint)
+	diff, err := computeReviewDiffWithEmpty(ctx, params.git, params.branchPoint, params.allowEmptyDiff)
 	if err != nil {
 		return "", err
 	}
@@ -963,7 +1056,8 @@ func toUIFindings(findings []verdict.Finding) []ui.Finding {
 func formatImplementSummary(summary implementSummary) string {
 	return runrecord.FormatSummary(runrecord.SummaryInput{
 		Iterations: summary.iterations, Final: summary.final, Nits: summary.nits,
-		DiffStat: summary.diffStat, WorktreePath: summary.worktreePath,
+		DiffStat: summary.diffStat, WorktreePath: summary.worktreePath, PullRequestURL: summary.pullRequestURL,
+		Publication: summary.publication,
 	})
 }
 

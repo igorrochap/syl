@@ -7,11 +7,15 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	commitgenadapter "github.com/igorrochap/syl/internal/adapters/commitgen"
+	"github.com/igorrochap/syl/internal/config"
 	"github.com/igorrochap/syl/internal/harness"
 	"github.com/igorrochap/syl/internal/harness/codex"
 	"github.com/igorrochap/syl/internal/usage"
@@ -146,6 +150,895 @@ func TestImplementLoopApprovesOnFirstIteration(t *testing.T) {
 			t.Fatalf("run artifacts = %q, want %q", artifactText, expected)
 		}
 	}
+}
+
+func TestImplementPrOnApproveRejectsLocalTrackerBeforeHarnessStarts(t *testing.T) {
+	fixture := newImplementLoopFixture(t)
+	configPath := filepath.Join(fixture.root, ".syl", "config.toml")
+	configContents, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	configContents = []byte(strings.Replace(string(configContents), `issues = "github"`, `issues = "local"`, 1))
+	if err := os.WriteFile(configPath, configContents, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ticketPath := filepath.Join(fixture.root, ".scratch", "feature-a", "issues", "42-local-workflow.md")
+	if err := os.MkdirAll(filepath.Dir(ticketPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(ticketPath, []byte("# 42 — Add resilient workflow\n\n**Status:** todo\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	commitWorkingTree(t, fixture.root, "local tracker fixture")
+	loop := &loopHarness{root: fixture.root}
+	fixture.harnesses["codex"] = loop
+	fixture.harnesses["claude"] = loop
+
+	code := fixture.app.Run(context.Background(), []string{"implement", "42", "--pr-on-approve"}, &fixture.stdout, &fixture.stderr)
+	if code == 0 || !strings.Contains(fixture.stderr.String(), "GitHub or GitLab Tracker") {
+		t.Fatalf("implement code = %d, stderr = %q, want supported Tracker explanation", code, fixture.stderr.String())
+	}
+	if len(loop.requests) != 0 {
+		t.Fatalf("harness requests = %d, want none", len(loop.requests))
+	}
+}
+
+func TestImplementPrOnApproveRequiresOriginBeforeHarnessStarts(t *testing.T) {
+	fixture := newImplementLoopFixture(t)
+	loop := &loopHarness{root: fixture.root}
+	fixture.harnesses["codex"] = loop
+	fixture.harnesses["claude"] = loop
+	fixture.app.deps.GH = fixedGH(&loopGHRunner{})
+
+	code := fixture.app.Run(context.Background(), []string{"implement", "42", "--pr-on-approve"}, &fixture.stdout, &fixture.stderr)
+	if code == 0 || !strings.Contains(fixture.stderr.String(), "--pr-on-approve requires an origin remote") {
+		t.Fatalf("implement code = %d, stderr = %q, want missing-origin error", code, fixture.stderr.String())
+	}
+	if len(loop.requests) != 0 {
+		t.Fatalf("harness requests = %d, want none", len(loop.requests))
+	}
+}
+
+func TestImplementPrOnApprovePublishesApprovedChanges(t *testing.T) {
+	fixture := newImplementLoopFixture(t)
+	bareRemote := createBareOrigin(t, fixture.root)
+	branchPoint := gitOutput(t, fixture.root, "rev-parse", "HEAD")
+	startBranch := gitOutput(t, fixture.root, "symbolic-ref", "--quiet", "--short", "HEAD")
+	loop := &loopHarness{
+		root: fixture.root,
+		streams: [][]harness.Event{
+			{{Type: harness.EventSession, SessionID: "implement-session"}},
+			{{Type: harness.EventSession, SessionID: "review-session"}, {Type: harness.EventAssistantText, Text: approveVerdictWithNitText}},
+		},
+	}
+	fixture.harnesses["codex"] = loop
+	fixture.harnesses["claude"] = loop
+	gh := &loopGHRunner{}
+	fixture.app.deps.GH = fixedGH(gh)
+	notifier := &recordingNotifier{}
+	fixture.app.deps.Notifier = notifier
+
+	code := fixture.app.Run(context.Background(), []string{"implement", "42", "--pr-on-approve"}, &fixture.stdout, &fixture.stderr)
+	if code != 0 {
+		t.Fatalf("implement code = %d, stderr = %q", code, fixture.stderr.String())
+	}
+	branch := "feat/add-resilient-workflow"
+	if got := gitOutput(t, fixture.root, "rev-list", "--count", branchPoint+"..HEAD"); got != "1" {
+		t.Fatalf("commits since branch point = %q, want exactly one", got)
+	}
+	if got := gitOutput(t, fixture.root, "log", "-1", "--format=%s"); got != "feat: Add resilient workflow (#42)" {
+		t.Fatalf("commit message = %q, want fallback conventional message", got)
+	}
+	if got := gitOutput(t, fixture.root, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"); got != "origin/"+branch {
+		t.Fatalf("upstream = %q, want origin/%s", got, branch)
+	}
+	if got := gitOutput(t, fixture.root, "--git-dir="+bareRemote, "show-ref", "--verify", "refs/heads/"+branch); got == "" {
+		t.Fatal("bare origin does not contain the implementation branch")
+	}
+	if got := gitOutput(t, fixture.root, "status", "--porcelain"); got != "" {
+		t.Fatalf("working tree = %q, want clean after publication", got)
+	}
+	if !strings.Contains(fixture.stdout.String(), "Pull request: https://github.com/example/project/pull/23") {
+		t.Fatalf("stdout = %q, want pull request URL in summary", fixture.stdout.String())
+	}
+	if len(notifier.messages) != 1 || !strings.Contains(notifier.messages[0], "https://github.com/example/project/pull/23") {
+		t.Fatalf("notifications = %v, want pull request URL", notifier.messages)
+	}
+	if len(gh.calls) == 0 || !strings.HasPrefix(gh.calls[len(gh.calls)-1], "pr create --draft ") {
+		t.Fatalf("GitHub calls = %#v, want draft PR as final Tracker operation", gh.calls)
+	}
+	prCall := gh.calls[len(gh.calls)-1]
+	for _, expected := range []string{
+		"--title Add resilient workflow",
+		"Closes #42\n\nThe implementation meets the ticket.\n\n- [ ] internal/example.go:9 — Rename this helper.",
+		"--head " + branch,
+		"--base " + startBranch,
+	} {
+		if !strings.Contains(prCall, expected) {
+			t.Errorf("draft PR call = %q, want %q", prCall, expected)
+		}
+	}
+	for index, call := range gh.calls {
+		if strings.Contains(call, "issue edit 42") && index > 0 && index >= len(gh.calls)-1 {
+			t.Fatalf("GitHub calls = %#v, want no status update after PR creation", gh.calls)
+		}
+	}
+	runDirs, err := filepath.Glob(filepath.Join(fixture.root, ".syl", "runs", "*-42"))
+	if err != nil || len(runDirs) != 1 {
+		t.Fatalf("Run directories = %v, error = %v; want one Run", runDirs, err)
+	}
+	metadata, err := os.ReadFile(filepath.Join(runDirs[0], "metadata.txt"))
+	if err != nil || !strings.Contains(string(metadata), "Publish on approve: true") {
+		t.Fatalf("metadata = %q, error = %v; want Publish on approve", metadata, err)
+	}
+	summary, err := os.ReadFile(filepath.Join(runDirs[0], "summary.txt"))
+	if err != nil || !strings.Contains(string(summary), "Pull request: https://github.com/example/project/pull/23") {
+		t.Fatalf("summary = %q, error = %v; want pull request URL", summary, err)
+	}
+}
+
+func TestImplementPrOnApprovePublishesGitLabDraftMergeRequest(t *testing.T) {
+	fixture := newImplementLoopFixture(t)
+	setIssueTracker(t, fixture.root, config.TrackerGitLab)
+	commitWorkingTree(t, fixture.root, "GitLab tracker fixture")
+	createBareOrigin(t, fixture.root)
+	branch := gitOutput(t, fixture.root, "symbolic-ref", "--quiet", "--short", "HEAD")
+	glab := configureApprovedGitLabPublicationHarness(fixture)
+	notifier := &recordingNotifier{}
+	fixture.app.deps.Notifier = notifier
+
+	code := fixture.app.Run(context.Background(), []string{"implement", "42", "--pr-on-approve"}, &fixture.stdout, &fixture.stderr)
+	if code != 0 {
+		t.Fatalf("implement code = %d, stderr = %q", code, fixture.stderr.String())
+	}
+	const mergeRequestURL = "https://gitlab.com/group/project/-/merge_requests/23"
+	if !strings.Contains(fixture.stdout.String(), "Pull request: "+mergeRequestURL) {
+		t.Fatalf("stdout = %q, want merge request URL in summary", fixture.stdout.String())
+	}
+	if len(notifier.messages) != 1 || !strings.Contains(notifier.messages[0], mergeRequestURL) {
+		t.Fatalf("notifications = %v, want merge request URL", notifier.messages)
+	}
+	createCall := "mr create --draft --title Add resilient workflow --description Closes #42\n\nThe implementation meets the ticket.\n\n- [ ] internal/example.go:9 — Rename this helper. --source-branch feat/add-resilient-workflow --target-branch " + branch + " --yes"
+	if !glab.hasCall(createCall) {
+		t.Fatalf("GitLab calls = %#v, want draft merge request arguments", glab.calls)
+	}
+	runDirs, err := filepath.Glob(filepath.Join(fixture.root, ".syl", "runs", "*-42"))
+	if err != nil || len(runDirs) != 1 {
+		t.Fatalf("Run directories = %v, error = %v; want one Run", runDirs, err)
+	}
+	summary, err := os.ReadFile(filepath.Join(runDirs[0], "summary.txt"))
+	if err != nil || !strings.Contains(string(summary), "Pull request: "+mergeRequestURL) ||
+		!strings.Contains(string(summary), "Publication: published") {
+		t.Fatalf("summary = %q, error = %v; want published Run record with merge request URL", summary, err)
+	}
+}
+
+func TestImplementPrOnApproveReportsExistingGitLabMergeRequest(t *testing.T) {
+	fixture := newImplementLoopFixture(t)
+	setIssueTracker(t, fixture.root, config.TrackerGitLab)
+	commitWorkingTree(t, fixture.root, "GitLab tracker fixture")
+	createBareOrigin(t, fixture.root)
+	const mergeRequestURL = "https://gitlab.com/group/project/-/merge_requests/17"
+	glab := configureApprovedGitLabPublicationHarness(fixture)
+	glab.existingURL = mergeRequestURL
+
+	code := fixture.app.Run(context.Background(), []string{"implement", "42", "--pr-on-approve"}, &fixture.stdout, &fixture.stderr)
+	if code != 0 || !strings.Contains(fixture.stdout.String(), mergeRequestURL) {
+		t.Fatalf("implement code = %d, stdout = %q, stderr = %q; want successful existing merge request URL", code, fixture.stdout.String(), fixture.stderr.String())
+	}
+	if glab.hasCreateCall() {
+		t.Fatalf("GitLab calls = %#v, want existing merge request lookup without creation", glab.calls)
+	}
+}
+
+func TestImplementPrOnApproveOmitsGitLabTargetForDetachedStart(t *testing.T) {
+	fixture := newImplementLoopFixture(t)
+	setIssueTracker(t, fixture.root, config.TrackerGitLab)
+	commitWorkingTree(t, fixture.root, "GitLab tracker fixture")
+	createBareOrigin(t, fixture.root)
+	gitOutput(t, fixture.root, "switch", "--detach", "HEAD")
+	glab := configureApprovedGitLabPublicationHarness(fixture)
+
+	code := fixture.app.Run(context.Background(), []string{"implement", "42", "--pr-on-approve"}, &fixture.stdout, &fixture.stderr)
+	if code != 0 {
+		t.Fatalf("implement code = %d, stderr = %q", code, fixture.stderr.String())
+	}
+	createCall := glab.createCall()
+	if !strings.HasPrefix(createCall, "mr create --draft ") || strings.Contains(createCall, "--target-branch ") {
+		t.Fatalf("draft merge request call = %q, want detached start without target branch", createCall)
+	}
+}
+
+func TestImplementPrOnApproveUsesGitLabDefaultBaseWithCommitgenFromDetachedStart(t *testing.T) {
+	fixture := newImplementLoopFixture(t)
+	setIssueTracker(t, fixture.root, config.TrackerGitLab)
+	commitWorkingTree(t, fixture.root, "GitLab tracker fixture")
+	createBareOrigin(t, fixture.root)
+	gitOutput(t, fixture.root, "switch", "--detach", "HEAD")
+	glab := configureApprovedGitLabPublicationHarness(fixture)
+	commitgen := &fakeCommitgenRunner{
+		available: true,
+		prOutput:  "Title: feat: generated GitLab title\n\nGenerated GitLab description.",
+		commit: func(ctx context.Context, workRoot string) error {
+			_, err := fixture.app.gitRunner(workRoot).Run(ctx, "commit", "-m", "feat: generated publication")
+			return err
+		},
+	}
+	fixture.app.deps.Commitgen = commitgen
+
+	code := fixture.app.Run(context.Background(), []string{"implement", "42", "--pr-on-approve"}, &fixture.stdout, &fixture.stderr)
+	if code != 0 {
+		t.Fatalf("implement code = %d, stderr = %q", code, fixture.stderr.String())
+	}
+	if len(commitgen.calls) != 2 || !reflect.DeepEqual(commitgen.calls[1].args, []string{
+		"pr", "--agent", "--base", "main", "--head", "feat/add-resilient-workflow",
+	}) {
+		t.Fatalf("commitgen calls = %#v, want GitLab forge default base", commitgen.calls)
+	}
+	createCall := glab.createCall()
+	if !strings.Contains(createCall, "--title feat: generated GitLab title") || !strings.Contains(createCall, "--target-branch main") {
+		t.Fatalf("draft merge request call = %q, want generated title and forge default base", createCall)
+	}
+}
+
+func TestImplementPrOnApproveReportsGitLabMergeRequestFailureCommand(t *testing.T) {
+	fixture := newImplementLoopFixture(t)
+	setIssueTracker(t, fixture.root, config.TrackerGitLab)
+	commitWorkingTree(t, fixture.root, "GitLab tracker fixture")
+	createBareOrigin(t, fixture.root)
+	glab := configureApprovedGitLabPublicationHarness(fixture)
+	glab.createError = exec.ErrNotFound
+
+	code := fixture.app.Run(context.Background(), []string{"implement", "42", "--pr-on-approve"}, &fixture.stdout, &fixture.stderr)
+	if code == 0 || !strings.Contains(fixture.stderr.String(), "publication failed during pull request") ||
+		!strings.Contains(fixture.stderr.String(), "glab is not installed") ||
+		!strings.Contains(fixture.stderr.String(), "glab mr create --draft") {
+		t.Fatalf("implement code = %d, stderr = %q, want GitLab merge request recovery command", code, fixture.stderr.String())
+	}
+	if strings.Contains(fixture.stderr.String(), "gh pr create") {
+		t.Fatalf("stderr = %q, want GitLab recovery command only", fixture.stderr.String())
+	}
+}
+
+func TestImplementPrOnApproveUsesCommitgenForCommitAndPullRequestText(t *testing.T) {
+	fixture := newImplementLoopFixture(t)
+	createBareOrigin(t, fixture.root)
+	branchPoint := gitOutput(t, fixture.root, "rev-parse", "HEAD")
+	gh := configureApprovedPublicationHarness(fixture)
+	commitgen := &fakeCommitgenRunner{
+		available: true,
+		prOutput:  "Title: feat: add x\n\nGenerated details.\n\nCloses #42",
+		commit: func(ctx context.Context, workRoot string) error {
+			_, err := fixture.app.gitRunner(workRoot).Run(ctx, "commit", "-m", "feat: generated publication")
+			return err
+		},
+	}
+	fixture.app.deps.Commitgen = commitgen
+
+	code := fixture.app.Run(context.Background(), []string{"implement", "42", "--pr-on-approve"}, &fixture.stdout, &fixture.stderr)
+	if code != 0 {
+		t.Fatalf("implement code = %d, stderr = %q", code, fixture.stderr.String())
+	}
+	if got := gitOutput(t, fixture.root, "rev-list", "--count", branchPoint+"..HEAD"); got != "1" {
+		t.Fatalf("commits since branch point = %q, want exactly one commitgen commit", got)
+	}
+	if got := gitOutput(t, fixture.root, "log", "-1", "--format=%s"); got != "feat: generated publication" {
+		t.Fatalf("commit message = %q, want commitgen-created message", got)
+	}
+	if len(commitgen.calls) != 2 || commitgen.calls[0].workRoot != fixture.root || commitgen.calls[1].workRoot != fixture.root {
+		t.Fatalf("commitgen calls = %#v, want commit and PR in the work root", commitgen.calls)
+	}
+	if !reflect.DeepEqual(commitgen.calls[0].args, []string{"--agent", "--context", "Ticket #42: Add resilient workflow"}) {
+		t.Fatalf("commitgen commit arguments = %#v", commitgen.calls[0].args)
+	}
+	if !reflect.DeepEqual(commitgen.calls[1].args, []string{"pr", "--agent", "--base", "main", "--head", "feat/add-resilient-workflow"}) {
+		t.Fatalf("commitgen PR arguments = %#v", commitgen.calls[1].args)
+	}
+	for _, forbidden := range []string{"--provider", "--model", "--language"} {
+		if slices.Contains(commitgen.calls[0].args, forbidden) || slices.Contains(commitgen.calls[1].args, forbidden) {
+			t.Fatalf("commitgen arguments contain %q: %#v", forbidden, commitgen.calls)
+		}
+	}
+	prCall := gh.calls[len(gh.calls)-1]
+	for _, expected := range []string{
+		"--title feat: add x",
+		"Generated details.\n\nCloses #42\n\n- [ ] internal/example.go:9 — Rename this helper.",
+		"--base main",
+	} {
+		if !strings.Contains(prCall, expected) {
+			t.Errorf("draft PR call = %q, want %q", prCall, expected)
+		}
+	}
+	bodyEnd := strings.Index(prCall, " --head ")
+	if strings.Count(prCall, "Closes #42") != 1 || bodyEnd < 0 ||
+		!strings.HasSuffix(prCall[:bodyEnd], "- [ ] internal/example.go:9 — Rename this helper.") {
+		t.Fatalf("draft PR call = %q, want one close reference and nit checklist at the end", prCall)
+	}
+	if strings.Contains(fixture.stdout.String(), "commitgen") {
+		t.Fatalf("stdout = %q, want no fallback notice when commitgen succeeds", fixture.stdout.String())
+	}
+}
+
+func TestImplementPrOnApprovePassesProjectLanguageToCommitgen(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		language string
+	}{
+		{name: "commitgen default"},
+		{name: "project override", language: "pt_br"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newImplementLoopFixture(t)
+			createBareOrigin(t, fixture.root)
+			configureApprovedPublicationHarness(fixture)
+			if test.language != "" {
+				projectConfig, err := config.Load(fixture.root)
+				if err != nil {
+					t.Fatal(err)
+				}
+				projectConfig.Publish.Language = test.language
+				if _, err := config.Write(fixture.root, projectConfig, config.OverwriteExisting); err != nil {
+					t.Fatal(err)
+				}
+				commitWorkingTree(t, fixture.root, "configure publication language")
+			}
+			logPath := installCommitgenScript(t, false)
+			fixture.app.deps.Commitgen = commitgenadapter.Runner{}
+
+			code := fixture.app.Run(context.Background(), []string{"implement", "42", "--pr-on-approve"}, &fixture.stdout, &fixture.stderr)
+			if code != 0 {
+				t.Fatalf("implement code = %d, stderr = %q", code, fixture.stderr.String())
+			}
+			calls := readCommitgenScriptCalls(t, logPath)
+			if len(calls) != 2 {
+				t.Fatalf("commitgen calls = %#v, want commit and PR calls", calls)
+			}
+			for index, args := range calls {
+				languageIndex := slices.Index(args, "--language")
+				if test.language == "" {
+					if languageIndex >= 0 {
+						t.Errorf("commitgen call %d arguments = %#v, want no --language", index, args)
+					}
+					continue
+				}
+				if languageIndex < 0 || languageIndex+1 >= len(args) || args[languageIndex+1] != test.language {
+					t.Errorf("commitgen call %d arguments = %#v, want --language %s", index, args, test.language)
+				}
+			}
+		})
+	}
+}
+
+func TestImplementPrOnApproveIncludesCommitgenLanguageFailureInFallbackNotice(t *testing.T) {
+	fixture := newImplementLoopFixture(t)
+	createBareOrigin(t, fixture.root)
+	gh := configureApprovedPublicationHarness(fixture)
+	gh.issueTitle = "Adicionar suporte à publicação"
+	projectConfig, err := config.Load(fixture.root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	projectConfig.Publish.Language = "xx"
+	if _, err := config.Write(fixture.root, projectConfig, config.OverwriteExisting); err != nil {
+		t.Fatal(err)
+	}
+	commitWorkingTree(t, fixture.root, "configure publication language")
+	logPath := installCommitgenScript(t, true)
+	fixture.app.deps.Commitgen = commitgenadapter.Runner{}
+
+	code := fixture.app.Run(context.Background(), []string{"implement", "42", "--pr-on-approve"}, &fixture.stdout, &fixture.stderr)
+	if code != 0 {
+		t.Fatalf("implement code = %d, stderr = %q", code, fixture.stderr.String())
+	}
+	if got := gitOutput(t, fixture.root, "log", "-1", "--format=%s"); got != "feat: Adicionar suporte à publicação (#42)" {
+		t.Fatalf("fallback commit message = %q, want ticket title preserved", got)
+	}
+	for _, expected := range []string{
+		"used fallback commit message",
+		"used fallback pull request text",
+		"language xx not supported",
+	} {
+		if !strings.Contains(fixture.stdout.String(), expected) {
+			t.Errorf("stdout = %q, want %q", fixture.stdout.String(), expected)
+		}
+	}
+	prCall := gh.calls[len(gh.calls)-1]
+	if !strings.Contains(prCall, "--title Adicionar suporte à publicação") ||
+		!strings.Contains(prCall, "The implementation meets the ticket.") {
+		t.Fatalf("draft PR call = %q, want original ticket title and English fallback body", prCall)
+	}
+	if calls := readCommitgenScriptCalls(t, logPath); len(calls) != 2 {
+		t.Fatalf("commitgen calls = %#v, want failed commit and PR calls", calls)
+	}
+}
+
+func installCommitgenScript(t *testing.T, failUnsupported bool) string {
+	t.Helper()
+	bin := t.TempDir()
+	logPath := filepath.Join(t.TempDir(), "commitgen-args.log")
+	script := `#!/bin/sh
+printf 'CALL\n' >> "$COMMITGEN_LOG"
+printf '%s\n' "$@" >> "$COMMITGEN_LOG"
+printf 'END\n' >> "$COMMITGEN_LOG"
+if [ "$COMMITGEN_FAIL_UNSUPPORTED" = "true" ]; then
+  case " $* " in
+    *" --language xx "*) printf '%s\n' 'language xx not supported' >&2; exit 1 ;;
+  esac
+fi
+if [ "$1" = "pr" ]; then
+  printf '%s\n' 'Title: feat: generated PR' '' 'Generated details.'
+  exit 0
+fi
+git commit -m 'feat: generated publication' >/dev/null
+`
+	path := filepath.Join(bin, "commitgen")
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("COMMITGEN_LOG", logPath)
+	if failUnsupported {
+		t.Setenv("COMMITGEN_FAIL_UNSUPPORTED", "true")
+	} else {
+		t.Setenv("COMMITGEN_FAIL_UNSUPPORTED", "false")
+	}
+	return logPath
+}
+
+func readCommitgenScriptCalls(t *testing.T, path string) [][]string {
+	t.Helper()
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var calls [][]string
+	var current []string
+	for _, line := range strings.Split(strings.TrimSpace(string(contents)), "\n") {
+		switch line {
+		case "CALL":
+			current = []string{}
+		case "END":
+			calls = append(calls, current)
+		default:
+			current = append(current, line)
+		}
+	}
+	return calls
+}
+
+func TestImplementPrOnApproveFallsBackWhenCommitgenCannotCommit(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		mode string
+	}{
+		{name: "exits non-zero", mode: "fail"},
+		{name: "commits then exits non-zero", mode: "fail-after-commit"},
+		{name: "leaves HEAD unchanged", mode: "noop"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newImplementLoopFixture(t)
+			createBareOrigin(t, fixture.root)
+			branchPoint := gitOutput(t, fixture.root, "rev-parse", "HEAD")
+			gh := configureApprovedPublicationHarness(fixture)
+			commitgen := &fakeCommitgenRunner{
+				available: true,
+				prOutput:  "Title: feat: generated PR\n\nGenerated description.",
+			}
+			if test.mode == "fail" {
+				commitgen.commitErr = fmt.Errorf("simulated commitgen failure")
+			}
+			if test.mode == "fail-after-commit" {
+				commitgen.commit = func(ctx context.Context, workRoot string) error {
+					if _, err := fixture.app.gitRunner(workRoot).Run(ctx, "commit", "-m", "feat: generated publication"); err != nil {
+						return err
+					}
+					return fmt.Errorf("simulated commitgen failure after commit")
+				}
+			}
+			fixture.app.deps.Commitgen = commitgen
+
+			code := fixture.app.Run(context.Background(), []string{"implement", "42", "--pr-on-approve"}, &fixture.stdout, &fixture.stderr)
+			if code != 0 {
+				t.Fatalf("implement code = %d, stderr = %q", code, fixture.stderr.String())
+			}
+			if got := gitOutput(t, fixture.root, "rev-list", "--count", branchPoint+"..HEAD"); got != "1" {
+				t.Fatalf("commits since branch point = %q, want one fallback commit", got)
+			}
+			if got := gitOutput(t, fixture.root, "log", "-1", "--format=%s"); got != "feat: Add resilient workflow (#42)" {
+				t.Fatalf("commit message = %q, want fallback commit message", got)
+			}
+			if !strings.Contains(fixture.stdout.String(), "used fallback commit message") {
+				t.Fatalf("stdout = %q, want commitgen fallback notice", fixture.stdout.String())
+			}
+			if strings.Contains(fixture.stdout.String(), "used fallback pull request text") {
+				t.Fatalf("stdout = %q, want generated pull request text", fixture.stdout.String())
+			}
+			if len(gh.calls) == 0 || !strings.Contains(gh.calls[len(gh.calls)-1], "--title feat: generated PR") {
+				t.Fatalf("GitHub calls = %#v, want commitgen pull request title", gh.calls)
+			}
+			prCall := gh.calls[len(gh.calls)-1]
+			bodyEnd := strings.Index(prCall, " --head ")
+			if strings.Count(prCall, "Closes #42") != 1 || bodyEnd < 0 ||
+				!strings.HasSuffix(prCall[:bodyEnd], "- [ ] internal/example.go:9 — Rename this helper.") {
+				t.Fatalf("draft PR call = %q, want one appended close reference and nit checklist at the end", prCall)
+			}
+		})
+	}
+}
+
+func TestImplementPrOnApproveFallsBackWhenCommitgenPRTextIsUnusable(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		output string
+		exit   string
+	}{
+		{name: "command fails", output: "Title: ignored", exit: "1"},
+		{name: "no title", output: " \n\t\n", exit: "0"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newImplementLoopFixture(t)
+			createBareOrigin(t, fixture.root)
+			gh := configureApprovedPublicationHarness(fixture)
+			commitgen := &fakeCommitgenRunner{
+				available: true,
+				prOutput:  test.output,
+				commit: func(ctx context.Context, workRoot string) error {
+					_, err := fixture.app.gitRunner(workRoot).Run(ctx, "commit", "-m", "feat: generated publication")
+					return err
+				},
+			}
+			if test.exit == "1" {
+				commitgen.prErr = fmt.Errorf("simulated commitgen pr failure")
+			}
+			fixture.app.deps.Commitgen = commitgen
+
+			code := fixture.app.Run(context.Background(), []string{"implement", "42", "--pr-on-approve"}, &fixture.stdout, &fixture.stderr)
+			if code != 0 {
+				t.Fatalf("implement code = %d, stderr = %q", code, fixture.stderr.String())
+			}
+			if !strings.Contains(fixture.stdout.String(), "used fallback pull request text") {
+				t.Fatalf("stdout = %q, want pull request fallback notice", fixture.stdout.String())
+			}
+			prCall := gh.calls[len(gh.calls)-1]
+			bodyEnd := strings.Index(prCall, " --head ")
+			if !strings.Contains(prCall, "--title Add resilient workflow") ||
+				!strings.Contains(prCall, "Closes #42\n\nThe implementation meets the ticket.") ||
+				bodyEnd < 0 || !strings.HasSuffix(prCall[:bodyEnd], "- [ ] internal/example.go:9 — Rename this helper.") {
+				t.Fatalf("draft PR call = %q, want fallback title, body, and nit checklist", prCall)
+			}
+		})
+	}
+}
+
+func TestImplementPrOnApproveUsesForgeDefaultBaseForCommitgenFromDetachedStart(t *testing.T) {
+	fixture := newImplementLoopFixture(t)
+	createBareOrigin(t, fixture.root)
+	gitOutput(t, fixture.root, "switch", "--detach", "HEAD")
+	loopGH := configureApprovedPublicationHarness(fixture)
+	commitgen := &fakeCommitgenRunner{
+		available: true,
+		prOutput:  "Titulo: feat: add x\n\nGenerated description.",
+		commit: func(ctx context.Context, workRoot string) error {
+			_, err := fixture.app.gitRunner(workRoot).Run(ctx, "commit", "-m", "feat: generated publication")
+			return err
+		},
+	}
+	fixture.app.deps.Commitgen = commitgen
+
+	code := fixture.app.Run(context.Background(), []string{"implement", "42", "--pr-on-approve"}, &fixture.stdout, &fixture.stderr)
+	if code != 0 {
+		t.Fatalf("implement code = %d, stderr = %q", code, fixture.stderr.String())
+	}
+	if len(commitgen.calls) != 2 || !reflect.DeepEqual(commitgen.calls[1].args, []string{
+		"pr", "--agent", "--base", "main", "--head", "feat/add-resilient-workflow",
+	}) {
+		t.Fatalf("commitgen calls = %#v, want forge default base", commitgen.calls)
+	}
+	prCall := loopGH.calls[len(loopGH.calls)-1]
+	if !strings.Contains(prCall, "--base main") || !strings.Contains(prCall, "--title feat: add x") {
+		t.Fatalf("draft PR call = %q, want generated title and the same forge default base", prCall)
+	}
+}
+
+func TestImplementPrOnApproveFallsBackWhenCommitgenIsUnavailable(t *testing.T) {
+	fixture := newImplementLoopFixture(t)
+	createBareOrigin(t, fixture.root)
+	branchPoint := gitOutput(t, fixture.root, "rev-parse", "HEAD")
+	configureApprovedPublicationHarness(fixture)
+	commitgen := &fakeCommitgenRunner{}
+	fixture.app.deps.Commitgen = commitgen
+
+	code := fixture.app.Run(context.Background(), []string{"implement", "42", "--pr-on-approve"}, &fixture.stdout, &fixture.stderr)
+	if code != 0 {
+		t.Fatalf("implement code = %d, stderr = %q", code, fixture.stderr.String())
+	}
+	if got := gitOutput(t, fixture.root, "rev-list", "--count", branchPoint+"..HEAD"); got != "1" {
+		t.Fatalf("commits since branch point = %q, want one fallback commit", got)
+	}
+	if got := gitOutput(t, fixture.root, "log", "-1", "--format=%s"); got != "feat: Add resilient workflow (#42)" {
+		t.Fatalf("commit message = %q, want fallback commit message", got)
+	}
+	for _, notice := range []string{
+		"commitgen unavailable; used fallback commit message",
+		"commitgen unavailable; used fallback pull request text",
+	} {
+		if !strings.Contains(fixture.stdout.String(), notice) {
+			t.Errorf("stdout = %q, want %q", fixture.stdout.String(), notice)
+		}
+	}
+	if len(commitgen.calls) != 0 {
+		t.Fatalf("commitgen calls = %#v, want none when the runner is unavailable", commitgen.calls)
+	}
+}
+
+func TestImplementPrOnApproveSkipsPublicationForEmptyDiff(t *testing.T) {
+	fixture := newImplementLoopFixture(t)
+	bareRemote := createBareOrigin(t, fixture.root)
+	branchPoint := gitOutput(t, fixture.root, "rev-parse", "HEAD")
+	loop := &loopHarness{
+		root: fixture.root, noChanges: true,
+		streams: [][]harness.Event{
+			{{Type: harness.EventSession, SessionID: "implement-session"}},
+			{{Type: harness.EventSession, SessionID: "review-session"}, {Type: harness.EventAssistantText, Text: approveVerdictText}},
+		},
+	}
+	fixture.harnesses["codex"] = loop
+	fixture.harnesses["claude"] = loop
+	gh := &loopGHRunner{}
+	fixture.app.deps.GH = fixedGH(gh)
+
+	code := fixture.app.Run(context.Background(), []string{"implement", "42", "--pr-on-approve"}, &fixture.stdout, &fixture.stderr)
+	if code != 0 {
+		t.Fatalf("implement code = %d, stderr = %q", code, fixture.stderr.String())
+	}
+	if got := gitOutput(t, fixture.root, "rev-list", "--count", branchPoint+"..HEAD"); got != "0" {
+		t.Fatalf("commits since branch point = %q, want zero", got)
+	}
+	if got := gitOutput(t, fixture.root, "status", "--porcelain"); got != "" {
+		t.Fatalf("working tree = %q, want clean", got)
+	}
+	if strings.Contains(strings.Join(gh.calls, "\n"), "pr create") {
+		t.Fatalf("GitHub calls = %#v, want no pull request operation", gh.calls)
+	}
+	if strings.Contains(gitOutput(t, fixture.root, "--git-dir="+bareRemote, "for-each-ref", "--format=%(refname)", "refs/heads"), "feat/add-resilient-workflow") {
+		t.Fatal("bare origin contains an implementation branch after an empty diff")
+	}
+	if !strings.Contains(fixture.stdout.String(), "No changes to publish; skipped commit, push, and pull request.") {
+		t.Fatalf("stdout = %q, want empty-diff notice", fixture.stdout.String())
+	}
+}
+
+func TestImplementPrOnApproveUsesNoBaseForDetachedStart(t *testing.T) {
+	fixture := newImplementLoopFixture(t)
+	createBareOrigin(t, fixture.root)
+	gitOutput(t, fixture.root, "switch", "--detach", "HEAD")
+	loop := &loopHarness{
+		root: fixture.root,
+		streams: [][]harness.Event{
+			{{Type: harness.EventSession, SessionID: "implement-session"}},
+			{{Type: harness.EventSession, SessionID: "review-session"}, {Type: harness.EventAssistantText, Text: approveVerdictText}},
+		},
+	}
+	fixture.harnesses["codex"] = loop
+	fixture.harnesses["claude"] = loop
+	gh := &loopGHRunner{}
+	fixture.app.deps.GH = fixedGH(gh)
+
+	code := fixture.app.Run(context.Background(), []string{"implement", "42", "--pr-on-approve"}, &fixture.stdout, &fixture.stderr)
+	if code != 0 {
+		t.Fatalf("implement code = %d, stderr = %q", code, fixture.stderr.String())
+	}
+	prCall := gh.calls[len(gh.calls)-1]
+	if !strings.HasPrefix(prCall, "pr create --draft ") || strings.Contains(prCall, "--base ") {
+		t.Fatalf("draft PR call = %q, want no base for detached start", prCall)
+	}
+}
+
+func TestImplementPrOnApproveUsesExplicitWorktreeBase(t *testing.T) {
+	fixture := newImplementLoopFixture(t)
+	bareRemote := createBareOrigin(t, fixture.root)
+	gitOutput(t, fixture.root, "branch", "-M", "main")
+	gitOutput(t, fixture.root, "push", "-u", "origin", "main")
+	gitOutput(t, fixture.root, "fetch", "origin", "main")
+	worktreeRoot := filepath.Join(t.TempDir(), "worktrees")
+	configureWorktreeRoot(t, fixture.root, worktreeRoot)
+	loop := &loopHarness{
+		streams: [][]harness.Event{
+			{{Type: harness.EventSession, SessionID: "worktree-implement"}},
+			{{Type: harness.EventSession, SessionID: "worktree-review"}, {Type: harness.EventAssistantText, Text: approveVerdictText}},
+		},
+	}
+	var worktreePath string
+	fixture.app.deps.Harnesses = func(root string) map[string]harness.Adapter {
+		worktreePath = root
+		loop.root = root
+		return map[string]harness.Adapter{"codex": loop, "claude": loop}
+	}
+	gh := &loopGHRunner{}
+	fixture.app.deps.GH = fixedGH(gh)
+
+	code := fixture.app.Run(context.Background(), []string{"implement", "42", "--pr-on-approve", "--worktree", "--base", "origin/main"}, &fixture.stdout, &fixture.stderr)
+	if code != 0 {
+		t.Fatalf("implement worktree code = %d, stderr = %q", code, fixture.stderr.String())
+	}
+	if worktreePath == "" {
+		t.Fatal("worktree harness did not run")
+	}
+	prCall := gh.calls[len(gh.calls)-1]
+	if !strings.Contains(prCall, "--base main") || strings.Contains(prCall, "--base origin/main") {
+		t.Fatalf("draft PR call = %q, want normalized base main", prCall)
+	}
+	branch := "feat/add-resilient-workflow"
+	if got := gitOutput(t, worktreePath, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"); got != "origin/"+branch {
+		t.Fatalf("worktree upstream = %q, want origin/%s", got, branch)
+	}
+	if got := gitOutput(t, fixture.root, "--git-dir="+bareRemote, "show-ref", "--verify", "refs/heads/"+branch); got == "" {
+		t.Fatal("bare origin does not contain the worktree implementation branch")
+	}
+}
+
+func TestImplementPrOnApproveDoesNotPublishExhaustedRun(t *testing.T) {
+	fixture := newImplementLoopFixture(t)
+	bareRemote := createBareOrigin(t, fixture.root)
+	branchPoint := gitOutput(t, fixture.root, "rev-parse", "HEAD")
+	loop := &loopHarness{
+		root: fixture.root,
+		streams: [][]harness.Event{
+			{{Type: harness.EventSession, SessionID: "implement-1"}},
+			{{Type: harness.EventSession, SessionID: "review-1"}, {Type: harness.EventAssistantText, Text: reviseVerdictText}},
+			{{Type: harness.EventSession, SessionID: "implement-2"}},
+			{{Type: harness.EventSession, SessionID: "review-2"}, {Type: harness.EventAssistantText, Text: reviseVerdictText}},
+			{{Type: harness.EventSession, SessionID: "implement-3"}},
+			{{Type: harness.EventSession, SessionID: "review-3"}, {Type: harness.EventAssistantText, Text: reviseVerdictText}},
+		},
+	}
+	fixture.harnesses["codex"] = loop
+	fixture.harnesses["claude"] = loop
+	gh := &loopGHRunner{}
+	fixture.app.deps.GH = fixedGH(gh)
+
+	code := fixture.app.Run(context.Background(), []string{"implement", "42", "--pr-on-approve"}, &fixture.stdout, &fixture.stderr)
+	if code == 0 || len(loop.requests) != 6 {
+		t.Fatalf("implement code = %d, harness requests = %d, want exhausted failure after three iterations", code, len(loop.requests))
+	}
+	if got := gitOutput(t, fixture.root, "rev-list", "--count", branchPoint+"..HEAD"); got != "0" {
+		t.Fatalf("commits since branch point = %q, want zero", got)
+	}
+	if strings.Contains(strings.Join(gh.calls, "\n"), "pr create") {
+		t.Fatalf("GitHub calls = %#v, want no pull request operation", gh.calls)
+	}
+	if refs := gitOutput(t, fixture.root, "--git-dir="+bareRemote, "for-each-ref", "--format=%(refname)", "refs/heads"); strings.Contains(refs, "feat/add-resilient-workflow") {
+		t.Fatalf("bare origin refs = %q, want no implementation branch", refs)
+	}
+}
+
+func createBareOrigin(t *testing.T, root string) string {
+	t.Helper()
+	bareRemote := filepath.Join(t.TempDir(), "origin.git")
+	command := exec.Command("git", "init", "--bare", "--quiet", bareRemote)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("create bare origin: %v\n%s", err, output)
+	}
+	gitOutput(t, root, "config", "user.name", "syl test")
+	gitOutput(t, root, "config", "user.email", "syl@example.test")
+	gitOutput(t, root, "remote", "add", "origin", bareRemote)
+	return bareRemote
+}
+
+func configureApprovedPublicationHarness(fixture *implementLoopFixture) *loopGHRunner {
+	loop := &loopHarness{
+		root: fixture.root,
+		streams: [][]harness.Event{
+			{{Type: harness.EventSession, SessionID: "implement-session"}},
+			{{Type: harness.EventSession, SessionID: "review-session"}, {Type: harness.EventAssistantText, Text: approveVerdictWithNitText}},
+		},
+	}
+	fixture.harnesses["codex"] = loop
+	fixture.harnesses["claude"] = loop
+	gh := &loopGHRunner{}
+	fixture.app.deps.GH = fixedGH(gh)
+	return gh
+}
+
+func configureApprovedGitLabPublicationHarness(fixture *implementLoopFixture) *publishingGitLabRunner {
+	loop := &loopHarness{
+		root: fixture.root,
+		streams: [][]harness.Event{
+			{{Type: harness.EventSession, SessionID: "implement-session"}},
+			{{Type: harness.EventSession, SessionID: "review-session"}, {Type: harness.EventAssistantText, Text: approveVerdictWithNitText}},
+		},
+	}
+	fixture.harnesses["codex"] = loop
+	fixture.harnesses["claude"] = loop
+	glab := &publishingGitLabRunner{}
+	fixture.app.deps.GLab = fixedGLab(glab)
+	return glab
+}
+
+type publishingGitLabRunner struct {
+	calls       []string
+	existingURL string
+	createError error
+}
+
+func (runner *publishingGitLabRunner) Run(_ context.Context, args ...string) (string, error) {
+	call := strings.Join(args, " ")
+	runner.calls = append(runner.calls, call)
+	switch call {
+	case "label list --output json --per-page 100":
+		return `[{"name":"todo"},{"name":"doing"}]`, nil
+	case "issue view 42 --output json":
+		return `{"id":9042,"iid":42,"title":"Add resilient workflow","description":"Acceptance criteria: leave a working implementation.","state":"opened","labels":["todo"]}`, nil
+	case "api --method PUT projects/:fullpath/issues/42 --raw-field labels=doing":
+		return "", nil
+	case "mr list --source-branch feat/add-resilient-workflow --output json --per-page 1":
+		if runner.existingURL != "" {
+			return fmt.Sprintf(`[{"web_url":%q}]`, runner.existingURL), nil
+		}
+		return "[]", nil
+	case "repo view --output json --jq .default_branch":
+		return "main\n", nil
+	default:
+		if strings.HasPrefix(call, "mr create --draft ") {
+			if runner.createError != nil {
+				return "", runner.createError
+			}
+			return "!23 Draft: Add resilient workflow (feat/add-resilient-workflow)\n https://gitlab.com/group/project/-/merge_requests/23\n", nil
+		}
+		return "", fmt.Errorf("unexpected glab command %q", call)
+	}
+}
+
+func (runner *publishingGitLabRunner) hasCall(want string) bool {
+	for _, call := range runner.calls {
+		if call == want {
+			return true
+		}
+	}
+	return false
+}
+
+func (runner *publishingGitLabRunner) hasCreateCall() bool {
+	return runner.createCall() != ""
+}
+
+func (runner *publishingGitLabRunner) createCall() string {
+	for _, call := range runner.calls {
+		if strings.HasPrefix(call, "mr create --draft ") {
+			return call
+		}
+	}
+	return ""
+}
+
+type fakeCommitgenCall struct {
+	workRoot string
+	args     []string
+}
+
+type fakeCommitgenRunner struct {
+	available bool
+	calls     []fakeCommitgenCall
+	commit    func(context.Context, string) error
+	commitErr error
+	prOutput  string
+	prErr     error
+}
+
+func (r *fakeCommitgenRunner) Available() bool { return r.available }
+
+func (r *fakeCommitgenRunner) Run(ctx context.Context, workRoot string, args ...string) (string, error) {
+	r.calls = append(r.calls, fakeCommitgenCall{workRoot: workRoot, args: append([]string(nil), args...)})
+	if len(args) > 0 && args[0] == "pr" {
+		return r.prOutput, r.prErr
+	}
+	if r.commit != nil {
+		if err := r.commit(ctx, workRoot); err != nil {
+			return "", err
+		}
+	}
+	return "", r.commitErr
 }
 
 func TestBareImplementDoesNotRunWorktreeSetup(t *testing.T) {
@@ -1625,6 +2518,7 @@ func newImplementLoopFixture(t *testing.T) *implementLoopFixture {
 		t.Fatal(err)
 	}
 	commitWorkingTree(t, base.root, "fixture")
+	gitOutput(t, base.root, "branch", "-M", "main")
 	harnesses := map[string]harness.Adapter{
 		"claude":   nil,
 		"codex":    nil,
@@ -1657,7 +2551,10 @@ type loopHarness struct {
 	streams               [][]harness.Event
 	requests              []harness.Request
 	leaveChangesUntracked bool
+	noChanges             bool
 }
+
+const approveVerdictWithNitText = "VERDICT: approve\nSUMMARY: The implementation meets the ticket.\nFINDINGS:\n- [nit] internal/example.go:9 — Rename this helper.\n"
 
 type setupCheckingLoopHarness struct {
 	*loopHarness
@@ -1806,7 +2703,7 @@ func (*unparseableReviewImplementHarness) AttachSession(context.Context, string,
 func (h *loopHarness) Run(_ context.Context, request harness.Request) (harness.Stream, error) {
 	h.requests = append(h.requests, request)
 	index := len(h.requests) - 1
-	if index%2 == 0 {
+	if index%2 == 0 && !h.noChanges {
 		if err := os.WriteFile(filepath.Join(h.root, "change.txt"), []byte(fmt.Sprintf("implemented-%d\n", index/2+1)), 0o644); err != nil {
 			return nil, err
 		}
@@ -1835,17 +2732,32 @@ func (*loopHarness) AttachSession(context.Context, string, harness.Request) erro
 }
 
 type loopGHRunner struct {
-	calls []string
+	calls      []string
+	issueTitle string
 }
 
 func (r *loopGHRunner) Run(_ context.Context, args ...string) (string, error) {
 	call := strings.Join(args, " ")
 	r.calls = append(r.calls, call)
+	if strings.HasPrefix(call, "pr create --draft ") {
+		return "https://github.com/example/project/pull/23\n", nil
+	}
+	if strings.HasPrefix(call, "pr list --head ") {
+		return "[]", nil
+	}
 	switch call {
+	case "repo view --json defaultBranchRef --jq .defaultBranchRef.name":
+		return "main\n", nil
+	case "pr list --head feat/add-resilient-workflow --state open --json url --limit 1":
+		return "[]", nil
 	case "label list --limit 100 --json name":
 		return `[{"name":"todo"},{"name":"doing"}]`, nil
 	case "issue view 42 --json number,title,body,state,labels":
-		return `{"number":42,"title":"Add resilient workflow","body":"Acceptance criteria: leave a working implementation.","state":"OPEN","labels":[{"name":"todo"}]}`, nil
+		title := r.issueTitle
+		if title == "" {
+			title = "Add resilient workflow"
+		}
+		return fmt.Sprintf(`{"number":42,"title":%q,"body":"Acceptance criteria: leave a working implementation.","state":"OPEN","labels":[{"name":"todo"}]}`, title), nil
 	case "issue edit 42 --add-label doing --remove-label todo":
 		return "", nil
 	default:

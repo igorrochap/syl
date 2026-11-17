@@ -243,6 +243,14 @@ func TestParseSummaryKeepsFirstOccurrenceAndRejectsBadIterations(t *testing.T) {
 	}
 }
 
+func TestParseSummaryReadsPublicationOutcome(t *testing.T) {
+	got := ParseSummary([]byte("Publication: failed\nPublication step: pull request\nPublication error:\n  gh pr create failed\n  permission denied\nDiff stat:\n file.go | 1 +\n"))
+	want := Publication{Status: PublicationFailed, Step: PublicationStepPullRequest, Error: "gh pr create failed\npermission denied"}
+	if !reflect.DeepEqual(got.Publication, want) {
+		t.Fatalf("ParseSummary().Publication = %#v, want %#v", got.Publication, want)
+	}
+}
+
 func TestParseVerdictLabel(t *testing.T) {
 	if got := ParseVerdictLabel([]byte("SUMMARY: x\nVERDICT:  revise \nVERDICT: approve\n")); got != "revise" {
 		t.Errorf("ParseVerdictLabel() = %q, want revise", got)

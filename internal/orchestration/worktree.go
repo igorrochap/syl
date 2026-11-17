@@ -18,30 +18,57 @@ import (
 // worktree. Provisioning does not update the ticket or start a harness; it only
 // prepares the checkout for a later implement run.
 type WorktreeOptions struct {
-	OriginRoot     string
-	ProjectConfig  config.Config
-	Ticket         tracker.Ticket
-	Base           string
-	Git            GitRunner
-	GitForWorktree func(root string) GitRunner
-	OriginGit      GitRunner
+	OriginRoot             string
+	ProjectConfig          config.Config
+	Ticket                 tracker.Ticket
+	Base                   string
+	CapturePullRequestBase bool
+	Git                    GitRunner
+	GitForWorktree         func(root string) GitRunner
+	OriginGit              GitRunner
 }
 
 // Worktree is the checkout prepared for an implementation run.
 type Worktree struct {
 	Path   string
 	Branch string
+	Base   string
 }
 
 // ProvisionWorktree creates a clean worktree for the ticket. The worktree and
 // branch remain owned by the caller once this function succeeds; before then,
 // every failure rolls both back and returns the failure that caused it.
 func ProvisionWorktree(ctx context.Context, options WorktreeOptions) (Worktree, error) {
+	paths, originGit, err := resolveWorktreePaths(options)
+	if err != nil {
+		return Worktree{}, err
+	}
+	branch := resolveBranchName(options.Ticket)
+	paths.path = filepath.Join(paths.root, paths.repo, worktreeBranchSlug(branch))
+	if err := refuseWorktreeCollision(ctx, originGit, paths.path, branch); err != nil {
+		return Worktree{}, err
+	}
+	baseBranch := provisionedPullRequestBase(ctx, options, originGit)
+	parent, err := prepareWorktreeParent(paths.root, paths.repo)
+	if err != nil {
+		return Worktree{}, err
+	}
+	return addProvisionedWorktree(ctx, options, paths, branch, baseBranch, originGit, parent)
+}
+
+type worktreePaths struct {
+	origin string
+	root   string
+	repo   string
+	path   string
+}
+
+func resolveWorktreePaths(options WorktreeOptions) (worktreePaths, GitRunner, error) {
 	if options.OriginRoot == "" {
-		return Worktree{}, errors.New("provision worktree: origin root is required")
+		return worktreePaths{}, nil, errors.New("provision worktree: origin root is required")
 	}
 	if options.Git == nil {
-		return Worktree{}, errors.New("provision worktree: git runner is not configured")
+		return worktreePaths{}, nil, errors.New("provision worktree: git runner is not configured")
 	}
 	originGit := options.OriginGit
 	if originGit == nil {
@@ -50,68 +77,84 @@ func ProvisionWorktree(ctx context.Context, options WorktreeOptions) (Worktree, 
 
 	originRoot, err := filepath.Abs(options.OriginRoot)
 	if err != nil {
-		return Worktree{}, fmt.Errorf("resolve origin root: %w", err)
+		return worktreePaths{}, nil, fmt.Errorf("resolve origin root: %w", err)
 	}
 	worktreeRoot, err := resolveWorktreeRoot(options.ProjectConfig.Worktree.Root)
 	if err != nil {
-		return Worktree{}, err
+		return worktreePaths{}, nil, err
 	}
-	branch := resolveBranchName(options.Ticket)
 	repoName := filepath.Base(filepath.Clean(originRoot))
-	worktreePath := filepath.Join(worktreeRoot, repoName, worktreeBranchSlug(branch))
+	return worktreePaths{origin: originRoot, root: worktreeRoot, repo: repoName}, originGit, nil
+}
 
-	if err := refuseWorktreeCollision(ctx, originGit, worktreePath, branch); err != nil {
-		return Worktree{}, err
+func provisionedPullRequestBase(ctx context.Context, options WorktreeOptions, originGit GitRunner) string {
+	if !options.CapturePullRequestBase {
+		return ""
 	}
+	if strings.TrimSpace(options.Base) == "" {
+		return currentBranch(ctx, originGit)
+	}
+	return pullRequestBase(ctx, originGit, options.Base)
+}
 
-	parent, err := prepareWorktreeParent(worktreeRoot, repoName)
-	if err != nil {
-		return Worktree{}, err
-	}
-
-	branchAttempted := false
-	cleanup := func() {
-		if branchAttempted {
-			rollbackWorktree(ctx, originGit, worktreePath, branch)
-		}
-		parent.cleanup()
-	}
-	fail := func(cause error) (Worktree, error) {
-		cleanup()
-		return Worktree{}, cause
-	}
-
-	args := []string{"worktree", "add", "-b", branch, worktreePath}
+func addProvisionedWorktree(
+	ctx context.Context,
+	options WorktreeOptions,
+	paths worktreePaths,
+	branch string,
+	baseBranch string,
+	originGit GitRunner,
+	parent worktreeParent,
+) (Worktree, error) {
+	args := []string{"worktree", "add", "-b", branch, paths.path}
 	if base := strings.TrimSpace(options.Base); base != "" {
 		args = append(args, base)
 	}
-	branchAttempted = true
 	if _, err := originGit.Run(ctx, args...); err != nil {
-		return fail(fmt.Errorf("create worktree %q: %w", worktreePath, err))
+		return failProvisionedWorktree(ctx, originGit, paths, branch, parent, fmt.Errorf("create worktree %q: %w", paths.path, err))
 	}
-
-	copied, err := copyAgentPaths(originRoot, worktreePath, options.ProjectConfig.Worktree.Copy)
+	copied, err := copyAgentPaths(paths.origin, paths.path, options.ProjectConfig.Worktree.Copy)
 	if err != nil {
-		return fail(err)
+		return failProvisionedWorktree(ctx, originGit, paths, branch, parent, err)
 	}
-	if len(copied) > 0 {
-		worktreeGit := options.Git
-		if options.GitForWorktree != nil {
-			worktreeGit = options.GitForWorktree(worktreePath)
-		}
-		if worktreeGit == nil {
-			return fail(errors.New("check copied agent paths: worktree git runner is not configured"))
-		}
-		untracked, err := untrackedPaths(ctx, worktreeGit)
-		if err != nil {
-			return fail(err)
-		}
-		if len(untracked) > 0 {
-			return fail(fmt.Errorf("copied agent paths are untracked and unignored: %s; add these paths to .gitignore before retrying", strings.Join(untracked, ", ")))
-		}
+	if err := validateCopiedAgentPaths(ctx, options, paths.path, copied); err != nil {
+		return failProvisionedWorktree(ctx, originGit, paths, branch, parent, err)
 	}
+	return Worktree{Path: paths.path, Branch: branch, Base: baseBranch}, nil
+}
 
-	return Worktree{Path: worktreePath, Branch: branch}, nil
+func failProvisionedWorktree(
+	ctx context.Context,
+	originGit GitRunner,
+	paths worktreePaths,
+	branch string,
+	parent worktreeParent,
+	cause error,
+) (Worktree, error) {
+	rollbackWorktree(ctx, originGit, paths.path, branch)
+	parent.cleanup()
+	return Worktree{}, cause
+}
+
+func validateCopiedAgentPaths(ctx context.Context, options WorktreeOptions, worktreePath string, copied []string) error {
+	if len(copied) == 0 {
+		return nil
+	}
+	worktreeGit := options.Git
+	if options.GitForWorktree != nil {
+		worktreeGit = options.GitForWorktree(worktreePath)
+	}
+	if worktreeGit == nil {
+		return errors.New("check copied agent paths: worktree git runner is not configured")
+	}
+	untracked, err := untrackedPaths(ctx, worktreeGit)
+	if err != nil {
+		return err
+	}
+	if len(untracked) > 0 {
+		return fmt.Errorf("copied agent paths are untracked and unignored: %s; add these paths to .gitignore before retrying", strings.Join(untracked, ", "))
+	}
+	return nil
 }
 
 func resolveWorktreeRoot(root string) (string, error) {

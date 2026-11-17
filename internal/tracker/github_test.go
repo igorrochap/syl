@@ -95,6 +95,121 @@ func TestGitHubCreateAppliesTodoLabelAndReturnsCreatedIssue(t *testing.T) {
 	}
 }
 
+func TestGitHubCreatePullRequestOpensDraftWithHeadAndOptionalBase(t *testing.T) {
+	runner := &scriptedGitHubRunner{responses: map[string]githubResponse{
+		"pr list --head feat/ship-it --state open --json url --limit 1": {
+			output: "[]",
+		},
+		"pr create --draft --title Ship it --body Closes #7 --head feat/ship-it --base main": {
+			output: "https://github.com/example/project/pull/23\n",
+		},
+	}}
+	githubTracker, err := NewGitHub(runner)
+	if err != nil {
+		t.Fatalf("NewGitHub() error = %v", err)
+	}
+
+	request := PullRequest{
+		Title: "Ship it", Body: "Closes #7", Head: "feat/ship-it", Base: "main",
+	}
+	url, err := githubTracker.CreatePullRequest(context.Background(), request)
+	if err != nil {
+		t.Fatalf("CreatePullRequest() error = %v", err)
+	}
+	if url != "https://github.com/example/project/pull/23" {
+		t.Fatalf("CreatePullRequest() URL = %q, want the created pull request URL", url)
+	}
+	if !runner.hasCall("pr create --draft --title Ship it --body Closes #7 --head feat/ship-it --base main") {
+		t.Fatalf("CreatePullRequest() calls = %#v, want draft PR arguments", runner.calls)
+	}
+	if got := strings.Join(githubTracker.CreatePullRequestCommand(request), " "); got != "gh pr create --draft --title Ship it --body Closes #7 --head feat/ship-it --base main" {
+		t.Fatalf("CreatePullRequestCommand() = %q, want manual draft PR command", got)
+	}
+}
+
+func TestGitHubCreatePullRequestReturnsExistingPullRequest(t *testing.T) {
+	const existingURL = "https://github.com/example/project/pull/23"
+	runner := &scriptedGitHubRunner{responses: map[string]githubResponse{
+		"pr list --head feat/ship-it --state open --json url --limit 1": {
+			output: `[{"url":"` + existingURL + `"}]`,
+		},
+	}}
+	githubTracker, err := NewGitHub(runner)
+	if err != nil {
+		t.Fatalf("NewGitHub() error = %v", err)
+	}
+
+	url, err := githubTracker.CreatePullRequest(context.Background(), PullRequest{
+		Title: "Ship it", Body: "Closes #7", Head: "feat/ship-it", Base: "main",
+	})
+	if err != nil || url != existingURL {
+		t.Fatalf("CreatePullRequest() = (%q, %v), want existing URL and no error", url, err)
+	}
+	if runner.hasCall("pr create --draft --title Ship it --body Closes #7 --head feat/ship-it --base main") {
+		t.Fatalf("gh calls = %#v, want existing pull request to skip creation", runner.calls)
+	}
+}
+
+func TestGitHubCreatePullRequestOmitsBaseWhenUnspecified(t *testing.T) {
+	runner := &scriptedGitHubRunner{responses: map[string]githubResponse{
+		"pr list --head feat/ship-it --state open --json url --limit 1": {
+			output: "[]",
+		},
+		"pr create --draft --title Ship it --body Closes #7 --head feat/ship-it": {
+			output: "https://github.com/example/project/pull/23\n",
+		},
+	}}
+	githubTracker, err := NewGitHub(runner)
+	if err != nil {
+		t.Fatalf("NewGitHub() error = %v", err)
+	}
+
+	if _, err := githubTracker.CreatePullRequest(context.Background(), PullRequest{
+		Title: "Ship it", Body: "Closes #7", Head: "feat/ship-it",
+	}); err != nil {
+		t.Fatalf("CreatePullRequest() error = %v", err)
+	}
+	if !runner.hasCall("pr create --draft --title Ship it --body Closes #7 --head feat/ship-it") {
+		t.Fatalf("CreatePullRequest() calls = %#v, want no base argument", runner.calls)
+	}
+}
+
+func TestGitHubDefaultPullRequestBaseReadsForgeBranch(t *testing.T) {
+	const command = "repo view --json defaultBranchRef --jq .defaultBranchRef.name"
+	runner := &scriptedGitHubRunner{responses: map[string]githubResponse{
+		command: {output: " main \n"},
+	}}
+	githubTracker, err := NewGitHub(runner)
+	if err != nil {
+		t.Fatalf("NewGitHub() error = %v", err)
+	}
+	base, err := githubTracker.DefaultPullRequestBase(context.Background())
+	if err != nil || base != "main" {
+		t.Fatalf("DefaultPullRequestBase() = (%q, %v), want main and no error", base, err)
+	}
+	if !runner.hasCall(command) {
+		t.Fatalf("GitHub calls = %#v, want forge default branch lookup", runner.calls)
+	}
+}
+
+func TestGitHubDefaultPullRequestBaseReportsLookupFailureAndEmptyBranch(t *testing.T) {
+	for _, response := range []githubResponse{
+		{err: errors.New("repository lookup failed")},
+		{output: " \n"},
+	} {
+		runner := &scriptedGitHubRunner{responses: map[string]githubResponse{
+			"repo view --json defaultBranchRef --jq .defaultBranchRef.name": response,
+		}}
+		githubTracker, err := NewGitHub(runner)
+		if err != nil {
+			t.Fatalf("NewGitHub() error = %v", err)
+		}
+		if base, err := githubTracker.DefaultPullRequestBase(context.Background()); err == nil || base != "" {
+			t.Fatalf("DefaultPullRequestBase() = (%q, %v), want empty base and an error", base, err)
+		}
+	}
+}
+
 func TestGitHubListReturnsAllIssueMetadata(t *testing.T) {
 	runner := &scriptedGitHubRunner{responses: map[string]githubResponse{
 		"label list --limit 100 --json name": {

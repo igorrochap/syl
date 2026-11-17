@@ -37,3 +37,31 @@ type Tracker interface {
 	AddComment(ctx context.Context, number int, note string) error
 	Create(ctx context.Context, title, body string) (Ticket, error)
 }
+
+// PullRequest describes the values used to create a draft pull request.
+type PullRequest struct {
+	Title string
+	Body  string
+	Head  string
+	Base  string
+}
+
+// PullRequestCreator is implemented by Trackers that can publish pull requests.
+type PullRequestCreator interface {
+	CreatePullRequest(ctx context.Context, request PullRequest) (string, error)
+	CreatePullRequestCommand(request PullRequest) []string
+}
+
+// RequirePullRequestCreator rejects a Tracker that cannot publish approved implementations.
+func RequirePullRequestCreator(issueTracker Tracker) error {
+	if _, ok := issueTracker.(PullRequestCreator); ok {
+		return nil
+	}
+	return errors.New("--pr-on-approve requires a GitHub or GitLab Tracker")
+}
+
+// PullRequestBaseResolver resolves the forge default branch used when a Run
+// starts from a detached or raw revision.
+type PullRequestBaseResolver interface {
+	DefaultPullRequestBase(ctx context.Context) (string, error)
+}

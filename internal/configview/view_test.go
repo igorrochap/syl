@@ -60,6 +60,26 @@ func TestBuildFormViewAndLiveRunBanner(t *testing.T) {
 	}
 }
 
+func TestBuildFormViewIncludesPublishLanguage(t *testing.T) {
+	project := initializedProject(t)
+	loaded, err := config.Load(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded.Publish.Language = "pt_br"
+	if _, err := config.Write(project, loaded, config.OverwriteExisting); err != nil {
+		t.Fatal(err)
+	}
+
+	view, err := configview.Build(projectPage(project, readmodel.HealthOK))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view.Values.PublishLanguage != "pt_br" {
+		t.Fatalf("form publish language = %q, want pt_br", view.Values.PublishLanguage)
+	}
+}
+
 func TestBuildInvalidViewMarksTheFailingKey(t *testing.T) {
 	project := t.TempDir()
 	if _, err := config.Init(project); err != nil {

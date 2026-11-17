@@ -55,6 +55,7 @@ func TestImplementHelpExplainsWorktreeDependencySetup(t *testing.T) {
 		"additional context for the implementer Role",
 		"--review-context string",
 		"additional context for the reviewer Role",
+		"--pr-on-approve",
 	} {
 		if !strings.Contains(fixture.stdout.String(), expected) {
 			t.Fatalf("implement help = %q, want %q", fixture.stdout.String(), expected)

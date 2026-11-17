@@ -17,6 +17,7 @@ func TestWriterRoundTripsRunRecord(t *testing.T) {
 		Kind: Implement, TicketRef: "#204", MaxIterations: 2,
 		Branch: "refactor/run-record-module", BranchPoint: "abc123", WorkRoot: originRoot,
 		ImplementerHarness: "codex", ReviewerHarness: "claude",
+		PublishOnApprove: true,
 		ImplementContext: "Preserve the format.\nKeep context blocks.",
 		ReviewContext:    "Check the reader and writer.",
 	}
@@ -79,7 +80,7 @@ func TestWriterRoundTripsRunRecord(t *testing.T) {
 		Branch: spec.Branch, BranchPoint: spec.BranchPoint, WorkRoot: spec.WorkRoot,
 		ImplementerHarness: spec.ImplementerHarness, ReviewerHarness: spec.ReviewerHarness,
 		ImplementContext: spec.ImplementContext, ReviewContext: spec.ReviewContext,
-		Kind: Implement,
+		Kind: Implement, PublishOnApprove: true,
 	}
 	if !reflect.DeepEqual(record.Metadata, wantMetadata) {
 		t.Fatalf("metadata = %#v, want %#v", record.Metadata, wantMetadata)
@@ -107,6 +108,36 @@ func TestWriterRoundTripsRunRecord(t *testing.T) {
 	if !hasArtifact(record.Artifacts, ImplementHandoff, "handoff-01.md") ||
 		!hasArtifact(record.Artifacts, ReviewDiff, "iteration-01-review.diff") {
 		t.Fatalf("artifacts do not include the handoff and review diff: %#v", record.Artifacts)
+	}
+}
+
+func TestWriterAndReaderRoundTripPublicationOutcomes(t *testing.T) {
+	tests := []struct {
+		name        string
+		publication Publication
+	}{
+		{name: "not requested", publication: Publication{Status: PublicationNotRequested}},
+		{name: "skipped", publication: Publication{Status: PublicationSkipped}},
+		{name: "published", publication: Publication{Status: PublicationPublished, URL: "https://github.com/example/project/pull/23"}},
+		{name: "failed", publication: Publication{
+			Status: PublicationFailed, Step: PublicationStepPush, Error: "push failed\npermission denied",
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			writer := NewWriter(t.TempDir())
+			if err := writer.WriteSummary(SummaryInput{Publication: test.publication}); err != nil {
+				t.Fatalf("WriteSummary() error = %v", err)
+			}
+
+			got, err := NewReader(nil).ReadSummary(writer.Directory())
+			if err != nil {
+				t.Fatalf("ReadSummary() error = %v", err)
+			}
+			if !reflect.DeepEqual(got.Publication, test.publication) {
+				t.Fatalf("ReadSummary().Publication = %#v, want %#v", got.Publication, test.publication)
+			}
+		})
 	}
 }
 

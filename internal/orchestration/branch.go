@@ -1,6 +1,7 @@
 package orchestration
 
 import (
+	"context"
 	"regexp"
 	"strconv"
 	"strings"
@@ -25,6 +26,67 @@ func resolveBranchName(ticket tracker.Ticket) string {
 		return suggestion
 	}
 	return branchName(ticket)
+}
+
+func currentBranch(ctx context.Context, git GitRunner) string {
+	branch, err := git.Run(ctx, "symbolic-ref", "--quiet", "--short", "HEAD")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(branch)
+}
+
+func pullRequestBase(ctx context.Context, git GitRunner, ref string) string {
+	ref = strings.TrimSpace(ref)
+	if isRevisionExpression(ref) {
+		return ""
+	}
+	branch, ok := pullRequestBranchName(ref)
+	if !ok {
+		return ""
+	}
+	if hasNamedBranch(ctx, git, branch) {
+		return branch
+	}
+	return ""
+}
+
+func isRevisionExpression(value string) bool {
+	return value == "HEAD" || value == "@" || strings.ContainsAny(value, "~^") || strings.Contains(value, "@{")
+}
+
+func pullRequestBranchName(ref string) (string, bool) {
+	branch := strings.TrimSpace(ref)
+	switch {
+	case strings.HasPrefix(branch, "origin/"):
+		branch = strings.TrimPrefix(branch, "origin/")
+	case strings.HasPrefix(branch, "refs/heads/"):
+		branch = strings.TrimPrefix(branch, "refs/heads/")
+	case strings.HasPrefix(branch, "refs/remotes/origin/"):
+		branch = strings.TrimPrefix(branch, "refs/remotes/origin/")
+	case strings.HasPrefix(branch, "refs/"):
+		return "", false
+	}
+	if branch == "" || branch == "HEAD" || isRevisionExpression(branch) {
+		return "", false
+	}
+	return branch, true
+}
+
+func hasNamedBranch(ctx context.Context, git GitRunner, branch string) bool {
+	localBranch := hasBranchReference(ctx, git, "refs/heads/"+branch)
+	if localBranch {
+		return true
+	}
+	return hasBranchReference(ctx, git, "refs/remotes/origin/"+branch)
+}
+
+func hasBranchReference(ctx context.Context, git GitRunner, ref string) bool {
+	if git == nil {
+		return false
+	}
+	_, err := git.Run(ctx, "show-ref", "--verify", "--quiet", ref)
+	return err == nil
 }
 
 func branchSuggestion(body string) (string, bool) {

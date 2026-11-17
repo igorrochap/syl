@@ -69,6 +69,8 @@ type GitHub struct {
 }
 
 var _ Tracker = (*GitHub)(nil)
+var _ PullRequestCreator = (*GitHub)(nil)
+var _ PullRequestBaseResolver = (*GitHub)(nil)
 
 // NewGitHub creates a GitHub tracker backed by runner.
 func NewGitHub(runner GHRunner) (*GitHub, error) {
@@ -169,6 +171,82 @@ func (g *GitHub) Create(ctx context.Context, title, body string) (Ticket, error)
 		return Ticket{}, err
 	}
 	return g.Resolve(ctx, "#"+strconv.Itoa(number))
+}
+
+// CreatePullRequest opens a draft pull request for an already-pushed branch.
+func (g *GitHub) CreatePullRequest(ctx context.Context, request PullRequest) (string, error) {
+	title := strings.TrimSpace(request.Title)
+	if title == "" {
+		return "", errors.New("cannot create a GitHub pull request without a title")
+	}
+	head := strings.TrimSpace(request.Head)
+	if head == "" {
+		return "", errors.New("cannot create a GitHub pull request without a head branch")
+	}
+	existingURL, err := g.findExistingPullRequestURL(ctx, head)
+	if err != nil {
+		return "", err
+	}
+	if existingURL != "" {
+		return existingURL, nil
+	}
+
+	args := g.CreatePullRequestCommand(request)[1:]
+	output, err := g.run(ctx, "create draft pull request", args...)
+	if err != nil {
+		return "", err
+	}
+	url := strings.TrimSpace(output)
+	if url == "" {
+		return "", errors.New("gh pr create returned an empty pull request URL")
+	}
+	return url, nil
+}
+
+// CreatePullRequestCommand builds the manual command for opening a draft pull request.
+func (*GitHub) CreatePullRequestCommand(request PullRequest) []string {
+	args := []string{
+		"gh", "pr", "create", "--draft", "--title", strings.TrimSpace(request.Title),
+		"--body", request.Body, "--head", strings.TrimSpace(request.Head),
+	}
+	if base := strings.TrimSpace(request.Base); base != "" {
+		args = append(args, "--base", base)
+	}
+	return args
+}
+
+// DefaultPullRequestBase returns the repository's forge-configured default branch.
+func (g *GitHub) DefaultPullRequestBase(ctx context.Context) (string, error) {
+	output, err := g.run(ctx, "read default pull request base", "repo", "view", "--json", "defaultBranchRef", "--jq", ".defaultBranchRef.name")
+	if err != nil {
+		return "", err
+	}
+	base := strings.TrimSpace(output)
+	if base == "" {
+		return "", errors.New("GitHub returned an empty default branch")
+	}
+	return base, nil
+}
+
+func (g *GitHub) findExistingPullRequestURL(ctx context.Context, head string) (string, error) {
+	output, err := g.run(ctx, "find existing pull request", "pr", "list", "--head", head, "--state", "open", "--json", "url", "--limit", "1")
+	if err != nil {
+		return "", err
+	}
+	var pullRequests []struct {
+		URL string `json:"url"`
+	}
+	if err := json.Unmarshal([]byte(output), &pullRequests); err != nil {
+		return "", fmt.Errorf("decode existing GitHub pull request list: %w", err)
+	}
+	if len(pullRequests) == 0 {
+		return "", nil
+	}
+	url := strings.TrimSpace(pullRequests[0].URL)
+	if url == "" {
+		return "", errors.New("existing GitHub pull request has no URL")
+	}
+	return url, nil
 }
 
 func (g *GitHub) ensureLabels(ctx context.Context) error {

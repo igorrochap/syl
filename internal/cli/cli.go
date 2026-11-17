@@ -35,6 +35,7 @@ type Dependencies struct {
 	GH            func(root string) tracker.GHRunner
 	GLab          func(root string) tracker.GLabRunner
 	Git           func(root string) orchestration.GitRunner
+	Commitgen     orchestration.CommitgenRunner
 	Updater       updater.Runner
 	BrowserOpener func(url string) error
 	Listen        func(network, address string) (net.Listener, error)
@@ -54,6 +55,7 @@ type implementCommandOptions struct {
 	verbose           bool
 	useWorktree       bool
 	base              string
+	publishOnApprove  bool
 }
 
 // New constructs an in-process CLI application with its three filesystem roots.
@@ -278,6 +280,7 @@ func (a *App) implementCommand() *cobra.Command {
 	var reviewContext string
 	var useWorktree bool
 	var base string
+	var publishOnApprove bool
 	command := &cobra.Command{
 		Use:   "implement N",
 		Short: "implement the current issue",
@@ -295,6 +298,7 @@ func (a *App) implementCommand() *cobra.Command {
 				verbose:           verbose,
 				useWorktree:       useWorktree,
 				base:              base,
+				publishOnApprove:  publishOnApprove,
 			})
 		},
 	}
@@ -303,14 +307,12 @@ func (a *App) implementCommand() *cobra.Command {
 	command.Flags().StringVar(&reviewContext, "review-context", "", "additional context for the reviewer Role")
 	command.Flags().BoolVar(&useWorktree, "worktree", false, "run in a dedicated worktree; fresh worktrees contain only the tracked tree, so use [worktree] setup to provision dependencies")
 	command.Flags().StringVar(&base, "base", "", "branch the worktree from this ref (defaults to HEAD)")
+	command.Flags().BoolVar(&publishOnApprove, "pr-on-approve", false, "commit, push, and open a draft pull request after approval")
 	return command
 }
 
 func (a *App) runImplementCommand(cmd *cobra.Command, args []string, commandOptions implementCommandOptions) error {
-	if strings.TrimSpace(commandOptions.base) != "" && !commandOptions.useWorktree {
-		return errors.New("--base requires --worktree")
-	}
-	projectConfig, issueTracker, ticket, err := a.resolveImplementTarget(cmd.Context(), args, cmd.ErrOrStderr())
+	projectConfig, issueTracker, ticket, err := a.preflightImplementTarget(cmd, args, commandOptions)
 	if err != nil {
 		return err
 	}
@@ -320,6 +322,38 @@ func (a *App) runImplementCommand(cmd *cobra.Command, args []string, commandOpti
 	if err != nil {
 		return err
 	}
+	return a.runImplementLoop(cmd, projectConfig, ticket, statusTracker, provisionedWorktree, workRoot, commandOptions)
+}
+
+func (a *App) preflightImplementTarget(
+	cmd *cobra.Command,
+	args []string,
+	commandOptions implementCommandOptions,
+) (config.Config, tracker.Tracker, tracker.Ticket, error) {
+	if strings.TrimSpace(commandOptions.base) != "" && !commandOptions.useWorktree {
+		return config.Config{}, nil, tracker.Ticket{}, errors.New("--base requires --worktree")
+	}
+	projectConfig, issueTracker, ticket, err := a.resolveImplementTarget(cmd.Context(), args, cmd.ErrOrStderr(), commandOptions.publishOnApprove)
+	if err != nil {
+		return config.Config{}, nil, tracker.Ticket{}, err
+	}
+	if commandOptions.publishOnApprove {
+		if _, err := a.gitRunner(a.originRoot).Run(cmd.Context(), "remote", "get-url", "origin"); err != nil {
+			return config.Config{}, nil, tracker.Ticket{}, fmt.Errorf("--pr-on-approve requires an origin remote (%v): %w", err, tracker.ErrNoRemote)
+		}
+	}
+	return projectConfig, issueTracker, ticket, nil
+}
+
+func (a *App) runImplementLoop(
+	cmd *cobra.Command,
+	projectConfig config.Config,
+	ticket tracker.Ticket,
+	statusTracker tracker.Tracker,
+	provisionedWorktree *orchestration.Worktree,
+	workRoot string,
+	commandOptions implementCommandOptions,
+) error {
 	implementer, err := a.harnessAtRoot("implement", projectConfig.Roles.Implement.Harness, workRoot)
 	if err != nil {
 		return a.cleanupProvisionedWorktree(cmd.Context(), provisionedWorktree, err)
@@ -331,10 +365,12 @@ func (a *App) runImplementCommand(cmd *cobra.Command, args []string, commandOpti
 	return orchestration.RunImplement(cmd.Context(), orchestration.ImplementOptions{
 		OriginRoot: a.originRoot, WorkRoot: workRoot, OpenRun: orchestration.NewDiskRunOpener(a.originRoot, a.sylHome, cmd.ErrOrStderr()), ProjectConfig: projectConfig, IssueTracker: statusTracker, Ticket: ticket,
 		Implementer: implementer, Reviewer: reviewer, Git: a.gitRunner(workRoot), OriginGit: a.gitRunner(a.originRoot),
-		Notifier: a.notifier(projectConfig.Notifications.Enabled), Input: cmd.InOrStdin(), Output: cmd.OutOrStdout(),
+		Commitgen: a.deps.Commitgen,
+		Notifier:  a.notifier(projectConfig.Notifications.Enabled), Input: cmd.InOrStdin(), Output: cmd.OutOrStdout(),
 		Context:             commandOptions.additionalContext,
 		ReviewContext:       commandOptions.reviewContext,
 		Verbose:             commandOptions.verbose,
+		PublishOnApprove:    commandOptions.publishOnApprove,
 		ProvisionedWorktree: provisionedWorktree,
 		IdentificationBanner: func(artifactDir string) error {
 			worktreePath := provisionedWorktreePath(provisionedWorktree)
@@ -377,7 +413,7 @@ func provisionedWorktreePath(worktree *orchestration.Worktree) string {
 	return worktree.Path
 }
 
-func (a *App) resolveImplementTarget(ctx context.Context, args []string, stderr io.Writer) (config.Config, tracker.Tracker, tracker.Ticket, error) {
+func (a *App) resolveImplementTarget(ctx context.Context, args []string, stderr io.Writer, publishOnApprove bool) (config.Config, tracker.Tracker, tracker.Ticket, error) {
 	projectConfig, err := a.loadProjectConfig(stderr)
 	if err != nil {
 		return config.Config{}, nil, tracker.Ticket{}, err
@@ -388,6 +424,11 @@ func (a *App) resolveImplementTarget(ctx context.Context, args []string, stderr 
 	issueTracker, err := a.newIssueTracker(projectConfig)
 	if err != nil {
 		return config.Config{}, nil, tracker.Ticket{}, err
+	}
+	if publishOnApprove {
+		if err := tracker.RequirePullRequestCreator(issueTracker); err != nil {
+			return config.Config{}, nil, tracker.Ticket{}, err
+		}
 	}
 	ticket, err := issueTracker.Resolve(ctx, args[0])
 	if err != nil {
@@ -407,7 +448,7 @@ func (a *App) prepareImplementCommandWorktree(
 		return nil, issueTracker, a.workRoot, nil
 	}
 	provisionedWorktree, statusTracker, err := a.provisionImplementWorktree(
-		cmd.Context(), projectConfig, ticket, commandOptions.base, issueTracker,
+		cmd.Context(), projectConfig, ticket, commandOptions.base, issueTracker, commandOptions.publishOnApprove,
 		cmd.OutOrStdout(), cmd.ErrOrStderr(),
 	)
 	if err != nil {
@@ -422,17 +463,19 @@ func (a *App) provisionImplementWorktree(
 	ticket tracker.Ticket,
 	base string,
 	issueTracker tracker.Tracker,
+	capturePullRequestBase bool,
 	stdout io.Writer,
 	stderr io.Writer,
 ) (*orchestration.Worktree, tracker.Tracker, error) {
 	provisioned, err := orchestration.ProvisionWorktree(ctx, orchestration.WorktreeOptions{
-		OriginRoot:     a.originRoot,
-		ProjectConfig:  projectConfig,
-		Ticket:         ticket,
-		Base:           base,
-		Git:            a.gitRunner(a.originRoot),
-		GitForWorktree: a.gitRunner,
-		OriginGit:      a.gitRunner(a.originRoot),
+		OriginRoot:             a.originRoot,
+		ProjectConfig:          projectConfig,
+		Ticket:                 ticket,
+		Base:                   base,
+		CapturePullRequestBase: capturePullRequestBase,
+		Git:                    a.gitRunner(a.originRoot),
+		GitForWorktree:         a.gitRunner,
+		OriginGit:              a.gitRunner(a.originRoot),
 	})
 	if err != nil {
 		return nil, nil, err
