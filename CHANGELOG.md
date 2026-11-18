@@ -2,6 +2,20 @@
 
 <!-- version list -->
 
+## v1.44.0 (2026-11-18)
+
+### Features
+
+- **scripts**: Run quality gates concurrently ([#275](https://github.com/igorrochap/syl/pull/275),
+  [`7942611`](https://github.com/igorrochap/syl/commit/7942611d2680d1864a0f774faef45709974b9082))
+
+### Refactoring
+
+- **scripts**: Improve concurrency and signal handling in quality checks
+  ([#275](https://github.com/igorrochap/syl/pull/275),
+  [`7942611`](https://github.com/igorrochap/syl/commit/7942611d2680d1864a0f774faef45709974b9082))
+
+
 ## v1.43.0 (2026-11-18)
 
 ### Bug Fixes
