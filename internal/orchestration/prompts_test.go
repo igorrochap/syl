@@ -99,18 +99,14 @@ func TestComposePlanPromptSetsUpRemoteBeforeFirstTrackerWrite(t *testing.T) {
 					t.Fatalf("plan prompt = %q, want %q before setup", got, test.beforeSetup)
 				}
 			}
-			for _, expected := range []string{
+			assertContainsAll(t, got,
 				test.wantCLI,
 				"If this directory is not a Git repository, offer to run `git init`",
 				"Ask the user to confirm each command before running it",
 				"do not run the remaining setup commands",
 				"skip the to-spec and to-tickets steps, and end the session",
 				"Leave any local docs created by --with-docs in place",
-			} {
-				if !strings.Contains(got, expected) {
-					t.Fatalf("plan prompt = %q, want %q", got, expected)
-				}
-			}
+			)
 			if test.options.TrackerName == config.TrackerGitHub && strings.Contains(got, "glab repo create") {
 				t.Fatalf("GitHub plan prompt = %q, want no GitLab command", got)
 			}
@@ -219,25 +215,21 @@ func TestComposeImplementPromptSeedsFreshRolloverSession(t *testing.T) {
 
 	got := composeImplementPrompt(ticket, findings, 2, "/tmp/handoff-2.md", "/tmp/handoff-1.md", "")
 
-	for _, expected := range []string{
+	assertContainsAll(t, got,
 		"Before doing any work, read the Rollover handoff document at /tmp/handoff-1.md.",
 		"Ticket: #42",
 		"Title: Preserve context",
 		"Ticket body (including acceptance criteria):\nKeep the session decisions.",
 		"Blocking findings:\n- [blocking] worker.go:10 — handle the error",
 		"/handoff /tmp/handoff-2.md",
-	} {
-		if !strings.Contains(got, expected) {
-			t.Fatalf("seeded implement prompt = %q, want %q", got, expected)
-		}
-	}
+	)
 }
 
 func TestComposeReviewPromptWithoutTicket(t *testing.T) {
 	got := composeReviewPrompt("", nil, "abc123", "/tmp/review.diff", "")
 	want := `/code-review
 
-Review the pre-computed diff at /tmp/review.diff against the recorded branch point abc123. This file is the authoritative diff for this review. Do not run Git to re-derive the diff. You may still open individual files for surrounding context. Do not modify files. Do not read or write review documents; the invoking tool records the verdict. The verdict block you print is the only record. End the review with the mandatory verdict block from the code-review skill.
+Review the pre-computed diff at /tmp/review.diff against the recorded branch point abc123. This file is the authoritative diff for this review. Do not run Git to re-derive the diff. You may still open individual files for surrounding context. Follow the Verdict contract for location rules. Cite each finding using the changed file's repository-relative path and its post-change, 1-based line. Determine it from the new-side (+) hunk arithmetic or confirm it in the file; a diff artifact line is never valid. Omit :line when no single line applies. Do not modify files. Do not read or write review documents; the invoking tool records the verdict. The verdict block you print is the only record. End the review with the mandatory verdict block from the code-review skill.
 
 If you are genuinely blocked on a decision that cannot be resolved from the ticket or the code, stop working and emit exactly this block:
 
@@ -251,13 +243,24 @@ Ambiguity should have been resolved during planning, and trivial choices should 
 	assertPromptEqual(t, got, want)
 }
 
+func TestComposeReviewPromptContainsFindingLineRule(t *testing.T) {
+	got := composeReviewPrompt("", nil, "abc123", "/tmp/review.diff", "")
+
+	assertContainsAll(t, got,
+		"Follow the Verdict contract for location rules.",
+		"Cite each finding using the changed file's repository-relative path and its post-change, 1-based line.",
+		"Determine it from the new-side (+) hunk arithmetic or confirm it in the file; a diff artifact line is never valid.",
+		"Omit :line when no single line applies.",
+	)
+}
+
 func TestComposeReviewPromptWithTicket(t *testing.T) {
 	ticket := tracker.Ticket{Number: 42, Title: "Concentrate prompts", Body: "Keep every byte.\n\nDo not change wording."}
 
 	got := composeReviewPrompt("#42", &ticket, "abc123", "/tmp/review.diff", "")
 	want := `/code-review
 
-Review the pre-computed diff at /tmp/review.diff against the recorded branch point abc123. This file is the authoritative diff for this review. Do not run Git to re-derive the diff. You may still open individual files for surrounding context. Do not modify files. Do not read or write review documents; the invoking tool records the verdict. The verdict block you print is the only record. End the review with the mandatory verdict block from the code-review skill.
+Review the pre-computed diff at /tmp/review.diff against the recorded branch point abc123. This file is the authoritative diff for this review. Do not run Git to re-derive the diff. You may still open individual files for surrounding context. Follow the Verdict contract for location rules. Cite each finding using the changed file's repository-relative path and its post-change, 1-based line. Determine it from the new-side (+) hunk arithmetic or confirm it in the file; a diff artifact line is never valid. Omit :line when no single line applies. Do not modify files. Do not read or write review documents; the invoking tool records the verdict. The verdict block you print is the only record. End the review with the mandatory verdict block from the code-review skill.
 
 If you are genuinely blocked on a decision that cannot be resolved from the ticket or the code, stop working and emit exactly this block:
 
@@ -331,13 +334,26 @@ func TestComposeReviewResumePrompt(t *testing.T) {
 	}
 
 	got := composeReviewResumePrompt("/tmp/review-2.diff", findings, "")
-	want := `This is an incremental re-review in the existing reviewer session. Do not spawn fresh Standards/Spec sub-agents. The implementer has addressed your blocking findings, listed below. The updated diff for this iteration is at /tmp/review-2.diff. Re-examine the changes, verify each blocking finding is resolved, check that the fixes introduced no new problems, and end with the mandatory verdict block from the code-review skill.
+	want := `This is an incremental re-review in the existing reviewer session. Do not spawn fresh Standards/Spec sub-agents. The implementer has addressed your blocking findings, listed below. The updated diff for this iteration is at /tmp/review-2.diff. Follow the Verdict contract for location rules. Cite each finding using the changed file's repository-relative path and its post-change, 1-based line. Determine it from the new-side (+) hunk arithmetic or confirm it in the file; a diff artifact line is never valid. Omit :line when no single line applies. For each carried-over finding, locate its current line in the current code before reporting it; do not copy its line number from an earlier Verdict. Re-examine the changes, verify each blocking finding is resolved, check that the fixes introduced no new problems, and end with the mandatory verdict block from the code-review skill.
 
 Blocking findings:
 - [blocking] prompts.go:10 — first issue
 - [blocking] prompts_test.go:20 — second issue`
 
 	assertPromptEqual(t, got, want)
+}
+
+func TestComposeReviewResumePromptContainsFindingLineRuleAndRefreshesCarriedOverLocations(t *testing.T) {
+	findings := []verdict.Finding{{Kind: verdict.Blocking, Location: "review.go:10", Issue: "first issue"}}
+	got := composeReviewResumePrompt("/tmp/review-2.diff", findings, "")
+
+	assertContainsAll(t, got,
+		"Follow the Verdict contract for location rules.",
+		"Cite each finding using the changed file's repository-relative path and its post-change, 1-based line.",
+		"Determine it from the new-side (+) hunk arithmetic or confirm it in the file; a diff artifact line is never valid.",
+		"Omit :line when no single line applies.",
+		"For each carried-over finding, locate its current line in the current code before reporting it; do not copy its line number from an earlier Verdict.",
+	)
 }
 
 func TestComposeReviewResumePromptAppendsContextAfterBlockingFindings(t *testing.T) {
@@ -348,14 +364,10 @@ func TestComposeReviewResumePromptAppendsContextAfterBlockingFindings(t *testing
 
 	got := composeReviewResumePrompt("/tmp/review-2.diff", findings, context)
 
-	for _, expected := range []string{
+	assertContainsAll(t, got,
 		"Blocking findings:\n- [blocking] review.go:10 — preserve this finding",
-		"## Additional context supplied by the user for this run\n\n" + context,
-	} {
-		if !strings.Contains(got, expected) {
-			t.Fatalf("resume prompt = %q, want %q", got, expected)
-		}
-	}
+		"## Additional context supplied by the user for this run\n\n"+context,
+	)
 	if strings.Index(got, "Blocking findings:") > strings.Index(got, "## Additional context") {
 		t.Fatalf("resume prompt = %q, want blocking findings before context", got)
 	}
@@ -368,6 +380,15 @@ func TestComposeReviewResumePromptWhitespaceOnlyContextMatchesWithoutContext(t *
 	withWhitespaceContext := composeReviewResumePrompt("/tmp/review-2.diff", findings, " \n\t ")
 
 	assertPromptEqual(t, withWhitespaceContext, withoutContext)
+}
+
+func assertContainsAll(t *testing.T, got string, expected ...string) {
+	t.Helper()
+	for _, substring := range expected {
+		if !strings.Contains(got, substring) {
+			t.Errorf("text = %q, want it to contain %q", got, substring)
+		}
+	}
 }
 
 func assertPromptEqual(t *testing.T, got, want string) {

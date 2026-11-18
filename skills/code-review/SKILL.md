@@ -147,6 +147,13 @@ Valuable findings are:
 
 ## Verdict contract
 
+Use `<file:line>` for a finding location. `<file>` is the repository-relative
+path; `<line>` is the 1-based line number in that file as it exists after the
+change. Determine the line from the new-side (`+`) hunk header arithmetic or
+open the file to confirm it. A line number in a diff file or diff artifact is
+never valid. When no single line applies, such as a deleted file or whole-file
+finding, use `<file>` without `:line`.
+
 Every review MUST end with exactly this block. Replace the placeholders with the review's values; do not put any text after the block:
 
 ```text
