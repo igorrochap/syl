@@ -755,6 +755,7 @@ type reviewFixture struct {
 func newReviewFixture(t *testing.T, adapter harness.Adapter) *reviewFixture {
 	t.Helper()
 	base := newTopSeamFixture(t)
+	writeReviewLocationFixture(t, base.root, "internal/orchestration/review.go", 42)
 	base.harnesses = map[string]harness.Adapter{"claude": adapter}
 	base.app = New(base.root, base.root, testSylHome(t, t.TempDir()), Dependencies{
 		Harnesses: harnessFactories(base.harnesses),

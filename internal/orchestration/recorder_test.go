@@ -334,7 +334,7 @@ func TestRunImplementIterationsRecordsReviseThenApproveInMemory(t *testing.T) {
 	if got := implementer.resumeCalls[0].sessionID; got != "implement-1" {
 		t.Fatalf("implement resume session = %q, want %q", got, "implement-1")
 	}
-	if got := implementer.resumeCalls[0].prompt; !strings.Contains(got, "worker.go:10") || !strings.Contains(got, "handle the error") {
+	if got := implementer.resumeCalls[0].prompt; !strings.Contains(got, "worker.go (location unverified)") || !strings.Contains(got, "handle the error") {
 		t.Fatalf("implement resume prompt = %q, want iteration blocking finding", got)
 	}
 	wantSessions := "iteration 1 implement: implement-1\n" +
@@ -402,7 +402,7 @@ func TestRunImplementIterationsUsesWorktreeHandoffToStartFreshSeededSession(t *t
 		t.Fatalf("implement calls = (%d runs, %d resumes), want (2, 0)", implementer.runCalls, len(implementer.resumeCalls))
 	}
 	seededPrompt := implementer.runRequests[1].Prompt
-	for _, expected := range []string{handoffPath, ticket.Title, ticket.Body, "worker.go:10", "handle the error"} {
+	for _, expected := range []string{handoffPath, ticket.Title, ticket.Body, "worker.go (location unverified)", "handle the error"} {
 		if !strings.Contains(seededPrompt, expected) {
 			t.Errorf("seeded prompt = %q, want %q", seededPrompt, expected)
 		}
@@ -483,7 +483,7 @@ func TestRunImplementIterationsRollsOverAfterRecoveredImplementTurn(t *testing.T
 		handoffPath,
 		ticket.Title,
 		ticket.Body,
-		"worker.go:10",
+		"worker.go (location unverified)",
 		"finish recovery handling",
 	} {
 		if !strings.Contains(seededPrompt, want) {
@@ -587,7 +587,7 @@ func TestRunImplementIterationsFallsBackToFreshRunWhenImplementResumeFails(t *te
 		t.Fatalf("implement run calls = %d, want initial run and fallback run", implementer.runCalls)
 	}
 	wantPrompt := composeImplementPrompt(ticket, []verdict.Finding{{
-		Kind: verdict.Blocking, Location: "worker.go:10", Issue: "handle the error",
+		Kind: verdict.Blocking, Location: "worker.go (location unverified)", Issue: "handle the error",
 	}}, 2, recorder.ImplementHandoffPath(2), "", "")
 	if got := implementer.resumeCalls[0].prompt; got != wantPrompt {
 		t.Fatalf("implement resume prompt = %q, want %q", got, wantPrompt)
@@ -898,10 +898,18 @@ func TestRunImplementPublishesApprovedDiffAndSkipsEmptyDiff(t *testing.T) {
 			publisher := &recordingPullRequestTracker{}
 			notifier := &recordingImplementNotifier{}
 			recorder := newMemoryRunRecorder()
+			workRoot := t.TempDir()
+			filePath := filepath.Join(workRoot, "internal", "example.go")
+			if err := os.MkdirAll(filepath.Dir(filePath), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filePath, []byte("package example\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
 			var spec RunSpec
 			var output strings.Builder
 			err := RunImplement(context.Background(), ImplementOptions{
-				OriginRoot: t.TempDir(), WorkRoot: t.TempDir(),
+				OriginRoot: t.TempDir(), WorkRoot: workRoot,
 				OpenRun: func(value RunSpec) (RunRecorder, error) {
 					spec = value
 					return recorder, nil
@@ -937,8 +945,14 @@ func TestRunImplementPublishesApprovedDiffAndSkipsEmptyDiff(t *testing.T) {
 				if publisher.request == nil || publisher.request.Head != "feat/add-resilient-workflow" || publisher.request.Base != "main" {
 					t.Fatalf("pull request = %#v, want branch head and start branch base", publisher.request)
 				}
-				if publisher.request.Body != "Closes #42\n\nReviewed implementation.\n\n- [ ] internal/example.go:9 — Rename this helper." {
+				if publisher.request.Body != "Closes #42\n\nReviewed implementation.\n\n- [ ] internal/example.go (location unverified) — Rename this helper." {
 					t.Fatalf("pull request body = %q, want summary and nit task", publisher.request.Body)
+				}
+				if !strings.Contains(recorder.files[artifactFilename(verdictArtifact, 1)], "internal/example.go (location unverified)") {
+					t.Fatalf("verdict artifact = %q, want checked location", recorder.files[artifactFilename(verdictArtifact, 1)])
+				}
+				if !strings.Contains(output.String(), "internal/example.go (location unverified)") {
+					t.Fatalf("terminal output = %q, want checked location", output.String())
 				}
 				if strings.Count(publisher.request.Body, "Closes #42") != 1 {
 					t.Fatalf("pull request body = %q, want one close reference", publisher.request.Body)
@@ -1030,7 +1044,7 @@ func TestRunImplementUsesCommitgenForPublication(t *testing.T) {
 	if publisher.request == nil || publisher.request.Title != "feat: generated PR" || publisher.request.Base != "main" {
 		t.Fatalf("pull request = %#v, want generated title and branch base", publisher.request)
 	}
-	if publisher.request.Body != "Generated details.\n\nCloses #42\n\n- [ ] internal/example.go:9 — Rename this helper." {
+	if publisher.request.Body != "Generated details.\n\nCloses #42\n\n- [ ] internal/example.go (location unverified) — Rename this helper." {
 		t.Fatalf("pull request body = %q, want generated description, close reference, and nit", publisher.request.Body)
 	}
 	if len(commitgen.calls) != 2 || commitgen.calls[0].workRoot != root || commitgen.calls[1].workRoot != root {

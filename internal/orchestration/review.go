@@ -227,7 +227,12 @@ func runStandaloneReview(ctx context.Context, options ReviewOptions, preparation
 		SandboxMode: options.ProjectConfig.Roles.Review.SandboxMode,
 	}, options.Output, mode, questions)
 	endedAt := time.Now().UTC()
-	return standaloneReviewRun{review: review, startedAt: startedAt, endedAt: endedAt}, err
+	run := standaloneReviewRun{review: review, startedAt: startedAt, endedAt: endedAt}
+	if err != nil {
+		return run, err
+	}
+	run.review.Verdict = verifyVerdictLocations(options.WorkRoot, run.review.Verdict)
+	return run, nil
 }
 
 type reviewUsageParams struct {
@@ -346,6 +351,9 @@ func runReview(ctx context.Context, adapter harness.Adapter, request harness.Req
 
 func recordStandaloneReviewArtifacts(recorder RunRecorder, review ReviewExecution) error {
 	if err := recorder.RecordReviewOutput(0, review); err != nil {
+		return err
+	}
+	if err := recorder.RecordVerdict(0, review.Verdict); err != nil {
 		return err
 	}
 	return recorder.RecordSessions(0, "review", review.SessionIDs)

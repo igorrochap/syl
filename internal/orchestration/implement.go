@@ -577,6 +577,7 @@ func runImplementReview(ctx context.Context, params implementIterationsParams, r
 			params, reviewParams, reviewResult, reviewStartedAt, reviewEndedAt, err,
 		)
 	}
+	reviewResult.Verdict = verifyVerdictLocations(params.workRoot, reviewResult.Verdict)
 	recordReviewUsage(reviewUsageParams{
 		recorder:  params.recorder,
 		iteration: reviewParams.iteration,
