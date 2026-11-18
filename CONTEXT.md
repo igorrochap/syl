@@ -31,6 +31,18 @@ _Avoid_: review history, review docs
 The reviewer's structured, machine-readable outcome for a loop iteration: approve (issue can be closed) or revise (with findings).
 _Avoid_: review result, approval
 
+**Gate**:
+One automated check a change must pass (format, vet, style, complexity, coverage, tests, architecture), run through the project's single entry point. syl runs the Gates itself after each implementer turn, out of the agent's reach; a red Gate sends the work back to the implementer before any review.
+_Avoid_: CI, checks, quality check
+
+**Gate attempt**:
+One run of the Gates within an iteration. Counted separately from iterations — an iteration is one implementer turn plus one reviewer turn, and a red Gate consumes no iteration. The count resets when the Gates go green.
+_Avoid_: retry, gate iteration
+
+**Evidence**:
+What the implementer records after exercising its change in the running software — what it exercised, how, what it observed, and the outcome — plus supporting files such as screenshots and logs. Kept per iteration in the Run record, never committed to the branch, and judged by the reviewer alongside the diff. Only images marked PR-worthy leave the Run record.
+_Avoid_: proof, test results, artifacts
+
 **Session transcript**:
 The durable record a harness writes for one session, and the source of truth for what a role did — what it said, which tools it used, and what it consumed.
 _Avoid_: log, session file, history
@@ -72,11 +84,11 @@ The durable contents and file format of one Run directory under `<origin root>/.
 _Avoid_: run files, run folder format
 
 **Run status**:
-The lifecycle outcome a Run records for itself: running, approved, exhausted (max iterations reached on a revise verdict), failed, or cancelled.
+The lifecycle outcome a Run records for itself: running, approved, exhausted (a loop limit was reached — max iterations on a revise verdict, or max Gate attempts on a red Gate; the Run record names which), failed, or cancelled.
 _Avoid_: result, state
 
 **Activity**:
-What a running Run is doing right now: preparing, implementing, reviewing, or awaiting-answer. Distinct from Role — preparing and awaiting-answer belong to no Role.
+What a running Run is doing right now: preparing, implementing, verifying, reviewing, or awaiting-answer. Distinct from Role — preparing, verifying, and awaiting-answer belong to no Role.
 _Avoid_: stage, step, phase
 
 **Live-run marker**:
