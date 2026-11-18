@@ -2,6 +2,7 @@ package scripts
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -9,7 +10,9 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
 
 func TestQualityRunsIndependentGatesConcurrentlyAndKeepsSummaryOrder(t *testing.T) {
@@ -18,6 +21,9 @@ func TestQualityRunsIndependentGatesConcurrentlyAndKeepsSummaryOrder(t *testing.
 	output, code := runQuality(t, root, events, false)
 	if code != 0 {
 		t.Fatalf("quality gate code = %d, output = %q; want success", code, output)
+	}
+	if !strings.HasPrefix(output, "QUALITY GATE\n") {
+		t.Fatalf("quality output = %q, want the summary header first", output)
 	}
 	if _, err := os.Stat(filepath.Join(events, "format-vet-overlap")); err != nil {
 		entries, _ := os.ReadDir(events)
@@ -61,6 +67,50 @@ func TestQualityReportsFailingGateDetailsAndReturnsNonzero(t *testing.T) {
 	}
 }
 
+func TestQualityExplainsSequentialFallbackWhenTempDirectoryCannotBeCreated(t *testing.T) {
+	root, events := newQualityFixture(t)
+
+	output, code := runQualityWithEnv(t, root, events, false, map[string]string{
+		"QUALITY_FAIL_RESULT_MKTEMP":         "1",
+		"QUALITY_SKIP_CONCURRENCY_HANDSHAKE": "1",
+	})
+	if code != 0 {
+		t.Fatalf("quality gate code = %d, output = %q; want sequential fallback to pass", code, output)
+	}
+	if !strings.Contains(output, "Could not create the Gate result directory; running Gates sequentially.") {
+		t.Fatalf("quality gate output = %q, want a sequential fallback note", output)
+	}
+}
+
+func TestQualityStopsConcurrentGatesOnTermination(t *testing.T) {
+	root, events := newQualityFixture(t)
+	command := exec.Command(filepath.Join(root, "scripts", "quality.sh"))
+	command.Dir = root
+	command.Env = qualityEnvironment(root, events, false, map[string]string{"QUALITY_STALL_VET": "1"})
+	if err := command.Start(); err != nil {
+		t.Fatalf("start quality script: %v", err)
+	}
+	finished := false
+	t.Cleanup(func() {
+		if finished {
+			return
+		}
+		_ = command.Process.Signal(syscall.SIGTERM)
+		_ = command.Wait()
+	})
+	awaitQualityMarker(t, filepath.Join(events, "go-vet-running"))
+	if err := command.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatalf("send SIGTERM to quality script: %v", err)
+	}
+	err := command.Wait()
+	finished = true
+	var exitError *exec.ExitError
+	if !errors.As(err, &exitError) || exitError.ExitCode() != 143 {
+		t.Fatalf("quality exit = %v, want status 143", err)
+	}
+	awaitQualityMarker(t, filepath.Join(events, "go-vet-exited"))
+}
+
 func newQualityFixture(t *testing.T) (string, string) {
 	t.Helper()
 
@@ -87,22 +137,31 @@ func newQualityFixture(t *testing.T) (string, string) {
 	}
 	writeFakeCommand(t, bin, "gofmt", `touch "$QUALITY_EVENTS/format.running"
 touch "$QUALITY_EVENTS/format.called"
-sleep 0.25
+if [[ "${QUALITY_SKIP_CONCURRENCY_HANDSHAKE:-0}" != "1" ]]; then
+  until [[ -e "$QUALITY_EVENTS/vet.running" ]]; do
+    sleep 0.01
+  done
+  touch "$QUALITY_EVENTS/format-vet-overlap"
+fi
 rm -f "$QUALITY_EVENTS/format.running"
 `)
 	writeFakeCommand(t, bin, "shellcheck", `touch "$QUALITY_EVENTS/vet.running"
 touch "$QUALITY_EVENTS/vet.called"
-for attempt in {1..50}; do
-  if [[ -e "$QUALITY_EVENTS/format.running" ]]; then
-    touch "$QUALITY_EVENTS/format-vet-overlap"
-    break
-  fi
-  sleep 0.01
-done
+if [[ "${QUALITY_SKIP_CONCURRENCY_HANDSHAKE:-0}" != "1" ]]; then
+  until [[ -e "$QUALITY_EVENTS/format-vet-overlap" ]]; do
+    sleep 0.01
+  done
+fi
 `)
 	writeFakeCommand(t, bin, "go", `case "$1" in
   vet)
-    sleep 0.08
+    if [[ "${QUALITY_STALL_VET:-0}" == "1" ]]; then
+      touch "$QUALITY_EVENTS/go-vet-running"
+      trap 'touch "$QUALITY_EVENTS/go-vet-exited"' EXIT
+      sleep 30
+    else
+      sleep 0.08
+    fi
     ;;
   mod)
     sleep 0.08
@@ -155,6 +214,16 @@ fi
 sleep 0.4
 rmdir "$QUALITY_EVENTS/lint.lock"
 `)
+	realMktemp, err := exec.LookPath("mktemp")
+	if err != nil {
+		t.Fatalf("find mktemp: %v", err)
+	}
+	writeFakeCommand(t, bin, "mktemp", fmt.Sprintf(`if [[ "${QUALITY_FAIL_RESULT_MKTEMP:-0}" == "1" && "$*" == *syl-quality.* ]]; then
+  echo "synthetic result directory failure" >&2
+  exit 1
+fi
+exec %q "$@"
+`, realMktemp))
 	writeFakeCommand(t, bin, "gocyclo", "exit 0\n")
 
 	runGit(t, root, "init")
@@ -209,11 +278,20 @@ func writeFakeCommand(t *testing.T, bin, name, body string) {
 }
 
 func runQuality(t *testing.T, root, events string, failTests bool) (string, int) {
+	return runQualityWithEnv(t, root, events, failTests, nil)
+}
+
+func runQualityWithEnv(t *testing.T, root, events string, failTests bool, extraEnv map[string]string) (string, int) {
 	t.Helper()
 
-	command := exec.Command(filepath.Join(root, "scripts", "quality.sh"))
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	command := exec.CommandContext(ctx, filepath.Join(root, "scripts", "quality.sh"))
 	command.Dir = root
-	command.Env = qualityEnvironment(root, events, failTests)
+	command.Env = qualityEnvironment(root, events, failTests, extraEnv)
+	command.Cancel = func() error {
+		return command.Process.Signal(syscall.SIGTERM)
+	}
 	var output bytes.Buffer
 	command.Stdout = &output
 	command.Stderr = &output
@@ -228,28 +306,60 @@ func runQuality(t *testing.T, root, events string, failTests bool) (string, int)
 	return output.String(), exitError.ExitCode()
 }
 
-func qualityEnvironment(root, events string, failTests bool) []string {
+func qualityEnvironment(root, events string, failTests bool, extraEnv map[string]string) []string {
 	bin := filepath.Join(root, "fake-bin")
 	qualityTestFailure := "0"
 	if failTests {
 		qualityTestFailure = "1"
 	}
-	environment := make([]string, 0, len(os.Environ())+4)
+	values := map[string]string{
+		"QUALITY_EVENTS":                     events,
+		"QUALITY_BASE_REF":                   "main",
+		"QUALITY_TEST_FAIL":                  qualityTestFailure,
+		"QUALITY_FAIL_RESULT_MKTEMP":         "0",
+		"QUALITY_SKIP_CONCURRENCY_HANDSHAKE": "0",
+		"QUALITY_STALL_VET":                  "0",
+	}
+	for key, value := range extraEnv {
+		values[key] = value
+	}
+	environment := make([]string, 0, len(os.Environ())+len(values)+1)
 	for _, entry := range os.Environ() {
-		if strings.HasPrefix(entry, "PATH=") ||
-			strings.HasPrefix(entry, "QUALITY_EVENTS=") ||
-			strings.HasPrefix(entry, "QUALITY_BASE_REF=") ||
-			strings.HasPrefix(entry, "QUALITY_TEST_FAIL=") {
+		if strings.HasPrefix(entry, "PATH=") {
+			continue
+		}
+		if isOverriddenQualityValue(entry, values) {
 			continue
 		}
 		environment = append(environment, entry)
 	}
-	return append(environment,
-		"PATH="+bin+":"+os.Getenv("PATH"),
-		"QUALITY_EVENTS="+events,
-		"QUALITY_BASE_REF=main",
-		"QUALITY_TEST_FAIL="+qualityTestFailure,
-	)
+	environment = append(environment, "PATH="+bin+":"+os.Getenv("PATH"))
+	for key, value := range values {
+		environment = append(environment, key+"="+value)
+	}
+	return environment
+}
+
+func isOverriddenQualityValue(entry string, values map[string]string) bool {
+	for key := range values {
+		if strings.HasPrefix(entry, key+"=") {
+			return true
+		}
+	}
+	return false
+}
+
+func awaitQualityMarker(t *testing.T, marker string) {
+	t.Helper()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(marker); err == nil {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for quality marker %q", marker)
 }
 
 func assertSummaryOrder(t *testing.T, output string, gates []string) {

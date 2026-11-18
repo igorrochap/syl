@@ -11,6 +11,7 @@ reports=()
 failed_gates=()
 golangci_lint_version=v2.13.1
 concurrent_result_directory=""
+concurrent_gate_pids=()
 
 format() {
   local go_file
@@ -745,22 +746,51 @@ run_concurrent_gates() {
   local gate
   local index
   local pid
+  local start_file
+  local result_directory=$concurrent_result_directory
   local wait_failed=0
+  local restore_job_control=0
+  local worker_index=0
   local -a pids=()
+
+  case "$-" in
+    *m*) restore_job_control=1 ;;
+  esac
+  set -m
 
   for gate in "$@"; do
     if ! index="$(selected_gate_index "$gate")"; then
       continue
     fi
-    run_gate "$gate" "$index" &
-    pids+=("$!")
+    start_file="$result_directory/start.$index"
+    (
+      trap - EXIT INT TERM
+      while [[ ! -e "$start_file" ]]; do
+        if [[ ! -d "$result_directory" ]]; then
+          exit 1
+        fi
+        sleep 0.01
+      done
+      run_gate "$gate" "$index"
+    ) </dev/null &
+    pid=$!
+    pids+=("$pid")
+    concurrent_gate_pids+=("$pid")
+    : >"$start_file"
   done
+
+  if (( restore_job_control == 0 )); then
+    set +m
+  fi
 
   for pid in "${pids[@]}"; do
     if ! wait "$pid"; then
       wait_failed=1
     fi
+    concurrent_gate_pids[worker_index]=""
+    (( worker_index += 1 ))
   done
+  concurrent_gate_pids=()
 
   return "$wait_failed"
 }
@@ -792,22 +822,56 @@ load_concurrent_results() {
   done
 }
 
-cleanup_concurrent_results() {
+# shellcheck disable=SC2329
+cleanup_concurrent_gates() {
+  local pid
+
+  trap - EXIT INT TERM
+  for pid in "${concurrent_gate_pids[@]-}"; do
+    if [[ -z "$pid" ]]; then
+      continue
+    fi
+    if ! kill -TERM -- "-$pid" 2>/dev/null; then
+      kill -TERM "$pid" 2>/dev/null || true
+    fi
+  done
+  sleep 0.1
+  for pid in "${concurrent_gate_pids[@]-}"; do
+    if [[ -z "$pid" ]]; then
+      continue
+    fi
+    kill -KILL -- "-$pid" 2>/dev/null || true
+  done
+  for pid in "${concurrent_gate_pids[@]-}"; do
+    if [[ -n "$pid" ]]; then
+      wait "$pid" 2>/dev/null || true
+    fi
+  done
+  concurrent_gate_pids=()
+
   if [[ -n "$concurrent_result_directory" ]]; then
     rm -rf -- "$concurrent_result_directory"
     concurrent_result_directory=""
   fi
 }
 
+# shellcheck disable=SC2329
+stop_concurrent_gates() {
+  local exit_status=$1
+
+  cleanup_concurrent_gates
+  exit "$exit_status"
+}
+
 run_all_gates_concurrently() {
   if ! concurrent_result_directory="$(mktemp -d "${TMPDIR:-/tmp}/syl-quality.XXXXXX")"; then
+    printf '%s\n' "Could not create the Gate result directory; running Gates sequentially." >&2
     for gate in "${selected_gates[@]}"; do
       run_gate "$gate"
     done
     return 0
   fi
 
-  trap cleanup_concurrent_results EXIT
   # vet rewrites go.mod and go.sum, so it only overlaps Gates that do not read them.
   run_concurrent_gates format vet complexity || true
   # style and architecture share golangci-lint's process lock, so they run in separate batches.
@@ -815,9 +879,15 @@ run_all_gates_concurrently() {
   # tests and coverage both run go test, so they run in separate batches.
   run_concurrent_gates coverage architecture || true
   load_concurrent_results
-  cleanup_concurrent_results
-  trap - EXIT
+  if [[ -n "$concurrent_result_directory" ]]; then
+    rm -rf -- "$concurrent_result_directory"
+    concurrent_result_directory=""
+  fi
 }
+
+trap cleanup_concurrent_gates EXIT
+trap 'stop_concurrent_gates 130' INT
+trap 'stop_concurrent_gates 143' TERM
 
 build_summary() {
   local summary="QUALITY GATE"
