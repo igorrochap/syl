@@ -2,6 +2,27 @@
 
 <!-- version list -->
 
+## v1.43.0 (2026-11-18)
+
+### Bug Fixes
+
+- **orchestration**: Validate finding locations against worktree
+  ([#274](https://github.com/igorrochap/syl/pull/274),
+  [`4f6eaef`](https://github.com/igorrochap/syl/commit/4f6eaefffecc920ff35c368038264b622a7dbb98))
+
+### Features
+
+- **orchestration**: Validate finding locations against worktree
+  ([#274](https://github.com/igorrochap/syl/pull/274),
+  [`4f6eaef`](https://github.com/igorrochap/syl/commit/4f6eaefffecc920ff35c368038264b622a7dbb98))
+
+### Refactoring
+
+- **orchestration**: Improve finding location verification logic
+  ([#274](https://github.com/igorrochap/syl/pull/274),
+  [`4f6eaef`](https://github.com/igorrochap/syl/commit/4f6eaefffecc920ff35c368038264b622a7dbb98))
+
+
 ## v1.42.0 (2026-11-18)
 
 ### Bug Fixes
