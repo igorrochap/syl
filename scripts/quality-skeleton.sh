@@ -4,10 +4,16 @@
 set -u
 
 gates=(format vet style complexity coverage tests architecture)
+# List mutually independent Gates here to run them concurrently.
+# Leave the list empty to run every Gate one after another.
+# Unlisted Gates after the first listed Gate wait for the whole batch to finish.
+# Concurrent Gates receive no stdin, so keep interactive Gates out of this list.
+concurrent_gates=()
 selected_gates=()
 results=()
 notes=()
-failed_gates=()
+concurrent_result_directory=""
+concurrent_gate_pids=()
 
 format() {
   # Put the format command for this project here.
@@ -61,6 +67,33 @@ show_known_gates() {
   printf '  %s\n' "${gates[@]}"
 }
 
+is_concurrent_gate() {
+  local requested=$1
+  local gate
+
+  for gate in "${concurrent_gates[@]-}"; do
+    if [[ "$gate" == "$requested" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+validate_concurrent_gates() {
+  local gate
+
+  for gate in "${concurrent_gates[@]-}"; do
+    if [[ -z "$gate" ]]; then
+      continue
+    fi
+    if ! is_known_gate "$gate"; then
+      printf 'Unknown concurrent gate: %s\n' "$gate"
+      show_known_gates
+      return 1
+    fi
+  done
+}
+
 first_line() {
   local value=$1
 
@@ -79,23 +112,28 @@ remove_status_prefix() {
   printf '%s\n' "$value"
 }
 
-run_gate() {
+run_gate_command() {
+  local gate=$1
+
+  case "$gate" in
+    format) format ;;
+    vet) vet ;;
+    style) style ;;
+    complexity) complexity ;;
+    coverage) coverage ;;
+    tests) tests ;;
+    architecture) architecture ;;
+  esac
+}
+
+evaluate_gate() {
   local gate=$1
   local report
   local exit_code
   local result
   local note
 
-  if case "$gate" in
-    format) report=$(format 2>&1) ;;
-    vet) report=$(vet 2>&1) ;;
-    style) report=$(style 2>&1) ;;
-    complexity) report=$(complexity 2>&1) ;;
-    coverage) report=$(coverage 2>&1) ;;
-    tests) report=$(tests 2>&1) ;;
-    architecture) report=$(architecture 2>&1) ;;
-  esac
-  then
+  if report=$(run_gate_command "$gate" 2>&1); then
     exit_code=0
   else
     exit_code=1
@@ -121,13 +159,127 @@ run_gate() {
     esac
   fi
 
-  results+=("$result")
-  notes+=("$note")
-  if [[ "$result" == FAIL ]]; then
-    failed_gates+=("$gate")
-  fi
+  gate_result=$result
+  gate_note=$note
   return 0
 }
+
+run_concurrent_gates() {
+  local result_directory
+  local gate
+  local index
+  local worker_index
+  local result_file
+  local start_file
+  local worker_pid
+  local -a worker_indexes=()
+
+  if ! result_directory=$(mktemp -d "${TMPDIR:-/tmp}/quality-gates.XXXXXX"); then
+    for (( index = 0; index < ${#selected_gates[@]}; index++ )); do
+      gate=${selected_gates[$index]}
+      if is_concurrent_gate "$gate"; then
+        results[index]=FAIL
+        notes[index]="could not create a result directory"
+      fi
+    done
+    return 0
+  fi
+  concurrent_result_directory=$result_directory
+
+  set -m
+  for (( index = 0; index < ${#selected_gates[@]}; index++ )); do
+    gate=${selected_gates[$index]}
+    if ! is_concurrent_gate "$gate"; then
+      continue
+    fi
+
+    result_file="$result_directory/$index"
+    start_file="$result_directory/start.$index"
+    # Keep the worker idle until its PID is tracked; removing the directory aborts an interrupted launch.
+    (
+      trap - EXIT INT TERM
+      while [[ ! -e "$start_file" ]]; do
+        if [[ ! -d "$result_directory" ]]; then
+          exit 1
+        fi
+        sleep 0.01
+      done
+      evaluate_gate "$gate"
+      printf '%s\n%s\n' "$gate_result" "$gate_note" >"$result_file"
+    ) </dev/null &
+    worker_pid=$!
+    concurrent_gate_pids+=("$worker_pid")
+    worker_indexes+=("$index")
+    printf '%s\n' "$worker_pid" >"$result_directory/pid.$index"
+    : >"$start_file"
+  done
+  set +m
+
+  for (( worker_index = 0; worker_index < ${#concurrent_gate_pids[@]}; worker_index++ )); do
+    if ! wait "${concurrent_gate_pids[$worker_index]}"; then
+      index=${worker_indexes[$worker_index]}
+      printf '%s\n%s\n' FAIL "could not collect the gate result" >"$result_directory/$index"
+    fi
+    concurrent_gate_pids[worker_index]=""
+  done
+
+  for index in "${worker_indexes[@]}"; do
+    result_file="$result_directory/$index"
+    gate_result=FAIL
+    gate_note="could not collect the gate result"
+    if [[ -r "$result_file" ]]; then
+      {
+        IFS= read -r gate_result || gate_result=FAIL
+        IFS= read -r gate_note || gate_note=""
+      } <"$result_file"
+    fi
+    results[index]=$gate_result
+    notes[index]=$gate_note
+  done
+
+  if rm -rf "$result_directory"; then
+    concurrent_result_directory=""
+  fi
+  concurrent_gate_pids=()
+}
+
+# These cleanup handlers are reached through the traps below.
+# shellcheck disable=SC2329
+quality_cleanup_concurrent_gates() {
+  local pid
+
+  trap - EXIT INT TERM
+  for pid in "${concurrent_gate_pids[@]-}"; do
+    if [[ -z "$pid" ]]; then
+      continue
+    fi
+    if ! kill -TERM -- "-$pid" 2>/dev/null; then
+      kill -TERM "$pid" 2>/dev/null || true
+    fi
+  done
+  for pid in "${concurrent_gate_pids[@]-}"; do
+    if [[ -n "$pid" ]]; then
+      wait "$pid" 2>/dev/null || true
+    fi
+  done
+  if [[ -n "$concurrent_result_directory" ]]; then
+    rm -rf "$concurrent_result_directory"
+  fi
+  concurrent_gate_pids=()
+  concurrent_result_directory=""
+}
+
+# shellcheck disable=SC2329
+quality_stop_concurrent_gates() {
+  local exit_status=$1
+
+  quality_cleanup_concurrent_gates
+  exit "$exit_status"
+}
+
+trap 'quality_cleanup_concurrent_gates' EXIT
+trap 'quality_stop_concurrent_gates 130' INT
+trap 'quality_stop_concurrent_gates 143' TERM
 
 build_summary() {
   local summary="QUALITY GATE"
@@ -136,6 +288,7 @@ build_summary() {
   local result
   local note
   local line
+  local -a failed_gates=()
 
   for (( index = 0; index < ${#selected_gates[@]}; index++ )); do
     gate=${selected_gates[$index]}
@@ -146,6 +299,9 @@ build_summary() {
       line+="   $note"
     fi
     summary+=$'\n'"$line"
+    if [[ "$result" == FAIL ]]; then
+      failed_gates+=("$gate")
+    fi
   done
 
   if (( ${#failed_gates[@]} > 0 )); then
@@ -182,8 +338,29 @@ else
   selected_gates=("$1")
 fi
 
+if ! validate_concurrent_gates; then
+  exit 2
+fi
+
 for gate in "${selected_gates[@]}"; do
-  run_gate "$gate"
+  results+=("")
+  notes+=("")
+done
+
+concurrent_gates_started=0
+for (( index = 0; index < ${#selected_gates[@]}; index++ )); do
+  gate=${selected_gates[$index]}
+  if is_concurrent_gate "$gate"; then
+    if (( concurrent_gates_started == 0 )); then
+      run_concurrent_gates
+      concurrent_gates_started=1
+    fi
+    continue
+  fi
+
+  evaluate_gate "$gate"
+  results[index]=$gate_result
+  notes[index]=$gate_note
 done
 
 summary=$(build_summary)
@@ -195,8 +372,10 @@ if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
   fi
 fi
 
-if (( ${#failed_gates[@]} > 0 )); then
-  exit 1
-fi
+for result in "${results[@]}"; do
+  if [[ "$result" == FAIL ]]; then
+    exit 1
+  fi
+done
 
 exit 0

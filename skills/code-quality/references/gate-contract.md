@@ -1,30 +1,51 @@
 # Gate contract
 
-A **gate** is one automated check a change must pass. This contract fixes the name of each gate and what it examines; a project fills each gate with its own tools and sets its own thresholds. The names are the shared language: ask about a gate by name, report a failure by name.
+A **Gate** is one automated check a change must pass. This contract fixes the name of each Gate and what it examines; a project fills each Gate with its own tools and sets its own thresholds. The names are the shared language: ask about a Gate by name, report a failure by name.
 
 ## Entry point
 
-Every gate runs through `scripts/quality.sh`:
+Every Gate runs through `scripts/quality.sh`:
 
 ```
-scripts/quality.sh          # run every gate
-scripts/quality.sh <gate>   # run one gate, e.g. scripts/quality.sh complexity
+scripts/quality.sh          # run every Gate
+scripts/quality.sh <gate>   # run one Gate, e.g. scripts/quality.sh complexity
 ```
 
-Run one gate while you work on what it covers; run the script with no argument before you call a change done. An unrecognised gate name is an error — the script names the valid gates and exits non-zero rather than falling back to running everything.
+Run one Gate while you work on what it covers; run the script with no argument before you call a change done. An unrecognised Gate name is an error — the script names the valid Gates and exits non-zero rather than falling back to running everything.
 
 If `scripts/quality.sh` is absent, the project has no gates. Say so to the user, and ask which commands to run instead of inferring them from the repository.
 
-The `style` and `complexity` gates use a base ref. Set `QUALITY_BASE_REF` to
+The `style` and `complexity` Gates use a base ref. Set `QUALITY_BASE_REF` to
 choose the base explicitly, which is useful for a stacked branch on a local
 machine. Base refs have this order of precedence: `QUALITY_BASE_REF`, then
 `GITHUB_BASE_REF` (try `origin/<name>` and `<name>`), then the default
 `origin/main` and `main`. If either explicitly supplied variable names no
-existing ref, the gate stops with an error and does not use a lower level.
-Each diff gate reports the selected base and changed-file count. The list of
+existing ref, the Gate stops with an error and does not use a lower level.
+Each diff Gate reports the selected base and changed-file count. The list of
 changed files and the analysis use the same merge base.
 
-## The gates
+## No-argument run
+
+With no argument, the entry point runs every Gate and prints a summary block. The block is the machine-readable result consumed by the orchestrator. It begins with one `QUALITY GATE` header line, followed by exactly one result line for each selected Gate:
+
+```
+QUALITY GATE
+  format        PASS
+  vet           PASS
+  style         PASS
+  complexity    PASS
+  coverage      PASS
+  tests         FAIL   <optional one-line detail>
+  architecture  SKIP   <optional one-line detail>
+```
+
+Each result line starts with two spaces, the Gate name left-aligned in a 14-character field, and one result: `PASS`, `FAIL`, or `SKIP`. An optional one-line detail may follow the result. Result lines follow the fixed order in [The Gates](#the-gates), limited to the selected Gates, regardless of when the Gates finish. Any diagnostic output after those lines is outside the summary block.
+
+The entry point exits non-zero when any selected Gate fails.
+
+The no-argument entry point should run independent Gates concurrently. This is a recommendation; a script that runs Gates one after another is compliant. The script decides which Gates are independent. Gates that share mutable state run one after another. Shared mutable state includes files a Gate rewrites and a test suite that two Gates both run.
+
+## The Gates
 
 **`format`** — the layout of the source: whitespace, line breaks, import order, and anything else the project's formatter owns. Passes when the files are already in formatted form. Fails when running the formatter would change a file; the fix is to run the formatter and commit the result.
 
