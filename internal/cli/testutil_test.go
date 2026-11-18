@@ -131,6 +131,24 @@ effort = "medium"
 	}
 }
 
+func writeReviewLocationFixture(t *testing.T, root, relativePath string, lineCount int) {
+	t.Helper()
+	path := filepath.Join(root, relativePath)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	lines := make([]string, lineCount)
+	for index := range lines {
+		lines[index] = "fixture line"
+	}
+	if strings.HasSuffix(relativePath, ".go") {
+		lines[0] = "package fixture"
+	}
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func harnessFactories(adapters map[string]harness.Adapter) func(string) map[string]harness.Adapter {
 	return func(string) map[string]harness.Adapter { return adapters }
 }

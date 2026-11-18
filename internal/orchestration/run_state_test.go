@@ -57,6 +57,9 @@ func TestRunImplementRecordsRunStateLifecycle(t *testing.T) {
 			if request.Completion != harness.CompletionTurnEnd {
 				t.Fatalf("implementer completion = %v, want turn end", request.Completion)
 			}
+			if !strings.Contains(request.Prompt, "file.go (location unverified)") {
+				t.Fatalf("implementer prompt = %q, want checked blocking finding location", request.Prompt)
+			}
 			observations = append(observations, readState())
 		}},
 	}
@@ -106,8 +109,8 @@ func TestRunImplementRecordsRunStateLifecycle(t *testing.T) {
 				if request.SandboxMode != config.SandboxModeReadOnly || request.Completion != harness.CompletionReviewVerdict {
 					t.Fatalf("review resume request = %#v, want read-only review", request)
 				}
-				if !strings.Contains(request.Prompt, "file.go:1") {
-					t.Fatalf("review resume prompt = %q, want iteration finding", request.Prompt)
+				if !strings.Contains(request.Prompt, "file.go (location unverified)") {
+					t.Fatalf("review resume prompt = %q, want checked iteration finding", request.Prompt)
 				}
 				nextReviewState = readState()
 				observations = append(observations, nextReviewState)
@@ -177,6 +180,16 @@ func TestRunImplementRecordsRunStateLifecycle(t *testing.T) {
 		t.Fatalf("final identity = %#v", final)
 	}
 	runDir := filepath.Dir(onlyRunStatePath(t, root))
+	verdictContents, err := os.ReadFile(filepath.Join(runDir, "iteration-01-verdict.txt"))
+	if err != nil {
+		t.Fatalf("read checked verdict artifact: %v", err)
+	}
+	if !strings.Contains(string(verdictContents), "file.go (location unverified)") {
+		t.Fatalf("verdict artifact = %q, want checked location", verdictContents)
+	}
+	if !strings.Contains(output.String(), "file.go (location unverified)") {
+		t.Fatalf("terminal output = %q, want checked location", output.String())
+	}
 	for _, name := range []string{"iteration-01-review.feed", "iteration-01-review.transcript"} {
 		contents, err := os.ReadFile(filepath.Join(runDir, name))
 		if err != nil {

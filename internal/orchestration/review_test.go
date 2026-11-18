@@ -5,6 +5,8 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -224,6 +226,63 @@ func TestRunReviewPostsRemoteReviewComment(t *testing.T) {
 	want := "## Review verdict\n\n```text\nVERDICT: approve\nSUMMARY: Ready\nFINDINGS:\n- (none)\n```\n"
 	if remote.comment != want {
 		t.Fatalf("remote review comment = %q, want %q", remote.comment, want)
+	}
+}
+
+func TestRunReviewChecksFindingLocationBeforeShowingAndRecordingVerdict(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "example.go"), []byte("package example\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git := &reviewDiffGit{responses: map[string]reviewDiffResponse{
+		"rev-parse HEAD":                          {output: "branch-point\n"},
+		"diff branch-point":                       {output: "diff --git a/example.go b/example.go\n+package example\n"},
+		"ls-files --others --exclude-standard -z": {},
+	}}
+	remote := &recordingReviewTracker{}
+	ticket := tracker.Ticket{Number: 42}
+	var output strings.Builder
+	adapter := &capturingReviewAdapter{events: []harness.Event{
+		{Type: harness.EventSession, SessionID: "review-session"},
+		{Type: harness.EventAssistantText, Text: "VERDICT: revise\nSUMMARY: Fix the issue.\nFINDINGS:\n- [blocking] example.go:2 — Fix this line.\n"},
+	}}
+
+	err := RunReview(context.Background(), ReviewOptions{
+		OriginRoot: root,
+		WorkRoot:   root,
+		OpenRun:    NewDiskRunOpener(root, sylhome.Dir{}, io.Discard),
+		ProjectConfig: config.Config{
+			Tracker: config.TrackerConfig{Reviews: config.TrackerGitHub},
+			Roles:   config.RolesConfig{Review: config.RoleConfig{Harness: config.HarnessClaude}},
+		},
+		IssueTracker: remote,
+		Ticket:       &ticket,
+		TicketRef:    "#42",
+		Adapter:      adapter,
+		Input:        strings.NewReader(""),
+		Output:       &output,
+		Git:          git,
+	})
+	if !errors.Is(err, ErrReviewNeedsRevision) {
+		t.Fatalf("RunReview() error = %v, want revise verdict", err)
+	}
+	const checkedLocation = "example.go (location unverified)"
+	if strings.Contains(remote.comment, "example.go:2") || !strings.Contains(remote.comment, checkedLocation) {
+		t.Fatalf("remote verdict = %q, want checked finding location", remote.comment)
+	}
+	if strings.Contains(output.String(), "example.go:2") || !strings.Contains(output.String(), checkedLocation) {
+		t.Fatalf("terminal review output = %q, want checked finding location", output.String())
+	}
+	runDirs, err := runrecord.NewReader(nil).Directories(root)
+	if err != nil || len(runDirs) != 1 {
+		t.Fatalf("Run directories = %v, error = %v, want one Run", runDirs, err)
+	}
+	verdictContents, err := os.ReadFile(filepath.Join(runDirs[0], "verdict.txt"))
+	if err != nil {
+		t.Fatalf("read verdict.txt: %v", err)
+	}
+	if strings.Contains(string(verdictContents), "example.go:2") || !strings.Contains(string(verdictContents), checkedLocation) {
+		t.Fatalf("verdict.txt = %q, want checked finding location", verdictContents)
 	}
 }
 

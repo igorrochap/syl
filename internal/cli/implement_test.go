@@ -2517,6 +2517,9 @@ func newImplementLoopFixture(t *testing.T) *implementLoopFixture {
 	if err := os.WriteFile(filepath.Join(base.root, "tracked.txt"), []byte("initial\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	writeReviewLocationFixture(t, base.root, "internal/example.go", 9)
+	writeReviewLocationFixture(t, base.root, "internal/orchestration/review.go", 42)
+	writeReviewLocationFixture(t, base.root, "docs/example.md", 3)
 	commitWorkingTree(t, base.root, "fixture")
 	gitOutput(t, base.root, "branch", "-M", "main")
 	harnesses := map[string]harness.Adapter{
