@@ -2,6 +2,27 @@
 
 <!-- version list -->
 
+## v1.42.0 (2026-11-18)
+
+### Bug Fixes
+
+- **orchestration**: Enforce file-relative line numbers in review prompts
+  ([#273](https://github.com/igorrochap/syl/pull/273),
+  [`6fdd9f6`](https://github.com/igorrochap/syl/commit/6fdd9f6017c934560a90d27e0a746cb744fa2319))
+
+### Features
+
+- **orchestration**: Enforce file-relative line numbers in review prompts
+  ([#273](https://github.com/igorrochap/syl/pull/273),
+  [`6fdd9f6`](https://github.com/igorrochap/syl/commit/6fdd9f6017c934560a90d27e0a746cb744fa2319))
+
+### Refactoring
+
+- **orchestration**: Update review finding instructions and tests
+  ([#273](https://github.com/igorrochap/syl/pull/273),
+  [`6fdd9f6`](https://github.com/igorrochap/syl/commit/6fdd9f6017c934560a90d27e0a746cb744fa2319))
+
+
 ## v1.41.0 (2026-11-18)
 
 ### Documentation
