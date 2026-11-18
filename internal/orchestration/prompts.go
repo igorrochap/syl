@@ -11,6 +11,8 @@ import (
 )
 
 const (
+	reviewFindingLocationInstruction = "Use <file:line>: <file> is the repository-relative path and <line> is the 1-based line number in that file after the change. Determine the line from the new-side (+) hunk header arithmetic or open the file to confirm it. A line number from a diff file or diff artifact is never valid. When no single line applies, use <file> without :line."
+
 	questionProtocolInstruction = `If you are genuinely blocked on a decision that cannot be resolved from the ticket or the code, stop working and emit exactly this block:
 
 QUESTION:
@@ -56,11 +58,11 @@ Ticket body (including acceptance criteria):
 
 	reviewPrompt = `/code-review
 
-Review the pre-computed diff at %s against the recorded branch point %s. This file is the authoritative diff for this review. Do not run Git to re-derive the diff. You may still open individual files for surrounding context. Do not modify files. Do not read or write review documents; the invoking tool records the verdict. The verdict block you print is the only record. End the review with the mandatory verdict block from the code-review skill.
+Review the pre-computed diff at %s against the recorded branch point %s. This file is the authoritative diff for this review. Do not run Git to re-derive the diff. You may still open individual files for surrounding context. %s Do not modify files. Do not read or write review documents; the invoking tool records the verdict. The verdict block you print is the only record. End the review with the mandatory verdict block from the code-review skill.
 
 ` + questionProtocolInstruction
 
-	reviewResumePrompt = `This is an incremental re-review in the existing reviewer session. Do not spawn fresh Standards/Spec sub-agents. The implementer has addressed your blocking findings, listed below. The updated diff for this iteration is at %s. Re-examine the changes, verify each blocking finding is resolved, check that the fixes introduced no new problems, and end with the mandatory verdict block from the code-review skill.
+	reviewResumePrompt = `This is an incremental re-review in the existing reviewer session. Do not spawn fresh Standards/Spec sub-agents. The implementer has addressed your blocking findings, listed below. The updated diff for this iteration is at %s. %s For each carried-over finding, locate its current line in the current code before reporting it; do not copy its line number from an earlier Verdict. Re-examine the changes, verify each blocking finding is resolved, check that the fixes introduced no new problems, and end with the mandatory verdict block from the code-review skill.
 
 Blocking findings:
 %s`
@@ -91,7 +93,7 @@ func composeImplementPrompt(
 }
 
 func composeReviewPrompt(ticketRef string, ticket *tracker.Ticket, branchPoint, diffPath, additionalContext string) string {
-	prompt := fmt.Sprintf(reviewPrompt, diffPath, branchPoint)
+	prompt := fmt.Sprintf(reviewPrompt, diffPath, branchPoint, reviewFindingLocationInstruction)
 	if ticket == nil {
 		return appendPromptContext(prompt, additionalContext)
 	}
@@ -108,7 +110,7 @@ func appendPromptContext(prompt, additionalContext string) string {
 }
 
 func composeReviewResumePrompt(diffPath string, blocking []verdict.Finding, additionalContext string) string {
-	prompt := fmt.Sprintf(reviewResumePrompt, diffPath, formatBlockingFindings(blocking))
+	prompt := fmt.Sprintf(reviewResumePrompt, diffPath, reviewFindingLocationInstruction, formatBlockingFindings(blocking))
 	return appendPromptContext(prompt, additionalContext)
 }
 

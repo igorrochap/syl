@@ -237,7 +237,7 @@ func TestComposeReviewPromptWithoutTicket(t *testing.T) {
 	got := composeReviewPrompt("", nil, "abc123", "/tmp/review.diff", "")
 	want := `/code-review
 
-Review the pre-computed diff at /tmp/review.diff against the recorded branch point abc123. This file is the authoritative diff for this review. Do not run Git to re-derive the diff. You may still open individual files for surrounding context. Do not modify files. Do not read or write review documents; the invoking tool records the verdict. The verdict block you print is the only record. End the review with the mandatory verdict block from the code-review skill.
+Review the pre-computed diff at /tmp/review.diff against the recorded branch point abc123. This file is the authoritative diff for this review. Do not run Git to re-derive the diff. You may still open individual files for surrounding context. Use <file:line>: <file> is the repository-relative path and <line> is the 1-based line number in that file after the change. Determine the line from the new-side (+) hunk header arithmetic or open the file to confirm it. A line number from a diff file or diff artifact is never valid. When no single line applies, use <file> without :line. Do not modify files. Do not read or write review documents; the invoking tool records the verdict. The verdict block you print is the only record. End the review with the mandatory verdict block from the code-review skill.
 
 If you are genuinely blocked on a decision that cannot be resolved from the ticket or the code, stop working and emit exactly this block:
 
@@ -251,13 +251,27 @@ Ambiguity should have been resolved during planning, and trivial choices should 
 	assertPromptEqual(t, got, want)
 }
 
+func TestComposeReviewPromptContainsFindingLineRule(t *testing.T) {
+	got := composeReviewPrompt("", nil, "abc123", "/tmp/review.diff", "")
+
+	for _, expected := range []string{
+		"Use <file:line>: <file> is the repository-relative path and <line> is the 1-based line number in that file after the change.",
+		"A line number from a diff file or diff artifact is never valid.",
+		"Determine the line from the new-side (+) hunk header arithmetic or open the file to confirm it.",
+	} {
+		if !strings.Contains(got, expected) {
+			t.Errorf("review prompt = %q, want it to contain %q", got, expected)
+		}
+	}
+}
+
 func TestComposeReviewPromptWithTicket(t *testing.T) {
 	ticket := tracker.Ticket{Number: 42, Title: "Concentrate prompts", Body: "Keep every byte.\n\nDo not change wording."}
 
 	got := composeReviewPrompt("#42", &ticket, "abc123", "/tmp/review.diff", "")
 	want := `/code-review
 
-Review the pre-computed diff at /tmp/review.diff against the recorded branch point abc123. This file is the authoritative diff for this review. Do not run Git to re-derive the diff. You may still open individual files for surrounding context. Do not modify files. Do not read or write review documents; the invoking tool records the verdict. The verdict block you print is the only record. End the review with the mandatory verdict block from the code-review skill.
+Review the pre-computed diff at /tmp/review.diff against the recorded branch point abc123. This file is the authoritative diff for this review. Do not run Git to re-derive the diff. You may still open individual files for surrounding context. Use <file:line>: <file> is the repository-relative path and <line> is the 1-based line number in that file after the change. Determine the line from the new-side (+) hunk header arithmetic or open the file to confirm it. A line number from a diff file or diff artifact is never valid. When no single line applies, use <file> without :line. Do not modify files. Do not read or write review documents; the invoking tool records the verdict. The verdict block you print is the only record. End the review with the mandatory verdict block from the code-review skill.
 
 If you are genuinely blocked on a decision that cannot be resolved from the ticket or the code, stop working and emit exactly this block:
 
@@ -331,13 +345,29 @@ func TestComposeReviewResumePrompt(t *testing.T) {
 	}
 
 	got := composeReviewResumePrompt("/tmp/review-2.diff", findings, "")
-	want := `This is an incremental re-review in the existing reviewer session. Do not spawn fresh Standards/Spec sub-agents. The implementer has addressed your blocking findings, listed below. The updated diff for this iteration is at /tmp/review-2.diff. Re-examine the changes, verify each blocking finding is resolved, check that the fixes introduced no new problems, and end with the mandatory verdict block from the code-review skill.
+	want := `This is an incremental re-review in the existing reviewer session. Do not spawn fresh Standards/Spec sub-agents. The implementer has addressed your blocking findings, listed below. The updated diff for this iteration is at /tmp/review-2.diff. Use <file:line>: <file> is the repository-relative path and <line> is the 1-based line number in that file after the change. Determine the line from the new-side (+) hunk header arithmetic or open the file to confirm it. A line number from a diff file or diff artifact is never valid. When no single line applies, use <file> without :line. For each carried-over finding, locate its current line in the current code before reporting it; do not copy its line number from an earlier Verdict. Re-examine the changes, verify each blocking finding is resolved, check that the fixes introduced no new problems, and end with the mandatory verdict block from the code-review skill.
 
 Blocking findings:
 - [blocking] prompts.go:10 — first issue
 - [blocking] prompts_test.go:20 — second issue`
 
 	assertPromptEqual(t, got, want)
+}
+
+func TestComposeReviewResumePromptContainsFindingLineRuleAndRefreshesCarriedOverLocations(t *testing.T) {
+	findings := []verdict.Finding{{Kind: verdict.Blocking, Location: "review.go:10", Issue: "first issue"}}
+	got := composeReviewResumePrompt("/tmp/review-2.diff", findings, "")
+
+	for _, expected := range []string{
+		"Use <file:line>: <file> is the repository-relative path and <line> is the 1-based line number in that file after the change.",
+		"A line number from a diff file or diff artifact is never valid.",
+		"Determine the line from the new-side (+) hunk header arithmetic or open the file to confirm it.",
+		"For each carried-over finding, locate its current line in the current code before reporting it; do not copy its line number from an earlier Verdict.",
+	} {
+		if !strings.Contains(got, expected) {
+			t.Errorf("resume prompt = %q, want it to contain %q", got, expected)
+		}
+	}
 }
 
 func TestComposeReviewResumePromptAppendsContextAfterBlockingFindings(t *testing.T) {
