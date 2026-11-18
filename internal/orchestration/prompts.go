@@ -11,7 +11,7 @@ import (
 )
 
 const (
-	reviewFindingLocationInstruction = "Use <file:line>: <file> is the repository-relative path and <line> is the 1-based line number in that file after the change. Determine the line from the new-side (+) hunk header arithmetic or open the file to confirm it. A line number from a diff file or diff artifact is never valid. When no single line applies, use <file> without :line."
+	reviewFindingLocationInstruction = `Follow the Verdict contract for location rules. Cite each finding using the changed file's repository-relative path and its post-change, 1-based line. Determine it from the new-side (+) hunk arithmetic or confirm it in the file; a diff artifact line is never valid. Omit :line when no single line applies.`
 
 	questionProtocolInstruction = `If you are genuinely blocked on a decision that cannot be resolved from the ticket or the code, stop working and emit exactly this block:
 
