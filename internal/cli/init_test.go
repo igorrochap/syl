@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -153,12 +155,13 @@ func TestInitReturnsConfigLoadError(t *testing.T) {
 
 func TestInitQualityScriptDispatchesGates(t *testing.T) {
 	root := initQualityScriptProject(t)
+	gateNames := []string{"format", "vet", "style", "complexity", "coverage", "tests", "architecture"}
 
 	listOutput, listError, listCode := runQualityScript(t, root, "--list")
 	if listCode != 0 || listError != "" {
 		t.Fatalf("quality.sh --list = code %d, stderr %q; want success", listCode, listError)
 	}
-	wantGates := "format\nvet\nstyle\ncomplexity\ncoverage\ntests\narchitecture\n"
+	wantGates := strings.Join(gateNames, "\n") + "\n"
 	if listOutput != wantGates {
 		t.Fatalf("quality.sh --list = %q, want %q", listOutput, wantGates)
 	}
@@ -170,7 +173,12 @@ func TestInitQualityScriptDispatchesGates(t *testing.T) {
 	if strings.Count(allOutput, "SKIP") != 7 {
 		t.Fatalf("quality.sh output = %q, want seven skipped gates", allOutput)
 	}
-	if !strings.HasPrefix(allOutput, "QUALITY GATE\n") || len(strings.Split(strings.TrimSuffix(allOutput, "\n"), "\n")) != 8 {
+	summaryLines := strings.Split(strings.TrimSuffix(allOutput, "\n"), "\n")
+	hasSummaryHeader := strings.HasPrefix(allOutput, "QUALITY GATE\n")
+	headerLineCount := 1
+	hasOneResultLinePerGate := len(summaryLines) == headerLineCount+len(gateNames)
+	hasValidSummaryBlock := hasSummaryHeader && hasOneResultLinePerGate
+	if !hasValidSummaryBlock {
 		t.Fatalf("quality.sh output = %q, want a header and one line for each gate", allOutput)
 	}
 
@@ -196,7 +204,6 @@ func TestInitQualityScriptDispatchesGates(t *testing.T) {
 func TestInitQualityScriptRunsGatesSequentiallyByDefault(t *testing.T) {
 	root := initQualityScriptProject(t)
 	configureQualityGate(t, root, "format", `
-  sleep 0.05
   touch format.finished
   printf '%s\n' 'PASS  format completed'
 `)
@@ -222,58 +229,59 @@ func TestInitQualityScriptRunsGatesSequentiallyByDefault(t *testing.T) {
 
 func TestInitQualityScriptRunsDeclaredGatesConcurrentlyInFixedOrder(t *testing.T) {
 	root := initQualityScriptProject(t)
-	qualityPath := filepath.Join(root, "scripts", "quality.sh")
-	contents, err := os.ReadFile(qualityPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	contentsString := strings.Replace(string(contents), "concurrent_gates=()", "concurrent_gates=(format vet)", 1)
-	if contentsString == string(contents) {
-		t.Fatal("did not declare concurrent Gates")
-	}
-	if err := os.WriteFile(qualityPath, []byte(contentsString), 0o755); err != nil {
+	declareConcurrentGates(t, root, "format", "vet")
+	barrierPath := filepath.Join(root, "vet.finished")
+	if err := syscall.Mkfifo(barrierPath, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	configureQualityGate(t, root, "format", `
-  sleep 0.5
-  if [[ ! -f vet.finished ]]; then
+  IFS= read -r gate_finished < vet.finished
+  if [[ "$gate_finished" != done ]]; then
     printf '%s\n' 'vet did not finish while format was running'
     return 1
   fi
   printf '%s\n' 'PASS  format completed late'
 `)
 	configureQualityGate(t, root, "vet", `
-  touch vet.finished
+  printf '%s\n' done > vet.finished
   printf '%s\n' 'vet failed'
   return 1
 `)
 
-	output, stderr, code := runQualityScript(t, root)
-	if code == 0 || stderr != "" {
-		t.Fatalf("quality.sh = code %d, stderr %q; want the failed gate to return non-zero", code, stderr)
+	commandContext, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	command := exec.CommandContext(commandContext, filepath.Join(root, "scripts", "quality.sh"))
+	command.Dir = root
+	command.Cancel = func() error {
+		return command.Process.Signal(syscall.SIGTERM)
 	}
-	if !strings.Contains(output, "format        PASS") || !strings.Contains(output, "vet           FAIL") {
-		t.Fatalf("quality.sh output = %q, want late format pass and vet failure", output)
+	command.WaitDelay = 5 * time.Second
+	var output, stderr strings.Builder
+	command.Stdout = &output
+	command.Stderr = &stderr
+	runErr := command.Run()
+	if commandContext.Err() != nil {
+		t.Fatalf("quality.sh did not open the concurrent barrier before timeout; stdout = %q", output.String())
 	}
-	if strings.Index(output, "format        PASS") > strings.Index(output, "vet           FAIL") {
-		t.Fatalf("quality.sh output = %q, want summary in fixed Gate order", output)
+	var exitError *exec.ExitError
+	if !errors.As(runErr, &exitError) || exitError.ExitCode() == 0 {
+		t.Fatalf("quality.sh error = %v, stderr %q, stdout %q; want the failing Gate to return non-zero", runErr, stderr.String(), output.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("quality.sh stderr = %q; want no stderr", stderr.String())
+	}
+	if !strings.Contains(output.String(), "format        PASS") || !strings.Contains(output.String(), "vet           FAIL") {
+		t.Fatalf("quality.sh output = %q, want late format pass and vet failure", output.String())
+	}
+	if strings.Index(output.String(), "format        PASS") > strings.Index(output.String(), "vet           FAIL") {
+		t.Fatalf("quality.sh output = %q, want summary in fixed Gate order", output.String())
 	}
 }
 
 func TestInitQualityScriptDoesNotPassCallerStdinToConcurrentGates(t *testing.T) {
 	root := initQualityScriptProject(t)
 	qualityPath := filepath.Join(root, "scripts", "quality.sh")
-	contents, err := os.ReadFile(qualityPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	contentsString := strings.Replace(string(contents), "concurrent_gates=()", "concurrent_gates=(format vet)", 1)
-	if contentsString == string(contents) {
-		t.Fatal("did not declare concurrent Gates")
-	}
-	if err := os.WriteFile(qualityPath, []byte(contentsString), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	declareConcurrentGates(t, root, "format", "vet")
 	for _, gate := range []string{"format", "vet"} {
 		configureQualityGate(t, root, gate, `
   if IFS= read -r value; then
@@ -301,25 +309,15 @@ func TestInitQualityScriptDoesNotPassCallerStdinToConcurrentGates(t *testing.T) 
 func TestInitQualityScriptStopsConcurrentGatesOnTermination(t *testing.T) {
 	root := initQualityScriptProject(t)
 	qualityPath := filepath.Join(root, "scripts", "quality.sh")
-	contents, err := os.ReadFile(qualityPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	contentsString := strings.Replace(string(contents), "concurrent_gates=()", "concurrent_gates=(format vet)", 1)
-	if contentsString == string(contents) {
-		t.Fatal("did not declare concurrent Gates")
-	}
-	if err := os.WriteFile(qualityPath, []byte(contentsString), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	declareConcurrentGates(t, root, "format", "vet")
 	configureQualityGate(t, root, "format", `
   touch format.started
-  sleep 0.5
+  while [[ ! -f format.release ]]; do sleep 0.01; done
   touch format.finished
 `)
 	configureQualityGate(t, root, "vet", `
   touch vet.started
-  sleep 0.5
+  while [[ ! -f vet.release ]]; do sleep 0.01; done
   touch vet.finished
 `)
 
@@ -343,23 +341,10 @@ func TestInitQualityScriptStopsConcurrentGatesOnTermination(t *testing.T) {
 	})
 
 	startedPaths := []string{filepath.Join(root, "format.started"), filepath.Join(root, "vet.started")}
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		allStarted := true
-		for _, path := range startedPaths {
-			if _, err := os.Stat(path); err != nil {
-				allStarted = false
-				break
-			}
-		}
-		if allStarted {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("concurrent Gates did not start")
-		}
-		time.Sleep(10 * time.Millisecond)
+	if err := waitForFiles(startedPaths); err != nil {
+		t.Fatal(err)
 	}
+	workerPIDs := readWorkerPIDs(t, temporaryDirectory, len(startedPaths))
 
 	if err := command.Process.Signal(syscall.SIGTERM); err != nil {
 		t.Fatalf("send TERM to quality.sh: %v", err)
@@ -369,10 +354,14 @@ func TestInitQualityScriptStopsConcurrentGatesOnTermination(t *testing.T) {
 	if waitErr == nil {
 		t.Fatal("quality.sh exited successfully after TERM")
 	}
-	time.Sleep(600 * time.Millisecond)
 	for _, path := range []string{filepath.Join(root, "format.finished"), filepath.Join(root, "vet.finished")} {
 		if _, err := os.Stat(path); !os.IsNotExist(err) {
 			t.Fatalf("Gate continued after TERM; found %s", path)
+		}
+	}
+	for _, pid := range workerPIDs {
+		if err := waitForProcessExit(pid); err != nil {
+			t.Fatal(err)
 		}
 	}
 	entries, err := os.ReadDir(temporaryDirectory)
@@ -384,6 +373,92 @@ func TestInitQualityScriptStopsConcurrentGatesOnTermination(t *testing.T) {
 	}
 }
 
+func declareConcurrentGates(t *testing.T, root string, gates ...string) {
+	t.Helper()
+	qualityPath := filepath.Join(root, "scripts", "quality.sh")
+	contents, err := os.ReadFile(qualityPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := string(contents)
+	declaration := "concurrent_gates=(" + strings.Join(gates, " ") + ")"
+	updated := strings.Replace(script, "concurrent_gates=()", declaration, 1)
+	if updated == script {
+		t.Fatal("did not declare concurrent Gates")
+	}
+	if err := os.WriteFile(qualityPath, []byte(updated), 0o755); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func waitForFiles(paths []string) error {
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		allExist := true
+		for _, path := range paths {
+			if _, err := os.Stat(path); err != nil {
+				allExist = false
+				break
+			}
+		}
+		if allExist {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("timed out waiting for files %v", paths)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func readWorkerPIDs(t *testing.T, temporaryDirectory string, workerCount int) []int {
+	t.Helper()
+	directories, err := os.ReadDir(temporaryDirectory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resultDirectory := ""
+	for _, entry := range directories {
+		if entry.IsDir() && strings.HasPrefix(entry.Name(), "quality-gates.") {
+			resultDirectory = filepath.Join(temporaryDirectory, entry.Name())
+			break
+		}
+	}
+	if resultDirectory == "" {
+		t.Fatal("quality result directory is missing")
+	}
+	pids := make([]int, 0, workerCount)
+	for index := 0; index < workerCount; index++ {
+		contents, err := os.ReadFile(filepath.Join(resultDirectory, "pid."+strconv.Itoa(index)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		pid, err := strconv.Atoi(strings.TrimSpace(string(contents)))
+		if err != nil {
+			t.Fatalf("parse worker %d PID: %v", index, err)
+		}
+		pids = append(pids, pid)
+	}
+	return pids
+}
+
+func waitForProcessExit(pid int) error {
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		err := syscall.Kill(-pid, 0)
+		if errors.Is(err, syscall.ESRCH) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("check worker process group %d: %w", pid, err)
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("worker process group %d did not exit", pid)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 func configureQualityGate(t *testing.T, root, gate, body string) {
 	t.Helper()
 	qualityPath := filepath.Join(root, "scripts", "quality.sh")
@@ -391,16 +466,17 @@ func configureQualityGate(t *testing.T, root, gate, body string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	functionStart := strings.Index(string(contents), gate+"() {\n")
+	script := string(contents)
+	functionStart := strings.Index(script, gate+"() {\n")
 	if functionStart < 0 {
 		t.Fatalf("quality.sh does not define %s", gate)
 	}
 	bodyStart := functionStart + len(gate+"() {\n")
-	functionEnd := strings.Index(string(contents[bodyStart:]), "\n}\n")
+	functionEnd := strings.Index(script[bodyStart:], "\n}\n")
 	if functionEnd < 0 {
 		t.Fatalf("quality.sh has no end for %s", gate)
 	}
-	updated := string(contents[:bodyStart]) + strings.Trim(body, "\n") + string(contents[bodyStart+functionEnd:])
+	updated := script[:bodyStart] + strings.Trim(body, "\n") + script[bodyStart+functionEnd:]
 	if err := os.WriteFile(qualityPath, []byte(updated), 0o755); err != nil {
 		t.Fatal(err)
 	}

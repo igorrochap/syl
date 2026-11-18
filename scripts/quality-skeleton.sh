@@ -6,6 +6,7 @@ set -u
 gates=(format vet style complexity coverage tests architecture)
 # List mutually independent Gates here to run them concurrently.
 # Leave the list empty to run every Gate one after another.
+# Unlisted Gates after the first listed Gate wait for the whole batch to finish.
 # Concurrent Gates receive no stdin, so keep interactive Gates out of this list.
 concurrent_gates=()
 selected_gates=()
@@ -169,8 +170,9 @@ run_concurrent_gates() {
   local index
   local worker_index
   local result_file
+  local start_file
+  local worker_pid
   local -a worker_indexes=()
-  local -a worker_pids=()
 
   if ! result_directory=$(mktemp -d "${TMPDIR:-/tmp}/quality-gates.XXXXXX"); then
     for (( index = 0; index < ${#selected_gates[@]}; index++ )); do
@@ -192,19 +194,29 @@ run_concurrent_gates() {
     fi
 
     result_file="$result_directory/$index"
+    start_file="$result_directory/start.$index"
+    # Keep the worker idle until its PID is tracked; removing the directory aborts an interrupted launch.
     (
       trap - EXIT INT TERM
+      while [[ ! -e "$start_file" ]]; do
+        if [[ ! -d "$result_directory" ]]; then
+          exit 1
+        fi
+        sleep 0.01
+      done
       evaluate_gate "$gate"
       printf '%s\n%s\n' "$gate_result" "$gate_note" >"$result_file"
     ) </dev/null &
+    worker_pid=$!
+    concurrent_gate_pids+=("$worker_pid")
     worker_indexes+=("$index")
-    worker_pids+=("$!")
-    concurrent_gate_pids+=("$!")
+    printf '%s\n' "$worker_pid" >"$result_directory/pid.$index"
+    : >"$start_file"
   done
   set +m
 
-  for (( worker_index = 0; worker_index < ${#worker_pids[@]}; worker_index++ )); do
-    if ! wait "${worker_pids[$worker_index]}"; then
+  for (( worker_index = 0; worker_index < ${#concurrent_gate_pids[@]}; worker_index++ )); do
+    if ! wait "${concurrent_gate_pids[$worker_index]}"; then
       index=${worker_indexes[$worker_index]}
       printf '%s\n%s\n' FAIL "could not collect the gate result" >"$result_directory/$index"
     fi

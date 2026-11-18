@@ -15,9 +15,18 @@ Run one Gate while you work on what it covers; run the script with no argument b
 
 If `scripts/quality.sh` is absent, the project has no gates. Say so to the user, and ask which commands to run instead of inferring them from the repository.
 
+The `style` and `complexity` Gates use a base ref. Set `QUALITY_BASE_REF` to
+choose the base explicitly, which is useful for a stacked branch on a local
+machine. Base refs have this order of precedence: `QUALITY_BASE_REF`, then
+`GITHUB_BASE_REF` (try `origin/<name>` and `<name>`), then the default
+`origin/main` and `main`. If either explicitly supplied variable names no
+existing ref, the Gate stops with an error and does not use a lower level.
+Each diff Gate reports the selected base and changed-file count. The list of
+changed files and the analysis use the same merge base.
+
 ## No-argument run
 
-With no argument, the entry point runs every Gate and prints a summary block. The block is the machine-readable result syl reads. It begins with one `QUALITY GATE` header line, followed by exactly one result line for each selected Gate:
+With no argument, the entry point runs every Gate and prints a summary block. The block is the machine-readable result consumed by the orchestrator. It begins with one `QUALITY GATE` header line, followed by exactly one result line for each selected Gate:
 
 ```
 QUALITY GATE
@@ -35,15 +44,6 @@ Each result line starts with two spaces, the Gate name left-aligned in a 14-char
 The entry point exits non-zero when any selected Gate fails.
 
 The no-argument entry point should run independent Gates concurrently. This is a recommendation; a script that runs Gates one after another is compliant. The script decides which Gates are independent. Gates that share mutable state run one after another. Shared mutable state includes files a Gate rewrites and a test suite that two Gates both run.
-
-The `style` and `complexity` Gates use a base ref. Set `QUALITY_BASE_REF` to
-choose the base explicitly, which is useful for a stacked branch on a local
-machine. Base refs have this order of precedence: `QUALITY_BASE_REF`, then
-`GITHUB_BASE_REF` (try `origin/<name>` and `<name>`), then the default
-`origin/main` and `main`. If either explicitly supplied variable names no
-existing ref, the Gate stops with an error and does not use a lower level.
-Each diff Gate reports the selected base and changed-file count. The list of
-changed files and the analysis use the same merge base.
 
 ## The Gates
 
