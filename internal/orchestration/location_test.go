@@ -31,6 +31,9 @@ func TestVerifyVerdictLocations(t *testing.T) {
 	}{
 		{name: "existing line", location: "valid.go:3", want: "valid.go:3"},
 		{name: "line past end", location: "valid.go:4", want: "valid.go (location unverified)"},
+		{name: "marked line past end", location: "valid.go:9999 (location unverified)", want: "valid.go (location unverified)"},
+		{name: "marked line past end with tab", location: "valid.go:9999\t(location unverified)", want: "valid.go (location unverified)"},
+		{name: "marked valid line is rechecked", location: "valid.go:2 (location unverified)", want: "valid.go:2"},
 		{name: "zero line", location: "valid.go:0", want: "valid.go (location unverified)"},
 		{name: "negative line", location: "valid.go:-1", want: "valid.go (location unverified)"},
 		{name: "existing path without line", location: "valid.go", want: "valid.go"},
@@ -47,7 +50,7 @@ func TestVerifyVerdictLocations(t *testing.T) {
 		{name: "free text with line-like suffix", location: "around validation:20", want: "around validation:20 (location unverified)"},
 		{name: "free text with nonnumeric suffix", location: "around validation:later", want: "around validation:later (location unverified)"},
 		{name: "cannot read path as a file", location: "directory", want: "directory (location unverified)"},
-		{name: "path outside worktree", location: "../outside.go:1", want: "../outside.go (location unverified)"},
+		{name: "path outside work root", location: "../outside.go:1", want: "../outside.go (location unverified)"},
 		{name: "absolute path", location: filepath.Join(root, "valid.go") + ":1", want: filepath.Join(root, "valid.go") + " (location unverified)"},
 		{name: "empty path", location: ":1", want: "(location unverified)"},
 	}

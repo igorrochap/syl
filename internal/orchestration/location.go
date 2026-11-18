@@ -30,29 +30,43 @@ func verifyVerdictLocations(workRoot string, review verdict.Verdict) verdict.Ver
 }
 
 func verifyFindingLocation(workRoot, location string) string {
-	if strings.HasSuffix(location, unverifiedLocationMark) {
-		return location
-	}
+	location = stripUnverifiedLocationMark(location)
 	lineLocation := parseFindingLineLocation(location)
 	path := location
 	if lineLocation.hasLine {
 		path = lineLocation.path
 	}
 
-	contents, readable := readVerifiedWorktreeFile(workRoot, path)
+	contents, readable := readWorkRootFile(workRoot, path)
 	if !readable {
-		if lineLocation.hasLine && !looksLikeFindingPath(path) {
-			return markLocationUnverified(location)
-		}
-		return markLocationUnverified(path)
+		return markUnreadableFindingLocation(location, path, lineLocation.hasLine)
 	}
 	if !lineLocation.hasLine {
 		return location
 	}
-	if !lineLocation.valid || !validFindingLineRange(lineLocation, countFileLines(contents)) {
+	lineCount := countFileLines(contents)
+	isOutOfRange := !validFindingLineRange(lineLocation, lineCount)
+	isInvalidLineLocation := !lineLocation.valid || isOutOfRange
+	if isInvalidLineLocation {
 		return markLocationUnverified(path)
 	}
 	return location
+}
+
+func stripUnverifiedLocationMark(location string) string {
+	if !strings.HasSuffix(location, unverifiedLocationMark) {
+		return location
+	}
+	location = strings.TrimSuffix(location, unverifiedLocationMark)
+	return strings.TrimRight(location, " \t\r\n")
+}
+
+func markUnreadableFindingLocation(location, path string, hasLine bool) string {
+	isFreeTextLocation := hasLine && !looksLikeFindingPath(path)
+	if isFreeTextLocation {
+		return markLocationUnverified(location)
+	}
+	return markLocationUnverified(path)
 }
 
 func parseFindingLineLocation(location string) findingLineLocation {
@@ -75,16 +89,16 @@ func parseFindingLineLocation(location string) findingLineLocation {
 	if !isDecimal(startText) || !isDecimal(endText) {
 		return findingLineLocation{}
 	}
+	startLine, startValid := parseDecimal(startText)
+	endLine, endValid := parseDecimal(endText)
 
 	parsed := findingLineLocation{
 		path:      location[:separator],
-		startLine: parseDecimal(startText),
-		endLine:   parseDecimal(endText),
+		startLine: startLine,
+		endLine:   endLine,
 		hasLine:   true,
+		valid:     startValid && endValid,
 	}
-	_, startErr := strconv.ParseUint(startText, 10, 64)
-	_, endErr := strconv.ParseUint(endText, 10, 64)
-	parsed.valid = startErr == nil && endErr == nil
 	return parsed
 }
 
@@ -107,16 +121,19 @@ func isDecimal(value string) bool {
 	return true
 }
 
-func parseDecimal(value string) uint64 {
+func parseDecimal(value string) (uint64, bool) {
 	parsed, err := strconv.ParseUint(value, 10, 64)
 	if err != nil {
-		return 0
+		return 0, false
 	}
-	return parsed
+	return parsed, true
 }
 
-func readVerifiedWorktreeFile(workRoot, relativePath string) ([]byte, bool) {
-	if strings.TrimSpace(workRoot) == "" || !filepath.IsLocal(filepath.FromSlash(relativePath)) {
+func readWorkRootFile(workRoot, relativePath string) ([]byte, bool) {
+	hasWorkRoot := strings.TrimSpace(workRoot) != ""
+	isRelativePath := filepath.IsLocal(filepath.FromSlash(relativePath))
+	isOutsideWorkRoot := !hasWorkRoot || !isRelativePath
+	if isOutsideWorkRoot {
 		return nil, false
 	}
 	root, err := filepath.Abs(workRoot)

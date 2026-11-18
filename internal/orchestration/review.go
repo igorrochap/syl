@@ -227,10 +227,12 @@ func runStandaloneReview(ctx context.Context, options ReviewOptions, preparation
 		SandboxMode: options.ProjectConfig.Roles.Review.SandboxMode,
 	}, options.Output, mode, questions)
 	endedAt := time.Now().UTC()
-	if err == nil {
-		review.Verdict = verifyVerdictLocations(options.WorkRoot, review.Verdict)
+	run := standaloneReviewRun{review: review, startedAt: startedAt, endedAt: endedAt}
+	if err != nil {
+		return run, err
 	}
-	return standaloneReviewRun{review: review, startedAt: startedAt, endedAt: endedAt}, err
+	run.review.Verdict = verifyVerdictLocations(options.WorkRoot, run.review.Verdict)
+	return run, nil
 }
 
 type reviewUsageParams struct {
