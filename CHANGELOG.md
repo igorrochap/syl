@@ -2,6 +2,26 @@
 
 <!-- version list -->
 
+## v1.41.0 (2026-11-18)
+
+### Documentation
+
+- **adr**: Add ADR 0007 for orchestrator-run branch-point gates
+  ([`0e65290`](https://github.com/igorrochap/syl/commit/0e65290a499b3811cd3ab504b28fca2eb93cad2d))
+
+### Features
+
+- **cli**: Support concurrent quality gates and summary format
+  ([#270](https://github.com/igorrochap/syl/pull/270),
+  [`bee8259`](https://github.com/igorrochap/syl/commit/bee82592cdce2ca818be963261121eb90d237f6d))
+
+### Testing
+
+- **cli**: Improve reliability of concurrent quality gates
+  ([#270](https://github.com/igorrochap/syl/pull/270),
+  [`bee8259`](https://github.com/igorrochap/syl/commit/bee82592cdce2ca818be963261121eb90d237f6d))
+
+
 ## v1.40.0 (2026-11-17)
 
 ### Bug Fixes
