@@ -2,6 +2,21 @@
 
 <!-- version list -->
 
+## v1.47.0 (2026-11-19)
+
+### Features
+
+- **orchestration**: Support nit carryover in review loops
+  ([#282](https://github.com/igorrochap/syl/pull/282),
+  [`ef29a21`](https://github.com/igorrochap/syl/commit/ef29a21bd565a91be790dda87161390259fa602b))
+
+### Refactoring
+
+- **orchestration**: Pass implementer feed paths to review prompts
+  ([#282](https://github.com/igorrochap/syl/pull/282),
+  [`ef29a21`](https://github.com/igorrochap/syl/commit/ef29a21bd565a91be790dda87161390259fa602b))
+
+
 ## v1.46.0 (2026-11-19)
 
 ### Documentation
