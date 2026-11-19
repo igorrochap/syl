@@ -91,7 +91,7 @@ If the user confirmed there is no spec, still spawn the Spec sub-agent and instr
 
 ### 5. Aggregate
 
-Aggregation is **faithful relay**: every sentence of the aggregate and every finding in the Verdict traces to a sub-agent report, entering exactly as reported. The reports are final. Present them under `## Standards` and `## Spec` headings, verbatim or lightly cleaned. Copy each axis tag into the Verdict unchanged. When the axes give different tags to the same finding, relay it as `[blocking]` and state the disagreement in the finding text. Otherwise do **not** merge or rerank findings — the two axes are deliberately separate (see _Why two axes_).
+Aggregation is **faithful relay**: every sentence of the aggregate and every finding in the Verdict traces to a sub-agent report, entering exactly as reported. The reports are final, subject to the disagreement exception below. Present them under `## Standards` and `## Spec` headings, verbatim or lightly cleaned. Keep each axis's finding under its own heading and as a separate Verdict entry, even when both axes report the same finding. Copy each axis tag into the Verdict unchanged, with one exception: when the axes give different tags to the same finding, tag both Verdict entries `[blocking]` and state the disagreement in each finding's text. Do **not** merge or otherwise rerank findings — the two axes are deliberately separate (see _Why two axes_).
 
 End with a one-line summary: total findings per axis, and the worst issue _within each axis_ (if any). Don't pick a single winner across axes — that's the reranking the separation exists to prevent.
 
