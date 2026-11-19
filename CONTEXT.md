@@ -106,7 +106,7 @@ Re-enter an existing Harness session, keeping its history.
 Start a fresh interactive Harness session. `resume` re-enters an existing session; `attach` starts a fresh one.
 
 **Rollover**:
-When an implementer session, judging itself low on context, writes a handoff document and the loop continues the next iteration in a fresh session seeded from it. syl signals the target path via `/handoff <path>` and detects the rollover by that file's existence; the seed supplements — never replaces — the ticket and blocking findings syl already supplies.
+When an implementer session, judging itself low on context, writes a handoff document and the loop continues the next iteration in a fresh session seeded from it. syl signals the target path via `/handoff <path>` and detects the rollover by that file's existence; the seed supplements — never replaces — the ticket and all carried-over findings syl already supplies.
 _Avoid_: restart, reset, compaction-recovery
 
 **Handoff document**:

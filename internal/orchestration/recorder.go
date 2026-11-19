@@ -23,6 +23,7 @@ type RunRecorder interface {
 	RecordState(state runrecord.State)
 	RecordUsage(entry usage.Entry) error
 	RecordImplementTurn(iteration int, feed, transcript string) error
+	RecordImplementReviewFeed(iteration, turn int, feed string) (string, error)
 	RecordFailure(iteration int, role, summary string) error
 	RecordReviewDiff(iteration int, diff string) (string, error)
 	RecordReviewOutput(iteration int, review ReviewExecution) error
@@ -176,6 +177,10 @@ func (recorder *diskRunRecorder) RecordNoGate(iteration int) (string, error) {
 
 func (recorder *diskRunRecorder) RecordImplementTurn(iteration int, feed, transcript string) error {
 	return recorder.writer.WriteImplementTurn(iteration, feed, transcript)
+}
+
+func (recorder *diskRunRecorder) RecordImplementReviewFeed(iteration, turn int, feed string) (string, error) {
+	return recorder.writer.WriteImplementReviewFeed(iteration, turn, feed)
 }
 
 func (recorder *diskRunRecorder) RecordFailure(iteration int, role, summary string) error {

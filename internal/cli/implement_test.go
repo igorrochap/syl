@@ -1552,8 +1552,8 @@ func TestImplementLoopFeedsBlockingFindingsIntoSecondImplementerPrompt(t *testin
 		}
 	}
 	secondPrompt := implementer.requests[2].Prompt
-	if !strings.Contains(secondPrompt, "/fix-review") || !strings.Contains(secondPrompt, "Address ONLY") || !strings.Contains(secondPrompt, "- [blocking] internal/orchestration/review.go:42 — handle a missing session") {
-		t.Fatalf("second implementer prompt = %q, want only the verbatim blocking finding", secondPrompt)
+	if !strings.Contains(secondPrompt, "/fix-review") || !strings.Contains(secondPrompt, "Fix every [blocking] finding") || !strings.Contains(secondPrompt, "- [blocking] internal/orchestration/review.go:42 — handle a missing session") {
+		t.Fatalf("second implementer prompt = %q, want the verbatim blocking finding", secondPrompt)
 	}
 	if strings.Contains(secondPrompt, "Acceptance criteria: leave a working implementation.") {
 		t.Fatalf("second implementer prompt = %q, want reviewer findings prompt instead of first-pass ticket prompt", secondPrompt)
@@ -1959,11 +1959,11 @@ func TestImplementLoopStillIteratesForNitOnlyRevisionAndSummarizesNits(t *testin
 	if code != 0 {
 		t.Fatalf("implement code = %d, want 0; stderr = %q", code, fixture.stderr.String())
 	}
-	if !strings.Contains(implementer.requests[2].Prompt, "Address ONLY") || !strings.Contains(implementer.requests[2].Prompt, "Blocking findings:\n(none)") {
+	if !strings.Contains(implementer.requests[2].Prompt, "Fix every [nit] finding") || !strings.Contains(implementer.requests[2].Prompt, "Blocking findings:\n(none)") {
 		t.Fatalf("second implementer prompt = %q, want a second iteration with no blocking findings", implementer.requests[2].Prompt)
 	}
-	if strings.Contains(implementer.requests[2].Prompt, "style could be clearer") {
-		t.Fatalf("second implementer prompt = %q, want nit excluded from implementer instructions", implementer.requests[2].Prompt)
+	if !strings.Contains(implementer.requests[2].Prompt, "[nit] docs/example.md:3 — style could be clearer") {
+		t.Fatalf("second implementer prompt = %q, want nit included in implementer instructions", implementer.requests[2].Prompt)
 	}
 	if !strings.Contains(fixture.stdout.String(), "Iterations: 2") || !strings.Contains(fixture.stdout.String(), "[nit] docs/example.md:3 — style could be clearer") {
 		t.Fatalf("stdout = %q, want per-iteration nit verdict", fixture.stdout.String())
@@ -1979,8 +1979,8 @@ func TestImplementLoopStillIteratesForNitOnlyRevisionAndSummarizesNits(t *testin
 	if strings.Contains(finalSummary, "style could be clearer") {
 		t.Fatalf("final summary = %q, want earlier nit omitted", finalSummary)
 	}
-	if !strings.Contains(fixture.stdout.String(), "iteration 2/3 — revising 0 blocking finding(s)") {
-		t.Fatalf("stdout = %q, want revision transition with zero blocking findings", fixture.stdout.String())
+	if !strings.Contains(fixture.stdout.String(), "iteration 2/3 — revising 1 finding(s)") {
+		t.Fatalf("stdout = %q, want revision transition with one finding", fixture.stdout.String())
 	}
 	if got := strings.Count(fixture.stdout.String(), "style could be clearer"); got != 1 {
 		t.Fatalf("stdout = %q, want only the first iteration verdict to contain the nit", fixture.stdout.String())
@@ -2107,8 +2107,8 @@ func TestImplementLoopCapReturnsNonZeroAfterThreeRevisions(t *testing.T) {
 		t.Fatalf("stdout = %q, want capped revise summary", fixture.stdout.String())
 	}
 	for _, expected := range []string{
-		"iteration 2/3 — revising 1 blocking finding(s)",
-		"iteration 3/3 — revising 1 blocking finding(s)",
+		"iteration 2/3 — revising 1 finding(s)",
+		"iteration 3/3 — revising 1 finding(s)",
 	} {
 		if !strings.Contains(fixture.stdout.String(), expected) {
 			t.Fatalf("stdout = %q, want %q", fixture.stdout.String(), expected)
