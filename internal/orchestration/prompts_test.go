@@ -153,28 +153,11 @@ func TestComposeImplementPromptRevisionWithBlockingFindings(t *testing.T) {
 	}
 
 	got := composeImplementPrompt(ticket, findings, 2, "/tmp/handoff-2.md", "", "")
-	want := `/fix-review
+	assertContainsAll(t, got, "Fix every [blocking] finding", "cannot decline a [blocking]", "decline a [nit] only with a reason", "Nits:\n(none)", "- [blocking] prompts.go:10 — first issue")
+	if strings.Contains(got, "Address ONLY") {
+		t.Fatal("obsolete blocking-only instruction")
+	}
 
-Address ONLY the reviewer's [blocking] findings listed below. Use the vendored fix-review skill. Leave the working tree with the changes for review and do not commit or push changes.
-
-If you are genuinely blocked on a decision that cannot be resolved from the ticket or the code, stop working and emit exactly this block:
-
-QUESTION:
-<the question, one or more lines>
-END QUESTION
-
-The QUESTION: marker must begin at the start of its own line; the block format is otherwise unchanged.
-Ambiguity should have been resolved during planning, and trivial choices should be decided without asking. After emitting the block, stop working.
-
-At the end of this turn, self-assess your remaining context. Only if you judge that you are low on context, invoke ` + "`/handoff /tmp/handoff-2.md`" + ` to prepare the next iteration. Do not invoke it otherwise.
-
-Ticket: #42
-
-Blocking findings:
-- [blocking] prompts.go:10 — first issue
-- [blocking] prompts_test.go:20 — second issue`
-
-	assertPromptEqual(t, got, want)
 }
 
 func TestComposeImplementPromptWhitespaceOnlyContextMatchesWithoutContext(t *testing.T) {
@@ -334,13 +317,8 @@ func TestComposeReviewResumePrompt(t *testing.T) {
 	}
 
 	got := composeReviewResumePrompt("/tmp/review-2.diff", findings, "")
-	want := `This is an incremental re-review in the existing reviewer session. Do not spawn fresh Standards/Spec sub-agents. The implementer has addressed your blocking findings, listed below. The updated diff for this iteration is at /tmp/review-2.diff. Follow the Verdict contract for location rules. Cite each finding using the changed file's repository-relative path and its post-change, 1-based line. Determine it from the new-side (+) hunk arithmetic or confirm it in the file; a diff artifact line is never valid. Omit :line when no single line applies. For each carried-over finding, locate its current line in the current code before reporting it; do not copy its line number from an earlier Verdict. Re-examine the changes, verify each blocking finding is resolved, check that the fixes introduced no new problems, and end with the mandatory verdict block from the code-review skill.
+	assertContainsAll(t, got, "verify each carried-over finding", "Do not downgrade an unresolved [blocking] finding", "Keep a declined [nit] in the Verdict unless you accept its reason", "Nits:\n(none)")
 
-Blocking findings:
-- [blocking] prompts.go:10 — first issue
-- [blocking] prompts_test.go:20 — second issue`
-
-	assertPromptEqual(t, got, want)
 }
 
 func TestComposeReviewResumePromptContainsFindingLineRuleAndRefreshesCarriedOverLocations(t *testing.T) {
@@ -395,5 +373,14 @@ func assertPromptEqual(t *testing.T, got, want string) {
 	t.Helper()
 	if got != want {
 		t.Fatalf("prompt = %q, want %q", got, want)
+	}
+}
+
+func TestRevisionPromptsCarryNits(t *testing.T) {
+	findings := []verdict.Finding{{Kind: verdict.Blocking, Location: "a.go:1", Issue: "block"}, {Kind: verdict.Nit, Location: "b.go:2", Issue: "nit issue"}}
+	implement := composeImplementPrompt(tracker.Ticket{Number: 42}, findings, 2, "handoff", "seed", "")
+	review := composeReviewResumePrompt("diff", findings, "")
+	for _, prompt := range []string{implement, review} {
+		assertContainsAll(t, prompt, "Blocking findings:\n- [blocking] a.go:1 — block", "Nits:\n- [nit] b.go:2 — nit issue")
 	}
 }

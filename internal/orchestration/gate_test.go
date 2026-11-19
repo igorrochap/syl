@@ -517,3 +517,49 @@ func gitTestCommand(t *testing.T, root string, args ...string) string {
 func testNow() time.Time {
 	return time.Now().UTC()
 }
+
+func TestRevisionCarriesAllVerdictFindingsAndDeclineReasons(t *testing.T) {
+	repo, branchPoint := newGateTestRepo(t, "#!/bin/sh\necho gate\n", true)
+	recorder := newMemoryRunRecorder()
+	recorder.dir = t.TempDir()
+	implementer := gateImplementer(2)
+	implementer.resumes[0][1].Text = "Declined nit n1: already covered."
+	reviewer := &scriptedConversationAdapter{
+		runs:    [][]harness.Event{{{Type: harness.EventSession, SessionID: "review-1"}, {Type: harness.EventAssistantText, Text: "VERDICT: revise\nSUMMARY: Fix required\nFINDINGS:\n- [blocking] a.go — block one\n- [blocking] b.go — block two\n- [nit] c.go — nit one\n- [nit] d.go — nit two\n- [nit] e.go — nit three\n"}}},
+		resumes: [][]harness.Event{{{Type: harness.EventSession, SessionID: "review-1"}, {Type: harness.EventAssistantText, Text: "VERDICT: approve\nSUMMARY: Ready\nFINDINGS:\n"}}},
+	}
+	gateRunner := &scriptedGateRunner{t: t, recorder: recorder, workRoot: repo, branchPoint: branchPoint, results: []GateExecution{{Output: qualitySummary("PASS")}, {Output: qualitySummary("PASS")}}}
+	_, _, _, err := runImplementIterations(context.Background(), implementIterationsParams{git: gitadapter.ExecGitRunner{Dir: repo}, workRoot: repo, implementer: implementer, reviewer: reviewer, projectConfig: gateTestConfig(2), ticket: tracker.Ticket{Number: 278}, branchPoint: branchPoint, recorder: recorder, gateRunner: gateRunner, output: io.Discard, allowEmptyDiff: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, prompt := range []string{implementer.resumeCalls[0].prompt, reviewer.resumeCalls[0].prompt} {
+		assertContainsAll(t, prompt, "[blocking] a.go", "block one", "[blocking] b.go", "block two", "[nit] c.go", "nit one", "[nit] d.go", "nit two", "[nit] e.go", "nit three")
+	}
+	assertContainsAll(t, reviewer.resumeCalls[0].prompt, "Declined nit n1: already covered.")
+}
+
+func TestRevisionFreshReviewFallbackCarriesFindingsAndDeclineReasons(t *testing.T) {
+	repo, branchPoint := newGateTestRepo(t, "#!/bin/sh\necho gate\n", true)
+	recorder := newMemoryRunRecorder()
+	recorder.dir = t.TempDir()
+	implementer := gateImplementer(2)
+	implementer.resumes[0][1].Text = "Declined nit c.go: already covered."
+	reviewer := &scriptedConversationAdapter{
+		runs: [][]harness.Event{
+			{{Type: harness.EventSession, SessionID: "review-1"}, {Type: harness.EventAssistantText, Text: "VERDICT: revise\nSUMMARY: Fix required\nFINDINGS:\n- [blocking] a.go — block one\n- [nit] c.go — nit one\n"}},
+			{{Type: harness.EventSession, SessionID: "review-2"}, {Type: harness.EventAssistantText, Text: "VERDICT: approve\nSUMMARY: Ready\nFINDINGS:\n"}},
+		},
+		resumes:           [][]harness.Event{{}},
+		resumeStartErrors: []error{&scriptedConversationError{message: "session unavailable"}},
+	}
+	gateRunner := &scriptedGateRunner{t: t, recorder: recorder, workRoot: repo, branchPoint: branchPoint, results: []GateExecution{{Output: qualitySummary("PASS")}, {Output: qualitySummary("PASS")}}}
+	_, final, _, err := runImplementIterations(context.Background(), implementIterationsParams{git: gitadapter.ExecGitRunner{Dir: repo}, workRoot: repo, implementer: implementer, reviewer: reviewer, projectConfig: gateTestConfig(2), ticket: tracker.Ticket{Number: 278}, branchPoint: branchPoint, recorder: recorder, gateRunner: gateRunner, output: io.Discard, allowEmptyDiff: true})
+	if err != nil || final.Status != verdict.Approve {
+		t.Fatalf("runImplementIterations() = (%q, %v), want approve", final.Status, err)
+	}
+	if len(reviewer.runRequests) != 2 || len(reviewer.resumeCalls) != 1 {
+		t.Fatalf("review requests = (%d fresh, %d resumed), want fallback after resume", len(reviewer.runRequests), len(reviewer.resumeCalls))
+	}
+	assertContainsAll(t, reviewer.runRequests[1].Prompt, "[blocking] a.go", "block one", "[nit] c.go", "nit one", "Declined nit c.go: already covered.", "verify each carried-over finding")
+}

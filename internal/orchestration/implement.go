@@ -476,16 +476,17 @@ type implementIterationsParams struct {
 
 type implementReviewParams struct {
 	iteration               int
-	blocking                []verdict.Finding
+	findings                []verdict.Finding
 	previousReviewerSession string
 	diffPath                string
 	gateResultPath          string
+	implementerOutput       string
 	mode                    HarnessOutputMode
 }
 
 type implementTurnParams struct {
 	iteration           int
-	blocking            []verdict.Finding
+	findings            []verdict.Finding
 	previousSession     string
 	handoffPath         string
 	rolloverSeedPath    string
@@ -496,7 +497,7 @@ type implementTurnParams struct {
 func runImplementIterations(ctx context.Context, params implementIterationsParams) (int, verdict.Verdict, []verdict.Finding, error) {
 	params.runState = ensureImplementRunState(params)
 	params.output = ensureLineTrackingWriter(params.output)
-	var blocking []verdict.Finding
+	var findings []verdict.Finding
 	var final verdict.Verdict
 	var previousImplementerSession string
 	var rolloverSeedPath string
@@ -514,7 +515,7 @@ func runImplementIterations(ctx context.Context, params implementIterationsParam
 			return 0, verdict.Verdict{}, nil, err
 		}
 		gateCycle, err := runImplementerGateCycle(
-			ctx, params, iteration, handoffPath, blocking, previousImplementerSession, rolloverSeedPath, mode, &branchGate,
+			ctx, params, iteration, handoffPath, findings, previousImplementerSession, rolloverSeedPath, mode, &branchGate,
 		)
 		if err != nil {
 			return 0, verdict.Verdict{}, nil, err
@@ -531,10 +532,11 @@ func runImplementIterations(ctx context.Context, params implementIterationsParam
 
 		reviewResult, err := runImplementReview(ctx, params, implementReviewParams{
 			iteration:               iteration,
-			blocking:                blocking,
+			findings:                findings,
 			previousReviewerSession: previousReviewerSession,
 			diffPath:                diffPath,
 			gateResultPath:          gateCycle.gateResultPath,
+			implementerOutput:       gateCycle.implementerOutput,
 			mode:                    mode,
 		})
 		if err != nil {
@@ -550,7 +552,7 @@ func runImplementIterations(ctx context.Context, params implementIterationsParam
 		if final.Status == verdict.Approve {
 			break
 		}
-		blocking = blockingFindings(final)
+		findings = final.Findings
 		previousReviewerSession = lastUsableSessionID(reviewResult.SessionIDs)
 	}
 	return iterations, final, nitFindings(final), nil
@@ -562,16 +564,18 @@ type branchGateSource struct {
 }
 
 type implementGateCycleResult struct {
-	previousSession  string
-	rolloverSeedPath string
-	gateResultPath   string
-	exhausted        bool
+	previousSession   string
+	rolloverSeedPath  string
+	gateResultPath    string
+	implementerOutput string
+	exhausted         bool
 }
 
 type implementGateTurnResult struct {
 	previousSession       string
 	rolloverSeedPath      string
 	gateResultPath        string
+	implementerOutput     string
 	failedAttemptFeedback failedGateAttemptFeedback
 	gatePresent           bool
 	green                 bool
@@ -582,7 +586,7 @@ func runImplementerGateCycle(
 	params implementIterationsParams,
 	iteration int,
 	firstHandoffPath string,
-	blocking []verdict.Finding,
+	findings []verdict.Finding,
 	previousSession string,
 	rolloverSeedPath string,
 	mode HarnessOutputMode,
@@ -599,7 +603,7 @@ func runImplementerGateCycle(
 			return implementGateCycleResult{}, err
 		}
 		turnResult, err := runImplementerGateTurn(
-			ctx, params, iteration, handoffPath, blocking, result, previousGateAttemptFeedback, gateAttempts+1, mode, branchGate,
+			ctx, params, iteration, handoffPath, findings, result, previousGateAttemptFeedback, gateAttempts+1, mode, branchGate,
 		)
 		if err != nil {
 			return implementGateCycleResult{}, err
@@ -607,6 +611,7 @@ func runImplementerGateCycle(
 		result.previousSession = turnResult.previousSession
 		result.rolloverSeedPath = turnResult.rolloverSeedPath
 		result.gateResultPath = turnResult.gateResultPath
+		result.implementerOutput = appendTranscriptString(result.implementerOutput, turnResult.implementerOutput)
 		if !turnResult.gatePresent || turnResult.green {
 			return result, nil
 		}
@@ -625,19 +630,19 @@ func runImplementerGateTurn(
 	params implementIterationsParams,
 	iteration int,
 	handoffPath string,
-	blocking []verdict.Finding,
+	findings []verdict.Finding,
 	cycle implementGateCycleResult,
 	previousGateAttemptFeedback *failedGateAttemptFeedback,
 	attemptNumber int,
 	mode HarnessOutputMode,
 	branchGate *branchGateSource,
 ) (implementGateTurnResult, error) {
-	turnBlocking := blocking
+	turnFindings := findings
 	if previousGateAttemptFeedback != nil {
-		turnBlocking = nil
+		turnFindings = nil
 	}
 	implementResult, err := runImplementTurn(ctx, params, implementTurnParams{
-		iteration: iteration, blocking: turnBlocking, previousSession: cycle.previousSession,
+		iteration: iteration, findings: turnFindings, previousSession: cycle.previousSession,
 		handoffPath: handoffPath, rolloverSeedPath: cycle.rolloverSeedPath,
 		gateAttemptFeedback: previousGateAttemptFeedback, mode: mode,
 	})
@@ -652,7 +657,7 @@ func runImplementerGateTurn(
 	if err := resolveBranchGate(ctx, params, branchGate); err != nil {
 		return implementGateTurnResult{}, err
 	}
-	result := implementGateTurnResult{rolloverSeedPath: rolloverSeedPath, previousSession: previousSession}
+	result := implementGateTurnResult{rolloverSeedPath: rolloverSeedPath, previousSession: previousSession, implementerOutput: implementResult.Feed}
 	if !branchGate.script.loaded {
 		result.gateResultPath, err = params.recorder.RecordNoGate(iteration)
 		if err != nil {
@@ -708,6 +713,9 @@ func ensureImplementRunState(params implementIterationsParams) *runStateTracker 
 func runImplementReview(ctx context.Context, params implementIterationsParams, reviewParams implementReviewParams) (ReviewExecution, error) {
 	params.runState.setActivity(runrecord.Reviewing)
 	reviewPrompt := composeReviewPrompt("#"+strconv.Itoa(params.ticket.Number), &params.ticket, params.branchPoint, reviewParams.diffPath, params.reviewContext)
+	if reviewParams.iteration > 1 {
+		reviewPrompt += "\n\n" + composeReviewCarryoverPrompt(reviewParams.diffPath, reviewParams.findings, "", reviewParams.implementerOutput, false)
+	}
 	reviewPrompt = appendGateResultPath(reviewPrompt, reviewParams.gateResultPath)
 	reviewRequest := harness.Request{
 		Completion:  harness.CompletionReviewVerdict,
@@ -733,7 +741,7 @@ func runImplementReview(ctx context.Context, params implementIterationsParams, r
 	}
 	if reviewParams.previousReviewerSession != "" {
 		reviewOptions.resumePrompt = appendGateResultPath(
-			composeReviewResumePrompt(reviewParams.diffPath, reviewParams.blocking, params.reviewContext),
+			composeReviewCarryoverPrompt(reviewParams.diffPath, reviewParams.findings, params.reviewContext, reviewParams.implementerOutput, true),
 			reviewParams.gateResultPath,
 		)
 	}
@@ -902,7 +910,7 @@ func presentImplementTurn(params implementIterationsParams, turn implementTurnPa
 	if turn.gateAttemptFeedback != nil {
 		activity = "addressing Gate failure"
 	} else if turn.iteration > 1 {
-		activity = fmt.Sprintf("revising %d blocking finding(s)", len(turn.blocking))
+		activity = fmt.Sprintf("revising %d blocking finding(s)", countBlockingFindings(turn.findings))
 	}
 	renderer := ui.New(params.output, ui.DetectCaps(params.output))
 	if err := writeRoleSection(params.output, "Implementer"); err != nil {
@@ -923,7 +931,7 @@ func buildImplementRequest(params implementIterationsParams, turn implementTurnP
 		)
 	} else {
 		implementPrompt = composeImplementPrompt(
-			params.ticket, turn.blocking, turn.iteration, turn.handoffPath, turn.rolloverSeedPath, params.additionalContext,
+			params.ticket, turn.findings, turn.iteration, turn.handoffPath, turn.rolloverSeedPath, params.additionalContext,
 		)
 	}
 	return harness.Request{
@@ -1244,14 +1252,14 @@ func ensureHeadUnchanged(ctx context.Context, git GitRunner, branchPoint string)
 	return nil
 }
 
-func blockingFindings(review verdict.Verdict) []verdict.Finding {
-	findings := make([]verdict.Finding, 0)
-	for _, finding := range review.Findings {
+func countBlockingFindings(findings []verdict.Finding) int {
+	count := 0
+	for _, finding := range findings {
 		if finding.Kind == verdict.Blocking {
-			findings = append(findings, finding)
+			count++
 		}
 	}
-	return findings
+	return count
 }
 
 func nitFindings(review verdict.Verdict) []verdict.Finding {

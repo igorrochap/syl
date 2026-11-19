@@ -38,7 +38,7 @@ Ticket body (including acceptance criteria):
 
 	reviseImplementPrompt = `/fix-review
 
-Address ONLY the reviewer's [blocking] findings listed below. Use the vendored fix-review skill. Leave the working tree with the changes for review and do not commit or push changes.
+Fix every [blocking] finding; you cannot decline a [blocking] finding. Fix every [nit] finding, or decline a [nit] only with a reason. Report each declined nit with its location and reason in your final response. Use the vendored fix-review skill. Leave the working tree with the changes for review and do not commit or push changes.
 
 ` + questionProtocolInstruction + `
 
@@ -47,6 +47,9 @@ At the end of this turn, self-assess your remaining context. Only if you judge t
 Ticket: %s
 
 Blocking findings:
+%s
+
+Nits:
 %s`
 
 	gateAttemptImplementPrompt = `Continue implementing the ticket below to address the red Gate attempt. Use the vendored implement skill and leave the working tree with changes for review. Do not commit or push changes. No reviewer findings apply to this Gate attempt.
@@ -64,7 +67,7 @@ Ticket body (including acceptance criteria):
 Gate attempt result:
 %s`
 
-	rolloverSeedPrompt = `Before doing any work, read the Rollover handoff document at %s. It supplements the ticket and blocking findings in this prompt; it does not replace them.
+	rolloverSeedPrompt = `Before doing any work, read the Rollover handoff document at %s. It supplements the ticket and all carried-over findings in this prompt; it does not replace them.
 
 Title: %s
 
@@ -84,15 +87,18 @@ Review the pre-computed diff at %s against the recorded branch point %s. This fi
 
 ` + questionProtocolInstruction
 
-	reviewResumePrompt = `This is an incremental re-review in the existing reviewer session. Do not spawn fresh Standards/Spec sub-agents. The implementer has addressed your blocking findings, listed below. The updated diff for this iteration is at %s. %s For each carried-over finding, locate its current line in the current code before reporting it; do not copy its line number from an earlier Verdict. Re-examine the changes, verify each blocking finding is resolved, check that the fixes introduced no new problems, and end with the mandatory verdict block from the code-review skill.
+	reviewResumePrompt = `The updated diff for this iteration is at %s. %s For each carried-over finding, locate its current line in the current code before reporting it; do not copy its line number from an earlier Verdict. Re-examine the changes and verify each carried-over finding is resolved. Keep the tag of each unresolved finding. Do not downgrade an unresolved [blocking] finding to [nit]. Evaluate each declined nit and its reason. Keep a declined [nit] in the Verdict unless you accept its reason. Check that the fixes introduced no new problems, and end with the mandatory verdict block from the code-review skill.
 
 Blocking findings:
+%s
+
+Nits:
 %s`
 )
 
 func composeImplementPrompt(
 	ticket tracker.Ticket,
-	blocking []verdict.Finding,
+	findings []verdict.Finding,
 	iteration int,
 	handoffPath string,
 	rolloverSeedPath string,
@@ -102,7 +108,7 @@ func composeImplementPrompt(
 	if iteration == 1 {
 		prompt = fmt.Sprintf(implementPrompt, handoffPath, "#"+strconv.Itoa(ticket.Number), ticket.Title, ticket.Body)
 	} else {
-		prompt = fmt.Sprintf(reviseImplementPrompt, handoffPath, "#"+strconv.Itoa(ticket.Number), formatBlockingFindings(blocking))
+		prompt = fmt.Sprintf(reviseImplementPrompt, handoffPath, "#"+strconv.Itoa(ticket.Number), formatFindings(findings, verdict.Blocking), formatFindings(findings, verdict.Nit))
 	}
 	if rolloverSeedPath != "" {
 		prompt = fmt.Sprintf(
@@ -152,9 +158,17 @@ func appendPromptContext(prompt, additionalContext string) string {
 	return fmt.Sprintf("%s\n\n## Additional context supplied by the user for this run\n\n%s", prompt, additionalContext)
 }
 
-func composeReviewResumePrompt(diffPath string, blocking []verdict.Finding, additionalContext string) string {
-	prompt := fmt.Sprintf(reviewResumePrompt, diffPath, reviewFindingLocationInstruction, formatBlockingFindings(blocking))
+func composeReviewResumePrompt(diffPath string, findings []verdict.Finding, additionalContext string) string {
+	prompt := fmt.Sprintf(reviewResumePrompt, diffPath, reviewFindingLocationInstruction, formatFindings(findings, verdict.Blocking), formatFindings(findings, verdict.Nit))
 	return appendPromptContext(prompt, additionalContext)
+}
+
+func composeReviewCarryoverPrompt(diffPath string, findings []verdict.Finding, additionalContext, implementerOutput string, resumed bool) string {
+	prompt := composeReviewResumePrompt(diffPath, findings, additionalContext)
+	if resumed {
+		prompt = "This is an incremental re-review in the existing reviewer session. Do not spawn fresh Standards/Spec sub-agents. " + prompt
+	}
+	return prompt + "\n\nImplementer output for this iteration (including nit decline reasons):\n" + implementerOutput
 }
 
 func appendGateResultPath(prompt, path string) string {
@@ -247,13 +261,16 @@ func planRemoteSetupStep(options PlanOptions) string {
 	return fmt.Sprintf("Before the first tracker write, check whether this directory is a Git repository and whether it has an origin remote. If this directory is not a Git repository, offer to run `git init`. If the origin remote is missing, offer to create it with `%s`. Ask the user to confirm each command before running it. If the user declines any setup command, do not run the remaining setup commands, skip the to-spec and to-tickets steps, and end the session. Leave any local docs created by --with-docs in place.", createRemoteCommand)
 }
 
-func formatBlockingFindings(findings []verdict.Finding) string {
-	if len(findings) == 0 {
-		return "(none)"
-	}
+func formatFindings(findings []verdict.Finding, kind verdict.FindingKind) string {
 	var builder strings.Builder
 	for _, finding := range findings {
+		if finding.Kind != kind {
+			continue
+		}
 		fmt.Fprintf(&builder, "- [%s] %s — %s\n", finding.Kind, finding.Location, finding.Issue)
+	}
+	if builder.Len() == 0 {
+		return "(none)"
 	}
 	return strings.TrimSuffix(builder.String(), "\n")
 }
