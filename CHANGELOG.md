@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v1.45.0 (2026-11-19)
+
+### Features
+
+- **orchestration**: Run branch-point Gate after each implementer turn
+  ([#276](https://github.com/igorrochap/syl/pull/276),
+  [`9239e1a`](https://github.com/igorrochap/syl/commit/9239e1acdf6e2e09eca24de6b2fc5eabf97df55e))
+
+
 ## v1.44.0 (2026-11-18)
 
 ### Features
