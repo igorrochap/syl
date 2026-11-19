@@ -195,6 +195,18 @@ func (writer *Writer) WriteImplementTurn(iteration int, feed, transcript string)
 	return writer.WriteArtifact(ImplementTranscript, iteration, []byte(transcript))
 }
 
+// WriteImplementReviewFeed preserves one implementer turn for the reviewer.
+func (writer *Writer) WriteImplementReviewFeed(iteration, turn int, feed string) (string, error) {
+	if iteration < 1 || turn < 1 {
+		return "", fmt.Errorf("invalid implementer turn %d/%d", iteration, turn)
+	}
+	name := fmt.Sprintf("iteration-%02d-implement-turn-%02d.feed", iteration, turn)
+	if err := writer.writeFile(name, []byte(feed)); err != nil {
+		return "", err
+	}
+	return filepath.Join(writer.directory, name), nil
+}
+
 // WriteReviewDiff writes a review diff and returns its path.
 func (writer *Writer) WriteReviewDiff(iteration int, diff string) (string, error) {
 	if err := writer.WriteArtifact(ReviewDiff, iteration, []byte(diff)); err != nil {

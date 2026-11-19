@@ -1979,8 +1979,8 @@ func TestImplementLoopStillIteratesForNitOnlyRevisionAndSummarizesNits(t *testin
 	if strings.Contains(finalSummary, "style could be clearer") {
 		t.Fatalf("final summary = %q, want earlier nit omitted", finalSummary)
 	}
-	if !strings.Contains(fixture.stdout.String(), "iteration 2/3 — revising 0 blocking finding(s)") {
-		t.Fatalf("stdout = %q, want revision transition with zero blocking findings", fixture.stdout.String())
+	if !strings.Contains(fixture.stdout.String(), "iteration 2/3 — revising 1 finding(s)") {
+		t.Fatalf("stdout = %q, want revision transition with one finding", fixture.stdout.String())
 	}
 	if got := strings.Count(fixture.stdout.String(), "style could be clearer"); got != 1 {
 		t.Fatalf("stdout = %q, want only the first iteration verdict to contain the nit", fixture.stdout.String())
@@ -2107,8 +2107,8 @@ func TestImplementLoopCapReturnsNonZeroAfterThreeRevisions(t *testing.T) {
 		t.Fatalf("stdout = %q, want capped revise summary", fixture.stdout.String())
 	}
 	for _, expected := range []string{
-		"iteration 2/3 — revising 1 blocking finding(s)",
-		"iteration 3/3 — revising 1 blocking finding(s)",
+		"iteration 2/3 — revising 1 finding(s)",
+		"iteration 3/3 — revising 1 finding(s)",
 	} {
 		if !strings.Contains(fixture.stdout.String(), expected) {
 			t.Fatalf("stdout = %q, want %q", fixture.stdout.String(), expected)

@@ -163,6 +163,12 @@ func (r *memoryRunRecorder) RecordImplementTurn(iteration int, feed, transcript 
 	return nil
 }
 
+func (r *memoryRunRecorder) RecordImplementReviewFeed(iteration, turn int, feed string) (string, error) {
+	name := fmt.Sprintf("iteration-%02d-implement-turn-%02d.feed", iteration, turn)
+	r.files[name] = feed
+	return filepath.Join(r.dir, name), nil
+}
+
 func (r *memoryRunRecorder) RecordFailure(iteration int, role, summary string) error {
 	r.files[runrecord.FailureArtifactName(iteration, role)] = summary
 	return nil
@@ -1964,5 +1970,29 @@ func (g staticImplementGit) Run(_ context.Context, args ...string) (string, erro
 		return "", nil
 	default:
 		return "", fmt.Errorf("unexpected git command %q", strings.Join(args, " "))
+	}
+}
+
+func TestRecordImplementReviewFeedKeepsRunRecordAndWorktreeCopy(t *testing.T) {
+	origin := t.TempDir()
+	worktree := t.TempDir()
+	recorder, err := openDiskRecorder(origin, RunSpec{Kind: runrecord.Implement, TicketRef: "#278", WorkRoot: worktree})
+	if err != nil {
+		t.Fatal(err)
+	}
+	params := implementIterationsParams{recorder: recorder, worktreeArtifactRoot: worktree}
+	path, err := recordImplementReviewFeed(params, 2, 1, "Declined nit: documented reason.")
+	if err != nil {
+		t.Fatal(err)
+	}
+	originPath := filepath.Join(recorder.dir, "iteration-02-implement-turn-01.feed")
+	if !strings.HasPrefix(path, worktree+string(filepath.Separator)) {
+		t.Fatalf("review feed path = %q, want path under Worktree %q", path, worktree)
+	}
+	for _, feedPath := range []string{originPath, path} {
+		contents, err := os.ReadFile(feedPath)
+		if err != nil || string(contents) != "Declined nit: documented reason." {
+			t.Fatalf("read feed %q = (%q, %v)", feedPath, contents, err)
+		}
 	}
 }

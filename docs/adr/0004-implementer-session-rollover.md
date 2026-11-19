@@ -38,7 +38,7 @@ session that actually holds the context.
 - **Signal = file existence, not output parsing.** syl passes a run-artifact path
   (`.syl/runs/<run>/handoff-<iter>.md`) as the `/handoff` argument. The file being
   present after the turn *is* the rollover signal; absent means resume as normal.
-- **Seed supplements, never replaces.** syl keeps supplying the ticket and blocking
+- **Seed supplements, never replaces.** syl keeps supplying the ticket and all carried-over
   findings every iteration; the handoff document adds only the soft context
   (decisions, exploration, approach).
 - **Resume failure degrades to today's behavior** — a plain fresh `Run` with ticket

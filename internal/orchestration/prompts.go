@@ -163,12 +163,13 @@ func composeReviewResumePrompt(diffPath string, findings []verdict.Finding, addi
 	return appendPromptContext(prompt, additionalContext)
 }
 
-func composeReviewCarryoverPrompt(diffPath string, findings []verdict.Finding, additionalContext, implementerOutput string, resumed bool) string {
+func composeReviewCarryoverPrompt(diffPath string, findings []verdict.Finding, additionalContext string, feedPaths []string) string {
 	prompt := composeReviewResumePrompt(diffPath, findings, additionalContext)
-	if resumed {
-		prompt = "This is an incremental re-review in the existing reviewer session. Do not spawn fresh Standards/Spec sub-agents. " + prompt
-	}
-	return prompt + "\n\nImplementer output for this iteration (including nit decline reasons):\n" + implementerOutput
+	return prompt + "\n\nRead the implementer feeds for this iteration for any nit decline reasons:\n- " + strings.Join(feedPaths, "\n- ")
+}
+
+func composeResumedReviewCarryoverPrompt(diffPath string, findings []verdict.Finding, additionalContext string, feedPaths []string) string {
+	return "This is an incremental re-review in the existing reviewer session. Do not spawn fresh Standards/Spec sub-agents. " + composeReviewCarryoverPrompt(diffPath, findings, additionalContext, feedPaths)
 }
 
 func appendGateResultPath(prompt, path string) string {

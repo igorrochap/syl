@@ -480,7 +480,7 @@ type implementReviewParams struct {
 	previousReviewerSession string
 	diffPath                string
 	gateResultPath          string
-	implementerOutput       string
+	implementerFeedPaths    []string
 	mode                    HarnessOutputMode
 }
 
@@ -536,7 +536,7 @@ func runImplementIterations(ctx context.Context, params implementIterationsParam
 			previousReviewerSession: previousReviewerSession,
 			diffPath:                diffPath,
 			gateResultPath:          gateCycle.gateResultPath,
-			implementerOutput:       gateCycle.implementerOutput,
+			implementerFeedPaths:    gateCycle.implementerFeedPaths,
 			mode:                    mode,
 		})
 		if err != nil {
@@ -564,18 +564,18 @@ type branchGateSource struct {
 }
 
 type implementGateCycleResult struct {
-	previousSession   string
-	rolloverSeedPath  string
-	gateResultPath    string
-	implementerOutput string
-	exhausted         bool
+	previousSession      string
+	rolloverSeedPath     string
+	gateResultPath       string
+	implementerFeedPaths []string
+	exhausted            bool
 }
 
 type implementGateTurnResult struct {
 	previousSession       string
 	rolloverSeedPath      string
 	gateResultPath        string
-	implementerOutput     string
+	implementerFeedPath   string
 	failedAttemptFeedback failedGateAttemptFeedback
 	gatePresent           bool
 	green                 bool
@@ -611,7 +611,9 @@ func runImplementerGateCycle(
 		result.previousSession = turnResult.previousSession
 		result.rolloverSeedPath = turnResult.rolloverSeedPath
 		result.gateResultPath = turnResult.gateResultPath
-		result.implementerOutput = appendTranscriptString(result.implementerOutput, turnResult.implementerOutput)
+		if turnResult.implementerFeedPath != "" {
+			result.implementerFeedPaths = append(result.implementerFeedPaths, turnResult.implementerFeedPath)
+		}
 		if !turnResult.gatePresent || turnResult.green {
 			return result, nil
 		}
@@ -657,7 +659,13 @@ func runImplementerGateTurn(
 	if err := resolveBranchGate(ctx, params, branchGate); err != nil {
 		return implementGateTurnResult{}, err
 	}
-	result := implementGateTurnResult{rolloverSeedPath: rolloverSeedPath, previousSession: previousSession, implementerOutput: implementResult.Feed}
+	result := implementGateTurnResult{rolloverSeedPath: rolloverSeedPath, previousSession: previousSession}
+	if iteration > 1 {
+		result.implementerFeedPath, err = recordImplementReviewFeed(params, iteration, attemptNumber, implementResult.Feed)
+		if err != nil {
+			return implementGateTurnResult{}, err
+		}
+	}
 	if !branchGate.script.loaded {
 		result.gateResultPath, err = params.recorder.RecordNoGate(iteration)
 		if err != nil {
@@ -714,7 +722,7 @@ func runImplementReview(ctx context.Context, params implementIterationsParams, r
 	params.runState.setActivity(runrecord.Reviewing)
 	reviewPrompt := composeReviewPrompt("#"+strconv.Itoa(params.ticket.Number), &params.ticket, params.branchPoint, reviewParams.diffPath, params.reviewContext)
 	if reviewParams.iteration > 1 {
-		reviewPrompt += "\n\n" + composeReviewCarryoverPrompt(reviewParams.diffPath, reviewParams.findings, "", reviewParams.implementerOutput, false)
+		reviewPrompt += "\n\n" + composeReviewCarryoverPrompt(reviewParams.diffPath, reviewParams.findings, "", reviewParams.implementerFeedPaths)
 	}
 	reviewPrompt = appendGateResultPath(reviewPrompt, reviewParams.gateResultPath)
 	reviewRequest := harness.Request{
@@ -741,7 +749,7 @@ func runImplementReview(ctx context.Context, params implementIterationsParams, r
 	}
 	if reviewParams.previousReviewerSession != "" {
 		reviewOptions.resumePrompt = appendGateResultPath(
-			composeReviewCarryoverPrompt(reviewParams.diffPath, reviewParams.findings, params.reviewContext, reviewParams.implementerOutput, true),
+			composeResumedReviewCarryoverPrompt(reviewParams.diffPath, reviewParams.findings, params.reviewContext, reviewParams.implementerFeedPaths),
 			reviewParams.gateResultPath,
 		)
 	}
@@ -827,6 +835,21 @@ func prepareIterationReviewDiff(ctx context.Context, params implementIterationsP
 	return recordWorktreeReviewDiff(params.worktreeArtifactRoot, filepath.Dir(diffPath), iteration, diff)
 }
 
+func recordImplementReviewFeed(params implementIterationsParams, iteration, turn int, feed string) (string, error) {
+	path, err := params.recorder.RecordImplementReviewFeed(iteration, turn, feed)
+	if err != nil {
+		return "", fmt.Errorf("record implementer feed for review: %w", err)
+	}
+	if params.worktreeArtifactRoot == "" {
+		return path, nil
+	}
+	writer, err := worktreeRunWriter(params.worktreeArtifactRoot, filepath.Dir(path))
+	if err != nil {
+		return "", fmt.Errorf("prepare worktree implementer feed: %w", err)
+	}
+	return writer.WriteImplementReviewFeed(iteration, turn, feed)
+}
+
 func prepareIterationHandoffPath(params implementIterationsParams, iteration int) (string, error) {
 	handoffPath := params.recorder.ImplementHandoffPath(iteration)
 	if params.worktreeArtifactRoot == "" {
@@ -910,7 +933,7 @@ func presentImplementTurn(params implementIterationsParams, turn implementTurnPa
 	if turn.gateAttemptFeedback != nil {
 		activity = "addressing Gate failure"
 	} else if turn.iteration > 1 {
-		activity = fmt.Sprintf("revising %d blocking finding(s)", countBlockingFindings(turn.findings))
+		activity = fmt.Sprintf("revising %d finding(s)", len(turn.findings))
 	}
 	renderer := ui.New(params.output, ui.DetectCaps(params.output))
 	if err := writeRoleSection(params.output, "Implementer"); err != nil {
@@ -1250,16 +1273,6 @@ func ensureHeadUnchanged(ctx context.Context, git GitRunner, branchPoint string)
 		return fmt.Errorf("implementation changed HEAD; agents must leave changes uncommitted")
 	}
 	return nil
-}
-
-func countBlockingFindings(findings []verdict.Finding) int {
-	count := 0
-	for _, finding := range findings {
-		if finding.Kind == verdict.Blocking {
-			count++
-		}
-	}
-	return count
 }
 
 func nitFindings(review verdict.Verdict) []verdict.Finding {
