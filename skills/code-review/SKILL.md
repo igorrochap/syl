@@ -21,7 +21,7 @@ Dispatcher discipline, phase by phase:
 - **Setup** (steps 1–3): metadata-only calls — resolve refs, verify non-emptiness via `--stat`/`stat`/`wc`, list candidate spec and standards paths. Everything a sub-agent will need travels as a path or reference in its spawn prompt.
 - **Handoff** (step 4): one message, both spawns. The two axis sub-agents are the only agents in a review; the Spec prompt tells that sub-agent to locate any related code itself.
 - **Waiting**: each sub-agent's completion re-invokes the coordinator automatically — **ending the turn is the wait**, and it needs no scheduling, polling, or checking. After the spawn message, end the turn: no tool calls, no status narration. When the first report arrives while the second is pending, end the turn again the same way. Each extra turn replays the coordinator's entire context; a silent wait is free.
-- **Aggregation** (step 5): built from the two reports alone. The quality bar for the verdict is **faithful relay**: every sentence of the aggregate and every finding in the verdict block traces to a sub-agent report, entering exactly as reported. The reports are final — including when the axes disagree; a disagreement is presented side by side, as itself.
+- **Aggregation** (step 5): follow the faithful-relay rules in step 5.
 
 Two hard guardrails, kept as prohibitions because no positive phrasing covers them:
 
@@ -68,30 +68,30 @@ On top of whatever the repo documents, the Standards axis always carries two bas
 The coordinator passes both paths without opening them. Two rules bind them:
 
 - **The repo overrides.** A documented repo standard always wins; where it endorses something the baseline would flag, suppress the smell.
-- **Always a judgement call.** Each baseline finding is a labelled heuristic ("possible Feature Envy"), never a hard violation — and, like any standard here, skip anything tooling already enforces. The gates examine complexity and style; a reviewer examines what a tool cannot see — a name, a design, the fidelity to the spec.
+- **Apply the rubric.** Tag baseline findings using the Verdict contract, and skip anything tooling already enforces. The gates examine complexity and style; a reviewer examines what a tool cannot see — a name, a design, the fidelity to the spec.
 
 ### 4. Spawn both sub-agents in parallel
 
-The coordinator's setup ends at this handoff. Send a single message containing both `Agent` tool calls. Use the `general-purpose` subagent for both. Make both prompts self-sufficient by including the exact diff-file path (or, when no artifact was supplied, the full diff command), the branch-point ref, the commit list, the candidate standards-source paths, and the spec path or reference. End the turn as soon as the spawn message is sent — the Waiting phase of the coordinator contract governs everything until the reports arrive.
+The coordinator's setup ends at this handoff. Send a single message containing both `Agent` tool calls. Use the `general-purpose` subagent for both. Make both prompts self-sufficient by including the installed path of this skill, the exact diff-file path (or, when no artifact was supplied, the full diff command), the branch-point ref, the commit list, the candidate standards-source paths, and the spec path or reference. End the turn as soon as the spawn message is sent — the Waiting phase of the coordinator contract governs everything until the reports arrive.
 
 **Standards sub-agent prompt** — include:
 
 - In normal mode, the full diff command and commit list. In pre-computed-diff mode, the exact diff-file path and branch-point ref instead; tell the sub-agent that the file is authoritative, must be verified non-empty, and must be read directly without invoking Git to re-derive the diff.
 - The list of standards-source files you found in step 3, plus the paths `skills/code-quality/SKILL.md` and `skills/refactoring/references/smells.md` — tell the sub-agent to read both for the baselines (it has repo file access).
-- The brief: "Report — per file/hunk where relevant — (a) every place the diff violates a documented standard: cite the standard (file + the rule); and (b) any baseline breach you spot — a norm from `skills/code-quality/SKILL.md` or a smell from `skills/refactoring/references/smells.md`: name it and quote the hunk. Distinguish hard violations from judgement calls — documented-standard breaches can be hard, but baseline findings are always judgement calls, and a documented repo standard overrides a baseline. Skip anything tooling enforces. Under 400 words."
+- The brief: "Read the severity rubric in the Verdict contract of the supplied code-review skill and tag each finding `[blocking]` or `[nit]` using it. Report — per file/hunk where relevant — (a) every place the diff violates a documented standard: cite the standard (file + the rule); and (b) any baseline breach you spot — a norm from `skills/code-quality/SKILL.md` or a smell from `skills/refactoring/references/smells.md`: name it and quote the hunk. A documented repo standard overrides a baseline. Skip anything tooling enforces. Under 400 words."
 
 **Spec sub-agent prompt** — include:
 
 - In normal mode, the diff command and commit list. In pre-computed-diff mode, the same exact diff-file path and branch-point ref used for the Standards sub-agent; tell the sub-agent to read that authoritative, non-empty file directly and not invoke Git to re-derive the diff.
 - The issue/PR reference or spec path from step 2, or the user's confirmation that no spec exists. The sub-agent retrieves and reads referenced content itself.
 - The instruction to locate and read any related code it needs itself; the coordinator will not locate context or verify the report.
-- The brief: "Report: (a) requirements the spec asked for that are missing or partial; (b) behaviour in the diff that wasn't asked for (scope creep); (c) requirements that look implemented but where the implementation looks wrong. Quote the spec line for each finding. Under 400 words."
+- The brief: "Read the severity rubric in the Verdict contract of the supplied code-review skill and tag each finding `[blocking]` or `[nit]` using it. Report: (a) requirements the spec asked for that are missing or partial; (b) behaviour in the diff that wasn't asked for (scope creep); (c) requirements that look implemented but where the implementation looks wrong. Quote the spec line for each finding. Under 400 words."
 
 If the user confirmed there is no spec, still spawn the Spec sub-agent and instruct it to report "no spec available".
 
 ### 5. Aggregate
 
-Aggregation is faithful relay of the two reports (see the coordinator contract). Present them under `## Standards` and `## Spec` headings, verbatim or lightly cleaned. Do **not** merge or rerank findings — the two axes are deliberately separate (see _Why two axes_).
+Aggregation is **faithful relay**: every sentence of the aggregate and every finding in the Verdict traces to a sub-agent report, entering exactly as reported. The reports are final, subject to the disagreement exception below. Present them under `## Standards` and `## Spec` headings, verbatim or lightly cleaned. Keep each axis's finding under its own heading and as a separate Verdict entry, even when both axes report the same finding. Copy each axis tag into the Verdict unchanged, with one exception: when the axes give different tags to the same finding, tag both Verdict entries `[blocking]` and state the disagreement in each finding's text. Do **not** merge or otherwise rerank findings — the two axes are deliberately separate (see _Why two axes_).
 
 End with a one-line summary: total findings per axis, and the worst issue _within each axis_ (if any). Don't pick a single winner across axes — that's the reranking the separation exists to prevent.
 
@@ -129,23 +129,26 @@ directory (e.g. `reviews/12-add-optional-end-to-end-benchmark-verification.md`,
   the problem and the suggested fix for every finding, quoting the relevant
   hunk or spec line.
 - A closing `## Verdict` stating whether the issue can be closed, or what must
-  be fixed first, per the Notes section below.
+  be fixed first, per the Verdict contract below.
 
 If a review document for this issue already exists (a prior round), add a new
 `## Round N` section rather than overwriting prior rounds — see the
 issue-15 review for the multi-round convention.
 
-## Notes
-
-If non valuable findings are found, tell the user the issue should be close and the user should move on to the next issue.
-
-Valuable findings are:
-- Spec not fully implemented or implemented wrong
-- Medium or higher risk of bugs
-- Codebase's standards violation and/or /refactoring smells found.
-- Bad code (hard to read, hard to maintaing, etc.), like: really long functions, bad naming, etc. For a catalog, use /refactoring
-
 ## Verdict contract
+
+The only permitted finding tags are `[blocking]` and `[nit]`; do not use other grades such as "blocking-lite" or "strong nit". Apply this rubric to every finding:
+
+- `[blocking]` if any of these conditions holds:
+  - The diff changes observable behaviour the spec did not ask for. Observable behaviour includes status codes, response bodies, stored data, error types, and outcomes under concurrency. This applies to every ticket, including refactors.
+  - The finding has a medium or higher risk of a bug, including a race.
+  - New or changed behaviour has no test that would fail if the behaviour broke.
+  - The diff adds dead or unreachable code.
+  - The diff adds duplicated code.
+  - The diff violates an ADR, the glossary in `CONTEXT.md`, or another documented repo standard.
+  - The diff contains a change outside the ticket scope.
+  - The finding quotes a spec line or acceptance criterion that the diff breaks, or the diff lacks verification evidence that the ticket requires.
+- `[nit]` is a finding the team would merge and never revisit. Ask: "Would we want this fixed before merge?" If yes, it is `[blocking]`.
 
 Use `<file:line>` for a finding location. `<file>` is the repository-relative
 path; `<line>` is the 1-based line number in that file as it exists after the
@@ -164,4 +167,4 @@ FINDINGS:
 - [nit] <file:line> — <issue>
 ```
 
-`approve` means the issue can be closed. Every finding must be tagged either `[blocking]` or `[nit]`. A review with zero findings still emits the block, with an empty `FINDINGS` list and no finding lines.
+`approve` means the issue can be closed and requires zero `[blocking]` findings. A review with zero findings still emits the block, with an empty `FINDINGS` list and no finding lines.
