@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -108,6 +109,60 @@ func TestWriterRoundTripsRunRecord(t *testing.T) {
 	if !hasArtifact(record.Artifacts, ImplementHandoff, "handoff-01.md") ||
 		!hasArtifact(record.Artifacts, ReviewDiff, "iteration-01-review.diff") {
 		t.Fatalf("artifacts do not include the handoff and review diff: %#v", record.Artifacts)
+	}
+}
+
+func TestWriterRecordsGateScriptAttemptsAndOutput(t *testing.T) {
+	writer := NewWriter(t.TempDir())
+	scriptPath, err := writer.WriteGateScript([]byte("#!/bin/sh\necho gate\n"), 0o755)
+	if err != nil {
+		t.Fatalf("WriteGateScript() error = %v", err)
+	}
+	info, err := os.Stat(scriptPath)
+	if err != nil {
+		t.Fatalf("stat branch-point Gate script: %v", err)
+	}
+	if info.Mode().Perm() != 0o755 {
+		t.Fatalf("Gate script permissions = %o, want 755", info.Mode().Perm())
+	}
+	paths, err := writer.WriteGateAttempt(2, GateAttempt{
+		Number: 3, ExitStatus: 1, PerGateResultsAvailable: true,
+		Results: []GateResult{{Name: "tests", Result: "FAIL"}}, Output: "full diagnostics\n",
+	})
+	if err != nil {
+		t.Fatalf("WriteGateAttempt() error = %v", err)
+	}
+	result, err := os.ReadFile(paths.Result)
+	if err != nil {
+		t.Fatalf("read Gate result: %v", err)
+	}
+	output, err := os.ReadFile(paths.Output)
+	if err != nil {
+		t.Fatalf("read Gate output: %v", err)
+	}
+	for _, want := range []string{"Gate attempt: 3", "Outcome: red", "Exit status: 1", "Per-Gate results: available", "tests: FAIL", filepath.Base(paths.Output)} {
+		if !strings.Contains(string(result), want) {
+			t.Errorf("Gate result = %q, want %q", result, want)
+		}
+	}
+	if string(output) != "full diagnostics\n" {
+		t.Fatalf("Gate output = %q, want full diagnostics", output)
+	}
+	record, err := NewReader(nil).Read(writer.Directory())
+	if err != nil {
+		t.Fatalf("Read() Gate artifacts: %v", err)
+	}
+	for _, expected := range []struct {
+		kind ArtifactKind
+		name string
+	}{
+		{GateScript, "branch-point-quality.sh"},
+		{GateAttemptFile, filepath.Base(paths.Result)},
+		{GateOutput, filepath.Base(paths.Output)},
+	} {
+		if !hasArtifact(record.Artifacts, expected.kind, expected.name) {
+			t.Errorf("Run record artifacts = %#v, want %q", record.Artifacts, expected.name)
+		}
 	}
 }
 

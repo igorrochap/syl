@@ -35,7 +35,7 @@ func TestBuildFormViewAndLiveRunBanner(t *testing.T) {
 	if view.ConfigHealth != readmodel.HealthOK {
 		t.Fatalf("Config health = %q, want ok for the form state", view.ConfigHealth)
 	}
-	if view.Values.MaxIterations != 3 || view.Values.Implement.Effort != "xhigh" {
+	if view.Values.MaxIterations != 3 || view.Values.MaxGateAttempts != 3 || view.Values.Implement.Effort != "xhigh" {
 		t.Fatalf("form values = %+v, want config values", view.Values)
 	}
 	if len(view.TrackerOptions) == 0 || len(view.HarnessOptions) == 0 || len(view.EffortOptions) == 0 {

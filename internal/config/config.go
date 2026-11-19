@@ -112,7 +112,8 @@ type RoleConfig struct {
 }
 
 type LoopConfig struct {
-	MaxIterations int
+	MaxIterations   int
+	MaxGateAttempts int
 }
 
 type NotificationsConfig struct {
@@ -171,7 +172,8 @@ type rawRole struct {
 }
 
 type rawLoop struct {
-	MaxIterations int `toml:"max_iterations"`
+	MaxIterations   int `toml:"max_iterations"`
+	MaxGateAttempts int `toml:"max_gate_attempts"`
 }
 
 type rawNotifications struct {
@@ -338,6 +340,7 @@ mcp = %t
 
 [loop]
 max_iterations = %d
+max_gate_attempts = %d
 
 [notifications]
 enabled = %t
@@ -365,7 +368,7 @@ copy = %s
 		cfg.Roles.Review.Harness, cfg.Roles.Review.Model, cfg.Roles.Review.Effort,
 		string(renderSandboxMode(cfg.Roles.Review.SandboxMode)),
 		cfg.Roles.Review.MCP,
-		cfg.Loop.MaxIterations, cfg.Notifications.Enabled,
+		cfg.Loop.MaxIterations, cfg.Loop.MaxGateAttempts, cfg.Notifications.Enabled,
 		publishLanguage,
 		worktreeRoot(cfg.Worktree.Root), cfg.Worktree.Setup, renderStringList(cfg.Worktree.Copy))
 }
@@ -400,7 +403,7 @@ func defaultConfigValue() Config {
 			Implement: RoleConfig{Harness: HarnessCodex, Model: "gpt-5.6-luna", Effort: EffortXHigh, MCP: true, SandboxMode: SandboxModeFullAccess},
 			Review:    RoleConfig{Harness: HarnessClaude, Model: "claude-sonnet-5", Effort: EffortMedium, SandboxMode: SandboxModeFullAccess},
 		},
-		Loop:          LoopConfig{MaxIterations: 3},
+		Loop:          LoopConfig{MaxIterations: 3, MaxGateAttempts: 3},
 		Notifications: NotificationsConfig{Enabled: true},
 		Worktree:      WorktreeConfig{Root: DefaultWorktreeRoot},
 	}
@@ -415,16 +418,9 @@ func validate(raw rawConfig, metadata toml.MetaData) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-
-	maxIterations := 3
-	if metadata.IsDefined("loop", "max_iterations") {
-		maxIterations = raw.Loop.MaxIterations
-	}
-	if maxIterations < 1 {
-		return Config{}, FieldError{
-			Field:   "loop.max_iterations",
-			Message: fmt.Sprintf("loop.max_iterations must be positive; got %d", maxIterations),
-		}
+	loopConfig, err := parseLoopConfig(raw.Loop, metadata)
+	if err != nil {
+		return Config{}, err
 	}
 
 	notificationsEnabled := true
@@ -451,11 +447,34 @@ func validate(raw rawConfig, metadata toml.MetaData) (Config, error) {
 	return Config{
 		Tracker:       trackerConfig,
 		Roles:         rolesConfig,
-		Loop:          LoopConfig{MaxIterations: maxIterations},
+		Loop:          loopConfig,
 		Notifications: NotificationsConfig{Enabled: notificationsEnabled},
 		Publish:       PublishConfig{Language: publishLanguage},
 		Worktree:      WorktreeConfig{Root: worktreeRoot, Setup: raw.Worktree.Setup, Copy: raw.Worktree.Copy},
 	}, nil
+}
+
+func parseLoopConfig(raw rawLoop, metadata toml.MetaData) (LoopConfig, error) {
+	loop := LoopConfig{MaxIterations: 3, MaxGateAttempts: 3}
+	if metadata.IsDefined("loop", "max_iterations") {
+		loop.MaxIterations = raw.MaxIterations
+	}
+	if metadata.IsDefined("loop", "max_gate_attempts") {
+		loop.MaxGateAttempts = raw.MaxGateAttempts
+	}
+	if loop.MaxIterations < 1 {
+		return LoopConfig{}, FieldError{
+			Field:   "loop.max_iterations",
+			Message: fmt.Sprintf("loop.max_iterations must be positive; got %d", loop.MaxIterations),
+		}
+	}
+	if loop.MaxGateAttempts < 1 {
+		return LoopConfig{}, FieldError{
+			Field:   "loop.max_gate_attempts",
+			Message: fmt.Sprintf("loop.max_gate_attempts must be positive; got %d", loop.MaxGateAttempts),
+		}
+	}
+	return loop, nil
 }
 
 // ValidationErrors validates a complete configuration and returns every
@@ -484,6 +503,12 @@ func ValidationErrors(cfg Config) []FieldError {
 		errors = append(errors, FieldError{
 			Field:   "loop.max_iterations",
 			Message: fmt.Sprintf("loop.max_iterations must be positive; got %d", cfg.Loop.MaxIterations),
+		})
+	}
+	if cfg.Loop.MaxGateAttempts < 1 {
+		errors = append(errors, FieldError{
+			Field:   "loop.max_gate_attempts",
+			Message: fmt.Sprintf("loop.max_gate_attempts must be positive; got %d", cfg.Loop.MaxGateAttempts),
 		})
 	}
 	errors = append(errors, validatePublishConfig(cfg.Publish)...)

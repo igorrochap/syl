@@ -94,6 +94,60 @@ func (r *memoryRunRecorder) ImplementHandoffPath(iteration int) string {
 	return filepath.Join(r.dir, artifactFilename(implementHandoffArtifact, iteration))
 }
 
+func (r *memoryRunRecorder) ImplementGateHandoffPath(iteration, turn int) string {
+	return filepath.Join(r.dir, fmt.Sprintf("handoff-%02d-gate-%02d.md", iteration, turn))
+}
+
+func (r *memoryRunRecorder) RecordGateScript(contents []byte, executable bool) (string, error) {
+	name := "branch-point-quality.sh"
+	r.files[name] = string(contents)
+	path := filepath.Join(r.dir, name)
+	if err := os.MkdirAll(r.dir, 0o755); err != nil {
+		return "", err
+	}
+	mode := os.FileMode(0o644)
+	if executable {
+		mode = 0o755
+	}
+	if err := os.WriteFile(path, contents, mode); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+func (r *memoryRunRecorder) RecordGateAttempt(iteration int, attempt runrecord.GateAttempt) (runrecord.GateAttemptPaths, error) {
+	resultName := fmt.Sprintf("iteration-%02d-gate-attempt-%02d.txt", iteration, attempt.Number)
+	outputName := fmt.Sprintf("iteration-%02d-gate-attempt-%02d.output.txt", iteration, attempt.Number)
+	outcome := "red"
+	if attempt.Green {
+		outcome = "green"
+	}
+	var result strings.Builder
+	fmt.Fprintf(&result, "Gate attempt: %d\nOutcome: %s\nExit status: %d\n", attempt.Number, outcome, attempt.ExitStatus)
+	if attempt.PerGateResultsAvailable {
+		result.WriteString("Per-Gate results: available\n")
+		for _, gate := range attempt.Results {
+			fmt.Fprintf(&result, "  %s: %s\n", gate.Name, gate.Result)
+		}
+	} else {
+		result.WriteString("Per-Gate results: unavailable\n")
+	}
+	fmt.Fprintf(&result, "Full output: %s\n", outputName)
+	r.files[resultName] = result.String()
+	r.files[outputName] = attempt.Output
+	return runrecord.GateAttemptPaths{
+		Result: filepath.Join(r.dir, resultName),
+		Output: filepath.Join(r.dir, outputName),
+	}, nil
+}
+
+func (r *memoryRunRecorder) RecordNoGate(iteration int) (string, error) {
+	name := fmt.Sprintf("iteration-%02d-gate.txt", iteration)
+	contents := "Gate: no gate\nBranch point has no scripts/quality.sh\n"
+	r.files[name] = contents
+	return filepath.Join(r.dir, name), nil
+}
+
 func (r *memoryRunRecorder) RecordState(state runrecord.State) {
 	r.states = append(r.states, state)
 }
@@ -1443,6 +1497,9 @@ type publishingTestGit struct {
 
 func (g *publishingTestGit) Run(_ context.Context, args ...string) (string, error) {
 	command := strings.Join(args, " ")
+	if strings.HasPrefix(command, "ls-tree ") && strings.HasSuffix(command, " -- scripts/quality.sh") {
+		return "", nil
+	}
 	g.calls = append(g.calls, command)
 	if command == g.failCommand {
 		return "", g.failure
@@ -1895,6 +1952,9 @@ func (*capturingImplementAdapter) AttachSession(context.Context, string, harness
 }
 
 func (g staticImplementGit) Run(_ context.Context, args ...string) (string, error) {
+	if len(args) == 4 && args[0] == "ls-tree" && args[2] == "--" && args[3] == "scripts/quality.sh" {
+		return "", nil
+	}
 	switch strings.Join(args, " ") {
 	case "rev-parse HEAD":
 		return g.branchPoint, nil

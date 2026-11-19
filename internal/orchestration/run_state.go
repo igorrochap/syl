@@ -60,6 +60,14 @@ func (r *runStateTracker) startActivity(iteration int, activity runrecord.Activi
 	r.save()
 }
 
+func (r *runStateTracker) setExhaustionReason(reason string) {
+	if r.finalized || r.state.ExhaustionReason == reason {
+		return
+	}
+	r.state.ExhaustionReason = reason
+	r.save()
+}
+
 func (r *runStateTracker) questionAsked(question string) {
 	if r.finalized {
 		return

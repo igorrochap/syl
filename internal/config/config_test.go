@@ -175,6 +175,9 @@ effort = "medium"
 	if got.Loop.MaxIterations != 3 {
 		t.Fatalf("Loop.MaxIterations = %d, want default 3", got.Loop.MaxIterations)
 	}
+	if got.Loop.MaxGateAttempts != 3 {
+		t.Fatalf("Loop.MaxGateAttempts = %d, want default 3", got.Loop.MaxGateAttempts)
+	}
 	if !got.Notifications.Enabled {
 		t.Fatal("Notifications.Enabled = false, want default true")
 	}
@@ -535,6 +538,7 @@ func TestLoadRejectsMissingRoleValuesAndInvalidLoop(t *testing.T) {
 		{name: "missing model", before: `model = "gpt-5.6-luna"`, after: `model = ""`, wantKey: "roles.implement.model"},
 		{name: "missing effort", before: `effort = "xhigh"`, after: `effort = ""`, wantKey: "roles.implement.effort"},
 		{name: "invalid loop", before: "max_iterations = 3", after: "max_iterations = 0", wantKey: "loop.max_iterations"},
+		{name: "invalid Gate attempts", before: "max_gate_attempts = 3", after: "max_gate_attempts = 0", wantKey: "loop.max_gate_attempts"},
 	}
 
 	for _, tt := range tests {

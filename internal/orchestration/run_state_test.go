@@ -385,8 +385,8 @@ func TestRunImplementRecordsLifecycleThroughMemoryOpenRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunImplement() error = %v", err)
 	}
-	if len(recorder.states) != 6 {
-		t.Fatalf("recorded states = %#v, want six lifecycle states", recorder.states)
+	if len(recorder.states) != 8 {
+		t.Fatalf("recorded states = %#v, want eight lifecycle states", recorder.states)
 	}
 	want := []struct {
 		activity  runrecord.Activity
@@ -395,8 +395,10 @@ func TestRunImplementRecordsLifecycleThroughMemoryOpenRun(t *testing.T) {
 	}{
 		{activity: runrecord.Preparing, status: runrecord.Running},
 		{activity: runrecord.Implementing, iteration: 1, status: runrecord.Running},
+		{activity: runrecord.Verifying, iteration: 1, status: runrecord.Running},
 		{activity: runrecord.Reviewing, iteration: 1, status: runrecord.Running},
 		{activity: runrecord.Implementing, iteration: 2, status: runrecord.Running},
+		{activity: runrecord.Verifying, iteration: 2, status: runrecord.Running},
 		{activity: runrecord.Reviewing, iteration: 2, status: runrecord.Running},
 		{iteration: 2, status: runrecord.Approved},
 	}

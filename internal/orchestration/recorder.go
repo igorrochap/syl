@@ -3,6 +3,7 @@ package orchestration
 import (
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"time"
 
@@ -15,6 +16,10 @@ import (
 // RunRecorder records the domain events that make up a syl Run.
 type RunRecorder interface {
 	ImplementHandoffPath(iteration int) string
+	ImplementGateHandoffPath(iteration, turn int) string
+	RecordGateScript(contents []byte, executable bool) (string, error)
+	RecordGateAttempt(iteration int, attempt runrecord.GateAttempt) (runrecord.GateAttemptPaths, error)
+	RecordNoGate(iteration int) (string, error)
 	RecordState(state runrecord.State)
 	RecordUsage(entry usage.Entry) error
 	RecordImplementTurn(iteration int, feed, transcript string) error
@@ -149,6 +154,26 @@ func (recorder *diskRunRecorder) ImplementHandoffPath(iteration int) string {
 	return recorder.writer.HandoffPath(iteration)
 }
 
+func (recorder *diskRunRecorder) ImplementGateHandoffPath(iteration, turn int) string {
+	return recorder.writer.GateHandoffPath(iteration, turn)
+}
+
+func (recorder *diskRunRecorder) RecordGateScript(contents []byte, executable bool) (string, error) {
+	mode := os.FileMode(0o644)
+	if executable {
+		mode = 0o755
+	}
+	return recorder.writer.WriteGateScript(contents, mode)
+}
+
+func (recorder *diskRunRecorder) RecordGateAttempt(iteration int, attempt runrecord.GateAttempt) (runrecord.GateAttemptPaths, error) {
+	return recorder.writer.WriteGateAttempt(iteration, attempt)
+}
+
+func (recorder *diskRunRecorder) RecordNoGate(iteration int) (string, error) {
+	return recorder.writer.WriteNoGate(iteration)
+}
+
 func (recorder *diskRunRecorder) RecordImplementTurn(iteration int, feed, transcript string) error {
 	return recorder.writer.WriteImplementTurn(iteration, feed, transcript)
 }
@@ -176,7 +201,8 @@ func (recorder *diskRunRecorder) RecordSessions(iteration int, role string, sess
 func (recorder *diskRunRecorder) WriteSummary(summary implementSummary) error {
 	return recorder.writer.WriteSummary(runrecord.SummaryInput{
 		Iterations: summary.iterations, Final: summary.final, Nits: summary.nits,
-		DiffStat: summary.diffStat, WorktreePath: summary.worktreePath, PullRequestURL: summary.pullRequestURL,
+		DiffStat: summary.diffStat, WorktreePath: summary.worktreePath,
+		ExhaustionReason: summary.exhaustionReason, PullRequestURL: summary.pullRequestURL,
 		Publication: summary.publication,
 	})
 }

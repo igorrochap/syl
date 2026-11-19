@@ -117,6 +117,14 @@ const (
 	UsageFile
 	// MetadataFile stores Run metadata.
 	MetadataFile
+	// GateScript is the branch-point copy of scripts/quality.sh.
+	GateScript
+	// GateAttemptFile stores the structured result of one Gate attempt.
+	GateAttemptFile
+	// GateOutput stores the full output of one Gate attempt.
+	GateOutput
+	// NoGateFile records that the branch point has no Gate script.
+	NoGateFile
 )
 
 // Artifact describes a recognized file in a Run directory.
@@ -127,7 +135,30 @@ type Artifact struct {
 	Iteration  int
 	Role       string
 	Extension  string
+	Attempt    int
 	ModTime    time.Time
+}
+
+// GateResult is one per-Gate result from a valid quality summary block.
+type GateResult struct {
+	Name   string
+	Result string
+}
+
+// GateAttempt contains the values persisted for one orchestrator Gate run.
+type GateAttempt struct {
+	Number                  int
+	ExitStatus              int
+	PerGateResultsAvailable bool
+	Results                 []GateResult
+	Green                   bool
+	Output                  string
+}
+
+// GateAttemptPaths identifies the structured result and full output artifacts.
+type GateAttemptPaths struct {
+	Result string
+	Output string
 }
 
 // Record is the readable contents and recognized artifacts of one Run.
@@ -600,10 +631,23 @@ func ParseArtifactName(name string) (Artifact, bool) {
 	if artifact, ok := parseHandoffArtifact(name); ok {
 		return artifact, true
 	}
+	if artifact, ok := parseGateArtifact(name); ok {
+		return artifact, true
+	}
 	return parseIterationArtifact(name)
 }
 
 func parseStandaloneArtifact(name string) (Artifact, bool) {
+	if name == "branch-point-quality.sh" {
+		return Artifact{Kind: GateScript, Name: name, Standalone: true, Extension: "sh"}, true
+	}
+	if artifact, ok := parseStandaloneRoleArtifact(name); ok {
+		return artifact, true
+	}
+	return parseStandaloneMetadataArtifact(name)
+}
+
+func parseStandaloneRoleArtifact(name string) (Artifact, bool) {
 	switch name {
 	case "review.diff":
 		return Artifact{Kind: ReviewDiff, Name: name, Standalone: true, Iteration: 1, Role: "review", Extension: "diff"}, true
@@ -615,6 +659,12 @@ func parseStandaloneArtifact(name string) (Artifact, bool) {
 		return Artifact{Kind: ReviewFailure, Name: name, Standalone: true, Iteration: 1, Role: "review", Extension: "failure.txt"}, true
 	case "implement.failure.txt":
 		return Artifact{Kind: ImplementFailure, Name: name, Standalone: true, Iteration: 1, Role: "implement", Extension: "failure.txt"}, true
+	}
+	return Artifact{}, false
+}
+
+func parseStandaloneMetadataArtifact(name string) (Artifact, bool) {
+	switch name {
 	case "verdict.txt":
 		return Artifact{Kind: VerdictFile, Name: name, Standalone: true, Iteration: 1}, true
 	case summaryFile:
@@ -627,6 +677,38 @@ func parseStandaloneArtifact(name string) (Artifact, bool) {
 	return Artifact{}, false
 }
 
+func parseGateArtifact(name string) (Artifact, bool) {
+	iteration := ParseIterationNumber(name)
+	if iteration <= 0 {
+		return Artifact{}, false
+	}
+	if name == fmt.Sprintf("iteration-%02d-gate.txt", iteration) {
+		return Artifact{Kind: NoGateFile, Name: name, Iteration: iteration, Role: "gate", Extension: "txt"}, true
+	}
+	base := fmt.Sprintf("iteration-%02d-gate-attempt-", iteration)
+	suffix, found := strings.CutPrefix(name, base)
+	if !found {
+		return Artifact{}, false
+	}
+	if strings.HasSuffix(suffix, ".output.txt") {
+		suffix = strings.TrimSuffix(suffix, ".output.txt")
+		attempt, err := strconv.Atoi(suffix)
+		if err != nil || attempt <= 0 {
+			return Artifact{}, false
+		}
+		return Artifact{Kind: GateOutput, Name: name, Iteration: iteration, Role: "gate", Extension: "output.txt", Attempt: attempt}, true
+	}
+	suffix, found = strings.CutSuffix(suffix, ".txt")
+	if !found {
+		return Artifact{}, false
+	}
+	attempt, err := strconv.Atoi(suffix)
+	if err != nil || attempt <= 0 {
+		return Artifact{}, false
+	}
+	return Artifact{Kind: GateAttemptFile, Name: name, Iteration: iteration, Role: "gate", Extension: "txt", Attempt: attempt}, true
+}
+
 func parseHandoffArtifact(name string) (Artifact, bool) {
 	number, found := strings.CutPrefix(name, "handoff-")
 	if !found {
@@ -636,11 +718,22 @@ func parseHandoffArtifact(name string) (Artifact, bool) {
 	if !found {
 		return Artifact{}, false
 	}
+	iterationPart, attemptPart, isGateHandoff := strings.Cut(number, "-gate-")
+	if isGateHandoff {
+		number = iterationPart
+	}
 	iteration, err := strconv.Atoi(number)
 	if err != nil || iteration <= 0 {
 		return Artifact{}, false
 	}
-	return Artifact{Kind: ImplementHandoff, Name: name, Iteration: iteration, Role: "implement", Extension: "md"}, true
+	artifact := Artifact{Kind: ImplementHandoff, Name: name, Iteration: iteration, Role: "implement", Extension: "md"}
+	if isGateHandoff {
+		artifact.Attempt, err = strconv.Atoi(attemptPart)
+		if err != nil || artifact.Attempt <= 1 {
+			return Artifact{}, false
+		}
+	}
+	return artifact, true
 }
 
 func parseIterationArtifact(name string) (Artifact, bool) {

@@ -28,13 +28,14 @@ type Spec struct {
 
 // SummaryInput contains the values that are formatted into summary.txt.
 type SummaryInput struct {
-	Iterations     int
-	Final          verdict.Verdict
-	Nits           []verdict.Finding
-	DiffStat       string
-	WorktreePath   string
-	PullRequestURL string
-	Publication    Publication
+	Iterations       int
+	Final            verdict.Verdict
+	Nits             []verdict.Finding
+	DiffStat         string
+	WorktreePath     string
+	ExhaustionReason string
+	PullRequestURL   string
+	Publication      Publication
 }
 
 type sessionKey struct {
@@ -110,6 +111,71 @@ func (writer *Writer) WriteState(state State) error {
 // HandoffPath returns the path for one implementer handoff document.
 func (writer *Writer) HandoffPath(iteration int) string {
 	return filepath.Join(writer.directory, ArtifactName(ImplementHandoff, iteration))
+}
+
+// GateHandoffPath returns a distinct handoff path for a Gate-driven turn.
+func (writer *Writer) GateHandoffPath(iteration, turn int) string {
+	return filepath.Join(writer.directory, fmt.Sprintf("handoff-%02d-gate-%02d.md", iteration, turn))
+}
+
+// GateScriptPath returns the artifact path for the branch-point Gate script.
+func (writer *Writer) GateScriptPath() string {
+	return filepath.Join(writer.directory, ArtifactName(GateScript, 0))
+}
+
+// WriteGateScript stores the script and preserves whether the branch-point copy is executable.
+func (writer *Writer) WriteGateScript(contents []byte, mode os.FileMode) (string, error) {
+	path := writer.GateScriptPath()
+	if err := writer.writeFileMode(filepath.Base(path), contents, mode.Perm()); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+// WriteGateAttempt persists the structured result and full output of one attempt.
+func (writer *Writer) WriteGateAttempt(iteration int, attempt GateAttempt) (GateAttemptPaths, error) {
+	if iteration <= 0 || attempt.Number <= 0 {
+		return GateAttemptPaths{}, fmt.Errorf("invalid Gate attempt %d in iteration %d", attempt.Number, iteration)
+	}
+	resultName := fmt.Sprintf("iteration-%02d-gate-attempt-%02d.txt", iteration, attempt.Number)
+	outputName := fmt.Sprintf("iteration-%02d-gate-attempt-%02d.output.txt", iteration, attempt.Number)
+	if err := writer.writeFile(outputName, []byte(attempt.Output)); err != nil {
+		return GateAttemptPaths{}, err
+	}
+	var result strings.Builder
+	outcome := "red"
+	if attempt.Green {
+		outcome = "green"
+	}
+	fmt.Fprintf(&result, "Gate attempt: %d\nOutcome: %s\nExit status: %d\n", attempt.Number, outcome, attempt.ExitStatus)
+	if attempt.PerGateResultsAvailable {
+		result.WriteString("Per-Gate results: available\n")
+		for _, gate := range attempt.Results {
+			fmt.Fprintf(&result, "  %s: %s\n", gate.Name, gate.Result)
+		}
+	} else {
+		result.WriteString("Per-Gate results: unavailable\n")
+	}
+	fmt.Fprintf(&result, "Full output: %s\n", outputName)
+	if err := writer.writeFile(resultName, []byte(result.String())); err != nil {
+		return GateAttemptPaths{}, err
+	}
+	return GateAttemptPaths{
+		Result: filepath.Join(writer.directory, resultName),
+		Output: filepath.Join(writer.directory, outputName),
+	}, nil
+}
+
+// WriteNoGate records that the branch point does not define a Gate script.
+func (writer *Writer) WriteNoGate(iteration int) (string, error) {
+	if iteration <= 0 {
+		return "", fmt.Errorf("invalid no-Gate iteration %d", iteration)
+	}
+	name := fmt.Sprintf("iteration-%02d-gate.txt", iteration)
+	if err := writer.writeFile(name, []byte("Gate: no gate\nBranch point has no scripts/quality.sh\n")); err != nil {
+		return "", err
+	}
+	return filepath.Join(writer.directory, name), nil
 }
 
 // WriteArtifact writes one named-by-kind Run artifact.
@@ -204,6 +270,7 @@ var standaloneArtifactNames = map[ArtifactKind]string{
 	SessionsFile:     sessionsFile,
 	UsageFile:        usageFile,
 	MetadataFile:     metadataFile,
+	GateScript:       "branch-point-quality.sh",
 }
 
 var iterationArtifactFormats = map[ArtifactKind]string{
@@ -262,45 +329,81 @@ func FormatVerdict(reviewVerdict verdict.Verdict) string {
 // FormatSummary returns the stable text representation stored in summary.txt.
 func FormatSummary(summary SummaryInput) string {
 	var builder strings.Builder
+	finalVerdict := string(summary.Final.Status)
+	if finalVerdict == "" {
+		finalVerdict = "none"
+	}
 	fmt.Fprintf(
 		&builder,
 		"Iterations: %d\nFinal verdict: %s\nSummary: %s\nNit findings:\n",
-		summary.Iterations, summary.Final.Status, summary.Final.Summary,
+		summary.Iterations, finalVerdict, summary.Final.Summary,
 	)
-	if len(summary.Nits) == 0 {
+	appendSummaryFindings(&builder, summary.Nits)
+	appendSummaryWorktree(&builder, summary.WorktreePath)
+	appendSummaryExhaustion(&builder, summary.ExhaustionReason)
+	appendSummaryPublication(&builder, summary.Publication)
+	appendSummaryPullRequest(&builder, summary)
+	appendSummaryDiffStat(&builder, summary.DiffStat)
+	return builder.String()
+}
+
+func appendSummaryFindings(builder *strings.Builder, findings []verdict.Finding) {
+	if len(findings) == 0 {
 		builder.WriteString("- (none)\n")
 	} else {
-		for _, finding := range summary.Nits {
-			fmt.Fprintf(&builder, "- [%s] %s — %s\n", finding.Kind, finding.Location, finding.Issue)
+		for _, finding := range findings {
+			fmt.Fprintf(builder, "- [%s] %s — %s\n", finding.Kind, finding.Location, finding.Issue)
 		}
 	}
-	if summary.WorktreePath != "" {
-		fmt.Fprintf(&builder,
-			"Worktree: %s\nRemove worktree: git worktree remove --force %s\n",
-			summary.WorktreePath, summary.WorktreePath,
-		)
+}
+
+func appendSummaryWorktree(builder *strings.Builder, worktreePath string) {
+	if worktreePath == "" {
+		return
 	}
-	if summary.Publication.Status != "" {
-		fmt.Fprintf(&builder, "Publication: %s\n", summary.Publication.Status)
-		if summary.Publication.Step != "" {
-			fmt.Fprintf(&builder, "Publication step: %s\n", summary.Publication.Step)
-		}
-		if summary.Publication.Error != "" {
-			builder.WriteString("Publication error:\n")
-			for _, line := range strings.Split(strings.ReplaceAll(summary.Publication.Error, "\r\n", "\n"), "\n") {
-				fmt.Fprintf(&builder, "  %s\n", line)
-			}
-		}
+	fmt.Fprintf(builder,
+		"Worktree: %s\nRemove worktree: git worktree remove --force %s\n",
+		worktreePath, worktreePath,
+	)
+}
+
+func appendSummaryExhaustion(builder *strings.Builder, reason string) {
+	if reason == "" {
+		return
 	}
+	fmt.Fprintf(builder, "Exhaustion reason: %s\n", reason)
+}
+
+func appendSummaryPublication(builder *strings.Builder, publication Publication) {
+	if publication.Status == "" {
+		return
+	}
+	fmt.Fprintf(builder, "Publication: %s\n", publication.Status)
+	if publication.Step != "" {
+		fmt.Fprintf(builder, "Publication step: %s\n", publication.Step)
+	}
+	if publication.Error == "" {
+		return
+	}
+	builder.WriteString("Publication error:\n")
+	for _, line := range strings.Split(strings.ReplaceAll(publication.Error, "\r\n", "\n"), "\n") {
+		fmt.Fprintf(builder, "  %s\n", line)
+	}
+}
+
+func appendSummaryPullRequest(builder *strings.Builder, summary SummaryInput) {
 	pullRequestURL := summary.Publication.URL
 	if pullRequestURL == "" {
 		pullRequestURL = summary.PullRequestURL
 	}
-	if pullRequestURL != "" {
-		fmt.Fprintf(&builder, "Pull request: %s\n", pullRequestURL)
+	if pullRequestURL == "" {
+		return
 	}
-	fmt.Fprintf(&builder, "Diff stat:\n%s\n", strings.TrimRight(summary.DiffStat, " \t\r\n"))
-	return builder.String()
+	fmt.Fprintf(builder, "Pull request: %s\n", pullRequestURL)
+}
+
+func appendSummaryDiffStat(builder *strings.Builder, diffStat string) {
+	fmt.Fprintf(builder, "Diff stat:\n%s\n", strings.TrimRight(diffStat, " \t\r\n"))
 }
 
 func appendRoleContext(metadata, role, context string) string {
@@ -321,8 +424,12 @@ func appendRoleContext(metadata, role, context string) string {
 }
 
 func (writer *Writer) writeFile(name string, contents []byte) error {
+	return writer.writeFileMode(name, contents, 0o644)
+}
+
+func (writer *Writer) writeFileMode(name string, contents []byte, mode os.FileMode) error {
 	path := filepath.Join(writer.directory, name)
-	if err := os.WriteFile(path, contents, 0o644); err != nil {
+	if err := os.WriteFile(path, contents, mode); err != nil {
 		return fmt.Errorf("write run artifact %s: %w", path, err)
 	}
 	return nil

@@ -37,6 +37,7 @@ type Values struct {
 	Review    RoleValues
 
 	MaxIterations        int
+	MaxGateAttempts      int
 	NotificationsEnabled bool
 	PublishLanguage      string
 
@@ -119,11 +120,15 @@ func Parse(form url.Values, defaults Values) (Values, FieldErrors) {
 		Plan:                 parseRole(form, "plan", defaults.Plan),
 		Implement:            parseRole(form, "implement", defaults.Implement),
 		Review:               parseRole(form, "review", defaults.Review),
+		MaxGateAttempts:      defaults.MaxGateAttempts,
 		NotificationsEnabled: formBool(form, "notifications.enabled"),
 		PublishLanguage:      publishLanguage,
 		WorktreeRoot:         form.Get("worktree.root"),
 		WorktreeSetup:        form.Get("worktree.setup"),
 		WorktreeCopy:         nonEmptyValues(form["worktree.copy"]),
+	}
+	if values.MaxGateAttempts < 1 {
+		values.MaxGateAttempts = 3
 	}
 
 	errors := FieldErrors{}
@@ -132,6 +137,14 @@ func Parse(form url.Values, defaults Values) (Values, FieldErrors) {
 		errors["loop.max_iterations"] = fmt.Sprintf("loop.max_iterations: invalid value %q; want an integer", form.Get("loop.max_iterations"))
 	} else {
 		values.MaxIterations = maxIterations
+	}
+	if _, submitted := form["loop.max_gate_attempts"]; submitted {
+		maxGateAttempts, parseErr := strconv.Atoi(form.Get("loop.max_gate_attempts"))
+		if parseErr != nil {
+			errors["loop.max_gate_attempts"] = fmt.Sprintf("loop.max_gate_attempts: invalid value %q; want an integer", form.Get("loop.max_gate_attempts"))
+		} else {
+			values.MaxGateAttempts = maxGateAttempts
+		}
 	}
 	for field, message := range Validate(values) {
 		if _, exists := errors[field]; !exists {
@@ -257,6 +270,7 @@ func valuesFromConfig(loaded config.Config) Values {
 		Implement:            roleValuesFromConfig(loaded.Roles.Implement),
 		Review:               roleValuesFromConfig(loaded.Roles.Review),
 		MaxIterations:        loaded.Loop.MaxIterations,
+		MaxGateAttempts:      loaded.Loop.MaxGateAttempts,
 		NotificationsEnabled: loaded.Notifications.Enabled,
 		PublishLanguage:      loaded.Publish.Language,
 		WorktreeRoot:         loaded.Worktree.Root,
@@ -280,7 +294,7 @@ func (values Values) config() config.Config {
 			Implement: values.Implement.config(),
 			Review:    values.Review.config(),
 		},
-		Loop:          config.LoopConfig{MaxIterations: values.MaxIterations},
+		Loop:          config.LoopConfig{MaxIterations: values.MaxIterations, MaxGateAttempts: values.MaxGateAttempts},
 		Notifications: config.NotificationsConfig{Enabled: values.NotificationsEnabled},
 		Publish:       config.PublishConfig{Language: values.PublishLanguage},
 		Worktree:      config.WorktreeConfig{Root: values.WorktreeRoot, Setup: values.WorktreeSetup, Copy: append([]string(nil), values.WorktreeCopy...)},
