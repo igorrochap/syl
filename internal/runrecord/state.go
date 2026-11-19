@@ -20,7 +20,7 @@ const (
 	Running Status = "running"
 	// Approved means the final review verdict approved the Run.
 	Approved Status = "approved"
-	// Exhausted means the Run reached its iteration limit with a revise verdict.
+	// Exhausted means the Run reached an iteration or Gate attempt limit.
 	Exhausted Status = "exhausted"
 	// Failed means the Run returned an error.
 	Failed Status = "failed"
@@ -36,6 +36,8 @@ const (
 	Preparing Activity = "preparing"
 	// Implementing means the implementer Role is active.
 	Implementing Activity = "implementing"
+	// Verifying means syl is running the branch-point Gates.
+	Verifying Activity = "verifying"
 	// Reviewing means the reviewer Role is active.
 	Reviewing Activity = "reviewing"
 	// AwaitingAnswer means the Run is paused for a user answer.
@@ -54,18 +56,19 @@ const (
 
 // State is the on-disk representation of one Run's current or final state.
 type State struct {
-	Status        Status     `json:"status"`
-	Activity      Activity   `json:"activity,omitempty"`
-	Iteration     int        `json:"iteration"`
-	MaxIterations int        `json:"max_iterations"`
-	Question      string     `json:"question,omitempty"`
-	PID           int        `json:"pid"`
-	Hostname      string     `json:"hostname"`
-	StartedAt     time.Time  `json:"started_at"`
-	UpdatedAt     time.Time  `json:"updated_at"`
-	EndedAt       *time.Time `json:"ended_at,omitempty"`
-	Kind          Kind       `json:"kind"`
-	TicketRef     string     `json:"ticket_ref"`
+	Status           Status     `json:"status"`
+	Activity         Activity   `json:"activity,omitempty"`
+	Iteration        int        `json:"iteration"`
+	MaxIterations    int        `json:"max_iterations"`
+	Question         string     `json:"question,omitempty"`
+	ExhaustionReason string     `json:"exhaustion_reason,omitempty"`
+	PID              int        `json:"pid"`
+	Hostname         string     `json:"hostname"`
+	StartedAt        time.Time  `json:"started_at"`
+	UpdatedAt        time.Time  `json:"updated_at"`
+	EndedAt          *time.Time `json:"ended_at,omitempty"`
+	Kind             Kind       `json:"kind"`
+	TicketRef        string     `json:"ticket_ref"`
 }
 
 // Path returns the state file path inside a Run directory.

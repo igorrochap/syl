@@ -331,7 +331,9 @@ func externalConfig(values configedit.Values) config.Config {
 			Implement: roleConfig(values.Implement),
 			Review:    roleConfig(values.Review),
 		},
-		Loop:          config.LoopConfig{MaxIterations: values.MaxIterations},
+		Loop: config.LoopConfig{
+			MaxIterations: values.MaxIterations, MaxGateAttempts: values.MaxGateAttempts,
+		},
 		Notifications: config.NotificationsConfig{Enabled: values.NotificationsEnabled},
 		Worktree:      config.WorktreeConfig{Root: values.WorktreeRoot, Setup: values.WorktreeSetup, Copy: values.WorktreeCopy},
 	}
@@ -343,20 +345,22 @@ func roleConfig(values configedit.RoleValues) config.RoleConfig {
 
 func sandboxDefaults() configedit.Values {
 	return configedit.Values{
-		Plan:      configedit.RoleValues{SandboxMode: string(config.SandboxModeFullAccess)},
-		Implement: configedit.RoleValues{SandboxMode: string(config.SandboxModeFullAccess)},
-		Review:    configedit.RoleValues{SandboxMode: string(config.SandboxModeFullAccess)},
+		MaxGateAttempts: 3,
+		Plan:            configedit.RoleValues{SandboxMode: string(config.SandboxModeFullAccess)},
+		Implement:       configedit.RoleValues{SandboxMode: string(config.SandboxModeFullAccess)},
+		Review:          configedit.RoleValues{SandboxMode: string(config.SandboxModeFullAccess)},
 	}
 }
 
 func formFromValues(values configedit.Values) url.Values {
 	form := url.Values{
-		"tracker.issues":      {values.TrackerIssues},
-		"tracker.reviews":     {values.TrackerReviews},
-		"publish.language":    {values.PublishLanguage},
-		"loop.max_iterations": {strconv.Itoa(values.MaxIterations)},
-		"worktree.root":       {values.WorktreeRoot},
-		"worktree.setup":      {values.WorktreeSetup},
+		"tracker.issues":         {values.TrackerIssues},
+		"tracker.reviews":        {values.TrackerReviews},
+		"publish.language":       {values.PublishLanguage},
+		"loop.max_iterations":    {strconv.Itoa(values.MaxIterations)},
+		"loop.max_gate_attempts": {strconv.Itoa(values.MaxGateAttempts)},
+		"worktree.root":          {values.WorktreeRoot},
+		"worktree.setup":         {values.WorktreeSetup},
 	}
 	setRoleForm(form, "plan", values.Plan)
 	setRoleForm(form, "implement", values.Implement)

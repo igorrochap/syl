@@ -49,7 +49,29 @@ Ticket: %s
 Blocking findings:
 %s`
 
+	gateAttemptImplementPrompt = `Continue implementing the ticket below to address the red Gate attempt. Use the vendored implement skill and leave the working tree with changes for review. Do not commit or push changes. No reviewer findings apply to this Gate attempt.
+
+` + questionProtocolInstruction + `
+
+At the end of this turn, self-assess your remaining context. Only if you judge that you are low on context, invoke ` + "`/handoff %s`" + ` to prepare the next implementer turn. Do not invoke it otherwise.
+
+Ticket: %s
+Title: %s
+
+Ticket body (including acceptance criteria):
+%s
+
+Gate attempt result:
+%s`
+
 	rolloverSeedPrompt = `Before doing any work, read the Rollover handoff document at %s. It supplements the ticket and blocking findings in this prompt; it does not replace them.
+
+Title: %s
+
+Ticket body (including acceptance criteria):
+%s`
+
+	gateAttemptRolloverSeedPrompt = `Before doing any work, read the Rollover handoff document at %s. It supplements the ticket and Gate attempt result in this prompt; it does not replace them.
 
 Title: %s
 
@@ -92,6 +114,27 @@ func composeImplementPrompt(
 	return appendPromptContext(prompt, additionalContext)
 }
 
+func composeGateAttemptPrompt(
+	ticket tracker.Ticket,
+	handoffPath string,
+	rolloverSeedPath string,
+	additionalContext string,
+	gateAttemptResult string,
+) string {
+	prompt := fmt.Sprintf(
+		gateAttemptImplementPrompt,
+		handoffPath, "#"+strconv.Itoa(ticket.Number), ticket.Title, ticket.Body, gateAttemptResult,
+	)
+	if rolloverSeedPath != "" {
+		prompt = fmt.Sprintf(
+			"%s\n\n%s",
+			prompt,
+			fmt.Sprintf(gateAttemptRolloverSeedPrompt, rolloverSeedPath, ticket.Title, ticket.Body),
+		)
+	}
+	return appendPromptContext(prompt, additionalContext)
+}
+
 func composeReviewPrompt(ticketRef string, ticket *tracker.Ticket, branchPoint, diffPath, additionalContext string) string {
 	prompt := fmt.Sprintf(reviewPrompt, diffPath, branchPoint, reviewFindingLocationInstruction)
 	if ticket == nil {
@@ -112,6 +155,14 @@ func appendPromptContext(prompt, additionalContext string) string {
 func composeReviewResumePrompt(diffPath string, blocking []verdict.Finding, additionalContext string) string {
 	prompt := fmt.Sprintf(reviewResumePrompt, diffPath, reviewFindingLocationInstruction, formatBlockingFindings(blocking))
 	return appendPromptContext(prompt, additionalContext)
+}
+
+func appendGateResultPath(prompt, path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return prompt
+	}
+	return fmt.Sprintf("%s\n\nThe orchestrator's Gate result for this iteration is recorded at %s.", prompt, path)
 }
 
 func composePlanPrompt(options PlanOptions) string {

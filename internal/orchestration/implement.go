@@ -30,14 +30,15 @@ type implementSetup struct {
 }
 
 type implementSummary struct {
-	iterations     int
-	final          verdict.Verdict
-	nits           []verdict.Finding
-	diffStat       string
-	worktreePath   string
-	pullRequestURL string
-	publishNotice  string
-	publication    runrecord.Publication
+	iterations       int
+	final            verdict.Verdict
+	nits             []verdict.Finding
+	diffStat         string
+	worktreePath     string
+	exhaustionReason string
+	pullRequestURL   string
+	publishNotice    string
+	publication      runrecord.Publication
 }
 
 type ImplementOptions struct {
@@ -59,6 +60,7 @@ type ImplementOptions struct {
 	ReviewContext        string
 	Verbose              bool
 	PublishOnApprove     bool
+	GateRunner           GateRunner
 	ProvisionedWorktree  *Worktree
 	IdentificationBanner func(artifactDir string) error
 }
@@ -161,9 +163,14 @@ func executeImplementRun(ctx context.Context, options ImplementOptions, run impl
 		reviewContext:        options.ReviewContext,
 		verbose:              options.Verbose,
 		allowEmptyDiff:       options.PublishOnApprove,
+		gateRunner:           options.GateRunner,
 	})
 	if err != nil {
 		return err
+	}
+	if run.runState.state.ExhaustionReason == "" && final.Status == verdict.Revise &&
+		iterations >= options.ProjectConfig.Loop.MaxIterations {
+		run.runState.setExhaustionReason(fmt.Sprintf("iteration limit (%d)", options.ProjectConfig.Loop.MaxIterations))
 	}
 
 	diffStat, err := run.setup.git.Run(ctx, "diff", "--stat", run.setup.branchPoint)
@@ -171,11 +178,12 @@ func executeImplementRun(ctx context.Context, options ImplementOptions, run impl
 		diffStat = fmt.Sprintf("unavailable: %v", err)
 	}
 	summary := implementSummary{
-		iterations:   iterations,
-		final:        final,
-		nits:         nits,
-		diffStat:     diffStat,
-		worktreePath: run.setup.worktreePath,
+		iterations:       iterations,
+		final:            final,
+		nits:             nits,
+		diffStat:         diffStat,
+		worktreePath:     run.setup.worktreePath,
+		exhaustionReason: run.runState.state.ExhaustionReason,
 	}
 	publicationErr := publishApprovedSummary(ctx, options, run.setup, &summary)
 	if err := completeImplementRun(ctx, options, run, summary); err != nil {
@@ -319,18 +327,37 @@ func completeImplementRun(ctx context.Context, options ImplementOptions, run imp
 		return err
 	}
 	if run.notifier != nil {
-		message := fmt.Sprintf("implement #%d finished: %s", options.Ticket.Number, summary.final.Status)
+		outcome := string(summary.final.Status)
+		if summary.exhaustionReason != "" {
+			outcome = string(runrecord.Exhausted)
+		}
+		message := fmt.Sprintf("implement #%d finished: %s", options.Ticket.Number, outcome)
 		if summary.pullRequestURL != "" {
 			message += " — " + summary.pullRequestURL
 		}
 		_ = run.notifier.Notify(ctx, message)
 	}
-	if summary.final.Status == verdict.Revise {
-		run.runState.finish(runrecord.Exhausted)
-		return fmt.Errorf("implement loop reached max iterations (%d) with revise verdict", options.ProjectConfig.Loop.MaxIterations)
+	if exhausted, err := finishExhaustedImplementRun(options, run, summary); exhausted {
+		return err
 	}
 	run.runState.finish(runrecord.Approved)
 	return nil
+}
+
+func finishExhaustedImplementRun(options ImplementOptions, run implementRunState, summary implementSummary) (bool, error) {
+	reason := summary.exhaustionReason
+	if reason == "" && summary.final.Status == verdict.Revise {
+		reason = fmt.Sprintf("iteration limit (%d)", options.ProjectConfig.Loop.MaxIterations)
+		run.runState.setExhaustionReason(reason)
+	}
+	if reason == "" {
+		return false, nil
+	}
+	run.runState.finish(runrecord.Exhausted)
+	if strings.HasPrefix(reason, "iteration limit") {
+		return true, fmt.Errorf("implement loop reached max iterations (%d) with revise verdict", options.ProjectConfig.Loop.MaxIterations)
+	}
+	return true, fmt.Errorf("implement loop reached %s", reason)
 }
 
 func prepareImplement(ctx context.Context, git GitRunner, issueTracker tracker.Tracker, ticket tracker.Ticket) (implementSetup, error) {
@@ -444,6 +471,7 @@ type implementIterationsParams struct {
 	reviewContext        string
 	verbose              bool
 	allowEmptyDiff       bool
+	gateRunner           GateRunner
 }
 
 type implementReviewParams struct {
@@ -451,16 +479,18 @@ type implementReviewParams struct {
 	blocking                []verdict.Finding
 	previousReviewerSession string
 	diffPath                string
+	gateResultPath          string
 	mode                    HarnessOutputMode
 }
 
 type implementTurnParams struct {
-	iteration        int
-	blocking         []verdict.Finding
-	previousSession  string
-	handoffPath      string
-	rolloverSeedPath string
-	mode             HarnessOutputMode
+	iteration           int
+	blocking            []verdict.Finding
+	previousSession     string
+	handoffPath         string
+	rolloverSeedPath    string
+	gateAttemptFeedback *failedGateAttemptFeedback
+	mode                HarnessOutputMode
 }
 
 func runImplementIterations(ctx context.Context, params implementIterationsParams) (int, verdict.Verdict, []verdict.Finding, error) {
@@ -471,6 +501,7 @@ func runImplementIterations(ctx context.Context, params implementIterationsParam
 	var previousImplementerSession string
 	var rolloverSeedPath string
 	var previousReviewerSession string
+	branchGate := branchGateSource{}
 	iterations := 0
 	for iteration := 1; iteration <= params.projectConfig.Loop.MaxIterations; iteration++ {
 		iterations = iteration
@@ -482,23 +513,16 @@ func runImplementIterations(ctx context.Context, params implementIterationsParam
 		if err != nil {
 			return 0, verdict.Verdict{}, nil, err
 		}
-		implementResult, err := runImplementTurn(ctx, params, implementTurnParams{
-			iteration:        iteration,
-			blocking:         blocking,
-			previousSession:  previousImplementerSession,
-			handoffPath:      handoffPath,
-			rolloverSeedPath: rolloverSeedPath,
-			mode:             mode,
-		})
-		if err != nil {
-			return 0, verdict.Verdict{}, nil, err
-		}
-		rolloverSeedPath, previousImplementerSession, err = nextImplementerTurn(
-			handoffPath,
-			implementResult.SessionIDs,
+		gateCycle, err := runImplementerGateCycle(
+			ctx, params, iteration, handoffPath, blocking, previousImplementerSession, rolloverSeedPath, mode, &branchGate,
 		)
 		if err != nil {
 			return 0, verdict.Verdict{}, nil, err
+		}
+		previousImplementerSession = gateCycle.previousSession
+		rolloverSeedPath = gateCycle.rolloverSeedPath
+		if gateCycle.exhausted {
+			return iterations, verdict.Verdict{}, nil, nil
 		}
 		diffPath, err := prepareIterationReviewDiff(ctx, params, iteration)
 		if err != nil {
@@ -510,6 +534,7 @@ func runImplementIterations(ctx context.Context, params implementIterationsParam
 			blocking:                blocking,
 			previousReviewerSession: previousReviewerSession,
 			diffPath:                diffPath,
+			gateResultPath:          gateCycle.gateResultPath,
 			mode:                    mode,
 		})
 		if err != nil {
@@ -531,6 +556,144 @@ func runImplementIterations(ctx context.Context, params implementIterationsParam
 	return iterations, final, nitFindings(final), nil
 }
 
+type branchGateSource struct {
+	script   branchGateScript
+	resolved bool
+}
+
+type implementGateCycleResult struct {
+	previousSession  string
+	rolloverSeedPath string
+	gateResultPath   string
+	exhausted        bool
+}
+
+type implementGateTurnResult struct {
+	previousSession       string
+	rolloverSeedPath      string
+	gateResultPath        string
+	failedAttemptFeedback failedGateAttemptFeedback
+	gatePresent           bool
+	green                 bool
+}
+
+func runImplementerGateCycle(
+	ctx context.Context,
+	params implementIterationsParams,
+	iteration int,
+	firstHandoffPath string,
+	blocking []verdict.Finding,
+	previousSession string,
+	rolloverSeedPath string,
+	mode HarnessOutputMode,
+	branchGate *branchGateSource,
+) (implementGateCycleResult, error) {
+	result := implementGateCycleResult{
+		previousSession: previousSession, rolloverSeedPath: rolloverSeedPath,
+	}
+	gateAttempts := 0
+	var previousGateAttemptFeedback *failedGateAttemptFeedback
+	for implementTurn := 1; ; implementTurn++ {
+		handoffPath, err := implementerTurnHandoffPath(params, iteration, implementTurn, firstHandoffPath)
+		if err != nil {
+			return implementGateCycleResult{}, err
+		}
+		turnResult, err := runImplementerGateTurn(
+			ctx, params, iteration, handoffPath, blocking, result, previousGateAttemptFeedback, gateAttempts+1, mode, branchGate,
+		)
+		if err != nil {
+			return implementGateCycleResult{}, err
+		}
+		result.previousSession = turnResult.previousSession
+		result.rolloverSeedPath = turnResult.rolloverSeedPath
+		result.gateResultPath = turnResult.gateResultPath
+		if !turnResult.gatePresent || turnResult.green {
+			return result, nil
+		}
+		gateAttempts++
+		if gateAttempts >= params.projectConfig.Loop.MaxGateAttempts {
+			params.runState.setExhaustionReason(fmt.Sprintf("Gate attempt limit (%d) in iteration %d", gateAttempts, iteration))
+			result.exhausted = true
+			return result, nil
+		}
+		previousGateAttemptFeedback = &turnResult.failedAttemptFeedback
+	}
+}
+
+func runImplementerGateTurn(
+	ctx context.Context,
+	params implementIterationsParams,
+	iteration int,
+	handoffPath string,
+	blocking []verdict.Finding,
+	cycle implementGateCycleResult,
+	previousGateAttemptFeedback *failedGateAttemptFeedback,
+	attemptNumber int,
+	mode HarnessOutputMode,
+	branchGate *branchGateSource,
+) (implementGateTurnResult, error) {
+	turnBlocking := blocking
+	if previousGateAttemptFeedback != nil {
+		turnBlocking = nil
+	}
+	implementResult, err := runImplementTurn(ctx, params, implementTurnParams{
+		iteration: iteration, blocking: turnBlocking, previousSession: cycle.previousSession,
+		handoffPath: handoffPath, rolloverSeedPath: cycle.rolloverSeedPath,
+		gateAttemptFeedback: previousGateAttemptFeedback, mode: mode,
+	})
+	if err != nil {
+		return implementGateTurnResult{}, err
+	}
+	params.runState.setActivity(runrecord.Verifying)
+	rolloverSeedPath, previousSession, err := nextImplementerTurn(handoffPath, implementResult.SessionIDs)
+	if err != nil {
+		return implementGateTurnResult{}, err
+	}
+	if err := resolveBranchGate(ctx, params, branchGate); err != nil {
+		return implementGateTurnResult{}, err
+	}
+	result := implementGateTurnResult{rolloverSeedPath: rolloverSeedPath, previousSession: previousSession}
+	if !branchGate.script.loaded {
+		result.gateResultPath, err = params.recorder.RecordNoGate(iteration)
+		if err != nil {
+			return implementGateTurnResult{}, fmt.Errorf("record missing branch-point Gate: %w", err)
+		}
+		return result, nil
+	}
+	result.failedAttemptFeedback, result.gateResultPath, result.green, err = recordGateAttempt(
+		ctx, params, iteration, attemptNumber, gateScriptPath(branchGate.script),
+	)
+	if err != nil {
+		return implementGateTurnResult{}, err
+	}
+	result.gatePresent = true
+	return result, nil
+}
+
+func implementerTurnHandoffPath(
+	params implementIterationsParams,
+	iteration, turn int,
+	firstHandoffPath string,
+) (string, error) {
+	if turn == 1 {
+		return firstHandoffPath, nil
+	}
+	return prepareGateAttemptHandoffPath(params, iteration, turn)
+}
+
+func resolveBranchGate(ctx context.Context, params implementIterationsParams, branchGate *branchGateSource) error {
+	if branchGate.resolved {
+		return nil
+	}
+	script, err := extractBranchGateScript(ctx, params.git, params.recorder, params.branchPoint)
+	if err != nil {
+		return err
+	}
+	branchGate.script = script
+	branchGate.resolved = true
+	return nil
+}
+
 func ensureImplementRunState(params implementIterationsParams) *runStateTracker {
 	if params.runState != nil {
 		return params.runState
@@ -544,11 +707,13 @@ func ensureImplementRunState(params implementIterationsParams) *runStateTracker 
 
 func runImplementReview(ctx context.Context, params implementIterationsParams, reviewParams implementReviewParams) (ReviewExecution, error) {
 	params.runState.setActivity(runrecord.Reviewing)
+	reviewPrompt := composeReviewPrompt("#"+strconv.Itoa(params.ticket.Number), &params.ticket, params.branchPoint, reviewParams.diffPath, params.reviewContext)
+	reviewPrompt = appendGateResultPath(reviewPrompt, reviewParams.gateResultPath)
 	reviewRequest := harness.Request{
 		Completion:  harness.CompletionReviewVerdict,
 		Model:       params.projectConfig.Roles.Review.Model,
 		Effort:      params.projectConfig.Roles.Review.Effort,
-		Prompt:      composeReviewPrompt("#"+strconv.Itoa(params.ticket.Number), &params.ticket, params.branchPoint, reviewParams.diffPath, params.reviewContext),
+		Prompt:      reviewPrompt,
 		MCP:         params.projectConfig.Roles.Review.MCP,
 		SandboxMode: params.projectConfig.Roles.Review.SandboxMode,
 	}
@@ -567,7 +732,10 @@ func runImplementReview(ctx context.Context, params implementIterationsParams, r
 		questions: params.questions,
 	}
 	if reviewParams.previousReviewerSession != "" {
-		reviewOptions.resumePrompt = composeReviewResumePrompt(reviewParams.diffPath, reviewParams.blocking, params.reviewContext)
+		reviewOptions.resumePrompt = appendGateResultPath(
+			composeReviewResumePrompt(reviewParams.diffPath, reviewParams.blocking, params.reviewContext),
+			reviewParams.gateResultPath,
+		)
 	}
 	reviewStartedAt := time.Now().UTC()
 	reviewResult, err := runReviewExecutionWithResumeFallback(ctx, params.reviewer, reviewOptions)
@@ -663,6 +831,18 @@ func prepareIterationHandoffPath(params implementIterationsParams, iteration int
 	return writer.HandoffPath(iteration), nil
 }
 
+func prepareGateAttemptHandoffPath(params implementIterationsParams, iteration, turn int) (string, error) {
+	handoffPath := params.recorder.ImplementGateHandoffPath(iteration, turn)
+	if params.worktreeArtifactRoot == "" {
+		return handoffPath, nil
+	}
+	writer, err := worktreeRunWriter(params.worktreeArtifactRoot, filepath.Dir(params.recorder.ImplementHandoffPath(iteration)))
+	if err != nil {
+		return "", fmt.Errorf("prepare worktree Gate attempt handoff path: %w", err)
+	}
+	return writer.GateHandoffPath(iteration, turn), nil
+}
+
 func handoffExists(handoffPath string) (bool, error) {
 	_, err := os.Stat(handoffPath)
 	if err == nil {
@@ -691,33 +871,10 @@ func runImplementTurn(
 	turn implementTurnParams,
 ) (implementExecution, error) {
 	params.runState.startActivity(turn.iteration, runrecord.Implementing)
-	activity := "implementing"
-	if turn.iteration > 1 {
-		activity = fmt.Sprintf("revising %d blocking finding(s)", len(turn.blocking))
+	if err := presentImplementTurn(params, turn); err != nil {
+		return implementExecution{}, err
 	}
-	renderer := ui.New(params.output, ui.DetectCaps(params.output))
-	if err := writeRoleSection(params.output, "Implementer"); err != nil {
-		return implementExecution{}, fmt.Errorf("write implement role: %w", err)
-	}
-	if err := renderer.Step(ui.Step{Label: fmt.Sprintf("iteration %d/%d — %s", turn.iteration, params.projectConfig.Loop.MaxIterations, activity)}); err != nil {
-		return implementExecution{}, fmt.Errorf("write implement progress: %w", err)
-	}
-
-	implementRequest := harness.Request{
-		Completion: harness.CompletionTurnEnd,
-		Model:      params.projectConfig.Roles.Implement.Model,
-		Effort:     params.projectConfig.Roles.Implement.Effort,
-		Prompt: composeImplementPrompt(
-			params.ticket,
-			turn.blocking,
-			turn.iteration,
-			turn.handoffPath,
-			turn.rolloverSeedPath,
-			params.additionalContext,
-		),
-		MCP:         params.projectConfig.Roles.Implement.MCP,
-		SandboxMode: params.projectConfig.Roles.Implement.SandboxMode,
-	}
+	implementRequest := buildImplementRequest(params, turn)
 	implementStartedAt := time.Now().UTC()
 	implementResult, err := runImplementRoleWithResumeFallback(
 		ctx,
@@ -730,43 +887,104 @@ func runImplementTurn(
 	)
 	implementEndedAt := time.Now().UTC()
 	if err != nil {
-		recordRoleUsage(params.recorder, usage.CollectInvocation(usage.Invocation{
-			Iteration:  turn.iteration,
-			Role:       "implement",
-			Harness:    string(params.projectConfig.Roles.Implement.Harness),
-			Model:      params.projectConfig.Roles.Implement.Model,
-			SessionIDs: implementResult.SessionIDs,
-			StartedAt:  implementStartedAt,
-			EndedAt:    implementEndedAt,
-		}, params.workRoot, ""))
-		if artifactErr := recordFailedImplementTurn(params.recorder, turn.iteration, implementResult, err); artifactErr != nil {
-			return implementExecution{}, fmt.Errorf("%w; save partial implement artifacts: %v", err, artifactErr)
-		}
+		recordRoleUsage(params.recorder, implementUsage(params, turn, implementResult, implementStartedAt, implementEndedAt))
+		return implementExecution{}, recordFailedImplementExecution(params.recorder, turn.iteration, implementResult, err)
+	}
+	recordRoleUsage(params.recorder, implementUsage(params, turn, implementResult, implementStartedAt, implementEndedAt))
+	if err := recordSuccessfulImplementTurn(ctx, params, turn, implementResult); err != nil {
 		return implementExecution{}, err
 	}
-	recordRoleUsage(params.recorder, usage.CollectInvocation(usage.Invocation{
+	return implementResult, nil
+}
+
+func presentImplementTurn(params implementIterationsParams, turn implementTurnParams) error {
+	activity := "implementing"
+	if turn.gateAttemptFeedback != nil {
+		activity = "addressing Gate failure"
+	} else if turn.iteration > 1 {
+		activity = fmt.Sprintf("revising %d blocking finding(s)", len(turn.blocking))
+	}
+	renderer := ui.New(params.output, ui.DetectCaps(params.output))
+	if err := writeRoleSection(params.output, "Implementer"); err != nil {
+		return fmt.Errorf("write implement role: %w", err)
+	}
+	if err := renderer.Step(ui.Step{Label: fmt.Sprintf("iteration %d/%d — %s", turn.iteration, params.projectConfig.Loop.MaxIterations, activity)}); err != nil {
+		return fmt.Errorf("write implement progress: %w", err)
+	}
+	return nil
+}
+
+func buildImplementRequest(params implementIterationsParams, turn implementTurnParams) harness.Request {
+	implementPrompt := ""
+	if turn.gateAttemptFeedback != nil {
+		implementPrompt = composeGateAttemptPrompt(
+			params.ticket, turn.handoffPath, turn.rolloverSeedPath, params.additionalContext,
+			formatGateAttemptFeedback(*turn.gateAttemptFeedback),
+		)
+	} else {
+		implementPrompt = composeImplementPrompt(
+			params.ticket, turn.blocking, turn.iteration, turn.handoffPath, turn.rolloverSeedPath, params.additionalContext,
+		)
+	}
+	return harness.Request{
+		Completion:  harness.CompletionTurnEnd,
+		Model:       params.projectConfig.Roles.Implement.Model,
+		Effort:      params.projectConfig.Roles.Implement.Effort,
+		Prompt:      implementPrompt,
+		MCP:         params.projectConfig.Roles.Implement.MCP,
+		SandboxMode: params.projectConfig.Roles.Implement.SandboxMode,
+	}
+}
+
+func implementUsage(
+	params implementIterationsParams,
+	turn implementTurnParams,
+	execution implementExecution,
+	startedAt, endedAt time.Time,
+) usage.Entry {
+	return usage.CollectInvocation(usage.Invocation{
 		Iteration:  turn.iteration,
 		Role:       "implement",
 		Harness:    string(params.projectConfig.Roles.Implement.Harness),
 		Model:      params.projectConfig.Roles.Implement.Model,
-		SessionIDs: implementResult.SessionIDs,
-		StartedAt:  implementStartedAt,
-		EndedAt:    implementEndedAt,
-	}, params.workRoot, ""))
+		SessionIDs: execution.SessionIDs,
+		StartedAt:  startedAt,
+		EndedAt:    endedAt,
+	}, params.workRoot, "")
+}
+
+func recordSuccessfulImplementTurn(
+	ctx context.Context,
+	params implementIterationsParams,
+	turn implementTurnParams,
+	execution implementExecution,
+) error {
 	if err := params.recorder.RecordImplementTurn(
 		turn.iteration,
-		implementResult.Feed,
-		implementResult.Transcript,
+		execution.Feed,
+		execution.Transcript,
 	); err != nil {
-		return implementExecution{}, err
+		return err
 	}
-	if err := params.recorder.RecordSessions(turn.iteration, "implement", implementResult.SessionIDs); err != nil {
-		return implementExecution{}, fmt.Errorf("record implement sessions: %w", err)
+	if err := params.recorder.RecordSessions(turn.iteration, "implement", execution.SessionIDs); err != nil {
+		return fmt.Errorf("record implement sessions: %w", err)
 	}
 	if err := ensureHeadUnchanged(ctx, params.git, params.branchPoint); err != nil {
-		return implementExecution{}, err
+		return err
 	}
-	return implementResult, nil
+	return nil
+}
+
+func recordFailedImplementExecution(
+	recorder RunRecorder,
+	iteration int,
+	execution implementExecution,
+	turnErr error,
+) error {
+	if err := recordFailedImplementTurn(recorder, iteration, execution, turnErr); err != nil {
+		return fmt.Errorf("%w; save partial implement artifacts: %v", turnErr, err)
+	}
+	return turnErr
 }
 
 // recordRoleUsage persists usage as best-effort metadata. Usage collection or
@@ -1057,7 +1275,8 @@ func toUIFindings(findings []verdict.Finding) []ui.Finding {
 func formatImplementSummary(summary implementSummary) string {
 	return runrecord.FormatSummary(runrecord.SummaryInput{
 		Iterations: summary.iterations, Final: summary.final, Nits: summary.nits,
-		DiffStat: summary.diffStat, WorktreePath: summary.worktreePath, PullRequestURL: summary.pullRequestURL,
+		DiffStat: summary.diffStat, WorktreePath: summary.worktreePath,
+		ExhaustionReason: summary.exhaustionReason, PullRequestURL: summary.pullRequestURL,
 		Publication: summary.publication,
 	})
 }
