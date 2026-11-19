@@ -2,6 +2,21 @@
 
 <!-- version list -->
 
+## v1.46.0 (2026-11-19)
+
+### Documentation
+
+- **skill**: Clarify aggregation rules for findings in code review
+  ([#281](https://github.com/igorrochap/syl/pull/281),
+  [`92d44ee`](https://github.com/igorrochap/syl/commit/92d44ee8dce354b6b60f7c38ebd264abf3a48b87))
+
+### Features
+
+- **review**: Add severity rubric to code-review skill
+  ([#281](https://github.com/igorrochap/syl/pull/281),
+  [`92d44ee`](https://github.com/igorrochap/syl/commit/92d44ee8dce354b6b60f7c38ebd264abf3a48b87))
+
+
 ## v1.45.0 (2026-11-19)
 
 ### Features
