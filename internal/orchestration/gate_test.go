@@ -576,3 +576,70 @@ func TestRevisionFreshReviewFallbackCarriesFindingsAndDeclineReasons(t *testing.
 		t.Fatal("missing decline reason from recorded feed")
 	}
 }
+
+func TestNitBudgetControlsApproval(t *testing.T) {
+	for _, test := range []struct {
+		name                         string
+		count, budget, maxIterations int
+		override, exhausted          bool
+	}{
+		{"over budget", 6, 5, 2, true, false},
+		{"equal budget", 5, 5, 2, false, false},
+		{"zero budget", 1, 0, 2, true, false},
+		{"exhausted", 6, 5, 1, true, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			repo, branchPoint := newGateTestRepo(t, "#!/bin/sh\necho gate\n", true)
+			recorder := newMemoryRunRecorder()
+			recorder.dir = t.TempDir()
+			implementer := gateImplementer(test.maxIterations)
+			var findings strings.Builder
+			for i := 1; i <= test.count; i++ {
+				fmt.Fprintf(&findings, "- [nit] file%d.go — nit number %d\n", i, i)
+			}
+			first := "VERDICT: approve\nSUMMARY: Ready\nFINDINGS:\n" + findings.String()
+			reviewer := &scriptedConversationAdapter{runs: [][]harness.Event{{{Type: harness.EventSession, SessionID: "review-1"}, {Type: harness.EventAssistantText, Text: first}}}, resumes: [][]harness.Event{{{Type: harness.EventSession, SessionID: "review-1"}, {Type: harness.EventAssistantText, Text: "VERDICT: approve\nSUMMARY: Ready\nFINDINGS:\n"}}}}
+			results := []GateExecution{{Output: qualitySummary("PASS")}, {Output: qualitySummary("PASS")}}
+			gateRunner := &scriptedGateRunner{t: t, recorder: recorder, workRoot: repo, branchPoint: branchPoint, results: results}
+			state := newRunStateTracker(recorder, runrecord.New(runrecord.Implement, "#280", 0, test.maxIterations, testNow()))
+			options, run := gateExecuteOptions(repo, branchPoint, recorder, implementer, reviewer, gateRunner, test.maxIterations, 3, state)
+			options.ProjectConfig.Loop.NitBudget = test.budget
+			publisher := &recordingPullRequestTracker{}
+			options.IssueTracker = publisher
+			options.PublishOnApprove = test.exhausted
+			var output strings.Builder
+			options.Output = &output
+			err := executeImplementRun(context.Background(), options, run)
+			if (err != nil) != test.exhausted {
+				t.Fatalf("error = %v, exhausted = %v", err, test.exhausted)
+			}
+			if (len(state.state.NitBudgetOverrides) > 0) != test.override {
+				t.Fatalf("overrides = %#v", state.state.NitBudgetOverrides)
+			}
+			if test.override {
+				override := state.state.NitBudgetOverrides[0]
+				if override.Iteration != 1 || override.NitCount != test.count || override.Budget != test.budget {
+					t.Fatalf("override = %#v", override)
+				}
+				expected := fmt.Sprintf("Nit budget override: iteration 1, %d nits (budget %d)", test.count, test.budget)
+				assertContainsAll(t, recorder.files["summary.txt"], expected)
+				assertContainsAll(t, output.String(), expected)
+				assertContainsAll(t, recorder.files["iteration-01-verdict.txt"], "VERDICT: approve", "nit number 1")
+				if !test.exhausted {
+					for i := 1; i <= test.count; i++ {
+						assertContainsAll(t, implementer.resumeCalls[0].prompt, fmt.Sprintf("nit number %d", i))
+					}
+				}
+			}
+			if test.exhausted && (publisher.request != nil || strings.Contains(recorder.files["summary.txt"], "Publication:")) {
+				t.Fatalf("exhausted run attempted publication: request = %#v, summary = %q", publisher.request, recorder.files["summary.txt"])
+			}
+			if test.exhausted && (state.state.Status != runrecord.Exhausted || !strings.Contains(state.state.ExhaustionReason, "Nit budget")) {
+				t.Fatalf("state = %#v", state.state)
+			}
+			if !test.exhausted && state.state.Status != runrecord.Approved {
+				t.Fatalf("state = %#v", state.state)
+			}
+		})
+	}
+}

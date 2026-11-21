@@ -3,6 +3,7 @@ package runrecord
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -70,12 +71,12 @@ func TestReaderReadsIndividualFiles(t *testing.T) {
 func TestReaderReadsState(t *testing.T) {
 	_, runDir := newRunDirectory(t)
 	now := time.Date(2026, time.September, 29, 20, 0, 0, 0, time.UTC)
-	want := State{Status: Approved, Iteration: 1, MaxIterations: 2, PID: 1, Hostname: "h", StartedAt: now, UpdatedAt: now, Kind: Implement, TicketRef: "#1"}
+	want := State{Status: Approved, Iteration: 1, MaxIterations: 2, PID: 1, Hostname: "h", StartedAt: now, UpdatedAt: now, Kind: Implement, TicketRef: "#1", NitBudgetOverrides: []NitBudgetOverride{{Iteration: 1, NitCount: 6, Budget: 5}, {Iteration: 2, NitCount: 8, Budget: 5}}}
 	if err := NewWriter(runDir).WriteState(want); err != nil {
 		t.Fatalf("WriteState() error = %v", err)
 	}
 	got, err := NewReader(nil).ReadState(runDir)
-	if err != nil || got != want {
+	if err != nil || !reflect.DeepEqual(got, want) {
 		t.Fatalf("ReadState() = (%#v, %v), want %#v", got, err, want)
 	}
 }

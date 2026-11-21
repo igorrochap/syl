@@ -122,6 +122,10 @@ func TestRunWithGitLabTrackersWritesLoadableConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("config.Load() error = %v", err)
 	}
+	contents, err := os.ReadFile(config.Path(root))
+	if err != nil || !strings.Contains(string(contents), "nit_budget = 5") {
+		t.Fatalf("init config = %q, error %v", contents, err)
+	}
 	if got.Tracker.Issues != config.TrackerGitLab || got.Tracker.Reviews != config.TrackerGitLab {
 		t.Fatalf("tracker = %#v, want gitlab/gitlab", got.Tracker)
 	}

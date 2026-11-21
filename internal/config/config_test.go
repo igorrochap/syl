@@ -58,6 +58,7 @@ func TestValidationErrorsMatchesLoadRules(t *testing.T) {
 	invalid.Roles.Implement = RoleConfig{Harness: HarnessClaude, Model: "gpt-5", Effort: EffortLow}
 	invalid.Roles.Review = RoleConfig{Harness: HarnessCodex, Model: "reviewer", Effort: Effort("extreme")}
 	invalid.Loop.MaxIterations = 0
+	invalid.Loop.NitBudget = -1
 	invalid.Worktree.Root = "  "
 
 	got := ValidationErrors(invalid)
@@ -69,6 +70,7 @@ func TestValidationErrorsMatchesLoadRules(t *testing.T) {
 		"roles.implement.model": `roles.implement.model: invalid value "gpt-5"; want a model starting with "claude-"`,
 		"roles.review.effort":   `roles.review.effort: invalid value "extreme"; want low, medium, high, or xhigh`,
 		"loop.max_iterations":   "loop.max_iterations must be positive; got 0",
+		"loop.nit_budget":       "loop.nit_budget must be non-negative; got -1",
 		"worktree.root":         "worktree.root: is required",
 	}
 	if len(got) != len(want) {
@@ -177,6 +179,9 @@ effort = "medium"
 	}
 	if got.Loop.MaxGateAttempts != 3 {
 		t.Fatalf("Loop.MaxGateAttempts = %d, want default 3", got.Loop.MaxGateAttempts)
+	}
+	if got.Loop.NitBudget != 5 {
+		t.Fatalf("NitBudget = %d, want 5", got.Loop.NitBudget)
 	}
 	if !got.Notifications.Enabled {
 		t.Fatal("Notifications.Enabled = false, want default true")
@@ -538,6 +543,7 @@ func TestLoadRejectsMissingRoleValuesAndInvalidLoop(t *testing.T) {
 		{name: "missing model", before: `model = "gpt-5.6-luna"`, after: `model = ""`, wantKey: "roles.implement.model"},
 		{name: "missing effort", before: `effort = "xhigh"`, after: `effort = ""`, wantKey: "roles.implement.effort"},
 		{name: "invalid loop", before: "max_iterations = 3", after: "max_iterations = 0", wantKey: "loop.max_iterations"},
+		{name: "invalid Nit budget", before: "nit_budget = 5", after: "nit_budget = -1", wantKey: "loop.nit_budget"},
 		{name: "invalid Gate attempts", before: "max_gate_attempts = 3", after: "max_gate_attempts = 0", wantKey: "loop.max_gate_attempts"},
 	}
 

@@ -16,15 +16,16 @@ type ReviewVerdict struct {
 
 // RunSummary is the final summary printed after an implement/review loop.
 type RunSummary struct {
-	Iterations        int
-	FinalVerdict      string
-	Summary           string
-	NitFindings       []Finding
-	WorktreePath      string
-	DiffStat          string
-	PullRequestURL    string
-	PublishNotice     string
-	PublicationStatus string
+	Iterations         int
+	FinalVerdict       string
+	Summary            string
+	NitFindings        []Finding
+	WorktreePath       string
+	DiffStat           string
+	PullRequestURL     string
+	PublishNotice      string
+	PublicationStatus  string
+	NitBudgetOverrides []fmt.Stringer
 }
 
 // ReviewVerdict writes the machine-readable verdict shape while applying
@@ -54,8 +55,11 @@ func (r *Renderer) RunSummary(value RunSummary) error {
 		{text: fmt.Sprintf("Iterations: %d", value.Iterations), style: r.style.heading},
 		{text: "Final verdict: " + value.FinalVerdict, style: r.style.label},
 		{text: "Summary: " + value.Summary, style: r.style.label},
-		{text: "Nit findings:", style: r.style.heading},
 	}
+	for _, override := range value.NitBudgetOverrides {
+		lines = append(lines, outputLine{text: override.String(), style: r.style.label})
+	}
+	lines = append(lines, outputLine{text: "Nit findings:", style: r.style.heading})
 	lines = append(lines, reviewFindingLines(r, value.NitFindings)...)
 	if len(value.NitFindings) == 0 {
 		lines[len(lines)-1] = outputLine{text: "- (none)", style: r.style.muted}

@@ -38,6 +38,7 @@ type Values struct {
 
 	MaxIterations        int
 	MaxGateAttempts      int
+	NitBudget            int
 	NotificationsEnabled bool
 	PublishLanguage      string
 
@@ -121,6 +122,7 @@ func Parse(form url.Values, defaults Values) (Values, FieldErrors) {
 		Implement:            parseRole(form, "implement", defaults.Implement),
 		Review:               parseRole(form, "review", defaults.Review),
 		MaxGateAttempts:      defaults.MaxGateAttempts,
+		NitBudget:            defaults.NitBudget,
 		NotificationsEnabled: formBool(form, "notifications.enabled"),
 		PublishLanguage:      publishLanguage,
 		WorktreeRoot:         form.Get("worktree.root"),
@@ -144,6 +146,14 @@ func Parse(form url.Values, defaults Values) (Values, FieldErrors) {
 			errors["loop.max_gate_attempts"] = fmt.Sprintf("loop.max_gate_attempts: invalid value %q; want an integer", form.Get("loop.max_gate_attempts"))
 		} else {
 			values.MaxGateAttempts = maxGateAttempts
+		}
+	}
+	if _, submitted := form["loop.nit_budget"]; submitted {
+		budget, parseErr := strconv.Atoi(form.Get("loop.nit_budget"))
+		if parseErr != nil {
+			errors["loop.nit_budget"] = fmt.Sprintf("loop.nit_budget: invalid value %q; want an integer", form.Get("loop.nit_budget"))
+		} else {
+			values.NitBudget = budget
 		}
 	}
 	for field, message := range Validate(values) {
@@ -271,6 +281,7 @@ func valuesFromConfig(loaded config.Config) Values {
 		Review:               roleValuesFromConfig(loaded.Roles.Review),
 		MaxIterations:        loaded.Loop.MaxIterations,
 		MaxGateAttempts:      loaded.Loop.MaxGateAttempts,
+		NitBudget:            loaded.Loop.NitBudget,
 		NotificationsEnabled: loaded.Notifications.Enabled,
 		PublishLanguage:      loaded.Publish.Language,
 		WorktreeRoot:         loaded.Worktree.Root,
@@ -294,7 +305,7 @@ func (values Values) config() config.Config {
 			Implement: values.Implement.config(),
 			Review:    values.Review.config(),
 		},
-		Loop:          config.LoopConfig{MaxIterations: values.MaxIterations, MaxGateAttempts: values.MaxGateAttempts},
+		Loop:          config.LoopConfig{MaxIterations: values.MaxIterations, MaxGateAttempts: values.MaxGateAttempts, NitBudget: values.NitBudget},
 		Notifications: config.NotificationsConfig{Enabled: values.NotificationsEnabled},
 		Publish:       config.PublishConfig{Language: values.PublishLanguage},
 		Worktree:      config.WorktreeConfig{Root: values.WorktreeRoot, Setup: values.WorktreeSetup, Copy: append([]string(nil), values.WorktreeCopy...)},

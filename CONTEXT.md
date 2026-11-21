@@ -31,6 +31,9 @@ _Avoid_: review history, review docs
 The reviewer's structured, machine-readable outcome for a loop iteration: approve (issue can be closed) or revise (with findings).
 _Avoid_: review result, approval
 
+**Nit budget**:
+The maximum number of nit findings an approve Verdict may carry while still ending a Run as approved. An approve Verdict over the budget sends its findings into another iteration.
+
 **Gate**:
 One automated check a change must pass (format, vet, style, complexity, coverage, tests, architecture), run through the project's single entry point. syl runs the Gates itself after each implementer turn, out of the agent's reach; a red Gate sends the work back to the implementer before any review.
 _Avoid_: CI, checks, quality check

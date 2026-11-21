@@ -283,14 +283,22 @@ func TestHandlerConfigRoutesCoverContentFeedbackAndBadRequests(t *testing.T) {
 	}
 
 	page := serveProject(t, handler, project, "/projects/config")
+	if !strings.Contains(page, `name="loop.nit_budget"`) {
+		t.Fatal("missing Nit budget field")
+	}
 	token := tokenFromPage(t, page)
 	form := configForm(t, project, token)
+	form.Set("loop.nit_budget", "2")
 	form.Set("loop.max_iterations", "6")
 	redirect := postMutation(t, handler, configSaveRoute(project), form, "http://localhost:7777")
 	if redirect.Code != http.StatusSeeOther || redirect.Header().Get("Location") != "/projects/config?path="+url.QueryEscape(project) {
 		t.Fatalf("non-HTMX save = %d/%q, want redirect to Config tab", redirect.Code, redirect.Header().Get("Location"))
 	}
 
+	loaded, err := config.Load(project)
+	if err != nil || loaded.Loop.NitBudget != 2 {
+		t.Fatalf("saved Nit budget: %#v, %v", loaded.Loop, err)
+	}
 	page = serveProject(t, handler, project, "/projects/config")
 	token = tokenFromPage(t, page)
 	form = configForm(t, project, token)

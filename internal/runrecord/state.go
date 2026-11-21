@@ -54,21 +54,34 @@ const (
 	Review Kind = "review"
 )
 
+// NitBudgetOverride records an approve Verdict continued as a revision.
+type NitBudgetOverride struct {
+	Iteration int `json:"iteration"`
+	NitCount  int `json:"nit_count"`
+	Budget    int `json:"budget"`
+}
+
+// String formats an override for Run summaries.
+func (override NitBudgetOverride) String() string {
+	return fmt.Sprintf("Nit budget override: iteration %d, %d nits (budget %d)", override.Iteration, override.NitCount, override.Budget)
+}
+
 // State is the on-disk representation of one Run's current or final state.
 type State struct {
-	Status           Status     `json:"status"`
-	Activity         Activity   `json:"activity,omitempty"`
-	Iteration        int        `json:"iteration"`
-	MaxIterations    int        `json:"max_iterations"`
-	Question         string     `json:"question,omitempty"`
-	ExhaustionReason string     `json:"exhaustion_reason,omitempty"`
-	PID              int        `json:"pid"`
-	Hostname         string     `json:"hostname"`
-	StartedAt        time.Time  `json:"started_at"`
-	UpdatedAt        time.Time  `json:"updated_at"`
-	EndedAt          *time.Time `json:"ended_at,omitempty"`
-	Kind             Kind       `json:"kind"`
-	TicketRef        string     `json:"ticket_ref"`
+	Status             Status              `json:"status"`
+	Activity           Activity            `json:"activity,omitempty"`
+	Iteration          int                 `json:"iteration"`
+	MaxIterations      int                 `json:"max_iterations"`
+	Question           string              `json:"question,omitempty"`
+	ExhaustionReason   string              `json:"exhaustion_reason,omitempty"`
+	NitBudgetOverrides []NitBudgetOverride `json:"nit_budget_overrides,omitempty"`
+	PID                int                 `json:"pid"`
+	Hostname           string              `json:"hostname"`
+	StartedAt          time.Time           `json:"started_at"`
+	UpdatedAt          time.Time           `json:"updated_at"`
+	EndedAt            *time.Time          `json:"ended_at,omitempty"`
+	Kind               Kind                `json:"kind"`
+	TicketRef          string              `json:"ticket_ref"`
 }
 
 // Path returns the state file path inside a Run directory.
