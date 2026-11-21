@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v1.48.1 (2026-11-21)
+
+### Bug Fixes
+
+- **review**: Prevent dropped findings in report relay
+  ([#284](https://github.com/igorrochap/syl/pull/284),
+  [`40e2931`](https://github.com/igorrochap/syl/commit/40e2931fc1be8c67111cf13c03d04c13848461f3))
+
+
 ## v1.48.0 (2026-11-21)
 
 ### Features
