@@ -450,6 +450,7 @@ then submit it with an empty line or end-of-file (Ctrl-D).
 | `roles.<role>.effort` | `low`, `medium`, `high`, `xhigh` | Effort level passed to the Harness. |
 | `roles.<role>.mcp` | `true`, `false` | Whether Claude sessions inherit user/project MCP configuration. Defaults to `true` for plan and implement, `false` for review. Codex ignores it. |
 | `loop.max_iterations` | integer | Cap on implement/review iterations for `syl implement`. |
+| `gate.protected_paths` | list of project-relative paths or directory prefixes | Additional paths flagged in reviewer prompts when touched. `scripts/quality.sh`, `.agents/skills/`, and `.syl/verify.md` are always protected. |
 | `notifications.enabled` | `true`, `false` | Send a desktop or terminal-bell notification on completion or on a `QUESTION`. |
 | `publish.language` | non-empty string | Language passed to commitgen for generated commit messages and pull request text. Omit it to use commitgen's configured default; unsupported values trigger the English fallback text. |
 | `worktree.root` | path | Central root for implementation worktrees. Defaults to `~/.syl/worktrees`. |

@@ -481,6 +481,7 @@ type implementReviewParams struct {
 	findings                []verdict.Finding
 	previousReviewerSession string
 	diffPath                string
+	protectedPaths          []string
 	gateResultPath          string
 	implementerFeedPaths    []string
 	mode                    HarnessOutputMode
@@ -527,7 +528,7 @@ func runImplementIterations(ctx context.Context, params implementIterationsParam
 		if gateCycle.exhausted {
 			return iterations, verdict.Verdict{}, nil, nil
 		}
-		diffPath, err := prepareIterationReviewDiff(ctx, params, iteration)
+		diffPath, protectedPaths, err := prepareIterationReviewDiff(ctx, params, iteration)
 		if err != nil {
 			return 0, verdict.Verdict{}, nil, err
 		}
@@ -537,6 +538,7 @@ func runImplementIterations(ctx context.Context, params implementIterationsParam
 			findings:                findings,
 			previousReviewerSession: previousReviewerSession,
 			diffPath:                diffPath,
+			protectedPaths:          protectedPaths,
 			gateResultPath:          gateCycle.gateResultPath,
 			implementerFeedPaths:    gateCycle.implementerFeedPaths,
 			mode:                    mode,
@@ -742,6 +744,7 @@ func runImplementReview(ctx context.Context, params implementIterationsParams, r
 	if reviewParams.iteration > 1 {
 		reviewPrompt += "\n\n" + composeReviewCarryoverPrompt(reviewParams.diffPath, reviewParams.findings, "", reviewParams.implementerFeedPaths)
 	}
+	reviewPrompt = appendProtectedPaths(reviewPrompt, reviewParams.protectedPaths)
 	reviewPrompt = appendGateResultPath(reviewPrompt, reviewParams.gateResultPath)
 	reviewRequest := harness.Request{
 		Completion:  harness.CompletionReviewVerdict,
@@ -766,10 +769,9 @@ func runImplementReview(ctx context.Context, params implementIterationsParams, r
 		questions: params.questions,
 	}
 	if reviewParams.previousReviewerSession != "" {
-		reviewOptions.resumePrompt = appendGateResultPath(
-			composeResumedReviewCarryoverPrompt(reviewParams.diffPath, reviewParams.findings, params.reviewContext, reviewParams.implementerFeedPaths),
-			reviewParams.gateResultPath,
-		)
+		resumePrompt := composeResumedReviewCarryoverPrompt(reviewParams.diffPath, reviewParams.findings, params.reviewContext, reviewParams.implementerFeedPaths)
+		resumePrompt = appendProtectedPaths(resumePrompt, reviewParams.protectedPaths)
+		reviewOptions.resumePrompt = appendGateResultPath(resumePrompt, reviewParams.gateResultPath)
 	}
 	reviewStartedAt := time.Now().UTC()
 	reviewResult, err := runReviewExecutionWithResumeFallback(ctx, params.reviewer, reviewOptions)
@@ -838,19 +840,21 @@ func recordReviewSessions(recorder RunRecorder, iteration int, review ReviewExec
 	return review, nil
 }
 
-func prepareIterationReviewDiff(ctx context.Context, params implementIterationsParams, iteration int) (string, error) {
+func prepareIterationReviewDiff(ctx context.Context, params implementIterationsParams, iteration int) (string, []string, error) {
 	diff, err := computeReviewDiffWithEmpty(ctx, params.git, params.branchPoint, params.allowEmptyDiff)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	diffPath, err := params.recorder.RecordReviewDiff(iteration, diff)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
+	paths := protectedPathsInDiff(diff, params.projectConfig.Gate.ProtectedPaths)
 	if params.worktreeArtifactRoot == "" {
-		return diffPath, nil
+		return diffPath, paths, nil
 	}
-	return recordWorktreeReviewDiff(params.worktreeArtifactRoot, filepath.Dir(diffPath), iteration, diff)
+	diffPath, err = recordWorktreeReviewDiff(params.worktreeArtifactRoot, filepath.Dir(diffPath), iteration, diff)
+	return diffPath, paths, err
 }
 
 func recordImplementReviewFeed(params implementIterationsParams, iteration, turn int, feed string) (string, error) {

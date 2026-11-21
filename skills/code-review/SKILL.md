@@ -74,13 +74,19 @@ The coordinator passes both paths without opening them. Two rules bind them:
 
 The coordinator's setup ends at this handoff. Send a single message containing both `Agent` tool calls. Use the `general-purpose` subagent for both. Make both prompts self-sufficient by including the installed path of this skill, the exact diff-file path (or, when no artifact was supplied, the full diff command), the branch-point ref, the commit list, the candidate standards-source paths, and the spec path or reference. End the turn as soon as the spawn message is sent — the Waiting phase of the coordinator contract governs everything until the reports arrive.
 
+When the invoking prompt lists protected paths, pass that list to both sub-agents. Each sub-agent examines the listed changes for loosened checks, including Gate configuration, reviewer or implementer instructions, and verification recipes, and reports any loosening the ticket did not request as a `[blocking]` finding. Judge changes requested by the ticket against its requirements.
+
 **Standards sub-agent prompt** — include:
+
+- The protected-path list and rule above, when supplied.
 
 - In normal mode, the full diff command and commit list. In pre-computed-diff mode, the exact diff-file path and branch-point ref instead; tell the sub-agent that the file is authoritative, must be verified non-empty, and must be read directly without invoking Git to re-derive the diff.
 - The list of standards-source files you found in step 3, plus the paths `skills/code-quality/SKILL.md` and `skills/refactoring/references/smells.md` — tell the sub-agent to read both for the baselines (it has repo file access).
 - The brief: "Read the severity rubric in the Verdict contract of the supplied code-review skill and tag each finding `[blocking]` or `[nit]` using it. Report — per file/hunk where relevant — (a) every place the diff violates a documented standard: cite the standard (file + the rule); and (b) any baseline breach you spot — a norm from `skills/code-quality/SKILL.md` or a smell from `skills/refactoring/references/smells.md`: name it and quote the hunk. A documented repo standard overrides a baseline. Skip anything tooling enforces. Under 400 words."
 
 **Spec sub-agent prompt** — include:
+
+- The protected-path list and rule above, when supplied.
 
 - In normal mode, the diff command and commit list. In pre-computed-diff mode, the same exact diff-file path and branch-point ref used for the Standards sub-agent; tell the sub-agent to read that authoritative, non-empty file directly and not invoke Git to re-derive the diff.
 - The issue/PR reference or spec path from step 2, or the user's confirmation that no spec exists. The sub-agent retrieves and reads referenced content itself.
