@@ -114,6 +114,7 @@ type RoleConfig struct {
 type LoopConfig struct {
 	MaxIterations   int
 	MaxGateAttempts int
+	NitBudget       int
 }
 
 type NotificationsConfig struct {
@@ -174,6 +175,7 @@ type rawRole struct {
 type rawLoop struct {
 	MaxIterations   int `toml:"max_iterations"`
 	MaxGateAttempts int `toml:"max_gate_attempts"`
+	NitBudget       int `toml:"nit_budget"`
 }
 
 type rawNotifications struct {
@@ -341,6 +343,7 @@ mcp = %t
 [loop]
 max_iterations = %d
 max_gate_attempts = %d
+nit_budget = %d
 
 [notifications]
 enabled = %t
@@ -368,7 +371,7 @@ copy = %s
 		cfg.Roles.Review.Harness, cfg.Roles.Review.Model, cfg.Roles.Review.Effort,
 		string(renderSandboxMode(cfg.Roles.Review.SandboxMode)),
 		cfg.Roles.Review.MCP,
-		cfg.Loop.MaxIterations, cfg.Loop.MaxGateAttempts, cfg.Notifications.Enabled,
+		cfg.Loop.MaxIterations, cfg.Loop.MaxGateAttempts, cfg.Loop.NitBudget, cfg.Notifications.Enabled,
 		publishLanguage,
 		worktreeRoot(cfg.Worktree.Root), cfg.Worktree.Setup, renderStringList(cfg.Worktree.Copy))
 }
@@ -403,7 +406,7 @@ func defaultConfigValue() Config {
 			Implement: RoleConfig{Harness: HarnessCodex, Model: "gpt-5.6-luna", Effort: EffortXHigh, MCP: true, SandboxMode: SandboxModeFullAccess},
 			Review:    RoleConfig{Harness: HarnessClaude, Model: "claude-sonnet-5", Effort: EffortMedium, SandboxMode: SandboxModeFullAccess},
 		},
-		Loop:          LoopConfig{MaxIterations: 3, MaxGateAttempts: 3},
+		Loop:          LoopConfig{MaxIterations: 3, MaxGateAttempts: 3, NitBudget: 5},
 		Notifications: NotificationsConfig{Enabled: true},
 		Worktree:      WorktreeConfig{Root: DefaultWorktreeRoot},
 	}
@@ -455,12 +458,18 @@ func validate(raw rawConfig, metadata toml.MetaData) (Config, error) {
 }
 
 func parseLoopConfig(raw rawLoop, metadata toml.MetaData) (LoopConfig, error) {
-	loop := LoopConfig{MaxIterations: 3, MaxGateAttempts: 3}
+	loop := LoopConfig{MaxIterations: 3, MaxGateAttempts: 3, NitBudget: 5}
 	if metadata.IsDefined("loop", "max_iterations") {
 		loop.MaxIterations = raw.MaxIterations
 	}
 	if metadata.IsDefined("loop", "max_gate_attempts") {
 		loop.MaxGateAttempts = raw.MaxGateAttempts
+	}
+	if metadata.IsDefined("loop", "nit_budget") {
+		loop.NitBudget = raw.NitBudget
+	}
+	if failures := validateNitBudget(loop.NitBudget); len(failures) > 0 {
+		return LoopConfig{}, failures[0]
 	}
 	if loop.MaxIterations < 1 {
 		return LoopConfig{}, FieldError{
@@ -511,6 +520,7 @@ func ValidationErrors(cfg Config) []FieldError {
 			Message: fmt.Sprintf("loop.max_gate_attempts must be positive; got %d", cfg.Loop.MaxGateAttempts),
 		})
 	}
+	errors = append(errors, validateNitBudget(cfg.Loop.NitBudget)...)
 	errors = append(errors, validatePublishConfig(cfg.Publish)...)
 	if strings.TrimSpace(cfg.Worktree.Root) == "" {
 		errors = append(errors, FieldError{Field: "worktree.root", Message: "worktree.root: is required"})
@@ -652,4 +662,11 @@ func parseEnum[T ~string](key, value string, valid []T, want string) (T, error) 
 		}
 	}
 	return zero, FieldError{Field: key, Message: fmt.Sprintf("%s: invalid value %q; want %s", key, value, want)}
+}
+
+func validateNitBudget(budget int) []FieldError {
+	if budget >= 0 {
+		return nil
+	}
+	return []FieldError{{Field: "loop.nit_budget", Message: fmt.Sprintf("loop.nit_budget must be non-negative; got %d", budget)}}
 }

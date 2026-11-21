@@ -28,14 +28,15 @@ type Spec struct {
 
 // SummaryInput contains the values that are formatted into summary.txt.
 type SummaryInput struct {
-	Iterations       int
-	Final            verdict.Verdict
-	Nits             []verdict.Finding
-	DiffStat         string
-	WorktreePath     string
-	ExhaustionReason string
-	PullRequestURL   string
-	Publication      Publication
+	Iterations         int
+	Final              verdict.Verdict
+	Nits               []verdict.Finding
+	DiffStat           string
+	WorktreePath       string
+	ExhaustionReason   string
+	NitBudgetOverrides []NitBudgetOverride
+	PullRequestURL     string
+	Publication        Publication
 }
 
 type sessionKey struct {
@@ -347,9 +348,13 @@ func FormatSummary(summary SummaryInput) string {
 	}
 	fmt.Fprintf(
 		&builder,
-		"Iterations: %d\nFinal verdict: %s\nSummary: %s\nNit findings:\n",
+		"Iterations: %d\nFinal verdict: %s\nSummary: %s\n",
 		summary.Iterations, finalVerdict, summary.Final.Summary,
 	)
+	for _, override := range summary.NitBudgetOverrides {
+		fmt.Fprintln(&builder, override)
+	}
+	builder.WriteString("Nit findings:\n")
 	appendSummaryFindings(&builder, summary.Nits)
 	appendSummaryWorktree(&builder, summary.WorktreePath)
 	appendSummaryExhaustion(&builder, summary.ExhaustionReason)

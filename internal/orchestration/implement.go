@@ -30,15 +30,16 @@ type implementSetup struct {
 }
 
 type implementSummary struct {
-	iterations       int
-	final            verdict.Verdict
-	nits             []verdict.Finding
-	diffStat         string
-	worktreePath     string
-	exhaustionReason string
-	pullRequestURL   string
-	publishNotice    string
-	publication      runrecord.Publication
+	iterations         int
+	final              verdict.Verdict
+	nits               []verdict.Finding
+	diffStat           string
+	worktreePath       string
+	exhaustionReason   string
+	nitBudgetOverrides []runrecord.NitBudgetOverride
+	pullRequestURL     string
+	publishNotice      string
+	publication        runrecord.Publication
 }
 
 type ImplementOptions struct {
@@ -178,12 +179,13 @@ func executeImplementRun(ctx context.Context, options ImplementOptions, run impl
 		diffStat = fmt.Sprintf("unavailable: %v", err)
 	}
 	summary := implementSummary{
-		iterations:       iterations,
-		final:            final,
-		nits:             nits,
-		diffStat:         diffStat,
-		worktreePath:     run.setup.worktreePath,
-		exhaustionReason: run.runState.state.ExhaustionReason,
+		iterations:         iterations,
+		final:              final,
+		nits:               nits,
+		diffStat:           diffStat,
+		worktreePath:       run.setup.worktreePath,
+		exhaustionReason:   run.runState.state.ExhaustionReason,
+		nitBudgetOverrides: run.runState.state.NitBudgetOverrides,
 	}
 	publicationErr := publishApprovedSummary(ctx, options, run.setup, &summary)
 	if err := completeImplementRun(ctx, options, run, summary); err != nil {
@@ -202,7 +204,7 @@ func publishApprovedSummary(
 		summary.publication.Status = runrecord.PublicationNotRequested
 		return nil
 	}
-	if summary.final.Status != verdict.Approve {
+	if summary.final.Status != verdict.Approve || summary.exhaustionReason != "" {
 		return nil
 	}
 
@@ -319,7 +321,7 @@ func completeImplementRun(ctx context.Context, options ImplementOptions, run imp
 		Iterations: summary.iterations, FinalVerdict: string(summary.final.Status), Summary: summary.final.Summary,
 		NitFindings: toUIFindings(summary.nits), WorktreePath: summary.worktreePath, DiffStat: summary.diffStat,
 		PullRequestURL: summary.pullRequestURL, PublishNotice: summary.publishNotice,
-		PublicationStatus: publicationStatus,
+		PublicationStatus: publicationStatus, NitBudgetOverrides: nitBudgetOverrideStrings(summary.nitBudgetOverrides),
 	}); err != nil {
 		return fmt.Errorf("write implement summary: %w", err)
 	}
@@ -549,13 +551,29 @@ func runImplementIterations(ctx context.Context, params implementIterationsParam
 		}); err != nil {
 			return 0, verdict.Verdict{}, nil, fmt.Errorf("write review verdict: %w", err)
 		}
-		if final.Status == verdict.Approve {
+		if processApproval(params, iteration, final) {
 			break
 		}
 		findings = final.Findings
 		previousReviewerSession = lastUsableSessionID(reviewResult.SessionIDs)
 	}
 	return iterations, final, nitFindings(final), nil
+}
+
+func processApproval(params implementIterationsParams, iteration int, final verdict.Verdict) bool {
+	if final.Status != verdict.Approve {
+		return false
+	}
+	count := len(nitFindings(final))
+	budget := params.projectConfig.Loop.NitBudget
+	if count <= budget {
+		return true
+	}
+	params.runState.recordNitBudgetOverride(iteration, count, budget)
+	if iteration == params.projectConfig.Loop.MaxIterations {
+		params.runState.setExhaustionReason(fmt.Sprintf("Nit budget exceeded (%d nits, budget %d) at iteration limit (%d)", count, budget, iteration))
+	}
+	return false
 }
 
 type branchGateSource struct {
@@ -1297,7 +1315,7 @@ func formatImplementSummary(summary implementSummary) string {
 	return runrecord.FormatSummary(runrecord.SummaryInput{
 		Iterations: summary.iterations, Final: summary.final, Nits: summary.nits,
 		DiffStat: summary.diffStat, WorktreePath: summary.worktreePath,
-		ExhaustionReason: summary.exhaustionReason, PullRequestURL: summary.pullRequestURL,
+		ExhaustionReason: summary.exhaustionReason, NitBudgetOverrides: summary.nitBudgetOverrides, PullRequestURL: summary.pullRequestURL,
 		Publication: summary.publication,
 	})
 }
@@ -1320,4 +1338,12 @@ func worktreeRunWriter(worktreeRoot, runDir string) (*runrecord.Writer, error) {
 		return nil, errors.New("worktree run artifact directory is required")
 	}
 	return runrecord.CreateNamedWriter(root, runName)
+}
+
+func nitBudgetOverrideStrings(overrides []runrecord.NitBudgetOverride) []fmt.Stringer {
+	lines := make([]fmt.Stringer, 0, len(overrides))
+	for _, override := range overrides {
+		lines = append(lines, override)
+	}
+	return lines
 }

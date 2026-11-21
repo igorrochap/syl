@@ -68,6 +68,14 @@ func (r *runStateTracker) setExhaustionReason(reason string) {
 	r.save()
 }
 
+func (r *runStateTracker) recordNitBudgetOverride(iteration, count, budget int) {
+	if r.finalized {
+		return
+	}
+	r.state.NitBudgetOverrides = append(r.state.NitBudgetOverrides, runrecord.NitBudgetOverride{Iteration: iteration, NitCount: count, Budget: budget})
+	r.save()
+}
+
 func (r *runStateTracker) questionAsked(question string) {
 	if r.finalized {
 		return

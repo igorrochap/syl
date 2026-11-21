@@ -38,6 +38,7 @@ func TestLoadAndSaveRoundTripsConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	snapshot.Values.NitBudget = 0
 	snapshot.Values.MaxIterations = 8
 	snapshot.Values.PublishLanguage = "pt_br"
 	snapshot.Values.WorktreeCopy = []string{".env", ".env.local"}
@@ -49,7 +50,7 @@ func TestLoadAndSaveRoundTripsConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if loaded.Loop.MaxIterations != 8 || loaded.Publish.Language != "pt_br" || !reflect.DeepEqual(loaded.Worktree.Copy, snapshot.Values.WorktreeCopy) {
+	if loaded.Loop.NitBudget != 0 || loaded.Loop.MaxIterations != 8 || loaded.Publish.Language != "pt_br" || !reflect.DeepEqual(loaded.Worktree.Copy, snapshot.Values.WorktreeCopy) {
 		t.Fatalf("loaded config = %#v, want edited values", loaded)
 	}
 	updated, err := configedit.Load(project)
@@ -307,11 +308,15 @@ func TestParseReportsLoadValidationMessages(t *testing.T) {
 		"roles.review.model":      {"claude-reviewer"},
 		"roles.review.effort":     {"medium"},
 		"loop.max_iterations":     {"0"},
+		"loop.nit_budget":         {"-1"},
 		"worktree.root":           {"~/.syl/worktrees"},
 	}
 	_, fieldErrors := configedit.Parse(form, sandboxDefaults())
 	if got := fieldErrors["loop.max_iterations"]; got != "loop.max_iterations must be positive; got 0" {
 		t.Fatalf("Parse() error = %q", got)
+	}
+	if got := fieldErrors["loop.nit_budget"]; got != "loop.nit_budget must be non-negative; got -1" {
+		t.Fatalf("Parse() nit budget error = %q", got)
 	}
 }
 

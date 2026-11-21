@@ -168,7 +168,7 @@ func configFromAnswers(answers map[string]tui.Answer) (config.Config, []string, 
 	}
 	return config.Config{
 		Tracker: config.TrackerConfig{Issues: config.Tracker(value("tracker.issues")), Reviews: config.Tracker(value("tracker.reviews"))},
-		Roles:   roles, Loop: config.LoopConfig{MaxIterations: 3, MaxGateAttempts: 3},
+		Roles:   roles, Loop: config.LoopConfig{MaxIterations: 3, MaxGateAttempts: 3, NitBudget: 5},
 		Notifications: config.NotificationsConfig{Enabled: true},
 		Worktree:      config.WorktreeConfig{Root: config.DefaultWorktreeRoot},
 	}, answers["optional"].Selected, nil
