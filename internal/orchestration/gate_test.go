@@ -643,3 +643,36 @@ func TestNitBudgetControlsApproval(t *testing.T) {
 		})
 	}
 }
+
+func TestImplementReviewsSendProtectedPathsToFreshAndResumedReviewer(t *testing.T) {
+	repo, branchPoint := newGateTestRepo(t, "#!/bin/sh\necho gate\n", true)
+	if err := os.WriteFile(filepath.Join(repo, "scripts", "quality.sh"), []byte("#!/bin/sh\necho changed\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, ".golangci.yml"), []byte("changed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	recorder := newMemoryRunRecorder()
+	recorder.dir = t.TempDir()
+	reviewer := &scriptedConversationAdapter{
+		runs:    [][]harness.Event{{{Type: harness.EventSession, SessionID: "review-1"}, {Type: harness.EventAssistantText, Text: "VERDICT: revise\nSUMMARY: Fix required\nFINDINGS:\n- [blocking] change.txt — fix\n"}}},
+		resumes: [][]harness.Event{{{Type: harness.EventSession, SessionID: "review-1"}, {Type: harness.EventAssistantText, Text: "VERDICT: approve\nSUMMARY: Ready\nFINDINGS:\n"}}},
+	}
+	cfg := gateTestConfig(2)
+	cfg.Gate.ProtectedPaths = []string{".golangci.yml"}
+	gateRunner := &scriptedGateRunner{t: t, recorder: recorder, workRoot: repo, branchPoint: branchPoint, results: []GateExecution{{Output: qualitySummary("PASS")}, {Output: qualitySummary("PASS")}}}
+	_, _, _, err := runImplementIterations(context.Background(), implementIterationsParams{git: gitadapter.ExecGitRunner{Dir: repo}, workRoot: repo, implementer: gateImplementer(2), reviewer: reviewer, projectConfig: cfg, ticket: tracker.Ticket{Number: 264}, branchPoint: branchPoint, recorder: recorder, gateRunner: gateRunner, output: io.Discard})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reviewer.runRequests) != 1 || len(reviewer.resumeCalls) != 1 {
+		t.Fatalf("reviewer calls = %d fresh, %d resumed", len(reviewer.runRequests), len(reviewer.resumeCalls))
+	}
+	for _, prompt := range []string{reviewer.runRequests[0].Prompt, reviewer.resumeCalls[0].prompt} {
+		assertProtectedReviewPrompt(t, prompt, "scripts/quality.sh", true)
+		assertProtectedReviewPrompt(t, prompt, ".golangci.yml", true)
+		if strings.Index(prompt, "## Protected paths") > strings.Index(prompt, "The orchestrator's Gate result") {
+			t.Fatal("protected paths should precede Gate result")
+		}
+	}
+}

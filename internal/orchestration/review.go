@@ -76,10 +76,11 @@ type ReviewOptions struct {
 }
 
 type reviewPreparation struct {
-	branchPoint string
-	diffPath    string
-	recorder    RunRecorder
-	runState    *runStateTracker
+	branchPoint    string
+	diffPath       string
+	protectedPaths []string
+	recorder       RunRecorder
+	runState       *runStateTracker
 }
 
 type standaloneReviewRun struct {
@@ -199,6 +200,7 @@ func handleStandaloneReviewError(options ReviewOptions, preparation reviewPrepar
 
 func runStandaloneReview(ctx context.Context, options ReviewOptions, preparation reviewPreparation) (standaloneReviewRun, error) {
 	prompt := composeReviewPrompt(options.TicketRef, options.Ticket, preparation.branchPoint, preparation.diffPath, options.Context)
+	prompt = appendProtectedPaths(prompt, preparation.protectedPaths)
 	notifier := options.Notifier
 	if !options.ProjectConfig.Notifications.Enabled {
 		notifier = nil
@@ -342,7 +344,7 @@ func prepareReviewWithOpener(
 	if err != nil {
 		return reviewPreparation{branchPoint: branchPoint, recorder: recorder, runState: runState}, fmt.Errorf("review: %w", err)
 	}
-	return reviewPreparation{branchPoint: branchPoint, diffPath: diffPath, recorder: recorder, runState: runState}, nil
+	return reviewPreparation{branchPoint: branchPoint, diffPath: diffPath, protectedPaths: protectedPathsInDiff(diff, options.ProjectConfig.Gate.ProtectedPaths), recorder: recorder, runState: runState}, nil
 }
 
 func runReview(ctx context.Context, adapter harness.Adapter, request harness.Request, output io.Writer, mode HarnessOutputMode, questions *QuestionHandler) (ReviewExecution, error) {

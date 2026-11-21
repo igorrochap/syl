@@ -822,3 +822,45 @@ func TestRenderRoundTripsSandboxModesForEveryRole(t *testing.T) {
 			loaded.Roles.Plan.SandboxMode, loaded.Roles.Implement.SandboxMode, loaded.Roles.Review.SandboxMode)
 	}
 }
+
+func TestProtectedPathsConfiguration(t *testing.T) {
+	root := t.TempDir()
+	base := configWithRoleValue("plan", "model", "claude-planner")
+	writeConfig(t, root, base+"\n[gate]\nprotected_paths = [\".golangci.yml\", \"checks/\"]\n")
+	cfg, err := Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{".golangci.yml", "checks/"}
+	if !reflect.DeepEqual(cfg.Gate.ProtectedPaths, want) {
+		t.Fatalf("protected paths = %v, want %v", cfg.Gate.ProtectedPaths, want)
+	}
+	writeConfig(t, root, Render(cfg))
+	roundTrip, err := Load(root)
+	if err != nil || !reflect.DeepEqual(roundTrip.Gate.ProtectedPaths, want) {
+		t.Fatalf("round trip = %v, error = %v", roundTrip.Gate.ProtectedPaths, err)
+	}
+	for _, value := range []string{`"checks"`, `[1]`, `[""]`, `["../outside"]`, `["/absolute"]`} {
+		t.Run(value, func(t *testing.T) {
+			writeConfig(t, root, base+"\n[gate]\nprotected_paths = "+value+"\n")
+			_, err := Load(root)
+			var field FieldError
+			if !errors.As(err, &field) || field.Field != "gate.protected_paths" {
+				t.Fatalf("Load() error = %v, want gate.protected_paths field error", err)
+			}
+		})
+	}
+}
+
+func TestEffectiveProtectedPathsAlwaysIncludesDefaults(t *testing.T) {
+	root := t.TempDir()
+	writeConfig(t, root, configWithRoleValue("plan", "model", "claude-planner")+"\n[gate]\nprotected_paths = [\".golangci.yml\"]\n")
+	cfg, err := Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"scripts/quality.sh", ".agents/skills/", ".syl/verify.md", ".golangci.yml"}
+	if got := cfg.Gate.EffectiveProtectedPaths(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("effective protected paths = %v, want %v", got, want)
+	}
+}

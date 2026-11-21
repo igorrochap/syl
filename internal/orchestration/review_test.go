@@ -526,3 +526,48 @@ func (t *recordingReviewTracker) AddComment(_ context.Context, _ int, note strin
 func (*recordingReviewTracker) Create(context.Context, string, string) (tracker.Ticket, error) {
 	return tracker.Ticket{}, nil
 }
+
+func TestRunReviewSendsProtectedPathsToReviewer(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		path      string
+		protected bool
+	}{
+		{"default", "scripts/quality.sh", true},
+		{"skill", ".agents/skills/review/SKILL.md", true},
+		{"configured", ".golangci.yml", true},
+		{"ordinary", "source.go", false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			adapter := &capturingReviewAdapter{}
+			diff := "diff --git a/" + test.path + " b/" + test.path + "\n+change\n"
+			git := &reviewDiffGit{responses: map[string]reviewDiffResponse{
+				"rev-parse HEAD":                          {output: "branch-point\n"},
+				"diff branch-point":                       {output: diff},
+				"ls-files --others --exclude-standard -z": {},
+			}}
+			err := RunReview(context.Background(), ReviewOptions{
+				OriginRoot: root, WorkRoot: root, OpenRun: NewDiskRunOpener(root, sylhome.Dir{}, io.Discard),
+				ProjectConfig: config.Config{Tracker: config.TrackerConfig{Reviews: config.TrackerLocal}, Gate: config.GateConfig{ProtectedPaths: []string{".golangci.yml"}}},
+				Adapter:       adapter, Input: strings.NewReader(""), Output: io.Discard, Git: git,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertProtectedReviewPrompt(t, adapter.request.Prompt, test.path, test.protected)
+		})
+	}
+}
+
+func assertProtectedReviewPrompt(t *testing.T, prompt, path string, protected bool) {
+	t.Helper()
+	section := "## Protected paths touched by the diff"
+	if !protected {
+		if strings.Contains(prompt, section) {
+			t.Fatalf("unexpected protected section: %s", prompt)
+		}
+		return
+	}
+	assertContainsAll(t, prompt, section, "- "+path, "ticket did not request", "[blocking]")
+}

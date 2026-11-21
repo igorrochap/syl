@@ -90,6 +90,7 @@ type Config struct {
 	Notifications NotificationsConfig
 	Publish       PublishConfig
 	Worktree      WorktreeConfig
+	Gate          GateConfig
 }
 
 type TrackerConfig struct {
@@ -126,6 +127,17 @@ type PublishConfig struct {
 	Language string
 }
 
+// GateConfig holds additional paths flagged for review.
+type GateConfig struct {
+	ProtectedPaths []string
+}
+
+// EffectiveProtectedPaths returns the mandatory paths and configured additions.
+func (gate GateConfig) EffectiveProtectedPaths() []string {
+	defaults := []string{"scripts/quality.sh", ".agents/skills/", ".syl/verify.md"}
+	return append(defaults, gate.ProtectedPaths...)
+}
+
 type WorktreeConfig struct {
 	Root  string
 	Setup string
@@ -151,6 +163,7 @@ type rawConfig struct {
 	Notifications rawNotifications `toml:"notifications"`
 	Publish       rawPublish       `toml:"publish"`
 	Worktree      rawWorktree      `toml:"worktree"`
+	Gate          rawGate          `toml:"gate"`
 }
 
 type rawTracker struct {
@@ -184,6 +197,10 @@ type rawNotifications struct {
 
 type rawPublish struct {
 	Language string `toml:"language"`
+}
+
+type rawGate struct {
+	ProtectedPaths any `toml:"protected_paths"`
 }
 
 type rawWorktree struct {
@@ -345,6 +362,10 @@ max_iterations = %d
 max_gate_attempts = %d
 nit_budget = %d
 
+[gate]
+# Additional project-relative paths or directory prefixes to protect.
+protected_paths = %s
+
 [notifications]
 enabled = %t
 
@@ -371,7 +392,7 @@ copy = %s
 		cfg.Roles.Review.Harness, cfg.Roles.Review.Model, cfg.Roles.Review.Effort,
 		string(renderSandboxMode(cfg.Roles.Review.SandboxMode)),
 		cfg.Roles.Review.MCP,
-		cfg.Loop.MaxIterations, cfg.Loop.MaxGateAttempts, cfg.Loop.NitBudget, cfg.Notifications.Enabled,
+		cfg.Loop.MaxIterations, cfg.Loop.MaxGateAttempts, cfg.Loop.NitBudget, renderStringList(cfg.Gate.ProtectedPaths), cfg.Notifications.Enabled,
 		publishLanguage,
 		worktreeRoot(cfg.Worktree.Root), cfg.Worktree.Setup, renderStringList(cfg.Worktree.Copy))
 }
@@ -447,7 +468,13 @@ func validate(raw rawConfig, metadata toml.MetaData) (Config, error) {
 		}
 	}
 
+	protectedPaths, err := parseProtectedPaths(raw.Gate.ProtectedPaths)
+	if err != nil {
+		return Config{}, err
+	}
+
 	return Config{
+		Gate:          GateConfig{ProtectedPaths: protectedPaths},
 		Tracker:       trackerConfig,
 		Roles:         rolesConfig,
 		Loop:          loopConfig,
@@ -455,6 +482,55 @@ func validate(raw rawConfig, metadata toml.MetaData) (Config, error) {
 		Publish:       PublishConfig{Language: publishLanguage},
 		Worktree:      WorktreeConfig{Root: worktreeRoot, Setup: raw.Worktree.Setup, Copy: raw.Worktree.Copy},
 	}, nil
+}
+
+func invalidProtectedPaths() FieldError {
+	return FieldError{Field: "gate.protected_paths", Message: "gate.protected_paths: must be a list of non-empty project-relative paths or directory prefixes"}
+}
+
+func validProtectedPath(path string) bool {
+	if path == "" || strings.TrimSpace(path) != path {
+		return false
+	}
+	if filepath.IsAbs(path) || strings.Contains(path, "\\") {
+		return false
+	}
+	clean := strings.TrimSuffix(path, "/")
+	if clean == "" || clean == "." || clean == ".." {
+		return false
+	}
+	return filepath.Clean(clean) == clean && !strings.HasPrefix(clean, "../")
+}
+
+func validateProtectedPaths(paths []string) []FieldError {
+	for _, path := range paths {
+		if !validProtectedPath(path) {
+			return []FieldError{invalidProtectedPaths()}
+		}
+	}
+	return nil
+}
+
+func parseProtectedPaths(value any) ([]string, error) {
+	if value == nil {
+		return nil, nil
+	}
+	items, ok := value.([]any)
+	if !ok {
+		return nil, invalidProtectedPaths()
+	}
+	paths := make([]string, 0, len(items))
+	for _, item := range items {
+		path, ok := item.(string)
+		if !ok {
+			return nil, invalidProtectedPaths()
+		}
+		paths = append(paths, path)
+	}
+	if failures := validateProtectedPaths(paths); len(failures) > 0 {
+		return nil, failures[0]
+	}
+	return paths, nil
 }
 
 func parseLoopConfig(raw rawLoop, metadata toml.MetaData) (LoopConfig, error) {
@@ -521,6 +597,7 @@ func ValidationErrors(cfg Config) []FieldError {
 		})
 	}
 	errors = append(errors, validateNitBudget(cfg.Loop.NitBudget)...)
+	errors = append(errors, validateProtectedPaths(cfg.Gate.ProtectedPaths)...)
 	errors = append(errors, validatePublishConfig(cfg.Publish)...)
 	if strings.TrimSpace(cfg.Worktree.Root) == "" {
 		errors = append(errors, FieldError{Field: "worktree.root", Message: "worktree.root: is required"})
