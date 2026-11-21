@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v1.49.0 (2026-11-21)
+
+### Features
+
+- **config**: Flag protected-path changes to the reviewer
+  ([#285](https://github.com/igorrochap/syl/pull/285),
+  [`e532469`](https://github.com/igorrochap/syl/commit/e532469a4b98e703d1ac11e9a010ec90d2bfc1a8))
+
+
 ## v1.48.1 (2026-11-21)
 
 ### Bug Fixes
