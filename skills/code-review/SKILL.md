@@ -20,7 +20,7 @@ Dispatcher discipline, phase by phase:
 
 - **Setup** (steps 1–3): metadata-only calls — resolve refs, verify non-emptiness via `--stat`/`stat`/`wc`, list candidate spec and standards paths. Everything a sub-agent will need travels as a path or reference in its spawn prompt.
 - **Handoff** (step 4): one message, both spawns. The two axis sub-agents are the only agents in a review; the Spec prompt tells that sub-agent to locate any related code itself.
-- **Waiting**: each sub-agent's completion re-invokes the coordinator automatically — **ending the turn is the wait**, and it needs no scheduling, polling, or checking. After the spawn message, end the turn: no tool calls, no status narration. When the first report arrives while the second is pending, end the turn again the same way. Each extra turn replays the coordinator's entire context; a silent wait is free.
+- **Waiting**: each sub-agent's completion re-invokes the coordinator automatically — **ending the turn is the wait**, and it needs no scheduling, polling, or checking. After the spawn message, end the turn: no tool calls, no status narration. When the first report arrives while the second is pending, end the turn again the same way. Wait for the harness-delivered reports defined in step 5; only the harness supplies their content. Each extra turn replays the coordinator's entire context; a silent wait is free.
 - **Aggregation** (step 5): follow the faithful-relay rules in step 5.
 
 Two hard guardrails, kept as prohibitions because no positive phrasing covers them:
@@ -91,7 +91,7 @@ If the user confirmed there is no spec, still spawn the Spec sub-agent and instr
 
 ### 5. Aggregate
 
-Aggregation is **faithful relay**: every sentence of the aggregate and every finding in the Verdict traces to a sub-agent report, entering exactly as reported. The reports are final, subject to the disagreement exception below. Present them under `## Standards` and `## Spec` headings, verbatim or lightly cleaned. Keep each axis's finding under its own heading and as a separate Verdict entry, even when both axes report the same finding. Copy each axis tag into the Verdict unchanged, with one exception: when the axes give different tags to the same finding, tag both Verdict entries `[blocking]` and state the disagreement in each finding's text. Do **not** merge or otherwise rerank findings — the two axes are deliberately separate (see _Why two axes_).
+Aggregation is **faithful relay**: every sentence of the aggregate and every finding in the Verdict traces to a sub-agent report, entering exactly as reported. A report is the content delivered by the harness for a completed sub-agent, including a task notification. Relay every finding in every report delivered for this review under its axis. The reports are final, subject to the disagreement exception below. Present them under `## Standards` and `## Spec` headings, verbatim or lightly cleaned. Keep each axis's finding under its own heading and as a separate Verdict entry, even when both axes report the same finding. Copy each axis tag into the Verdict unchanged, with one exception: when the axes give different tags to the same finding, tag both Verdict entries `[blocking]` and state the disagreement in each finding's text. Do **not** merge or otherwise rerank findings — the two axes are deliberately separate (see _Why two axes_).
 
 End with a one-line summary: total findings per axis, and the worst issue _within each axis_ (if any). Don't pick a single winner across axes — that's the reranking the separation exists to prevent.
 
