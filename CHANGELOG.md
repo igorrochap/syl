@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v1.48.0 (2026-11-21)
+
+### Features
+
+- **orchestration**: Add nit budget configuration and enforcement
+  ([#283](https://github.com/igorrochap/syl/pull/283),
+  [`575aaf1`](https://github.com/igorrochap/syl/commit/575aaf11109998d9f8e7adc1f66093ca045df168))
+
+
 ## v1.47.0 (2026-11-19)
 
 ### Features
