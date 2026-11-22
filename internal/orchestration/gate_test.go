@@ -37,7 +37,7 @@ func TestImplementStartsNewTurnAfterRedGateWithinIterationThenReviews(t *testing
 		wantScript: "#!/bin/sh\necho branch-point gate\n",
 	}
 	state := newRunStateTracker(recorder, runrecord.New(runrecord.Implement, "#263", 0, 1, testNow()))
-	iterations, final, _, err := runImplementIterations(context.Background(), implementIterationsParams{
+	iterations, final, _, _, err := runImplementIterations(context.Background(), implementIterationsParams{
 		git:            gitadapter.ExecGitRunner{Dir: repo},
 		workRoot:       repo,
 		implementer:    implementer,
@@ -104,7 +104,7 @@ func TestImplementUsesGateExitStatusWhenSummaryIsUnavailable(t *testing.T) {
 			{ExitStatus: 0, Output: "legacy gate passed without a summary"},
 		},
 	}
-	iterations, final, _, err := runImplementIterations(context.Background(), implementIterationsParams{
+	iterations, final, _, _, err := runImplementIterations(context.Background(), implementIterationsParams{
 		git: gitadapter.ExecGitRunner{Dir: repo}, workRoot: repo,
 		implementer: implementer, reviewer: reviewer, projectConfig: gateTestConfig(1),
 		ticket: tracker.Ticket{Number: 264}, branchPoint: branchPoint, recorder: recorder,
@@ -177,7 +177,7 @@ func TestImplementResetsGateAttemptNumberAfterGreen(t *testing.T) {
 			{ExitStatus: 0, Output: qualitySummary("PASS")},
 		},
 	}
-	iterations, final, _, err := runImplementIterations(context.Background(), implementIterationsParams{
+	iterations, final, _, _, err := runImplementIterations(context.Background(), implementIterationsParams{
 		git: gitadapter.ExecGitRunner{Dir: repo}, workRoot: repo,
 		implementer: implementer, reviewer: reviewer, projectConfig: gateTestConfig(2),
 		ticket: tracker.Ticket{Number: 269}, branchPoint: branchPoint, recorder: recorder,
@@ -222,7 +222,7 @@ func TestGateDrivenTurnKeepsRolloverAndQuestionProtocol(t *testing.T) {
 			{ExitStatus: 0, Output: qualitySummary("PASS")},
 		},
 	}
-	_, final, _, err := runImplementIterations(context.Background(), implementIterationsParams{
+	_, final, _, _, err := runImplementIterations(context.Background(), implementIterationsParams{
 		git: gitadapter.ExecGitRunner{Dir: repo}, workRoot: repo,
 		implementer: implementer, reviewer: reviewer, projectConfig: gateTestConfig(1),
 		ticket:      tracker.Ticket{Number: 270, Title: "Keep rollover", Body: "Retain the ticket."},
@@ -296,7 +296,7 @@ func TestImplementRecordsNoGateFromBranchPoint(t *testing.T) {
 	implementer := gateImplementer(1)
 	reviewer := gateReviewer("VERDICT: approve\nSUMMARY: Ready\nFINDINGS:\n")
 	gateRunner := &scriptedGateRunner{t: t, recorder: recorder, workRoot: repo, branchPoint: branchPoint}
-	_, final, _, err := runImplementIterations(context.Background(), implementIterationsParams{
+	_, final, _, _, err := runImplementIterations(context.Background(), implementIterationsParams{
 		git: gitadapter.ExecGitRunner{Dir: repo}, workRoot: repo,
 		implementer: implementer, reviewer: reviewer, projectConfig: gateTestConfig(1),
 		ticket: tracker.Ticket{Number: 265}, branchPoint: branchPoint, recorder: recorder,
@@ -530,7 +530,7 @@ func TestRevisionCarriesAllVerdictFindingsAndDeclineReasons(t *testing.T) {
 		resumes: [][]harness.Event{{{Type: harness.EventSession, SessionID: "review-1"}, {Type: harness.EventAssistantText, Text: "VERDICT: approve\nSUMMARY: Ready\nFINDINGS:\n"}}},
 	}
 	gateRunner := &scriptedGateRunner{t: t, recorder: recorder, workRoot: repo, branchPoint: branchPoint, results: []GateExecution{{Output: qualitySummary("PASS")}, {Output: qualitySummary("FAIL")}, {Output: qualitySummary("PASS")}}}
-	_, _, _, err := runImplementIterations(context.Background(), implementIterationsParams{git: gitadapter.ExecGitRunner{Dir: repo}, workRoot: repo, implementer: implementer, reviewer: reviewer, projectConfig: gateTestConfig(2), ticket: tracker.Ticket{Number: 278}, branchPoint: branchPoint, recorder: recorder, gateRunner: gateRunner, output: io.Discard, allowEmptyDiff: true})
+	_, _, _, _, err := runImplementIterations(context.Background(), implementIterationsParams{git: gitadapter.ExecGitRunner{Dir: repo}, workRoot: repo, implementer: implementer, reviewer: reviewer, projectConfig: gateTestConfig(2), ticket: tracker.Ticket{Number: 278}, branchPoint: branchPoint, recorder: recorder, gateRunner: gateRunner, output: io.Discard, allowEmptyDiff: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -571,7 +571,7 @@ func TestRevisionFreshReviewFallbackCarriesFindingsAndDeclineReasons(t *testing.
 		resumeStartErrors: []error{&scriptedConversationError{message: "session unavailable"}},
 	}
 	gateRunner := &scriptedGateRunner{t: t, recorder: recorder, workRoot: repo, branchPoint: branchPoint, results: []GateExecution{{Output: qualitySummary("PASS")}, {Output: qualitySummary("PASS")}}}
-	_, final, _, err := runImplementIterations(context.Background(), implementIterationsParams{git: gitadapter.ExecGitRunner{Dir: repo}, workRoot: repo, implementer: implementer, reviewer: reviewer, projectConfig: gateTestConfig(2), ticket: tracker.Ticket{Number: 278}, branchPoint: branchPoint, recorder: recorder, gateRunner: gateRunner, output: io.Discard, allowEmptyDiff: true})
+	_, final, _, _, err := runImplementIterations(context.Background(), implementIterationsParams{git: gitadapter.ExecGitRunner{Dir: repo}, workRoot: repo, implementer: implementer, reviewer: reviewer, projectConfig: gateTestConfig(2), ticket: tracker.Ticket{Number: 278}, branchPoint: branchPoint, recorder: recorder, gateRunner: gateRunner, output: io.Discard, allowEmptyDiff: true})
 	if err != nil || final.Status != verdict.Approve {
 		t.Fatalf("runImplementIterations() = (%q, %v), want approve", final.Status, err)
 	}
@@ -676,7 +676,7 @@ func TestImplementReviewsSendProtectedPathsToFreshAndResumedReviewer(t *testing.
 	cfg := gateTestConfig(2)
 	cfg.Gate.ProtectedPaths = []string{".golangci.yml"}
 	gateRunner := &scriptedGateRunner{t: t, recorder: recorder, workRoot: repo, branchPoint: branchPoint, results: []GateExecution{{Output: qualitySummary("PASS")}, {Output: qualitySummary("PASS")}}}
-	_, _, _, err := runImplementIterations(context.Background(), implementIterationsParams{git: gitadapter.ExecGitRunner{Dir: repo}, workRoot: repo, implementer: gateImplementer(2), reviewer: reviewer, projectConfig: cfg, ticket: tracker.Ticket{Number: 264}, branchPoint: branchPoint, recorder: recorder, gateRunner: gateRunner, output: io.Discard})
+	_, _, _, _, err := runImplementIterations(context.Background(), implementIterationsParams{git: gitadapter.ExecGitRunner{Dir: repo}, workRoot: repo, implementer: gateImplementer(2), reviewer: reviewer, projectConfig: cfg, ticket: tracker.Ticket{Number: 264}, branchPoint: branchPoint, recorder: recorder, gateRunner: gateRunner, output: io.Discard})
 	if err != nil {
 		t.Fatal(err)
 	}
