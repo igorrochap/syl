@@ -206,11 +206,12 @@ func TestSummarizeEvidenceKeepsMultilineContinuationAndSplitsExercises(t *testin
 		"- What was exercised: the HTTP response.\n" +
 		"- Outcome: pass\n"
 	summary := summarizeEvidenceText(contents)
-	if !strings.Contains(summary, "Exercised: the CLI output. The second output line was also checked.") {
-		t.Fatalf("Evidence summary = %q, want the continuation line", summary)
-	}
-	if got := strings.Count(summary, "- Outcome: pass"); got != 2 {
-		t.Fatalf("Evidence summary = %q, want two separate exercises, found %d outcomes", summary, got)
+	want := "- Outcome: pass\n" +
+		"  - Exercised: the CLI output. The second output line was also checked.\n" +
+		"- Outcome: pass\n" +
+		"  - Exercised: the HTTP response."
+	if summary != want {
+		t.Fatalf("Evidence summary = %q, want readable field lists %q", summary, want)
 	}
 }
 
@@ -221,11 +222,15 @@ func TestSummarizeEvidenceStartsExerciseOnHeadingWithoutExercisedField(t *testin
 		"## Exercise: API\n" +
 		"- How it was exercised: made an HTTP request.\n" +
 		"- Outcome: pass\n"
-	exercises := strings.Split(summarizeEvidenceText(contents), "\n")
-	if len(exercises) != 2 || !strings.Contains(exercises[0], "Exercised: the command output.") ||
-		!strings.Contains(exercises[1], "How: made an HTTP request.") ||
-		strings.Contains(exercises[1], "command output") {
-		t.Fatalf("Evidence exercises = %q, want the API heading to start an independent exercise", exercises)
+	got := strings.Split(summarizeEvidenceText(contents), "\n")
+	want := []string{
+		"- Outcome: pass",
+		"  - Exercised: the command output.",
+		"- Outcome: pass",
+		"  - How: made an HTTP request.",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("Evidence exercises = %q, want independently formatted exercise lists %q", got, want)
 	}
 }
 

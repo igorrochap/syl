@@ -1324,8 +1324,10 @@ func TestRunImplementFallbackBodyIncludesPerGateResultsAndEvidence(t *testing.T)
 	}
 	assertContainsAll(t, publisher.request.Body,
 		"## Verification", "format: PASS", "vet: PASS", "style: PASS", "complexity: PASS",
-		"coverage: PASS", "tests: PASS", "architecture: PASS", "Outcome: pass.",
-		"Exercised: fallback publication", "Observed: each Gate result appeared in the body.",
+		"coverage: PASS", "tests: PASS", "architecture: PASS",
+		"- Outcome: pass.\n  - Exercised: fallback publication.\n"+
+			"  - How: called RunImplement with a fake Tracker.\n"+
+			"  - Observed: each Gate result appeared in the body.",
 		"Closes #42")
 }
 

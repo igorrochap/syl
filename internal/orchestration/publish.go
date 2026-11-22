@@ -886,20 +886,27 @@ func joinEvidenceText(existing, next string) string {
 }
 
 func formatEvidenceExercise(exercise evidenceExercise) string {
-	parts := make([]string, 0, 4)
-	if exercise.outcome != "" {
-		parts = append(parts, "Outcome: "+exercise.outcome)
+	fields := []struct {
+		label string
+		value string
+	}{
+		{label: "Outcome", value: exercise.outcome},
+		{label: "Exercised", value: exercise.exercised},
+		{label: "How", value: exercise.how},
+		{label: "Observed", value: exercise.observed},
 	}
-	if exercise.exercised != "" {
-		parts = append(parts, "Exercised: "+exercise.exercised)
+	lines := make([]string, 0, len(fields))
+	for _, field := range fields {
+		if field.value == "" {
+			continue
+		}
+		prefix := "  - "
+		if len(lines) == 0 {
+			prefix = "- "
+		}
+		lines = append(lines, prefix+field.label+": "+field.value)
 	}
-	if exercise.how != "" {
-		parts = append(parts, "How: "+exercise.how)
-	}
-	if exercise.observed != "" {
-		parts = append(parts, "Observed: "+exercise.observed)
-	}
-	return "- " + strings.Join(parts, "; ")
+	return strings.Join(lines, "\n")
 }
 
 func summarizeUnstructuredEvidence(contents string) string {
