@@ -10,6 +10,12 @@ Two-axis review of the diff between `HEAD` and a fixed point the user supplies:
 
 Both axes run as **parallel sub-agents** so they don't pollute each other's context, then this skill aggregates their findings.
 
+### Evidence review
+
+When the invoking prompt supplies an iteration Evidence directory, read its `evidence.md` and the supporting files it references. Compare what was exercised and observed with the ticket's acceptance criteria. Missing or unconvincing Evidence is a `[blocking]` finding when the change needs runtime Evidence, such as a UI change. An explicit `not exercised` reason is acceptable when runtime Evidence is unnecessary, such as a pure refactor covered by tests. If the Evidence does not settle whether the change works, the reviewer may exercise the software through a non-mutating path or disposable copy. Keep the project and Evidence files read-only; do not modify `evidence.md` or its supporting files.
+
+The Spec sub-agent applies this protocol on the initial review. During an incremental re-review, the existing reviewer session applies it directly without spawning fresh sub-agents.
+
 The project's issue tracker should have been provided to you, including how it tracks reviews specifically (comments on a remote issue tracker, or a local `.scratch/` log) — this determines how you document findings in the Documenting section below. If these details are missing, ask the user before proceeding.
 
 ## Coordinator contract
@@ -90,8 +96,9 @@ When the invoking prompt lists protected paths, pass that list to both sub-agent
 
 - In normal mode, the diff command and commit list. In pre-computed-diff mode, the same exact diff-file path and branch-point ref used for the Standards sub-agent; tell the sub-agent to read that authoritative, non-empty file directly and not invoke Git to re-derive the diff.
 - The issue/PR reference or spec path from step 2, or the user's confirmation that no spec exists. The sub-agent retrieves and reads referenced content itself.
+- The current iteration Evidence directory supplied by the invoking prompt. Tell the sub-agent to read `evidence.md` and its referenced supporting files, apply the Evidence review protocol above, and include its Evidence judgment in the Spec report.
 - The instruction to locate and read any related code it needs itself; the coordinator will not locate context or verify the report.
-- The brief: "Read the severity rubric in the Verdict contract of the supplied code-review skill and tag each finding `[blocking]` or `[nit]` using it. Report: (a) requirements the spec asked for that are missing or partial; (b) behaviour in the diff that wasn't asked for (scope creep); (c) requirements that look implemented but where the implementation looks wrong. Quote the spec line for each finding. Under 400 words."
+- The brief: "Read the severity rubric in the Verdict contract of the supplied code-review skill and tag each finding `[blocking]` or `[nit]` using it. Report: (a) requirements the spec asked for that are missing or partial; (b) behaviour in the diff that wasn't asked for (scope creep); (c) requirements that look implemented but where the implementation looks wrong; and (d) whether the Evidence supports the acceptance criteria. Quote the spec line for each finding. Under 400 words."
 
 If the user confirmed there is no spec, still spawn the Spec sub-agent and instruct it to report "no spec available".
 

@@ -29,7 +29,9 @@ func TestProtectedPathsInReviewPrompt(t *testing.T) {
 			if !reflect.DeepEqual(paths, test.want) {
 				t.Fatalf("paths = %q, want %q", paths, test.want)
 			}
-			prompt := appendProtectedPaths(composeReviewPrompt("", nil, "base", "diff", ""), paths)
+			prompt := appendProtectedPaths(composeReviewPrompt("", nil, "base", reviewPromptContext{
+				diffPath: "diff", evidence: noIterationReviewEvidence(),
+			}), paths)
 			if len(paths) == 0 {
 				if strings.Contains(prompt, "Protected paths") {
 					t.Fatal("unexpected protected-path section")
