@@ -22,6 +22,8 @@ END QUESTION
 The QUESTION: marker must begin at the start of its own line; the block format is otherwise unchanged.
 Ambiguity should have been resolved during planning, and trivial choices should be decided without asking. After emitting the block, stop working.`
 
+	implementerEvidenceInstruction = `Before ending this implementer turn, use the vendored verify skill to exercise the change in the running software and save Evidence to %s. Do not commit Evidence; it stays with this Run.`
+
 	implementPrompt = `/implement
 
 Implement the ticket below in the current project. Use the vendored implement skill and leave the working tree with the requested changes for review. Do not commit or push changes.
@@ -29,6 +31,8 @@ Implement the ticket below in the current project. Use the vendored implement sk
 ` + questionProtocolInstruction + `
 
 At the end of this turn, self-assess your remaining context. Only if you judge that you are low on context, invoke ` + "`/handoff %s`" + ` to prepare the next iteration. Do not invoke it otherwise.
+
+` + implementerEvidenceInstruction + `
 
 Ticket: %s
 Title: %s
@@ -44,6 +48,8 @@ Fix every [blocking] finding; you cannot decline a [blocking] finding. Fix every
 
 At the end of this turn, self-assess your remaining context. Only if you judge that you are low on context, invoke ` + "`/handoff %s`" + ` to prepare the next iteration. Do not invoke it otherwise.
 
+` + implementerEvidenceInstruction + `
+
 Ticket: %s
 
 Blocking findings:
@@ -57,6 +63,8 @@ Nits:
 ` + questionProtocolInstruction + `
 
 At the end of this turn, self-assess your remaining context. Only if you judge that you are low on context, invoke ` + "`/handoff %s`" + ` to prepare the next implementer turn. Do not invoke it otherwise.
+
+` + implementerEvidenceInstruction + `
 
 Ticket: %s
 Title: %s
@@ -96,49 +104,61 @@ Nits:
 %s`
 )
 
+type implementPromptOptions struct {
+	handoffPath       string
+	evidenceDirectory string
+	rolloverSeedPath  string
+	additionalContext string
+}
+
 func composeImplementPrompt(
 	ticket tracker.Ticket,
 	findings []verdict.Finding,
 	iteration int,
-	handoffPath string,
-	rolloverSeedPath string,
-	additionalContext string,
+	options implementPromptOptions,
 ) string {
 	var prompt string
 	if iteration == 1 {
-		prompt = fmt.Sprintf(implementPrompt, handoffPath, "#"+strconv.Itoa(ticket.Number), ticket.Title, ticket.Body)
+		prompt = fmt.Sprintf(
+			implementPrompt,
+			options.handoffPath, options.evidenceDirectory,
+			"#"+strconv.Itoa(ticket.Number), ticket.Title, ticket.Body,
+		)
 	} else {
-		prompt = fmt.Sprintf(reviseImplementPrompt, handoffPath, "#"+strconv.Itoa(ticket.Number), formatFindings(findings, verdict.Blocking), formatFindings(findings, verdict.Nit))
+		prompt = fmt.Sprintf(
+			reviseImplementPrompt,
+			options.handoffPath, options.evidenceDirectory, "#"+strconv.Itoa(ticket.Number),
+			formatFindings(findings, verdict.Blocking), formatFindings(findings, verdict.Nit),
+		)
 	}
-	if rolloverSeedPath != "" {
+	if options.rolloverSeedPath != "" {
 		prompt = fmt.Sprintf(
 			"%s\n\n%s",
 			prompt,
-			fmt.Sprintf(rolloverSeedPrompt, rolloverSeedPath, ticket.Title, ticket.Body),
+			fmt.Sprintf(rolloverSeedPrompt, options.rolloverSeedPath, ticket.Title, ticket.Body),
 		)
 	}
-	return appendPromptContext(prompt, additionalContext)
+	return appendPromptContext(prompt, options.additionalContext)
 }
 
 func composeGateAttemptPrompt(
 	ticket tracker.Ticket,
-	handoffPath string,
-	rolloverSeedPath string,
-	additionalContext string,
+	options implementPromptOptions,
 	gateAttemptResult string,
 ) string {
 	prompt := fmt.Sprintf(
 		gateAttemptImplementPrompt,
-		handoffPath, "#"+strconv.Itoa(ticket.Number), ticket.Title, ticket.Body, gateAttemptResult,
+		options.handoffPath, options.evidenceDirectory,
+		"#"+strconv.Itoa(ticket.Number), ticket.Title, ticket.Body, gateAttemptResult,
 	)
-	if rolloverSeedPath != "" {
+	if options.rolloverSeedPath != "" {
 		prompt = fmt.Sprintf(
 			"%s\n\n%s",
 			prompt,
-			fmt.Sprintf(gateAttemptRolloverSeedPrompt, rolloverSeedPath, ticket.Title, ticket.Body),
+			fmt.Sprintf(gateAttemptRolloverSeedPrompt, options.rolloverSeedPath, ticket.Title, ticket.Body),
 		)
 	}
-	return appendPromptContext(prompt, additionalContext)
+	return appendPromptContext(prompt, options.additionalContext)
 }
 
 func composeReviewPrompt(ticketRef string, ticket *tracker.Ticket, branchPoint, diffPath, additionalContext string) string {

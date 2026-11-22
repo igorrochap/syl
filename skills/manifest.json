@@ -17,6 +17,7 @@
     { "name": "tdd", "classification": "core" },
     { "name": "to-spec", "classification": "core" },
     { "name": "to-tickets", "classification": "core" },
+    { "name": "verify", "classification": "core" },
     { "name": "writing-for-agents", "classification": "core" },
     { "name": "go-style", "classification": "optional" }
   ]

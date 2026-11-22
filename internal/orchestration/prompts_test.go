@@ -12,7 +12,9 @@ import (
 func TestComposeImplementPromptFirstIteration(t *testing.T) {
 	ticket := tracker.Ticket{Number: 42, Title: "Concentrate prompts", Body: "Keep every byte.\n\nDo not change wording."}
 
-	got := composeImplementPrompt(ticket, nil, 1, "/tmp/handoff-1.md", "", "")
+	got := composeImplementPrompt(ticket, nil, 1, implementPromptOptions{
+		handoffPath: "/tmp/handoff-1.md", evidenceDirectory: "/tmp/evidence-1",
+	})
 	want := `/implement
 
 Implement the ticket below in the current project. Use the vendored implement skill and leave the working tree with the requested changes for review. Do not commit or push changes.
@@ -27,6 +29,8 @@ The QUESTION: marker must begin at the start of its own line; the block format i
 Ambiguity should have been resolved during planning, and trivial choices should be decided without asking. After emitting the block, stop working.
 
 At the end of this turn, self-assess your remaining context. Only if you judge that you are low on context, invoke ` + "`/handoff /tmp/handoff-1.md`" + ` to prepare the next iteration. Do not invoke it otherwise.
+
+Before ending this implementer turn, use the vendored verify skill to exercise the change in the running software and save Evidence to /tmp/evidence-1. Do not commit Evidence; it stays with this Run.
 
 Ticket: #42
 Title: Concentrate prompts
@@ -152,8 +156,14 @@ func TestComposeImplementPromptRevisionWithBlockingFindings(t *testing.T) {
 		{Kind: verdict.Blocking, Location: "prompts_test.go:20", Issue: "second issue"},
 	}
 
-	got := composeImplementPrompt(ticket, findings, 2, "/tmp/handoff-2.md", "", "")
-	assertContainsAll(t, got, "Fix every [blocking] finding", "cannot decline a [blocking]", "decline a [nit] only with a reason", "Nits:\n(none)", "- [blocking] prompts.go:10 — first issue")
+	got := composeImplementPrompt(ticket, findings, 2, implementPromptOptions{
+		handoffPath: "/tmp/handoff-2.md", evidenceDirectory: "/tmp/evidence-2",
+	})
+	assertContainsAll(t, got,
+		"Fix every [blocking] finding", "cannot decline a [blocking]", "decline a [nit] only with a reason",
+		"Nits:\n(none)", "- [blocking] prompts.go:10 — first issue",
+		"use the vendored verify skill", "save Evidence to /tmp/evidence-2",
+	)
 	if strings.Contains(got, "Address ONLY") {
 		t.Fatal("obsolete blocking-only instruction")
 	}
@@ -174,8 +184,14 @@ func TestComposeImplementPromptWhitespaceOnlyContextMatchesWithoutContext(t *tes
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			handoffPath := "/tmp/handoff.md"
-			withoutContext := composeImplementPrompt(ticket, test.blocking, test.iteration, handoffPath, "", "")
-			withWhitespaceContext := composeImplementPrompt(ticket, test.blocking, test.iteration, handoffPath, "", " \n\t ")
+			evidencePath := "/tmp/evidence-1"
+			if test.iteration > 1 {
+				evidencePath = "/tmp/evidence-2"
+			}
+			options := implementPromptOptions{handoffPath: handoffPath, evidenceDirectory: evidencePath}
+			withoutContext := composeImplementPrompt(ticket, test.blocking, test.iteration, options)
+			options.additionalContext = " \n\t "
+			withWhitespaceContext := composeImplementPrompt(ticket, test.blocking, test.iteration, options)
 			assertPromptEqual(t, withWhitespaceContext, withoutContext)
 		})
 	}
@@ -185,7 +201,9 @@ func TestComposeImplementPromptPreservesMultilineContext(t *testing.T) {
 	ticket := tracker.Ticket{Number: 42}
 	context := "Use the existing GitRunner seam.\nDo not add a new adapter."
 
-	got := composeImplementPrompt(ticket, nil, 1, "/tmp/handoff-1.md", "", context)
+	got := composeImplementPrompt(ticket, nil, 1, implementPromptOptions{
+		handoffPath: "/tmp/handoff-1.md", evidenceDirectory: "/tmp/evidence-1", additionalContext: context,
+	})
 
 	if !strings.Contains(got, context) {
 		t.Fatalf("implement prompt = %q, want exact multi-line context %q", got, context)
@@ -196,7 +214,9 @@ func TestComposeImplementPromptSeedsFreshRolloverSession(t *testing.T) {
 	ticket := tracker.Ticket{Number: 42, Title: "Preserve context", Body: "Keep the session decisions."}
 	findings := []verdict.Finding{{Kind: verdict.Blocking, Location: "worker.go:10", Issue: "handle the error"}}
 
-	got := composeImplementPrompt(ticket, findings, 2, "/tmp/handoff-2.md", "/tmp/handoff-1.md", "")
+	got := composeImplementPrompt(ticket, findings, 2, implementPromptOptions{
+		handoffPath: "/tmp/handoff-2.md", evidenceDirectory: "/tmp/evidence-2", rolloverSeedPath: "/tmp/handoff-1.md",
+	})
 
 	assertContainsAll(t, got,
 		"Before doing any work, read the Rollover handoff document at /tmp/handoff-1.md.",
@@ -205,6 +225,20 @@ func TestComposeImplementPromptSeedsFreshRolloverSession(t *testing.T) {
 		"Ticket body (including acceptance criteria):\nKeep the session decisions.",
 		"Blocking findings:\n- [blocking] worker.go:10 — handle the error",
 		"/handoff /tmp/handoff-2.md",
+	)
+}
+
+func TestComposeGateAttemptPromptIncludesEvidenceDirectory(t *testing.T) {
+	ticket := tracker.Ticket{Number: 42, Title: "Exercise failed Gate fixes", Body: "Keep behavior visible."}
+
+	got := composeGateAttemptPrompt(ticket, implementPromptOptions{
+		handoffPath: "/tmp/handoff-1-gate-2.md", evidenceDirectory: "/tmp/evidence-1",
+	}, "tests failed")
+
+	assertContainsAll(t, got,
+		"use the vendored verify skill to exercise the change in the running software",
+		"save Evidence to /tmp/evidence-1",
+		"Gate attempt result:\ntests failed",
 	)
 }
 
@@ -378,7 +412,9 @@ func assertPromptEqual(t *testing.T, got, want string) {
 
 func TestRevisionPromptsCarryNits(t *testing.T) {
 	findings := []verdict.Finding{{Kind: verdict.Blocking, Location: "a.go:1", Issue: "block"}, {Kind: verdict.Nit, Location: "b.go:2", Issue: "nit issue"}}
-	implement := composeImplementPrompt(tracker.Ticket{Number: 42}, findings, 2, "handoff", "seed", "")
+	implement := composeImplementPrompt(tracker.Ticket{Number: 42}, findings, 2, implementPromptOptions{
+		handoffPath: "handoff", evidenceDirectory: "evidence-2", rolloverSeedPath: "seed",
+	})
 	review := composeReviewResumePrompt("diff", findings, "")
 	for _, prompt := range []string{implement, review} {
 		assertContainsAll(t, prompt, "Blocking findings:\n- [blocking] a.go:1 — block", "Nits:\n- [nit] b.go:2 — nit issue")
