@@ -98,6 +98,10 @@ func (r *memoryRunRecorder) ImplementGateHandoffPath(iteration, turn int) string
 	return filepath.Join(r.dir, fmt.Sprintf("handoff-%02d-gate-%02d.md", iteration, turn))
 }
 
+func (r *memoryRunRecorder) EvidenceDirectory(iteration int) string {
+	return filepath.Join(r.dir, runrecord.ArtifactName(runrecord.EvidenceDirectory, iteration))
+}
+
 func (r *memoryRunRecorder) RecordGateScript(contents []byte, executable bool) (string, error) {
 	name := "branch-point-quality.sh"
 	r.files[name] = string(contents)
@@ -648,7 +652,9 @@ func TestRunImplementIterationsFallsBackToFreshRunWhenImplementResumeFails(t *te
 	}
 	wantPrompt := composeImplementPrompt(ticket, []verdict.Finding{{
 		Kind: verdict.Blocking, Location: "worker.go (location unverified)", Issue: "handle the error",
-	}}, 2, recorder.ImplementHandoffPath(2), "", "")
+	}}, 2, implementPromptOptions{
+		handoffPath: recorder.ImplementHandoffPath(2), evidenceDirectory: recorder.EvidenceDirectory(2),
+	})
 	if got := implementer.resumeCalls[0].prompt; got != wantPrompt {
 		t.Fatalf("implement resume prompt = %q, want %q", got, wantPrompt)
 	}

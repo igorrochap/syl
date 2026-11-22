@@ -130,6 +130,16 @@ func TestSyncRunsReportAndAppliesCoreSkills(t *testing.T) {
 	}
 }
 
+func TestSyncPreservesProjectVerifyRecipe(t *testing.T) {
+	root := t.TempDir()
+	recipePath := writeProjectVerifyRecipe(t, root)
+
+	if err := Sync(root, SyncOptions{Output: io.Discard, All: true}); err != nil {
+		t.Fatalf("Sync() error = %v", err)
+	}
+	assertProjectVerifyRecipeUnchanged(t, recipePath)
+}
+
 func TestSyncPromptsForLocallyModifiedSkill(t *testing.T) {
 	root, skillName := locallyModifiedSyncProject(t)
 	var output bytes.Buffer

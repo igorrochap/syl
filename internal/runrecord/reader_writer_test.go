@@ -121,6 +121,27 @@ func TestReadSkipsDirectoriesAndUnreadableVerdicts(t *testing.T) {
 	}
 }
 
+func TestReadRecognizesEvidenceDirectoryForItsIteration(t *testing.T) {
+	_, runDir := newRunDirectory(t)
+	evidenceDir := filepath.Join(runDir, "evidence-1")
+	if err := os.Mkdir(evidenceDir, 0o755); err != nil {
+		t.Fatalf("create evidence directory: %v", err)
+	}
+	writeRunFile(t, evidenceDir, "evidence.md", "Outcome: pass\n")
+
+	record, err := NewReader(nil).Read(runDir)
+	if err != nil {
+		t.Fatalf("Read() error = %v", err)
+	}
+	if len(record.Artifacts) != 1 {
+		t.Fatalf("artifacts = %#v, want the evidence directory", record.Artifacts)
+	}
+	artifact := record.Artifacts[0]
+	if artifact.Kind != EvidenceDirectory || artifact.Name != "evidence-1" || artifact.Iteration != 1 {
+		t.Fatalf("evidence artifact = %#v, want evidence-1 for iteration 1", artifact)
+	}
+}
+
 func TestReadSortsArtifactsByName(t *testing.T) {
 	_, runDir := newRunDirectory(t)
 	writeRunFile(t, runDir, "iteration-02-review.diff", "")

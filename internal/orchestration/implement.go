@@ -492,6 +492,7 @@ type implementTurnParams struct {
 	findings            []verdict.Finding
 	previousSession     string
 	handoffPath         string
+	evidenceDirectory   string
 	rolloverSeedPath    string
 	gateAttemptFeedback *failedGateAttemptFeedback
 	mode                HarnessOutputMode
@@ -518,7 +519,8 @@ func runImplementIterations(ctx context.Context, params implementIterationsParam
 			return 0, verdict.Verdict{}, nil, err
 		}
 		gateCycle, err := runImplementerGateCycle(
-			ctx, params, iteration, handoffPath, findings, previousImplementerSession, rolloverSeedPath, mode, &branchGate,
+			ctx, params, iteration, handoffPath,
+			findings, previousImplementerSession, rolloverSeedPath, mode, &branchGate,
 		)
 		if err != nil {
 			return 0, verdict.Verdict{}, nil, err
@@ -665,7 +667,8 @@ func runImplementerGateTurn(
 	}
 	implementResult, err := runImplementTurn(ctx, params, implementTurnParams{
 		iteration: iteration, findings: turnFindings, previousSession: cycle.previousSession,
-		handoffPath: handoffPath, rolloverSeedPath: cycle.rolloverSeedPath,
+		handoffPath: handoffPath, evidenceDirectory: params.recorder.EvidenceDirectory(iteration),
+		rolloverSeedPath:    cycle.rolloverSeedPath,
 		gateAttemptFeedback: previousGateAttemptFeedback, mode: mode,
 	})
 	if err != nil {
@@ -968,15 +971,19 @@ func presentImplementTurn(params implementIterationsParams, turn implementTurnPa
 }
 
 func buildImplementRequest(params implementIterationsParams, turn implementTurnParams) harness.Request {
+	options := implementPromptOptions{
+		handoffPath: turn.handoffPath, evidenceDirectory: turn.evidenceDirectory,
+		rolloverSeedPath: turn.rolloverSeedPath, additionalContext: params.additionalContext,
+	}
 	implementPrompt := ""
 	if turn.gateAttemptFeedback != nil {
 		implementPrompt = composeGateAttemptPrompt(
-			params.ticket, turn.handoffPath, turn.rolloverSeedPath, params.additionalContext,
+			params.ticket, options,
 			formatGateAttemptFeedback(*turn.gateAttemptFeedback),
 		)
 	} else {
 		implementPrompt = composeImplementPrompt(
-			params.ticket, turn.findings, turn.iteration, turn.handoffPath, turn.rolloverSeedPath, params.additionalContext,
+			params.ticket, turn.findings, turn.iteration, options,
 		)
 	}
 	return harness.Request{

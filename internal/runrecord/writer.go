@@ -119,6 +119,11 @@ func (writer *Writer) GateHandoffPath(iteration, turn int) string {
 	return filepath.Join(writer.directory, fmt.Sprintf("handoff-%02d-gate-%02d.md", iteration, turn))
 }
 
+// EvidenceDirectory returns the Evidence directory for one implementer iteration.
+func (writer *Writer) EvidenceDirectory(iteration int) string {
+	return filepath.Join(writer.directory, ArtifactName(EvidenceDirectory, iteration))
+}
+
 // GateScriptPath returns the artifact path for the branch-point Gate script.
 func (writer *Writer) GateScriptPath() string {
 	return filepath.Join(writer.directory, ArtifactName(GateScript, 0))
@@ -296,6 +301,7 @@ var iterationArtifactFormats = map[ArtifactKind]string{
 	VerdictFile:         "iteration-%02d-verdict.txt",
 	ImplementFailure:    "iteration-%02d-implement.failure.txt",
 	ReviewFailure:       "iteration-%02d-review.failure.txt",
+	EvidenceDirectory:   "evidence-%d",
 }
 
 // FailureArtifactName returns the stable name for a failed Role artifact.

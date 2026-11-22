@@ -125,9 +125,11 @@ const (
 	GateOutput
 	// NoGateFile records that the branch point has no Gate script.
 	NoGateFile
+	// EvidenceDirectory is the Evidence directory for one implementer iteration.
+	EvidenceDirectory
 )
 
-// Artifact describes a recognized file in a Run directory.
+// Artifact describes a recognized file or directory in a Run directory.
 type Artifact struct {
 	Kind       ArtifactKind
 	Name       string
@@ -257,7 +259,7 @@ func (reader *Reader) readEntry(record *Record, runDir string, entry os.DirEntry
 		record.HighestIteration = max(record.HighestIteration, ParseIterationNumber(entry.Name()))
 	}
 	artifact, ok := ParseArtifactName(entry.Name())
-	if !ok || entry.IsDir() {
+	if !ok || !matchesArtifactEntryType(entry, artifact) {
 		return
 	}
 	if info, err := entry.Info(); err == nil {
@@ -267,6 +269,13 @@ func (reader *Reader) readEntry(record *Record, runDir string, entry os.DirEntry
 	if artifact.Kind == VerdictFile {
 		reader.readVerdict(record, runDir, artifact)
 	}
+}
+
+func matchesArtifactEntryType(entry os.DirEntry, artifact Artifact) bool {
+	if artifact.Kind == EvidenceDirectory {
+		return entry.IsDir()
+	}
+	return !entry.IsDir()
 }
 
 func (reader *Reader) readVerdict(record *Record, runDir string, artifact Artifact) {
@@ -628,6 +637,9 @@ func ParseArtifactName(name string) (Artifact, bool) {
 	if artifact, ok := parseStandaloneArtifact(name); ok {
 		return artifact, true
 	}
+	if artifact, ok := parseEvidenceDirectory(name); ok {
+		return artifact, true
+	}
 	if artifact, ok := parseHandoffArtifact(name); ok {
 		return artifact, true
 	}
@@ -635,6 +647,18 @@ func ParseArtifactName(name string) (Artifact, bool) {
 		return artifact, true
 	}
 	return parseIterationArtifact(name)
+}
+
+func parseEvidenceDirectory(name string) (Artifact, bool) {
+	iterationText, found := strings.CutPrefix(name, "evidence-")
+	if !found {
+		return Artifact{}, false
+	}
+	iteration, err := strconv.Atoi(iterationText)
+	if err != nil || iteration <= 0 || name != fmt.Sprintf("evidence-%d", iteration) {
+		return Artifact{}, false
+	}
+	return Artifact{Kind: EvidenceDirectory, Name: name, Iteration: iteration, Role: "implement"}, true
 }
 
 func parseStandaloneArtifact(name string) (Artifact, bool) {
