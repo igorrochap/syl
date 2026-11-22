@@ -255,7 +255,12 @@ func TestParseSummaryKeepsFirstOccurrenceAndRejectsBadIterations(t *testing.T) {
 }
 
 func TestParseSummaryReadsPublicationOutcome(t *testing.T) {
-	got := ParseSummary([]byte("Publication: failed\nPublication step: pull request\nPublication error:\n  gh pr create failed\n  permission denied\nDiff stat:\n file.go | 1 +\n"))
+	got := ParseSummary([]byte("Publication: published\nPublication notice:\n  Could not attach PR-worthy Evidence image Dashboard\n  gh pr edit failed: unknown flag: --attach\nDiff stat:\n file.go | 1 +\n"))
+	if got.PublicationNotice != "Could not attach PR-worthy Evidence image Dashboard\ngh pr edit failed: unknown flag: --attach" {
+		t.Fatalf("ParseSummary().PublicationNotice = %q, want the complete publication notice", got.PublicationNotice)
+	}
+
+	got = ParseSummary([]byte("Publication: failed\nPublication step: pull request\nPublication error:\n  gh pr create failed\n  permission denied\nDiff stat:\n file.go | 1 +\n"))
 	want := Publication{Status: PublicationFailed, Step: PublicationStepPullRequest, Error: "gh pr create failed\npermission denied"}
 	if !reflect.DeepEqual(got.Publication, want) {
 		t.Fatalf("ParseSummary().Publication = %#v, want %#v", got.Publication, want)

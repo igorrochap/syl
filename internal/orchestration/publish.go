@@ -4,7 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
+	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -22,15 +25,25 @@ type publicationGateVerification struct {
 }
 
 type publicationVerification struct {
-	gates               publicationGateVerification
-	evidence            string
-	evidenceRecorded    bool
-	evidenceUnavailable bool
+	gates                publicationGateVerification
+	evidence             string
+	evidenceImages       []tracker.PullRequestEvidenceImage
+	evidenceImageNotices []string
+	evidenceRecorded     bool
+	evidenceUnavailable  bool
+}
+
+type publicationEvidence struct {
+	summary      string
+	images       []tracker.PullRequestEvidenceImage
+	imageNotices []string
+	recorded     bool
 }
 
 var (
 	markdownImagePattern = regexp.MustCompile(`!\[([^\]]*)\](?:\([^)]*\)|\s*\[[^\]]*\])?`)
 	htmlImagePattern     = regexp.MustCompile(`(?is)<img\b[^>]*>`)
+	prWorthyImagePattern = regexp.MustCompile(`(?i)!\[([^\]]*)\]\(\s*(?:<([^>]+)>|([^\s)]+))(?:\s+(?:"[^"]*"|'[^']*'))?\s*\)\s*(?:[-–—:]\s*)?(?:\(\s*)?PR-worthy\b(?:\s*\))?`)
 )
 
 func publishApprovedImplement(
@@ -38,34 +51,48 @@ func publishApprovedImplement(
 	options ImplementOptions,
 	setup implementSetup,
 	summary implementSummary,
-) (runrecord.Publication, []string) {
+) (runrecord.Publication, []string, []string) {
 	var notices []string
+	attachmentNotices := append([]string(nil), summary.verification.evidenceImageNotices...)
+	notices = append(notices, attachmentNotices...)
 	hasChanges, err := stageApprovedImplementation(ctx, setup)
 	if err != nil {
-		return failedPublication(runrecord.PublicationStepCommit, err), notices
+		return failedPublication(runrecord.PublicationStepCommit, err), notices, attachmentNotices
 	}
 	if !hasChanges {
-		return runrecord.Publication{Status: runrecord.PublicationSkipped}, notices
+		return runrecord.Publication{Status: runrecord.PublicationSkipped}, notices, attachmentNotices
 	}
 	message, err := implementationCommitMessage(options, setup.branch)
 	if err != nil {
-		return failedPublication(runrecord.PublicationStepCommit, err), notices
+		return failedPublication(runrecord.PublicationStepCommit, err), notices, attachmentNotices
 	}
 	notice, err := commitApprovedImplementation(ctx, options, setup, message)
 	if notice != "" {
 		notices = append(notices, notice)
 	}
 	if err != nil {
-		return failedPublication(runrecord.PublicationStepCommit, fmt.Errorf("commit approved implementation: %w", err)), notices
+		return failedPublication(runrecord.PublicationStepCommit, fmt.Errorf("commit approved implementation: %w", err)), notices, attachmentNotices
 	}
 	if _, err := setup.git.Run(ctx, "push", "-u", "origin", setup.branch); err != nil {
-		return failedPublication(runrecord.PublicationStepPush, fmt.Errorf("push implementation branch %q: %w", setup.branch, err)), notices
+		return failedPublication(runrecord.PublicationStepPush, fmt.Errorf("push implementation branch %q: %w", setup.branch, err)), notices, attachmentNotices
 	}
 	pullRequest, notice := commitgenPullRequest(ctx, options, setup, summary)
 	if notice != "" {
 		notices = append(notices, notice)
 	}
-	return createDraftPullRequest(ctx, options, pullRequest, notices)
+	publication, notices := createDraftPullRequest(ctx, options, pullRequest, notices)
+	if publication.Status != runrecord.PublicationPublished {
+		return publication, notices, attachmentNotices
+	}
+	attachmentFailures := attachPullRequestEvidence(
+		ctx,
+		options.IssueTracker,
+		publication.URL,
+		summary.verification.evidenceImages,
+	)
+	attachmentNotices = append(attachmentNotices, attachmentFailures...)
+	notices = append(notices, attachmentFailures...)
+	return publication, notices, attachmentNotices
 }
 
 func stageApprovedImplementation(ctx context.Context, setup implementSetup) (bool, error) {
@@ -98,6 +125,39 @@ func createDraftPullRequest(
 		return failedPublication(runrecord.PublicationStepPullRequest, fmt.Errorf("create draft pull request: tracker returned an empty URL")), notices
 	}
 	return runrecord.Publication{Status: runrecord.PublicationPublished, URL: pullRequestURL}, notices
+}
+
+func attachPullRequestEvidence(
+	ctx context.Context,
+	issueTracker tracker.Tracker,
+	pullRequestURL string,
+	images []tracker.PullRequestEvidenceImage,
+) []string {
+	if len(images) == 0 {
+		return nil
+	}
+
+	attacher, ok := issueTracker.(tracker.PullRequestEvidenceAttacher)
+	if !ok {
+		var notices []string
+		attachmentError := errors.New("tracker does not support pull request Evidence attachments")
+		for _, image := range images {
+			notices = append(notices, formatPullRequestEvidenceNotice(image, attachmentError))
+		}
+		return notices
+	}
+
+	var notices []string
+	for _, image := range images {
+		if err := attacher.AttachPullRequestEvidence(ctx, pullRequestURL, image); err != nil {
+			notices = append(notices, formatPullRequestEvidenceNotice(image, err))
+		}
+	}
+	return notices
+}
+
+func formatPullRequestEvidenceNotice(image tracker.PullRequestEvidenceImage, reason error) string {
+	return fmt.Sprintf("Could not attach PR-worthy Evidence image %q (%s): %v", image.Alt, image.Path, reason)
 }
 
 func commitApprovedImplementation(
@@ -450,15 +510,170 @@ func writeEvidenceVerification(section *strings.Builder, verification publicatio
 	fmt.Fprintf(section, "Evidence summary:\n\n%s\n", verification.evidence)
 }
 
-func readPublicationEvidence(directory string) (string, bool, error) {
+func readPublicationEvidence(directory string) (publicationEvidence, error) {
 	contents, err := os.ReadFile(filepath.Join(directory, "evidence.md"))
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return "", false, nil
+			return publicationEvidence{}, nil
 		}
-		return "", false, fmt.Errorf("read evidence.md: %w", err)
+		return publicationEvidence{}, fmt.Errorf("read evidence.md: %w", err)
 	}
-	return summarizeEvidenceText(string(contents)), true, nil
+	images, imageNotices := prWorthyEvidenceImages(directory, string(contents))
+	return publicationEvidence{
+		summary: summarizeEvidenceText(string(contents)), images: images,
+		imageNotices: imageNotices, recorded: true,
+	}, nil
+}
+
+func prWorthyEvidenceImages(directory, contents string) ([]tracker.PullRequestEvidenceImage, []string) {
+	var (
+		images  []tracker.PullRequestEvidenceImage
+		notices []string
+	)
+	insideCodeBlock := false
+	for _, line := range strings.Split(strings.ReplaceAll(contents, "\r\n", "\n"), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if isCodeFenceDelimiter(trimmed) {
+			insideCodeBlock = !insideCodeBlock
+			continue
+		}
+		if insideCodeBlock {
+			continue
+		}
+		for _, match := range prWorthyImagePattern.FindAllStringSubmatch(line, -1) {
+			source := evidenceImageSource(match)
+			alt := strings.TrimSpace(match[1])
+			if alt == "" {
+				alt = filepath.Base(source)
+			}
+			path, err := localEvidenceImagePath(directory, source)
+			if err != nil {
+				notices = append(notices, formatPullRequestEvidenceNotice(
+					tracker.PullRequestEvidenceImage{Path: source, Alt: alt},
+					err,
+				))
+				continue
+			}
+			images = append(images, tracker.PullRequestEvidenceImage{Path: path, Alt: alt})
+		}
+	}
+	return images, notices
+}
+
+func evidenceImageSource(match []string) string {
+	if match[2] != "" {
+		return match[2]
+	}
+	return match[3]
+}
+
+func localEvidenceImagePath(directory, source string) (string, error) {
+	path, err := parseLocalEvidenceImagePath(source)
+	if err != nil {
+		return "", err
+	}
+	absoluteEvidenceDirectory, err := filepath.Abs(directory)
+	if err != nil {
+		return "", fmt.Errorf("resolve Evidence directory: %w", err)
+	}
+	absoluteImagePath, err := filepath.Abs(filepath.Join(absoluteEvidenceDirectory, path))
+	if err != nil {
+		return "", fmt.Errorf("resolve PR-worthy Evidence image path %q: %w", source, err)
+	}
+	insideEvidenceDirectory, err := isWithinEvidenceDirectory(absoluteEvidenceDirectory, absoluteImagePath)
+	if err != nil {
+		return "", fmt.Errorf("check PR-worthy Evidence image path %q: %w", source, err)
+	}
+	if !insideEvidenceDirectory {
+		return "", fmt.Errorf("PR-worthy Evidence image path %q escapes the Evidence directory", source)
+	}
+	if err := requireEvidenceImageInDirectory(absoluteEvidenceDirectory, absoluteImagePath, source); err != nil {
+		return "", err
+	}
+	if err := validateEvidenceImage(absoluteImagePath); err != nil {
+		return "", err
+	}
+	return absoluteImagePath, nil
+}
+
+func parseLocalEvidenceImagePath(source string) (string, error) {
+	parsed, err := url.Parse(strings.TrimSpace(source))
+	if err != nil {
+		return "", fmt.Errorf("parse PR-worthy Evidence image path %q: %w", source, err)
+	}
+	isRemoteReference := parsed.Scheme != "" || parsed.Host != "" || parsed.RawQuery != ""
+	if isRemoteReference {
+		return "", fmt.Errorf("PR-worthy Evidence image path %q is not a local Evidence file", source)
+	}
+	if parsed.Fragment != "" {
+		return "", fmt.Errorf("PR-worthy Evidence image path %q contains # and cannot be attached safely", source)
+	}
+	path := filepath.FromSlash(parsed.Path)
+	if path == "" {
+		return "", errors.New("PR-worthy Evidence image link has an empty path")
+	}
+	if filepath.IsAbs(path) {
+		return "", fmt.Errorf("PR-worthy Evidence image path %q must be relative to the Evidence directory", source)
+	}
+	return path, nil
+}
+
+func requireEvidenceImageInDirectory(evidenceDirectory, imagePath, source string) error {
+	resolvedEvidenceDirectory, err := filepath.EvalSymlinks(evidenceDirectory)
+	if err != nil {
+		return fmt.Errorf("resolve Evidence directory: %w", err)
+	}
+	resolvedImagePath, err := filepath.EvalSymlinks(imagePath)
+	if err != nil {
+		return fmt.Errorf("resolve PR-worthy Evidence image %q: %w", source, err)
+	}
+	insideEvidenceDirectory, err := isWithinEvidenceDirectory(resolvedEvidenceDirectory, resolvedImagePath)
+	if err != nil {
+		return fmt.Errorf("check resolved PR-worthy Evidence image path %q: %w", source, err)
+	}
+	if !insideEvidenceDirectory {
+		return fmt.Errorf("PR-worthy Evidence image path %q resolves outside the Evidence directory", source)
+	}
+	return nil
+}
+
+func isWithinEvidenceDirectory(directory, path string) (bool, error) {
+	relativePath, err := filepath.Rel(directory, path)
+	if err != nil {
+		return false, err
+	}
+	pathEscapesDirectory := relativePath == ".." || strings.HasPrefix(relativePath, ".."+string(filepath.Separator))
+	return !pathEscapesDirectory, nil
+}
+
+func validateEvidenceImage(path string) error {
+	fileInfo, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("inspect PR-worthy Evidence image %q: %w", path, err)
+	}
+	if !fileInfo.Mode().IsRegular() {
+		return fmt.Errorf("PR-worthy Evidence image %q is not a regular file", path)
+	}
+	imageFile, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("open PR-worthy Evidence image %q: %w", path, err)
+	}
+	header := make([]byte, 512)
+	bytesRead, readErr := imageFile.Read(header)
+	closeErr := imageFile.Close()
+	if readErr != nil && !errors.Is(readErr, io.EOF) {
+		return fmt.Errorf("read PR-worthy Evidence image %q: %w", path, readErr)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("close PR-worthy Evidence image %q: %w", path, closeErr)
+	}
+	contentType := http.DetectContentType(header[:bytesRead])
+	isSVG := strings.EqualFold(filepath.Ext(path), ".svg") && strings.Contains(strings.ToLower(string(header[:bytesRead])), "<svg")
+	isImage := strings.HasPrefix(contentType, "image/") || isSVG
+	if !isImage {
+		return fmt.Errorf("PR-worthy Evidence file %q is not an image (detected %s)", path, contentType)
+	}
+	return nil
 }
 
 func summarizeEvidenceText(contents string) string {

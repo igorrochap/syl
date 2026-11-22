@@ -127,6 +127,89 @@ func TestGitHubCreatePullRequestOpensDraftWithHeadAndOptionalBase(t *testing.T) 
 	}
 }
 
+func TestGitHubAttachesEvidenceImageToExistingPullRequest(t *testing.T) {
+	const command = "pr edit 23 --attach /tmp/dashboard.png#Dashboard"
+	runner := &scriptedGitHubRunner{responses: map[string]githubResponse{command: {}}}
+	githubTracker, err := NewGitHub(runner)
+	if err != nil {
+		t.Fatalf("NewGitHub() error = %v", err)
+	}
+
+	err = githubTracker.AttachPullRequestEvidence(context.Background(), "https://github.com/example/project/pull/23", PullRequestEvidenceImage{
+		Path: "/tmp/dashboard.png", Alt: "Dashboard",
+	})
+	if err != nil {
+		t.Fatalf("AttachPullRequestEvidence() error = %v", err)
+	}
+	if len(runner.calls) != 1 || runner.calls[0] != command {
+		t.Fatalf("gh calls = %#v, want %q", runner.calls, command)
+	}
+}
+
+func TestGitHubEvidenceAttachmentReturnsUnsupportedFlagError(t *testing.T) {
+	const command = "pr edit 23 --attach /tmp/dashboard.png#Dashboard"
+	runner := &scriptedGitHubRunner{responses: map[string]githubResponse{
+		command: {err: errors.New("unknown flag: --attach")},
+	}}
+	githubTracker, err := NewGitHub(runner)
+	if err != nil {
+		t.Fatalf("NewGitHub() error = %v", err)
+	}
+
+	err = githubTracker.AttachPullRequestEvidence(context.Background(), "https://github.com/example/project/pull/23", PullRequestEvidenceImage{
+		Path: "/tmp/dashboard.png", Alt: "Dashboard",
+	})
+	if err == nil || !strings.Contains(err.Error(), "unknown flag: --attach") {
+		t.Fatalf("AttachPullRequestEvidence() error = %v, want unsupported flag error", err)
+	}
+}
+
+func TestGitHubEvidenceAttachmentRejectsInvalidURLAndUnrepresentableImage(t *testing.T) {
+	tests := []struct {
+		name           string
+		pullRequestURL string
+		image          PullRequestEvidenceImage
+		wantError      string
+	}{
+		{
+			name: "invalid URL", pullRequestURL: "not a pull request URL",
+			image:     PullRequestEvidenceImage{Path: "/tmp/dashboard.png", Alt: "Dashboard"},
+			wantError: "invalid GitHub pull request URL",
+		},
+		{
+			name: "empty path", pullRequestURL: "https://github.com/example/project/pull/23",
+			image:     PullRequestEvidenceImage{Alt: "Dashboard"},
+			wantError: "without a file path",
+		},
+		{
+			name: "hash in path", pullRequestURL: "https://github.com/example/project/pull/23",
+			image:     PullRequestEvidenceImage{Path: "/tmp/dash#board.png", Alt: "Dashboard"},
+			wantError: "cannot contain #",
+		},
+		{
+			name: "hash in alt text", pullRequestURL: "https://github.com/example/project/pull/23",
+			image:     PullRequestEvidenceImage{Path: "/tmp/dashboard.png", Alt: "Dashboard #1"},
+			wantError: "cannot contain #",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			runner := &scriptedGitHubRunner{responses: map[string]githubResponse{}}
+			githubTracker, err := NewGitHub(runner)
+			if err != nil {
+				t.Fatalf("NewGitHub() error = %v", err)
+			}
+			err = githubTracker.AttachPullRequestEvidence(context.Background(), test.pullRequestURL, test.image)
+			if err == nil || !strings.Contains(err.Error(), test.wantError) {
+				t.Fatalf("AttachPullRequestEvidence() error = %v, want %q", err, test.wantError)
+			}
+			if len(runner.calls) != 0 {
+				t.Fatalf("gh calls = %v, want no command for invalid attachment data", runner.calls)
+			}
+		})
+	}
+}
+
 func TestGitHubCreatePullRequestReturnsExistingPullRequest(t *testing.T) {
 	const existingURL = "https://github.com/example/project/pull/23"
 	runner := &scriptedGitHubRunner{responses: map[string]githubResponse{

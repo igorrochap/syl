@@ -213,7 +213,7 @@ func (recorder *diskRunRecorder) WriteSummary(summary implementSummary) error {
 		Iterations: summary.iterations, Final: summary.final, Nits: summary.nits,
 		DiffStat: summary.diffStat, WorktreePath: summary.worktreePath,
 		ExhaustionReason: summary.exhaustionReason, NitBudgetOverrides: summary.nitBudgetOverrides, PullRequestURL: summary.pullRequestURL,
-		Publication: summary.publication,
+		PublicationNotice: summary.attachmentNotice, Publication: summary.publication,
 	})
 }
 

@@ -36,6 +36,7 @@ type SummaryInput struct {
 	ExhaustionReason   string
 	NitBudgetOverrides []NitBudgetOverride
 	PullRequestURL     string
+	PublicationNotice  string
 	Publication        Publication
 }
 
@@ -365,6 +366,7 @@ func FormatSummary(summary SummaryInput) string {
 	appendSummaryWorktree(&builder, summary.WorktreePath)
 	appendSummaryExhaustion(&builder, summary.ExhaustionReason)
 	appendSummaryPublication(&builder, summary.Publication)
+	appendIndentedBlock(&builder, "Publication notice", summary.PublicationNotice)
 	appendSummaryPullRequest(&builder, summary)
 	appendSummaryDiffStat(&builder, summary.DiffStat)
 	return builder.String()
@@ -408,8 +410,15 @@ func appendSummaryPublication(builder *strings.Builder, publication Publication)
 	if publication.Error == "" {
 		return
 	}
-	builder.WriteString("Publication error:\n")
-	for _, line := range strings.Split(strings.ReplaceAll(publication.Error, "\r\n", "\n"), "\n") {
+	appendIndentedBlock(builder, "Publication error", publication.Error)
+}
+
+func appendIndentedBlock(builder *strings.Builder, heading, contents string) {
+	if contents == "" {
+		return
+	}
+	fmt.Fprintf(builder, "%s:\n", heading)
+	for _, line := range strings.Split(strings.ReplaceAll(contents, "\r\n", "\n"), "\n") {
 		fmt.Fprintf(builder, "  %s\n", line)
 	}
 }

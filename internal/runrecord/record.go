@@ -44,13 +44,14 @@ type Session struct {
 
 // Summary contains the interpreted values stored in summary.txt.
 type Summary struct {
-	Contents       string
-	Iterations     int
-	FinalVerdict   string
-	Text           string
-	DiffStat       string
-	PullRequestURL string
-	Publication    Publication
+	Contents          string
+	Iterations        int
+	FinalVerdict      string
+	Text              string
+	DiffStat          string
+	PullRequestURL    string
+	PublicationNotice string
+	Publication       Publication
 }
 
 // PublicationStatus is the outcome of publishing an approved implementation.
@@ -560,6 +561,7 @@ func ParseSummary(contents []byte) Summary {
 	if index := firstLineIndex(lines, "Pull request:"); index >= 0 {
 		summary.PullRequestURL = fieldValue(lines[index], "Pull request:")
 	}
+	summary.PublicationNotice = parseSummaryNotice(lines)
 	summary.Publication = parseSummaryPublication(lines)
 	if summary.Publication.Status == PublicationPublished && summary.Publication.URL == "" {
 		summary.Publication.URL = summary.PullRequestURL
@@ -570,28 +572,37 @@ func ParseSummary(contents []byte) Summary {
 	return summary
 }
 
+func parseSummaryNotice(lines []string) string {
+	return parseIndentedBlock(lines, "Publication notice:")
+}
+
 func parseSummaryPublication(lines []string) Publication {
 	publication := Publication{}
-	for index, line := range lines {
+	for _, line := range lines {
 		if strings.HasPrefix(line, "Publication:") && publication.Status == "" {
 			publication.Status = PublicationStatus(fieldValue(line, "Publication:"))
 		}
 		if strings.HasPrefix(line, "Publication step:") && publication.Step == "" {
 			publication.Step = PublicationStep(fieldValue(line, "Publication step:"))
 		}
-		if !strings.HasPrefix(line, "Publication error:") || publication.Error != "" {
-			continue
-		}
-		var errorLines []string
-		for _, continuation := range lines[index+1:] {
-			if !strings.HasPrefix(continuation, "  ") {
-				break
-			}
-			errorLines = append(errorLines, strings.TrimPrefix(continuation, "  "))
-		}
-		publication.Error = strings.Join(errorLines, "\n")
 	}
+	publication.Error = parseIndentedBlock(lines, "Publication error:")
 	return publication
+}
+
+func parseIndentedBlock(lines []string, heading string) string {
+	index := firstLineIndex(lines, heading)
+	if index < 0 {
+		return ""
+	}
+	var contents []string
+	for _, continuation := range lines[index+1:] {
+		if !strings.HasPrefix(continuation, "  ") {
+			break
+		}
+		contents = append(contents, strings.TrimPrefix(continuation, "  "))
+	}
+	return strings.Join(contents, "\n")
 }
 
 // firstPositiveIterations skips Iterations lines that are not positive numbers.
