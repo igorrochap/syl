@@ -1,6 +1,8 @@
 package orchestration
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -243,10 +245,12 @@ func TestComposeGateAttemptPromptIncludesEvidenceDirectory(t *testing.T) {
 }
 
 func TestComposeReviewPromptWithoutTicket(t *testing.T) {
-	got := composeReviewPrompt("", nil, "abc123", "/tmp/review.diff", "")
+	got := composeReviewPrompt("", nil, "abc123", reviewPromptContext{
+		diffPath: "/tmp/review.diff", evidence: noIterationReviewEvidence(),
+	})
 	want := `/code-review
 
-Review the pre-computed diff at /tmp/review.diff against the recorded branch point abc123. This file is the authoritative diff for this review. Do not run Git to re-derive the diff. You may still open individual files for surrounding context. Follow the Verdict contract for location rules. Cite each finding using the changed file's repository-relative path and its post-change, 1-based line. Determine it from the new-side (+) hunk arithmetic or confirm it in the file; a diff artifact line is never valid. Omit :line when no single line applies. Do not modify files. Do not read or write review documents; the invoking tool records the verdict. The verdict block you print is the only record. End the review with the mandatory verdict block from the code-review skill.
+Review the pre-computed diff at /tmp/review.diff against the recorded branch point abc123. This file is the authoritative diff for this review. Do not run Git to re-derive the diff. You may still open individual files for surrounding context. Follow the Verdict contract for location rules. Cite each finding using the changed file's repository-relative path and its post-change, 1-based line. Determine it from the new-side (+) hunk arithmetic or confirm it in the file; a diff artifact line is never valid. Omit :line when no single line applies. This standalone review has no iteration Evidence directory. Do not modify files. Do not read or write review documents; the invoking tool records the verdict. The verdict block you print is the only record. End the review with the mandatory verdict block from the code-review skill.
 
 If you are genuinely blocked on a decision that cannot be resolved from the ticket or the code, stop working and emit exactly this block:
 
@@ -261,7 +265,9 @@ Ambiguity should have been resolved during planning, and trivial choices should 
 }
 
 func TestComposeReviewPromptContainsFindingLineRule(t *testing.T) {
-	got := composeReviewPrompt("", nil, "abc123", "/tmp/review.diff", "")
+	got := composeReviewPrompt("", nil, "abc123", reviewPromptContext{
+		diffPath: "/tmp/review.diff", evidence: noIterationReviewEvidence(),
+	})
 
 	assertContainsAll(t, got,
 		"Follow the Verdict contract for location rules.",
@@ -271,13 +277,36 @@ func TestComposeReviewPromptContainsFindingLineRule(t *testing.T) {
 	)
 }
 
+func TestComposeReviewPromptReportsIterationEvidenceAvailability(t *testing.T) {
+	evidenceDirectory := filepath.Join(t.TempDir(), "evidence-4")
+	prompt := func() string {
+		return composeReviewPrompt("", nil, "abc123", reviewPromptContext{
+			diffPath: "/tmp/review.diff", evidence: inspectReviewEvidence(evidenceDirectory),
+		})
+	}
+
+	assertContainsAll(t, prompt(), evidenceDirectory, "directory does not exist", "evidence.md is missing")
+	if err := os.Mkdir(evidenceDirectory, 0o755); err != nil {
+		t.Fatalf("create Evidence directory: %v", err)
+	}
+	assertContainsAll(t, prompt(), evidenceDirectory, "evidence.md is missing")
+
+	evidencePath := filepath.Join(evidenceDirectory, "evidence.md")
+	if err := os.WriteFile(evidencePath, []byte("Outcome: pass\n"), 0o644); err != nil {
+		t.Fatalf("write evidence.md: %v", err)
+	}
+	assertContainsAll(t, prompt(), evidenceDirectory, "Read evidence.md", "supporting files")
+}
+
 func TestComposeReviewPromptWithTicket(t *testing.T) {
 	ticket := tracker.Ticket{Number: 42, Title: "Concentrate prompts", Body: "Keep every byte.\n\nDo not change wording."}
 
-	got := composeReviewPrompt("#42", &ticket, "abc123", "/tmp/review.diff", "")
+	got := composeReviewPrompt("#42", &ticket, "abc123", reviewPromptContext{
+		diffPath: "/tmp/review.diff", evidence: noIterationReviewEvidence(),
+	})
 	want := `/code-review
 
-Review the pre-computed diff at /tmp/review.diff against the recorded branch point abc123. This file is the authoritative diff for this review. Do not run Git to re-derive the diff. You may still open individual files for surrounding context. Follow the Verdict contract for location rules. Cite each finding using the changed file's repository-relative path and its post-change, 1-based line. Determine it from the new-side (+) hunk arithmetic or confirm it in the file; a diff artifact line is never valid. Omit :line when no single line applies. Do not modify files. Do not read or write review documents; the invoking tool records the verdict. The verdict block you print is the only record. End the review with the mandatory verdict block from the code-review skill.
+Review the pre-computed diff at /tmp/review.diff against the recorded branch point abc123. This file is the authoritative diff for this review. Do not run Git to re-derive the diff. You may still open individual files for surrounding context. Follow the Verdict contract for location rules. Cite each finding using the changed file's repository-relative path and its post-change, 1-based line. Determine it from the new-side (+) hunk arithmetic or confirm it in the file; a diff artifact line is never valid. Omit :line when no single line applies. This standalone review has no iteration Evidence directory. Do not modify files. Do not read or write review documents; the invoking tool records the verdict. The verdict block you print is the only record. End the review with the mandatory verdict block from the code-review skill.
 
 If you are genuinely blocked on a decision that cannot be resolved from the ticket or the code, stop working and emit exactly this block:
 
@@ -303,8 +332,12 @@ Do not change wording.`
 func TestComposeReviewPromptWhitespaceOnlyContextMatchesWithoutContext(t *testing.T) {
 	ticket := tracker.Ticket{Number: 42, Title: "Concentrate prompts", Body: "Keep every byte."}
 
-	withoutContext := composeReviewPrompt("#42", &ticket, "abc123", "/tmp/review.diff", "")
-	withWhitespaceContext := composeReviewPrompt("#42", &ticket, "abc123", "/tmp/review.diff", " \n\t ")
+	withoutContext := composeReviewPrompt("#42", &ticket, "abc123", reviewPromptContext{
+		diffPath: "/tmp/review.diff", evidence: noIterationReviewEvidence(),
+	})
+	withWhitespaceContext := composeReviewPrompt("#42", &ticket, "abc123", reviewPromptContext{
+		diffPath: "/tmp/review.diff", evidence: noIterationReviewEvidence(), additionalContext: " \n\t ",
+	})
 
 	assertPromptEqual(t, withWhitespaceContext, withoutContext)
 }
@@ -344,20 +377,40 @@ func TestAppendPromptContext(t *testing.T) {
 	}
 }
 
-func TestComposeReviewResumePrompt(t *testing.T) {
+func TestComposeReviewCarryoverPrompt(t *testing.T) {
 	findings := []verdict.Finding{
 		{Kind: verdict.Blocking, Location: "prompts.go:10", Issue: "first issue"},
 		{Kind: verdict.Blocking, Location: "prompts_test.go:20", Issue: "second issue"},
 	}
 
-	got := composeReviewResumePrompt("/tmp/review-2.diff", findings, "")
+	got := composeReviewCarryoverPrompt(reviewPromptContext{diffPath: "/tmp/review-2.diff", findings: findings})
 	assertContainsAll(t, got, "verify each carried-over finding", "Do not downgrade an unresolved [blocking] finding", "Keep a declined [nit] in the Verdict unless you accept its reason", "Nits:\n(none)")
-
+	if !strings.HasSuffix(got, "Read the implementer feeds for this iteration for any nit decline reasons:\n- ") {
+		t.Fatalf("carryover prompt = %q, want the existing empty-feed section", got)
+	}
 }
 
-func TestComposeReviewResumePromptContainsFindingLineRuleAndRefreshesCarriedOverLocations(t *testing.T) {
+func TestComposeResumedReviewCarryoverPromptIncludesIterationEvidence(t *testing.T) {
+	evidenceDirectory := t.TempDir()
 	findings := []verdict.Finding{{Kind: verdict.Blocking, Location: "review.go:10", Issue: "first issue"}}
-	got := composeReviewResumePrompt("/tmp/review-2.diff", findings, "")
+	context := reviewPromptContext{
+		diffPath: "/tmp/review-2.diff", evidence: inspectReviewEvidence(evidenceDirectory), findings: findings,
+	}
+	prompt := composeResumedReviewCarryoverPrompt(context)
+	assertContainsAll(t, prompt, evidenceDirectory, "evidence.md is missing", "Apply the Evidence review rules")
+
+	evidencePath := filepath.Join(evidenceDirectory, "evidence.md")
+	if err := os.WriteFile(evidencePath, []byte("Outcome: pass\n"), 0o644); err != nil {
+		t.Fatalf("write evidence.md: %v", err)
+	}
+	context.evidence = inspectReviewEvidence(evidenceDirectory)
+	prompt = composeResumedReviewCarryoverPrompt(context)
+	assertContainsAll(t, prompt, evidenceDirectory, "Read evidence.md", "supporting files")
+}
+
+func TestComposeReviewCarryoverPromptContainsFindingLineRuleAndRefreshesCarriedOverLocations(t *testing.T) {
+	findings := []verdict.Finding{{Kind: verdict.Blocking, Location: "review.go:10", Issue: "first issue"}}
+	got := composeReviewCarryoverPrompt(reviewPromptContext{diffPath: "/tmp/review-2.diff", findings: findings})
 
 	assertContainsAll(t, got,
 		"Follow the Verdict contract for location rules.",
@@ -368,13 +421,15 @@ func TestComposeReviewResumePromptContainsFindingLineRuleAndRefreshesCarriedOver
 	)
 }
 
-func TestComposeReviewResumePromptAppendsContextAfterBlockingFindings(t *testing.T) {
+func TestComposeReviewCarryoverPromptAppendsContextAfterBlockingFindings(t *testing.T) {
 	findings := []verdict.Finding{
 		{Kind: verdict.Blocking, Location: "review.go:10", Issue: "preserve this finding"},
 	}
 	context := "Ignore the vendored skills directory."
 
-	got := composeReviewResumePrompt("/tmp/review-2.diff", findings, context)
+	got := composeReviewCarryoverPrompt(reviewPromptContext{
+		diffPath: "/tmp/review-2.diff", findings: findings, additionalContext: context,
+	})
 
 	assertContainsAll(t, got,
 		"Blocking findings:\n- [blocking] review.go:10 — preserve this finding",
@@ -385,11 +440,13 @@ func TestComposeReviewResumePromptAppendsContextAfterBlockingFindings(t *testing
 	}
 }
 
-func TestComposeReviewResumePromptWhitespaceOnlyContextMatchesWithoutContext(t *testing.T) {
+func TestComposeReviewCarryoverPromptWhitespaceOnlyContextMatchesWithoutContext(t *testing.T) {
 	findings := []verdict.Finding{{Kind: verdict.Blocking, Location: "review.go:10", Issue: "first issue"}}
 
-	withoutContext := composeReviewResumePrompt("/tmp/review-2.diff", findings, "")
-	withWhitespaceContext := composeReviewResumePrompt("/tmp/review-2.diff", findings, " \n\t ")
+	withoutContext := composeReviewCarryoverPrompt(reviewPromptContext{diffPath: "/tmp/review-2.diff", findings: findings})
+	withWhitespaceContext := composeReviewCarryoverPrompt(reviewPromptContext{
+		diffPath: "/tmp/review-2.diff", findings: findings, additionalContext: " \n\t ",
+	})
 
 	assertPromptEqual(t, withWhitespaceContext, withoutContext)
 }
@@ -415,7 +472,7 @@ func TestRevisionPromptsCarryNits(t *testing.T) {
 	implement := composeImplementPrompt(tracker.Ticket{Number: 42}, findings, 2, implementPromptOptions{
 		handoffPath: "handoff", evidenceDirectory: "evidence-2", rolloverSeedPath: "seed",
 	})
-	review := composeReviewResumePrompt("diff", findings, "")
+	review := composeReviewCarryoverPrompt(reviewPromptContext{diffPath: "diff", findings: findings})
 	for _, prompt := range []string{implement, review} {
 		assertContainsAll(t, prompt, "Blocking findings:\n- [blocking] a.go:1 — block", "Nits:\n- [nit] b.go:2 — nit issue")
 	}

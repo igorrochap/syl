@@ -91,11 +91,11 @@ Ticket body (including acceptance criteria):
 
 	reviewPrompt = `/code-review
 
-Review the pre-computed diff at %s against the recorded branch point %s. This file is the authoritative diff for this review. Do not run Git to re-derive the diff. You may still open individual files for surrounding context. %s Do not modify files. Do not read or write review documents; the invoking tool records the verdict. The verdict block you print is the only record. End the review with the mandatory verdict block from the code-review skill.
+Review the pre-computed diff at %s against the recorded branch point %s. This file is the authoritative diff for this review. Do not run Git to re-derive the diff. You may still open individual files for surrounding context. %s %s Do not modify files. Do not read or write review documents; the invoking tool records the verdict. The verdict block you print is the only record. End the review with the mandatory verdict block from the code-review skill.
 
 ` + questionProtocolInstruction
 
-	reviewResumePrompt = `The updated diff for this iteration is at %s. %s For each carried-over finding, locate its current line in the current code before reporting it; do not copy its line number from an earlier Verdict. Re-examine the changes and verify each carried-over finding is resolved. Keep the tag of each unresolved finding. Do not downgrade an unresolved [blocking] finding to [nit]. Evaluate each declined nit and its reason. Keep a declined [nit] in the Verdict unless you accept its reason. Check that the fixes introduced no new problems, and end with the mandatory verdict block from the code-review skill.
+	reviewResumePrompt = `The updated diff for this iteration is at %s. %s Apply the Evidence review rules in the code-review skill supplied for this review to the Evidence directory in this prompt. For each carried-over finding, locate its current line in the current code before reporting it; do not copy its line number from an earlier Verdict. Re-examine the changes and verify each carried-over finding is resolved. Keep the tag of each unresolved finding. Do not downgrade an unresolved [blocking] finding to [nit]. Evaluate each declined nit and its reason. Keep a declined [nit] in the Verdict unless you accept its reason. Check that the fixes introduced no new problems, and end with the mandatory verdict block from the code-review skill.
 
 Blocking findings:
 %s
@@ -109,6 +109,14 @@ type implementPromptOptions struct {
 	evidenceDirectory string
 	rolloverSeedPath  string
 	additionalContext string
+}
+
+type reviewPromptContext struct {
+	diffPath             string
+	evidence             reviewEvidence
+	findings             []verdict.Finding
+	additionalContext    string
+	implementerFeedPaths []string
 }
 
 func composeImplementPrompt(
@@ -161,13 +169,16 @@ func composeGateAttemptPrompt(
 	return appendPromptContext(prompt, options.additionalContext)
 }
 
-func composeReviewPrompt(ticketRef string, ticket *tracker.Ticket, branchPoint, diffPath, additionalContext string) string {
-	prompt := fmt.Sprintf(reviewPrompt, diffPath, branchPoint, reviewFindingLocationInstruction)
+func composeReviewPrompt(ticketRef string, ticket *tracker.Ticket, branchPoint string, context reviewPromptContext) string {
+	prompt := fmt.Sprintf(
+		reviewPrompt,
+		context.diffPath, branchPoint, reviewFindingLocationInstruction, context.evidence.promptInstruction(),
+	)
 	if ticket == nil {
-		return appendPromptContext(prompt, additionalContext)
+		return appendPromptContext(prompt, context.additionalContext)
 	}
 	prompt = fmt.Sprintf("%s\n\nReview the current diff against this ticket (%s).\n\nTicket title: %s\n\nTicket body:\n%s", prompt, ticketRef, ticket.Title, ticket.Body)
-	return appendPromptContext(prompt, additionalContext)
+	return appendPromptContext(prompt, context.additionalContext)
 }
 
 func appendPromptContext(prompt, additionalContext string) string {
@@ -178,18 +189,19 @@ func appendPromptContext(prompt, additionalContext string) string {
 	return fmt.Sprintf("%s\n\n## Additional context supplied by the user for this run\n\n%s", prompt, additionalContext)
 }
 
-func composeReviewResumePrompt(diffPath string, findings []verdict.Finding, additionalContext string) string {
-	prompt := fmt.Sprintf(reviewResumePrompt, diffPath, reviewFindingLocationInstruction, formatFindings(findings, verdict.Blocking), formatFindings(findings, verdict.Nit))
-	return appendPromptContext(prompt, additionalContext)
+func composeReviewCarryoverPrompt(context reviewPromptContext) string {
+	prompt := fmt.Sprintf(
+		reviewResumePrompt,
+		context.diffPath, reviewFindingLocationInstruction,
+		formatFindings(context.findings, verdict.Blocking), formatFindings(context.findings, verdict.Nit),
+	)
+	prompt = appendPromptContext(prompt, context.additionalContext)
+	return prompt + "\n\nRead the implementer feeds for this iteration for any nit decline reasons:\n- " + strings.Join(context.implementerFeedPaths, "\n- ")
 }
 
-func composeReviewCarryoverPrompt(diffPath string, findings []verdict.Finding, additionalContext string, feedPaths []string) string {
-	prompt := composeReviewResumePrompt(diffPath, findings, additionalContext)
-	return prompt + "\n\nRead the implementer feeds for this iteration for any nit decline reasons:\n- " + strings.Join(feedPaths, "\n- ")
-}
-
-func composeResumedReviewCarryoverPrompt(diffPath string, findings []verdict.Finding, additionalContext string, feedPaths []string) string {
-	return "This is an incremental re-review in the existing reviewer session. Do not spawn fresh Standards/Spec sub-agents. " + composeReviewCarryoverPrompt(diffPath, findings, additionalContext, feedPaths)
+func composeResumedReviewCarryoverPrompt(context reviewPromptContext) string {
+	return "This is an incremental re-review in the existing reviewer session. Do not spawn fresh Standards/Spec sub-agents. " +
+		context.evidence.promptInstruction() + " " + composeReviewCarryoverPrompt(context)
 }
 
 func appendGateResultPath(prompt, path string) string {

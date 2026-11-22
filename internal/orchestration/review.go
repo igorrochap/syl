@@ -199,7 +199,9 @@ func handleStandaloneReviewError(options ReviewOptions, preparation reviewPrepar
 }
 
 func runStandaloneReview(ctx context.Context, options ReviewOptions, preparation reviewPreparation) (standaloneReviewRun, error) {
-	prompt := composeReviewPrompt(options.TicketRef, options.Ticket, preparation.branchPoint, preparation.diffPath, options.Context)
+	prompt := composeReviewPrompt(options.TicketRef, options.Ticket, preparation.branchPoint, reviewPromptContext{
+		diffPath: preparation.diffPath, evidence: noIterationReviewEvidence(), additionalContext: options.Context,
+	})
 	prompt = appendProtectedPaths(prompt, preparation.protectedPaths)
 	notifier := options.Notifier
 	if !options.ProjectConfig.Notifications.Enabled {

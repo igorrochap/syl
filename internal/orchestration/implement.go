@@ -743,9 +743,20 @@ func ensureImplementRunState(params implementIterationsParams) *runStateTracker 
 
 func runImplementReview(ctx context.Context, params implementIterationsParams, reviewParams implementReviewParams) (ReviewExecution, error) {
 	params.runState.setActivity(runrecord.Reviewing)
-	reviewPrompt := composeReviewPrompt("#"+strconv.Itoa(params.ticket.Number), &params.ticket, params.branchPoint, reviewParams.diffPath, params.reviewContext)
+	promptContext := reviewPromptContext{
+		diffPath:             reviewParams.diffPath,
+		evidence:             inspectReviewEvidence(params.recorder.EvidenceDirectory(reviewParams.iteration)),
+		findings:             reviewParams.findings,
+		additionalContext:    params.reviewContext,
+		implementerFeedPaths: reviewParams.implementerFeedPaths,
+	}
+	reviewPrompt := composeReviewPrompt(
+		"#"+strconv.Itoa(params.ticket.Number), &params.ticket, params.branchPoint, promptContext,
+	)
 	if reviewParams.iteration > 1 {
-		reviewPrompt += "\n\n" + composeReviewCarryoverPrompt(reviewParams.diffPath, reviewParams.findings, "", reviewParams.implementerFeedPaths)
+		carryoverContext := promptContext
+		carryoverContext.additionalContext = ""
+		reviewPrompt += "\n\n" + composeReviewCarryoverPrompt(carryoverContext)
 	}
 	reviewPrompt = appendProtectedPaths(reviewPrompt, reviewParams.protectedPaths)
 	reviewPrompt = appendGateResultPath(reviewPrompt, reviewParams.gateResultPath)
@@ -772,7 +783,7 @@ func runImplementReview(ctx context.Context, params implementIterationsParams, r
 		questions: params.questions,
 	}
 	if reviewParams.previousReviewerSession != "" {
-		resumePrompt := composeResumedReviewCarryoverPrompt(reviewParams.diffPath, reviewParams.findings, params.reviewContext, reviewParams.implementerFeedPaths)
+		resumePrompt := composeResumedReviewCarryoverPrompt(promptContext)
 		resumePrompt = appendProtectedPaths(resumePrompt, reviewParams.protectedPaths)
 		reviewOptions.resumePrompt = appendGateResultPath(resumePrompt, reviewParams.gateResultPath)
 	}

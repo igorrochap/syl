@@ -538,6 +538,13 @@ func TestRevisionCarriesAllVerdictFindingsAndDeclineReasons(t *testing.T) {
 		assertContainsAll(t, prompt, "[blocking] a.go", "block one", "[blocking] b.go", "block two", "[nit] c.go", "nit one", "[nit] d.go", "nit two", "[nit] e.go", "nit three")
 	}
 	prompt := reviewer.resumeCalls[0].prompt
+	iterationOneEvidence := filepath.Join(recorder.dir, "evidence-1")
+	iterationTwoEvidence := filepath.Join(recorder.dir, "evidence-2")
+	assertContainsAll(t, reviewer.runRequests[0].Prompt, iterationOneEvidence, "directory does not exist", "evidence.md is missing")
+	assertContainsAll(t, prompt, iterationTwoEvidence, "directory does not exist", "evidence.md is missing")
+	if strings.Count(prompt, iterationTwoEvidence) != 1 {
+		t.Fatalf("incremental review prompt repeats its Evidence path: %q", prompt)
+	}
 	for _, name := range []string{"iteration-02-implement-turn-01.feed", "iteration-02-implement-turn-02.feed"} {
 		assertContainsAll(t, prompt, filepath.Join(recorder.dir, name))
 	}
@@ -572,6 +579,14 @@ func TestRevisionFreshReviewFallbackCarriesFindingsAndDeclineReasons(t *testing.
 		t.Fatalf("review requests = (%d fresh, %d resumed), want fallback after resume", len(reviewer.runRequests), len(reviewer.resumeCalls))
 	}
 	assertContainsAll(t, reviewer.runRequests[1].Prompt, "[blocking] a.go", "block one", "[nit] c.go", "nit one", filepath.Join(recorder.dir, "iteration-02-implement-turn-01.feed"), "verify each carried-over finding")
+	iterationOneEvidence := filepath.Join(recorder.dir, "evidence-1")
+	iterationTwoEvidence := filepath.Join(recorder.dir, "evidence-2")
+	assertContainsAll(t, reviewer.runRequests[0].Prompt, iterationOneEvidence)
+	assertContainsAll(t, reviewer.resumeCalls[0].prompt, iterationTwoEvidence)
+	assertContainsAll(t, reviewer.runRequests[1].Prompt, iterationTwoEvidence)
+	if strings.Count(reviewer.runRequests[1].Prompt, iterationTwoEvidence) != 1 {
+		t.Fatalf("fresh review fallback prompt repeats its Evidence path: %q", reviewer.runRequests[1].Prompt)
+	}
 	if strings.TrimSpace(recorder.files["iteration-02-implement-turn-01.feed"]) != "Declined nit c.go: already covered." {
 		t.Fatal("missing decline reason from recorded feed")
 	}

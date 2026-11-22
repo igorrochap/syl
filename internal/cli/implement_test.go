@@ -1272,11 +1272,19 @@ func TestImplementReviewContextReachesReviewerPromptsOnly(t *testing.T) {
 	if strings.Contains(loop.requests[0].Prompt, reviewerContext) || strings.Contains(loop.implementResumeCalls[0].request.Prompt, reviewerContext) {
 		t.Fatalf("implementer prompts = %q and %q, want no reviewer context %q", loop.requests[0].Prompt, loop.implementResumeCalls[0].request.Prompt, reviewerContext)
 	}
+	runDirs, err := filepath.Glob(filepath.Join(fixture.root, ".syl", "runs", "*-42"))
+	if err != nil || len(runDirs) != 1 {
+		t.Fatalf("run directories = %v, err = %v; want one issue artifact directory", runDirs, err)
+	}
+	evidenceDirectory := filepath.Join(runDirs[0], "evidence-2")
 	resumePrompt := loop.resumeCalls[0].request.Prompt
 	for _, expected := range []string{
 		reviewerContext,
 		"internal/orchestration/review.go:42",
 		"handle a missing session",
+		evidenceDirectory,
+		"evidence.md is missing",
+		"Apply the Evidence review rules",
 	} {
 		if !strings.Contains(resumePrompt, expected) {
 			t.Fatalf("resume prompt = %q, want %q", resumePrompt, expected)
@@ -1808,8 +1816,11 @@ func TestImplementLoopResumesPreviousReviewerSession(t *testing.T) {
 	resumePrompt := loop.resumeCalls[0].request.Prompt
 	for _, expected := range []string{
 		filepath.Join(runDirs[0], "iteration-02-review.diff"),
+		filepath.Join(runDirs[0], "evidence-2"),
+		"evidence.md is missing",
 		"internal/orchestration/review.go:42 — handle a missing session",
 		"incremental re-review",
+		"Apply the Evidence review rules",
 		"Do not spawn fresh Standards/Spec sub-agents",
 		"mandatory verdict block",
 	} {
