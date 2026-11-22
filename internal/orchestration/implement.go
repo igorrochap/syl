@@ -33,6 +33,7 @@ type implementSummary struct {
 	iterations         int
 	final              verdict.Verdict
 	nits               []verdict.Finding
+	verification       publicationVerification
 	diffStat           string
 	worktreePath       string
 	exhaustionReason   string
@@ -147,7 +148,7 @@ func formatUncommittedWork(workRoot, status string) string {
 }
 
 func executeImplementRun(ctx context.Context, options ImplementOptions, run implementRunState) error {
-	iterations, final, nits, err := runImplementIterations(ctx, implementIterationsParams{
+	iterations, final, nits, gateVerification, err := runImplementIterations(ctx, implementIterationsParams{
 		git:                  run.setup.git,
 		workRoot:             options.WorkRoot,
 		implementer:          options.Implementer,
@@ -182,12 +183,13 @@ func executeImplementRun(ctx context.Context, options ImplementOptions, run impl
 		iterations:         iterations,
 		final:              final,
 		nits:               nits,
+		verification:       publicationVerification{gates: gateVerification},
 		diffStat:           diffStat,
 		worktreePath:       run.setup.worktreePath,
 		exhaustionReason:   run.runState.state.ExhaustionReason,
 		nitBudgetOverrides: run.runState.state.NitBudgetOverrides,
 	}
-	publicationErr := publishApprovedSummary(ctx, options, run.setup, &summary)
+	publicationErr := publishApprovedSummary(ctx, options, run.setup, run.recorder, &summary)
 	if err := completeImplementRun(ctx, options, run, summary); err != nil {
 		return err
 	}
@@ -198,6 +200,7 @@ func publishApprovedSummary(
 	ctx context.Context,
 	options ImplementOptions,
 	setup implementSetup,
+	recorder RunRecorder,
 	summary *implementSummary,
 ) error {
 	if !options.PublishOnApprove {
@@ -207,15 +210,32 @@ func publishApprovedSummary(
 	if summary.final.Status != verdict.Approve || summary.exhaustionReason != "" {
 		return nil
 	}
+	evidence, evidenceRecorded, evidenceErr := readPublicationEvidence(
+		recorder.EvidenceDirectory(summary.iterations),
+	)
+	summary.verification.evidence = evidence
+	summary.verification.evidenceRecorded = evidenceRecorded
+	if evidenceErr != nil {
+		summary.verification.evidenceUnavailable = true
+	}
 
 	var notices []string
 	summary.publication, notices = publishApprovedImplement(ctx, options, setup, *summary)
 	summary.publishNotice = strings.Join(notices, "\n")
+	if evidenceErr != nil {
+		summary.publishNotice = appendPublicationNotice(
+			summary.publishNotice,
+			"Evidence could not be included in the pull request: "+evidenceErr.Error(),
+		)
+	}
 	switch summary.publication.Status {
 	case runrecord.PublicationPublished:
 		summary.pullRequestURL = summary.publication.URL
 	case runrecord.PublicationSkipped:
-		summary.publishNotice = "No changes to publish; skipped commit, push, and pull request."
+		summary.publishNotice = appendPublicationNotice(
+			summary.publishNotice,
+			"No changes to publish; skipped commit, push, and pull request.",
+		)
 	case runrecord.PublicationFailed:
 		commands := publicationCommands(summary.publication.Step, options, setup, *summary)
 		failureNotice := formatPublicationFailure(summary.publication, commands)
@@ -226,6 +246,13 @@ func publishApprovedSummary(
 		return errors.New(failureNotice)
 	}
 	return nil
+}
+
+func appendPublicationNotice(existing, notice string) string {
+	if existing == "" {
+		return notice
+	}
+	return existing + "\n" + notice
 }
 
 func prepareImplementRun(ctx context.Context, options ImplementOptions, originGit GitRunner) (implementRunState, error) {
@@ -494,11 +521,14 @@ type implementTurnParams struct {
 	handoffPath         string
 	evidenceDirectory   string
 	rolloverSeedPath    string
-	gateAttemptFeedback *failedGateAttemptFeedback
+	gateAttemptFeedback *gateAttemptFeedback
 	mode                HarnessOutputMode
 }
 
-func runImplementIterations(ctx context.Context, params implementIterationsParams) (int, verdict.Verdict, []verdict.Finding, error) {
+func runImplementIterations(
+	ctx context.Context,
+	params implementIterationsParams,
+) (int, verdict.Verdict, []verdict.Finding, publicationGateVerification, error) {
 	params.runState = ensureImplementRunState(params)
 	params.output = ensureLineTrackingWriter(params.output)
 	var findings []verdict.Finding
@@ -506,6 +536,7 @@ func runImplementIterations(ctx context.Context, params implementIterationsParam
 	var previousImplementerSession string
 	var rolloverSeedPath string
 	var previousReviewerSession string
+	var gateVerification publicationGateVerification
 	branchGate := branchGateSource{}
 	iterations := 0
 	for iteration := 1; iteration <= params.projectConfig.Loop.MaxIterations; iteration++ {
@@ -516,23 +547,24 @@ func runImplementIterations(ctx context.Context, params implementIterationsParam
 		}
 		handoffPath, err := prepareIterationHandoffPath(params, iteration)
 		if err != nil {
-			return 0, verdict.Verdict{}, nil, err
+			return 0, verdict.Verdict{}, nil, publicationGateVerification{}, err
 		}
 		gateCycle, err := runImplementerGateCycle(
 			ctx, params, iteration, handoffPath,
 			findings, previousImplementerSession, rolloverSeedPath, mode, &branchGate,
 		)
 		if err != nil {
-			return 0, verdict.Verdict{}, nil, err
+			return 0, verdict.Verdict{}, nil, publicationGateVerification{}, err
 		}
 		previousImplementerSession = gateCycle.previousSession
 		rolloverSeedPath = gateCycle.rolloverSeedPath
+		gateVerification = gateCycle.gateVerification
 		if gateCycle.exhausted {
-			return iterations, verdict.Verdict{}, nil, nil
+			return iterations, verdict.Verdict{}, nil, gateVerification, nil
 		}
 		diffPath, protectedPaths, err := prepareIterationReviewDiff(ctx, params, iteration)
 		if err != nil {
-			return 0, verdict.Verdict{}, nil, err
+			return 0, verdict.Verdict{}, nil, publicationGateVerification{}, err
 		}
 
 		reviewResult, err := runImplementReview(ctx, params, implementReviewParams{
@@ -546,14 +578,14 @@ func runImplementIterations(ctx context.Context, params implementIterationsParam
 			mode:                    mode,
 		})
 		if err != nil {
-			return 0, verdict.Verdict{}, nil, err
+			return 0, verdict.Verdict{}, nil, publicationGateVerification{}, err
 		}
 		final = reviewResult.Verdict
 		renderer := ui.New(params.output, ui.DetectCaps(params.output))
 		if err := renderer.ReviewVerdict(ui.ReviewVerdict{
 			Status: string(final.Status), Summary: final.Summary, Findings: toUIFindings(final.Findings),
 		}); err != nil {
-			return 0, verdict.Verdict{}, nil, fmt.Errorf("write review verdict: %w", err)
+			return 0, verdict.Verdict{}, nil, publicationGateVerification{}, fmt.Errorf("write review verdict: %w", err)
 		}
 		if processApproval(params, iteration, final) {
 			break
@@ -561,7 +593,7 @@ func runImplementIterations(ctx context.Context, params implementIterationsParam
 		findings = final.Findings
 		previousReviewerSession = lastUsableSessionID(reviewResult.SessionIDs)
 	}
-	return iterations, final, nitFindings(final), nil
+	return iterations, final, nitFindings(final), gateVerification, nil
 }
 
 func processApproval(params implementIterationsParams, iteration int, final verdict.Verdict) bool {
@@ -589,18 +621,20 @@ type implementGateCycleResult struct {
 	previousSession      string
 	rolloverSeedPath     string
 	gateResultPath       string
+	gateVerification     publicationGateVerification
 	implementerFeedPaths []string
 	exhausted            bool
 }
 
 type implementGateTurnResult struct {
-	previousSession       string
-	rolloverSeedPath      string
-	gateResultPath        string
-	implementerFeedPath   string
-	failedAttemptFeedback failedGateAttemptFeedback
-	gatePresent           bool
-	green                 bool
+	previousSession     string
+	rolloverSeedPath    string
+	gateResultPath      string
+	gateVerification    publicationGateVerification
+	implementerFeedPath string
+	gateFeedback        gateAttemptFeedback
+	gatePresent         bool
+	green               bool
 }
 
 func runImplementerGateCycle(
@@ -618,7 +652,7 @@ func runImplementerGateCycle(
 		previousSession: previousSession, rolloverSeedPath: rolloverSeedPath,
 	}
 	gateAttempts := 0
-	var previousGateAttemptFeedback *failedGateAttemptFeedback
+	var previousGateAttemptFeedback *gateAttemptFeedback
 	for implementTurn := 1; ; implementTurn++ {
 		handoffPath, err := implementerTurnHandoffPath(params, iteration, implementTurn, firstHandoffPath)
 		if err != nil {
@@ -633,6 +667,7 @@ func runImplementerGateCycle(
 		result.previousSession = turnResult.previousSession
 		result.rolloverSeedPath = turnResult.rolloverSeedPath
 		result.gateResultPath = turnResult.gateResultPath
+		result.gateVerification = turnResult.gateVerification
 		if turnResult.implementerFeedPath != "" {
 			result.implementerFeedPaths = append(result.implementerFeedPaths, turnResult.implementerFeedPath)
 		}
@@ -645,7 +680,7 @@ func runImplementerGateCycle(
 			result.exhausted = true
 			return result, nil
 		}
-		previousGateAttemptFeedback = &turnResult.failedAttemptFeedback
+		previousGateAttemptFeedback = &turnResult.gateFeedback
 	}
 }
 
@@ -656,7 +691,7 @@ func runImplementerGateTurn(
 	handoffPath string,
 	findings []verdict.Finding,
 	cycle implementGateCycleResult,
-	previousGateAttemptFeedback *failedGateAttemptFeedback,
+	previousGateAttemptFeedback *gateAttemptFeedback,
 	attemptNumber int,
 	mode HarnessOutputMode,
 	branchGate *branchGateSource,
@@ -696,13 +731,16 @@ func runImplementerGateTurn(
 		}
 		return result, nil
 	}
-	result.failedAttemptFeedback, result.gateResultPath, result.green, err = recordGateAttempt(
+	result.gateFeedback, result.gateResultPath, result.green, err = recordGateAttempt(
 		ctx, params, iteration, attemptNumber, gateScriptPath(branchGate.script),
 	)
 	if err != nil {
 		return implementGateTurnResult{}, err
 	}
 	result.gatePresent = true
+	result.gateVerification = publicationGateVerification{
+		ran: true, feedback: result.gateFeedback,
+	}
 	return result, nil
 }
 

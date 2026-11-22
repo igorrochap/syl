@@ -251,7 +251,7 @@ func TestImplementPrOnApprovePublishesApprovedChanges(t *testing.T) {
 	prCall := gh.calls[len(gh.calls)-1]
 	for _, expected := range []string{
 		"--title Add resilient workflow",
-		"Closes #42\n\nThe implementation meets the ticket.\n\n- [ ] internal/example.go:9 — Rename this helper.",
+		"Closes #42\n\nThe implementation meets the ticket.\n\n## Verification\n\nGates: none (no Gate ran).\n\nEvidence: none (no evidence.md was recorded).\n\n- [ ] internal/example.go:9 — Rename this helper.",
 		"--head " + branch,
 		"--base " + startBranch,
 	} {
@@ -299,7 +299,7 @@ func TestImplementPrOnApprovePublishesGitLabDraftMergeRequest(t *testing.T) {
 	if len(notifier.messages) != 1 || !strings.Contains(notifier.messages[0], mergeRequestURL) {
 		t.Fatalf("notifications = %v, want merge request URL", notifier.messages)
 	}
-	createCall := "mr create --draft --title Add resilient workflow --description Closes #42\n\nThe implementation meets the ticket.\n\n- [ ] internal/example.go:9 — Rename this helper. --source-branch feat/add-resilient-workflow --target-branch " + branch + " --yes"
+	createCall := "mr create --draft --title Add resilient workflow --description Closes #42\n\nThe implementation meets the ticket.\n\n## Verification\n\nGates: none (no Gate ran).\n\nEvidence: none (no evidence.md was recorded).\n\n- [ ] internal/example.go:9 — Rename this helper. --source-branch feat/add-resilient-workflow --target-branch " + branch + " --yes"
 	if !glab.hasCall(createCall) {
 		t.Fatalf("GitLab calls = %#v, want draft merge request arguments", glab.calls)
 	}
@@ -443,7 +443,7 @@ func TestImplementPrOnApproveUsesCommitgenForCommitAndPullRequestText(t *testing
 	prCall := gh.calls[len(gh.calls)-1]
 	for _, expected := range []string{
 		"--title feat: add x",
-		"Generated details.\n\nCloses #42\n\n- [ ] internal/example.go:9 — Rename this helper.",
+		"Generated details.\n\nCloses #42\n\n## Verification\n\nGates: none (no Gate ran).\n\nEvidence: none (no evidence.md was recorded).\n\n- [ ] internal/example.go:9 — Rename this helper.",
 		"--base main",
 	} {
 		if !strings.Contains(prCall, expected) {
