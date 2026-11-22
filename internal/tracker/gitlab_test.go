@@ -418,6 +418,82 @@ func TestGitLabCreatePullRequestOpensDraftAndTargetsOptionalBase(t *testing.T) {
 	}
 }
 
+func TestGitLabAttachesEvidenceImageToExistingMergeRequest(t *testing.T) {
+	const command = "mr update 23 --attach /tmp/dashboard.png"
+	runner := &scriptedGitLabRunner{responses: map[string]gitLabResponse{command: {}}}
+	gitLab, err := NewGitLab(runner)
+	if err != nil {
+		t.Fatalf("NewGitLab() error = %v", err)
+	}
+
+	err = gitLab.AttachPullRequestEvidence(context.Background(), "https://gitlab.com/group/project/-/merge_requests/23", PullRequestEvidenceImage{
+		Path: "/tmp/dashboard.png", Alt: "Dashboard",
+	})
+	if err != nil {
+		t.Fatalf("AttachPullRequestEvidence() error = %v", err)
+	}
+	if len(runner.calls) != 1 || runner.calls[0] != command {
+		t.Fatalf("glab calls = %#v, want %q", runner.calls, command)
+	}
+}
+
+func TestGitLabEvidenceAttachmentReturnsCommandFailure(t *testing.T) {
+	const command = "mr update 23 --attach /tmp/dashboard.png"
+	runner := &scriptedGitLabRunner{responses: map[string]gitLabResponse{
+		command: {err: errors.New("unknown flag: --attach")},
+	}}
+	gitLab, err := NewGitLab(runner)
+	if err != nil {
+		t.Fatalf("NewGitLab() error = %v", err)
+	}
+
+	err = gitLab.AttachPullRequestEvidence(context.Background(), "https://gitlab.com/group/project/-/merge_requests/23", PullRequestEvidenceImage{
+		Path: "/tmp/dashboard.png", Alt: "Dashboard",
+	})
+	if err == nil || !strings.Contains(err.Error(), "unknown flag: --attach") {
+		t.Fatalf("AttachPullRequestEvidence() error = %v, want unsupported flag failure", err)
+	}
+	if len(runner.calls) != 1 || runner.calls[0] != command {
+		t.Fatalf("glab calls = %#v, want %q", runner.calls, command)
+	}
+}
+
+func TestGitLabEvidenceAttachmentRejectsInvalidURLAndEmptyPath(t *testing.T) {
+	tests := []struct {
+		name            string
+		mergeRequestURL string
+		image           PullRequestEvidenceImage
+		wantError       string
+	}{
+		{
+			name: "invalid URL", mergeRequestURL: "not a merge request URL",
+			image:     PullRequestEvidenceImage{Path: "/tmp/dashboard.png"},
+			wantError: "invalid GitLab merge request URL",
+		},
+		{
+			name: "empty path", mergeRequestURL: "https://gitlab.com/group/project/-/merge_requests/23",
+			image:     PullRequestEvidenceImage{Alt: "Dashboard"},
+			wantError: "without a file path",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			runner := &scriptedGitLabRunner{responses: map[string]gitLabResponse{}}
+			gitLab, err := NewGitLab(runner)
+			if err != nil {
+				t.Fatalf("NewGitLab() error = %v", err)
+			}
+			err = gitLab.AttachPullRequestEvidence(context.Background(), test.mergeRequestURL, test.image)
+			if err == nil || !strings.Contains(err.Error(), test.wantError) {
+				t.Fatalf("AttachPullRequestEvidence() error = %v, want %q", err, test.wantError)
+			}
+			if len(runner.calls) != 0 {
+				t.Fatalf("glab calls = %v, want no command for invalid attachment data", runner.calls)
+			}
+		})
+	}
+}
+
 func TestGitLabCreatePullRequestReturnsExistingMergeRequest(t *testing.T) {
 	const existingURL = "https://gitlab.com/group/project/-/merge_requests/17"
 	runner := &scriptedGitLabRunner{responses: map[string]gitLabResponse{

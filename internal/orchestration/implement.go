@@ -40,6 +40,7 @@ type implementSummary struct {
 	nitBudgetOverrides []runrecord.NitBudgetOverride
 	pullRequestURL     string
 	publishNotice      string
+	attachmentNotice   string
 	publication        runrecord.Publication
 }
 
@@ -210,18 +211,21 @@ func publishApprovedSummary(
 	if summary.final.Status != verdict.Approve || summary.exhaustionReason != "" {
 		return nil
 	}
-	evidence, evidenceRecorded, evidenceErr := readPublicationEvidence(
+	evidence, evidenceErr := readPublicationEvidence(
 		recorder.EvidenceDirectory(summary.iterations),
 	)
-	summary.verification.evidence = evidence
-	summary.verification.evidenceRecorded = evidenceRecorded
+	summary.verification.evidence = evidence.summary
+	summary.verification.evidenceImages = evidence.images
+	summary.verification.evidenceImageNotices = evidence.imageNotices
+	summary.verification.evidenceRecorded = evidence.recorded
 	if evidenceErr != nil {
 		summary.verification.evidenceUnavailable = true
 	}
 
-	var notices []string
-	summary.publication, notices = publishApprovedImplement(ctx, options, setup, *summary)
+	var notices, attachmentNotices []string
+	summary.publication, notices, attachmentNotices = publishApprovedImplement(ctx, options, setup, *summary)
 	summary.publishNotice = strings.Join(notices, "\n")
+	summary.attachmentNotice = strings.Join(attachmentNotices, "\n")
 	if evidenceErr != nil {
 		summary.publishNotice = appendPublicationNotice(
 			summary.publishNotice,
@@ -1376,7 +1380,7 @@ func formatImplementSummary(summary implementSummary) string {
 		Iterations: summary.iterations, Final: summary.final, Nits: summary.nits,
 		DiffStat: summary.diffStat, WorktreePath: summary.worktreePath,
 		ExhaustionReason: summary.exhaustionReason, NitBudgetOverrides: summary.nitBudgetOverrides, PullRequestURL: summary.pullRequestURL,
-		Publication: summary.publication,
+		PublicationNotice: summary.attachmentNotice, Publication: summary.publication,
 	})
 }
 

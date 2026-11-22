@@ -1073,7 +1073,7 @@ func TestRunImplementUsesCommitgenForPublication(t *testing.T) {
 	publisher := &recordingPullRequestTracker{}
 	recorder := newMemoryRunRecorder()
 	recorder.dir = t.TempDir()
-	writePublicationEvidence(t, recorder, 1, "# Evidence\n\n## Exercise: publication\n"+
+	writePublicationEvidence(t, recorder, "# Evidence\n\n## Exercise: publication\n"+
 		"- What was exercised: the published body includes its Gate results.\n"+
 		"- How it was exercised: RunImplement used fake commitgen and Tracker adapters.\n"+
 		"- What was observed: the body included all seven Gate results.\n"+
@@ -1129,6 +1129,154 @@ func TestRunImplementUsesCommitgenForPublication(t *testing.T) {
 	}
 }
 
+func TestRunImplementAttachesOnlyPRWorthyEvidenceImages(t *testing.T) {
+	tests := []struct {
+		name          string
+		evidence      string
+		wantImagePath bool
+	}{
+		{
+			name: "marked image is attached after pull request creation",
+			evidence: "# Evidence\n\n" +
+				"![Dashboard](./screens/dashboard.png) — PR-worthy\n" +
+				"![Console](./screens/console.png)\n",
+			wantImagePath: true,
+		},
+		{
+			name: "unmarked image does not run attachment command",
+			evidence: "# Evidence\n\n" +
+				"![Dashboard](./screens/dashboard.png)\n",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			root, _, git := newPublicationTestRepository(t)
+			addPublicationBareOrigin(t, git)
+			publisher := &recordingPullRequestTracker{}
+			recorder := newMemoryRunRecorder()
+			recorder.dir = t.TempDir()
+			writePublicationEvidence(t, recorder, test.evidence)
+			imagePath := filepath.Join(recorder.EvidenceDirectory(1), "screens", "dashboard.png")
+			writeEvidenceImage(t, imagePath)
+
+			if err := RunImplement(context.Background(), publicationImplementOptions(root, git, publisher, recorder, nil)); err != nil {
+				t.Fatalf("RunImplement() error = %v", err)
+			}
+			if publisher.createCalls != 1 {
+				t.Fatalf("pull request creation calls = %d, want exactly one", publisher.createCalls)
+			}
+			if !test.wantImagePath {
+				if len(publisher.attachments) != 0 {
+					t.Fatalf("attachment calls = %#v, want none", publisher.attachments)
+				}
+				return
+			}
+			if len(publisher.attachments) != 1 || publisher.attachments[0] != (tracker.PullRequestEvidenceImage{
+				Path: imagePath, Alt: "Dashboard",
+			}) {
+				t.Fatalf("attachment calls = %#v, want only the marked Dashboard image", publisher.attachments)
+			}
+			if !slices.Equal(publisher.events, []string{"create", "attach"}) {
+				t.Fatalf("publication calls = %v, want attachment after pull request creation", publisher.events)
+			}
+		})
+	}
+}
+
+func TestRunImplementKeepsPublicationWhenEvidenceAttachmentFails(t *testing.T) {
+	root, _, git := newPublicationTestRepository(t)
+	addPublicationBareOrigin(t, git)
+	attachmentError := errors.New("gh pr edit failed: unknown flag: --attach")
+	publisher := &recordingPullRequestTracker{attachmentError: attachmentError}
+	recorder := newMemoryRunRecorder()
+	recorder.dir = t.TempDir()
+	writePublicationEvidence(t, recorder, "# Evidence\n\n![Dashboard](./dashboard.png) PR-worthy\n")
+	writeEvidenceImage(t, filepath.Join(recorder.EvidenceDirectory(1), "dashboard.png"))
+	var output strings.Builder
+	options := publicationImplementOptions(root, git, publisher, recorder, nil)
+	options.Output = &output
+
+	if err := RunImplement(context.Background(), options); err != nil {
+		t.Fatalf("RunImplement() error = %v, want publication to remain successful", err)
+	}
+	summary := runrecord.ParseSummary([]byte(recorder.files[artifactFilename(summaryArtifact, 0)]))
+	if summary.Publication.Status != runrecord.PublicationPublished ||
+		summary.Publication.URL != "https://github.com/example/project/pull/23" {
+		t.Fatalf("recorded publication = %#v, want published pull request after attachment failure", summary.Publication)
+	}
+	if !strings.Contains(summary.PublicationNotice, "Dashboard") ||
+		!strings.Contains(summary.PublicationNotice, "dashboard.png") ||
+		!strings.Contains(summary.PublicationNotice, attachmentError.Error()) {
+		t.Fatalf("recorded publication notice = %q, want image name and command error", summary.PublicationNotice)
+	}
+	if publisher.createCalls != 1 || len(publisher.attachments) != 1 {
+		t.Fatalf("publication calls = %#v, want one creation and one attachment attempt", publisher)
+	}
+	if !strings.Contains(output.String(), attachmentError.Error()) {
+		t.Fatalf("implement output = %q, want the attachment failure notice", output.String())
+	}
+}
+
+func TestRunImplementRecordsNoticeWhenTrackerCannotAttachEvidence(t *testing.T) {
+	root, _, git := newPublicationTestRepository(t)
+	addPublicationBareOrigin(t, git)
+	publisher := &recordingPullRequestTracker{}
+	issueTracker := &existingPullRequestTracker{creator: publisher}
+	recorder := newMemoryRunRecorder()
+	recorder.dir = t.TempDir()
+	writePublicationEvidence(t, recorder, "# Evidence\n\n![Dashboard](./dashboard.png) PR-worthy\n")
+	writeEvidenceImage(t, filepath.Join(recorder.EvidenceDirectory(1), "dashboard.png"))
+	var output strings.Builder
+	options := publicationImplementOptions(root, git, issueTracker, recorder, nil)
+	options.Output = &output
+
+	if err := RunImplement(context.Background(), options); err != nil {
+		t.Fatalf("RunImplement() error = %v, want publication to remain successful", err)
+	}
+	summary := runrecord.ParseSummary([]byte(recorder.files[artifactFilename(summaryArtifact, 0)]))
+	if summary.Publication.Status != runrecord.PublicationPublished || publisher.createCalls != 1 {
+		t.Fatalf("publication = %#v, create calls = %d; want one published pull request", summary.Publication, publisher.createCalls)
+	}
+	if !strings.Contains(summary.PublicationNotice, "Dashboard") ||
+		!strings.Contains(summary.PublicationNotice, "dashboard.png") ||
+		!strings.Contains(summary.PublicationNotice, "tracker does not support") {
+		t.Fatalf("publication notice = %q, want image name and unsupported Tracker reason", summary.PublicationNotice)
+	}
+	if strings.Contains(summary.PublicationNotice, "commitgen unavailable") || len(publisher.attachments) != 0 {
+		t.Fatalf("publication notice = %q, attachments = %#v; want only attachment notices and no attachment command", summary.PublicationNotice, publisher.attachments)
+	}
+	if !strings.Contains(output.String(), "tracker does not support") {
+		t.Fatalf("implement output = %q, want unsupported Tracker notice", output.String())
+	}
+}
+
+func TestRunImplementRecordsNoticeForMarkedRemoteEvidenceImage(t *testing.T) {
+	root, _, git := newPublicationTestRepository(t)
+	addPublicationBareOrigin(t, git)
+	publisher := &recordingPullRequestTracker{}
+	recorder := newMemoryRunRecorder()
+	recorder.dir = t.TempDir()
+	writePublicationEvidence(t, recorder, "# Evidence\n\n![Hosted dashboard](https://cdn.example.test/dashboard.png) PR-worthy\n")
+	options := publicationImplementOptions(root, git, publisher, recorder, nil)
+
+	if err := RunImplement(context.Background(), options); err != nil {
+		t.Fatalf("RunImplement() error = %v, want publication to remain successful", err)
+	}
+	summary := runrecord.ParseSummary([]byte(recorder.files[artifactFilename(summaryArtifact, 0)]))
+	if summary.Publication.Status != runrecord.PublicationPublished || publisher.createCalls != 1 {
+		t.Fatalf("publication = %#v, create calls = %d; want one published pull request", summary.Publication, publisher.createCalls)
+	}
+	if !strings.Contains(summary.PublicationNotice, "Hosted dashboard") ||
+		!strings.Contains(summary.PublicationNotice, "https://cdn.example.test/dashboard.png") ||
+		!strings.Contains(summary.PublicationNotice, "not a local Evidence file") {
+		t.Fatalf("publication notice = %q, want remote image name, path, and reason", summary.PublicationNotice)
+	}
+	if len(publisher.attachments) != 0 {
+		t.Fatalf("attachment calls = %#v, want no command for remote Evidence images", publisher.attachments)
+	}
+}
+
 func TestRunImplementPublishesOverallGateResultWhenPerGateResultsAreUnavailable(t *testing.T) {
 	root, _, git := newPublicationTestRepository(t)
 	addPublicationGate(t, root, git)
@@ -1136,7 +1284,7 @@ func TestRunImplementPublishesOverallGateResultWhenPerGateResultsAreUnavailable(
 	publisher := &recordingPullRequestTracker{}
 	recorder := newMemoryRunRecorder()
 	recorder.dir = t.TempDir()
-	writePublicationEvidence(t, recorder, 1, "# Evidence\n\n- What was exercised: the review Evidence behavior.\n"+
+	writePublicationEvidence(t, recorder, "# Evidence\n\n- What was exercised: the review Evidence behavior.\n"+
 		"- How it was exercised: checked the prepared pull request body.\n"+
 		"- What was observed: the runtime service was unavailable.\n"+
 		"- Outcome: not exercised — local runtime service is unavailable.\n")
@@ -1163,7 +1311,7 @@ func TestRunImplementFallbackBodyIncludesPerGateResultsAndEvidence(t *testing.T)
 	publisher := &recordingPullRequestTracker{}
 	recorder := newMemoryRunRecorder()
 	recorder.dir = t.TempDir()
-	writePublicationEvidence(t, recorder, 1, "# Evidence\n\n- **What was exercised:** fallback publication.\n"+
+	writePublicationEvidence(t, recorder, "# Evidence\n\n- **What was exercised:** fallback publication.\n"+
 		"- **How it was exercised:** called RunImplement with a fake Tracker.\n"+
 		"- **What was observed:** each Gate result appeared in the body.\n"+
 		"- **Outcome:** pass.\n")
@@ -1176,8 +1324,10 @@ func TestRunImplementFallbackBodyIncludesPerGateResultsAndEvidence(t *testing.T)
 	}
 	assertContainsAll(t, publisher.request.Body,
 		"## Verification", "format: PASS", "vet: PASS", "style: PASS", "complexity: PASS",
-		"coverage: PASS", "tests: PASS", "architecture: PASS", "Outcome: pass.",
-		"Exercised: fallback publication", "Observed: each Gate result appeared in the body.",
+		"coverage: PASS", "tests: PASS", "architecture: PASS",
+		"- Outcome: pass.\n  - Exercised: fallback publication.\n"+
+			"  - How: called RunImplement with a fake Tracker.\n"+
+			"  - Observed: each Gate result appeared in the body.",
 		"Closes #42")
 }
 
@@ -1241,9 +1391,9 @@ func addPublicationGate(t *testing.T, root string, git gitadapter.ExecGitRunner)
 	return gitOutput(t, git, "rev-parse", "HEAD")
 }
 
-func writePublicationEvidence(t *testing.T, recorder *memoryRunRecorder, iteration int, contents string) {
+func writePublicationEvidence(t *testing.T, recorder *memoryRunRecorder, contents string) {
 	t.Helper()
-	directory := recorder.EvidenceDirectory(iteration)
+	directory := recorder.EvidenceDirectory(1)
 	if err := os.MkdirAll(directory, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -1708,16 +1858,32 @@ func (g *publishingTestGit) Run(_ context.Context, args ...string) (string, erro
 
 type recordingPullRequestTracker struct {
 	branchSetupTracker
-	request *tracker.PullRequest
+	request         *tracker.PullRequest
+	createCalls     int
+	attachments     []tracker.PullRequestEvidenceImage
+	attachmentError error
+	events          []string
 }
 
 func (tracker *recordingPullRequestTracker) CreatePullRequest(_ context.Context, request tracker.PullRequest) (string, error) {
 	tracker.request = &request
+	tracker.createCalls++
+	tracker.events = append(tracker.events, "create")
 	return "https://github.com/example/project/pull/23", nil
 }
 
 func (*recordingPullRequestTracker) CreatePullRequestCommand(request tracker.PullRequest) []string {
 	return githubPullRequestTestCommand(request)
+}
+
+func (tracker *recordingPullRequestTracker) AttachPullRequestEvidence(
+	_ context.Context,
+	_ string,
+	image tracker.PullRequestEvidenceImage,
+) error {
+	tracker.attachments = append(tracker.attachments, image)
+	tracker.events = append(tracker.events, "attach")
+	return tracker.attachmentError
 }
 
 type failingPullRequestTracker struct {

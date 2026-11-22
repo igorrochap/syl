@@ -68,6 +68,7 @@ type GitLab struct {
 
 var _ Tracker = (*GitLab)(nil)
 var _ PullRequestCreator = (*GitLab)(nil)
+var _ PullRequestEvidenceAttacher = (*GitLab)(nil)
 var _ PullRequestBaseResolver = (*GitLab)(nil)
 
 // NewGitLab creates a GitLab tracker backed by runner.
@@ -208,6 +209,24 @@ func (*GitLab) CreatePullRequestCommand(request PullRequest) []string {
 		args = append(args, "--target-branch", base)
 	}
 	return append(args, "--yes")
+}
+
+// AttachPullRequestEvidence adds one image to an existing GitLab merge request.
+func (g *GitLab) AttachPullRequestEvidence(
+	ctx context.Context,
+	pullRequestURL string,
+	image PullRequestEvidenceImage,
+) error {
+	number, err := pullRequestNumberFromURL(pullRequestURL, "GitLab merge request", "merge_requests")
+	if err != nil {
+		return err
+	}
+	path, err := pullRequestEvidencePath(image, "GitLab")
+	if err != nil {
+		return err
+	}
+	_, err = g.run(ctx, "attach Evidence image to merge request", "mr", "update", number, "--attach", path)
+	return err
 }
 
 // DefaultPullRequestBase returns the GitLab project's configured default branch.

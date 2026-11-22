@@ -168,12 +168,18 @@ func TestWriterRecordsGateScriptAttemptsAndOutput(t *testing.T) {
 
 func TestWriterAndReaderRoundTripPublicationOutcomes(t *testing.T) {
 	tests := []struct {
-		name        string
-		publication Publication
+		name              string
+		publication       Publication
+		publicationNotice string
 	}{
 		{name: "not requested", publication: Publication{Status: PublicationNotRequested}},
 		{name: "skipped", publication: Publication{Status: PublicationSkipped}},
 		{name: "published", publication: Publication{Status: PublicationPublished, URL: "https://github.com/example/project/pull/23"}},
+		{
+			name:              "published with attachment notice",
+			publication:       Publication{Status: PublicationPublished, URL: "https://github.com/example/project/pull/23"},
+			publicationNotice: "Could not attach Dashboard: gh pr edit failed\nunknown flag: --attach",
+		},
 		{name: "failed", publication: Publication{
 			Status: PublicationFailed, Step: PublicationStepPush, Error: "push failed\npermission denied",
 		}},
@@ -181,7 +187,9 @@ func TestWriterAndReaderRoundTripPublicationOutcomes(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			writer := NewWriter(t.TempDir())
-			if err := writer.WriteSummary(SummaryInput{Publication: test.publication}); err != nil {
+			if err := writer.WriteSummary(SummaryInput{
+				Publication: test.publication, PublicationNotice: test.publicationNotice,
+			}); err != nil {
 				t.Fatalf("WriteSummary() error = %v", err)
 			}
 
@@ -191,6 +199,9 @@ func TestWriterAndReaderRoundTripPublicationOutcomes(t *testing.T) {
 			}
 			if !reflect.DeepEqual(got.Publication, test.publication) {
 				t.Fatalf("ReadSummary().Publication = %#v, want %#v", got.Publication, test.publication)
+			}
+			if got.PublicationNotice != test.publicationNotice {
+				t.Fatalf("ReadSummary().PublicationNotice = %q, want %q", got.PublicationNotice, test.publicationNotice)
 			}
 		})
 	}

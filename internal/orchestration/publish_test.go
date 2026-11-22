@@ -3,8 +3,11 @@ package orchestration
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/igorrochap/syl/internal/tracker"
 )
 
 func TestEnsureClosingReferenceMatchesExactTicketNumber(t *testing.T) {
@@ -39,9 +42,9 @@ func TestEnsureClosingReferenceMatchesExactTicketNumber(t *testing.T) {
 
 func TestReadPublicationEvidenceDistinguishesMissingFileFromReadFailure(t *testing.T) {
 	t.Run("missing evidence is absent", func(t *testing.T) {
-		contents, recorded, err := readPublicationEvidence(t.TempDir())
-		if err != nil || recorded || contents != "" {
-			t.Fatalf("readPublicationEvidence() = (%q, %t, %v), want absent without error", contents, recorded, err)
+		evidence, err := readPublicationEvidence(t.TempDir())
+		if err != nil || evidence.recorded || evidence.summary != "" || len(evidence.images) != 0 {
+			t.Fatalf("readPublicationEvidence() = (%#v, %v), want absent without error", evidence, err)
 		}
 	})
 
@@ -50,9 +53,9 @@ func TestReadPublicationEvidenceDistinguishesMissingFileFromReadFailure(t *testi
 		if err := os.WriteFile(directory, []byte("file"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		contents, recorded, err := readPublicationEvidence(directory)
-		if err == nil || recorded || contents != "" || !strings.Contains(err.Error(), "read evidence.md") {
-			t.Fatalf("readPublicationEvidence() = (%q, %t, %v), want a read error", contents, recorded, err)
+		evidence, err := readPublicationEvidence(directory)
+		if err == nil || evidence.recorded || evidence.summary != "" || len(evidence.images) != 0 || !strings.Contains(err.Error(), "read evidence.md") {
+			t.Fatalf("readPublicationEvidence() = (%#v, %v), want a read error", evidence, err)
 		}
 		body := appendVerificationSection("", publicationVerification{evidenceUnavailable: true})
 		if !strings.Contains(body, "Evidence: unavailable") || strings.Contains(body, "Evidence: none") ||
@@ -62,21 +65,103 @@ func TestReadPublicationEvidenceDistinguishesMissingFileFromReadFailure(t *testi
 	})
 }
 
+func TestReadPublicationEvidenceSelectsOnlyPRWorthyLocalImages(t *testing.T) {
+	directory := t.TempDir()
+	contents := "# Evidence\n\n" +
+		"![Dashboard](./screens/dashboard.png) — PR-worthy\n" +
+		"![Overview](<./screens/overview wide.png>) (PR-worthy)\n" +
+		"![Console](./screens/console.png)\n" +
+		"![Remote](https://example.test/screen.png) PR-worthy\n" +
+		"![Protocol relative](//cdn.example.test/screen.png) PR-worthy\n" +
+		"![Query](./screens/dashboard.png?download=1) PR-worthy\n" +
+		"```markdown\n![Example](./screens/example.png) PR-worthy\n```\n"
+	if err := os.WriteFile(filepath.Join(directory, "evidence.md"), []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	writeEvidenceImage(t, filepath.Join(directory, "screens", "dashboard.png"))
+	writeEvidenceImage(t, filepath.Join(directory, "screens", "overview wide.png"))
+
+	evidence, err := readPublicationEvidence(directory)
+	if err != nil || !evidence.recorded {
+		t.Fatalf("readPublicationEvidence() = (%#v, %v), want recorded Evidence without error", evidence, err)
+	}
+	want := []tracker.PullRequestEvidenceImage{{
+		Path: filepath.Join(directory, "screens", "dashboard.png"), Alt: "Dashboard",
+	}, {
+		Path: filepath.Join(directory, "screens", "overview wide.png"), Alt: "Overview",
+	}}
+	if !reflect.DeepEqual(evidence.images, want) || len(evidence.imageNotices) != 3 {
+		t.Fatalf("PR-worthy images = %#v, notices = %v; want %#v and three remote path notices", evidence.images, evidence.imageNotices, want)
+	}
+	for _, expected := range []string{"Remote", "Protocol relative", "Query", "not a local Evidence file"} {
+		if !strings.Contains(strings.Join(evidence.imageNotices, "\n"), expected) {
+			t.Errorf("image notices = %v, want %q", evidence.imageNotices, expected)
+		}
+	}
+}
+
+func TestReadPublicationEvidenceRejectsInvalidMarkedImagePaths(t *testing.T) {
+	directory := t.TempDir()
+	outsideImage := filepath.Join(t.TempDir(), "outside.png")
+	writeEvidenceImage(t, outsideImage)
+	insideText := filepath.Join(directory, "notes.txt")
+	if err := os.WriteFile(insideText, []byte("not an image"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	imageSymlink := filepath.Join(directory, "linked.png")
+	if err := os.Symlink(outsideImage, imageSymlink); err != nil {
+		t.Skipf("create image symlink: %v", err)
+	}
+	contents := "# Evidence\n\n" +
+		"![Absolute](" + outsideImage + ") PR-worthy\n" +
+		"![Traversal](../" + filepath.Base(outsideImage) + ") PR-worthy\n" +
+		"![Text](./notes.txt) PR-worthy\n" +
+		"![Symlink](./linked.png) PR-worthy\n" +
+		"![Hash](./hash#image.png) PR-worthy\n" +
+		"![Malformed](<./bad%zz.png>) PR-worthy\n"
+	if err := os.WriteFile(filepath.Join(directory, "evidence.md"), []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	evidence, err := readPublicationEvidence(directory)
+	if err != nil || !evidence.recorded || len(evidence.images) != 0 || len(evidence.imageNotices) != 6 {
+		t.Fatalf("readPublicationEvidence() = (%#v, %v), want six actionable image notices and no uploads", evidence, err)
+	}
+	for _, expected := range []string{
+		"Absolute", "must be relative", "Traversal", "escapes", "Text", "not an image",
+		"Symlink", "resolves outside", "Hash", "contains #", "Malformed", "invalid URL escape",
+	} {
+		if !strings.Contains(strings.Join(evidence.imageNotices, "\n"), expected) {
+			t.Errorf("image notices = %v, want %q", evidence.imageNotices, expected)
+		}
+	}
+}
+
 func TestPublicationVerificationSummarizesImagesOnlyEvidenceAsText(t *testing.T) {
 	directory := t.TempDir()
 	if err := os.WriteFile(filepath.Join(directory, "evidence.md"), []byte("![runtime screenshot](screen.png)\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	contents, recorded, err := readPublicationEvidence(directory)
-	if err != nil || !recorded {
-		t.Fatalf("readPublicationEvidence() = (%q, %t, %v), want recorded Evidence", contents, recorded, err)
+	evidence, err := readPublicationEvidence(directory)
+	if err != nil || !evidence.recorded {
+		t.Fatalf("readPublicationEvidence() = (%#v, %v), want recorded Evidence", evidence, err)
 	}
-	body := appendVerificationSection("", publicationVerification{evidence: contents, evidenceRecorded: recorded})
+	body := appendVerificationSection("", publicationVerification{evidence: evidence.summary, evidenceRecorded: evidence.recorded})
 	if !strings.Contains(body, "Evidence summary:\n\n[Image omitted: runtime screenshot]") {
 		t.Fatalf("verification body = %q, want text summary of the omitted image", body)
 	}
 	if strings.Contains(body, "![") || strings.Contains(body, "screen.png") {
 		t.Fatalf("verification body = %q, want no embedded image or image path", body)
+	}
+}
+
+func writeEvidenceImage(t *testing.T, path string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("\x89PNG\r\n\x1a\n"), 0o600); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -121,11 +206,12 @@ func TestSummarizeEvidenceKeepsMultilineContinuationAndSplitsExercises(t *testin
 		"- What was exercised: the HTTP response.\n" +
 		"- Outcome: pass\n"
 	summary := summarizeEvidenceText(contents)
-	if !strings.Contains(summary, "Exercised: the CLI output. The second output line was also checked.") {
-		t.Fatalf("Evidence summary = %q, want the continuation line", summary)
-	}
-	if got := strings.Count(summary, "- Outcome: pass"); got != 2 {
-		t.Fatalf("Evidence summary = %q, want two separate exercises, found %d outcomes", summary, got)
+	want := "- Outcome: pass\n" +
+		"  - Exercised: the CLI output. The second output line was also checked.\n" +
+		"- Outcome: pass\n" +
+		"  - Exercised: the HTTP response."
+	if summary != want {
+		t.Fatalf("Evidence summary = %q, want readable field lists %q", summary, want)
 	}
 }
 
@@ -136,11 +222,15 @@ func TestSummarizeEvidenceStartsExerciseOnHeadingWithoutExercisedField(t *testin
 		"## Exercise: API\n" +
 		"- How it was exercised: made an HTTP request.\n" +
 		"- Outcome: pass\n"
-	exercises := strings.Split(summarizeEvidenceText(contents), "\n")
-	if len(exercises) != 2 || !strings.Contains(exercises[0], "Exercised: the command output.") ||
-		!strings.Contains(exercises[1], "How: made an HTTP request.") ||
-		strings.Contains(exercises[1], "command output") {
-		t.Fatalf("Evidence exercises = %q, want the API heading to start an independent exercise", exercises)
+	got := strings.Split(summarizeEvidenceText(contents), "\n")
+	want := []string{
+		"- Outcome: pass",
+		"  - Exercised: the command output.",
+		"- Outcome: pass",
+		"  - How: made an HTTP request.",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("Evidence exercises = %q, want independently formatted exercise lists %q", got, want)
 	}
 }
 

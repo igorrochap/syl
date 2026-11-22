@@ -70,6 +70,7 @@ type GitHub struct {
 
 var _ Tracker = (*GitHub)(nil)
 var _ PullRequestCreator = (*GitHub)(nil)
+var _ PullRequestEvidenceAttacher = (*GitHub)(nil)
 var _ PullRequestBaseResolver = (*GitHub)(nil)
 
 // NewGitHub creates a GitHub tracker backed by runner.
@@ -213,6 +214,36 @@ func (*GitHub) CreatePullRequestCommand(request PullRequest) []string {
 		args = append(args, "--base", base)
 	}
 	return args
+}
+
+// AttachPullRequestEvidence adds one image to an existing GitHub pull request.
+func (g *GitHub) AttachPullRequestEvidence(
+	ctx context.Context,
+	pullRequestURL string,
+	image PullRequestEvidenceImage,
+) error {
+	number, err := pullRequestNumberFromURL(pullRequestURL, "GitHub pull request", "pull")
+	if err != nil {
+		return err
+	}
+	path, err := pullRequestEvidencePath(image, "GitHub")
+	if err != nil {
+		return err
+	}
+	attachment, err := githubPullRequestEvidenceArgument(path, image.Alt)
+	if err != nil {
+		return err
+	}
+	_, err = g.run(ctx, "attach Evidence image to pull request", "pr", "edit", number, "--attach", attachment)
+	return err
+}
+
+func githubPullRequestEvidenceArgument(path, alt string) (string, error) {
+	containsSeparator := strings.Contains(path, "#") || strings.Contains(alt, "#")
+	if containsSeparator {
+		return "", errors.New("GitHub attachment paths and alt text cannot contain #")
+	}
+	return path + "#" + alt, nil
 }
 
 // DefaultPullRequestBase returns the repository's forge-configured default branch.
