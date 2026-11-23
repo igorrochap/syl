@@ -131,6 +131,30 @@ func TestRunWithGitLabTrackersWritesLoadableConfig(t *testing.T) {
 	}
 }
 
+func TestInitInstallsVerifySkillAndPreservesProjectRecipe(t *testing.T) {
+	root := t.TempDir()
+	recipePath := writeProjectVerifyRecipe(t, root)
+
+	manifest, err := readSkillManifest()
+	if err != nil {
+		t.Fatalf("readSkillManifest() error = %v", err)
+	}
+	answers := make([]string, 0, len(initPromptSpecs(manifest)))
+	for range initPromptSpecs(manifest) {
+		answers = append(answers, "")
+	}
+	var output strings.Builder
+	if err := Run(root, strings.NewReader(strings.Join(answers, "\n")+"\n"), &output); err != nil {
+		t.Fatalf("Run() error = %v; output = %q", err, output.String())
+	}
+
+	installedSkill := filepath.Join(root, ".agents", "skills", "verify", "SKILL.md")
+	if _, err := os.Stat(installedSkill); err != nil {
+		t.Fatalf("verify skill was not installed: %v", err)
+	}
+	assertProjectVerifyRecipeUnchanged(t, recipePath)
+}
+
 func initPromptSpec(t *testing.T, manifest skillManifest, key string) tui.PromptSpec {
 	t.Helper()
 	for _, spec := range initPromptSpecs(manifest) {

@@ -193,14 +193,14 @@ func gateAttemptIsGreen(execution GateExecution, summary parsedGateSummary) bool
 	return true
 }
 
-type failedGateAttemptFeedback struct {
+type gateAttemptFeedback struct {
 	resultsAvailable bool
 	results          []runrecord.GateResult
 	outputPath       string
 	exitStatus       int
 }
 
-func formatGateAttemptFeedback(feedback failedGateAttemptFeedback) string {
+func formatGateAttemptFeedback(feedback gateAttemptFeedback) string {
 	var prompt strings.Builder
 	prompt.WriteString("The orchestrator ran the Gate script after your turn, and this Gate attempt was red. ")
 	if feedback.resultsAvailable {
@@ -227,7 +227,7 @@ func recordGateAttempt(
 	params implementIterationsParams,
 	iteration, attemptNumber int,
 	scriptPath string,
-) (failedGateAttemptFeedback, string, bool, error) {
+) (gateAttemptFeedback, string, bool, error) {
 	runner := params.gateRunner
 	if runner == nil {
 		runner = CommandGateRunner{}
@@ -241,12 +241,12 @@ func recordGateAttempt(
 		Green: green, Output: result.Output,
 	})
 	if err != nil {
-		return failedGateAttemptFeedback{}, "", false, fmt.Errorf("record Gate attempt: %w", err)
+		return gateAttemptFeedback{}, "", false, fmt.Errorf("record Gate attempt: %w", err)
 	}
 	if err := ctx.Err(); err != nil {
-		return failedGateAttemptFeedback{}, paths.Result, green, err
+		return gateAttemptFeedback{}, paths.Result, green, err
 	}
-	feedback := failedGateAttemptFeedback{
+	feedback := gateAttemptFeedback{
 		resultsAvailable: summary.valid, results: summary.results,
 		outputPath: paths.Output, exitStatus: result.ExitStatus,
 	}

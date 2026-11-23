@@ -17,6 +17,7 @@ import (
 type RunRecorder interface {
 	ImplementHandoffPath(iteration int) string
 	ImplementGateHandoffPath(iteration, turn int) string
+	EvidenceDirectory(iteration int) string
 	RecordGateScript(contents []byte, executable bool) (string, error)
 	RecordGateAttempt(iteration int, attempt runrecord.GateAttempt) (runrecord.GateAttemptPaths, error)
 	RecordNoGate(iteration int) (string, error)
@@ -159,6 +160,10 @@ func (recorder *diskRunRecorder) ImplementGateHandoffPath(iteration, turn int) s
 	return recorder.writer.GateHandoffPath(iteration, turn)
 }
 
+func (recorder *diskRunRecorder) EvidenceDirectory(iteration int) string {
+	return recorder.writer.EvidenceDirectory(iteration)
+}
+
 func (recorder *diskRunRecorder) RecordGateScript(contents []byte, executable bool) (string, error) {
 	mode := os.FileMode(0o644)
 	if executable {
@@ -208,7 +213,7 @@ func (recorder *diskRunRecorder) WriteSummary(summary implementSummary) error {
 		Iterations: summary.iterations, Final: summary.final, Nits: summary.nits,
 		DiffStat: summary.diffStat, WorktreePath: summary.worktreePath,
 		ExhaustionReason: summary.exhaustionReason, NitBudgetOverrides: summary.nitBudgetOverrides, PullRequestURL: summary.pullRequestURL,
-		Publication: summary.publication,
+		PublicationNotice: summary.attachmentNotice, Publication: summary.publication,
 	})
 }
 

@@ -23,6 +23,8 @@ func TestParseArtifactName(t *testing.T) {
 		{"sessions.txt", Artifact{Kind: SessionsFile, Name: "sessions.txt", Standalone: true}, true},
 		{"usage.json", Artifact{Kind: UsageFile, Name: "usage.json", Standalone: true}, true},
 		{"handoff-03.md", Artifact{Kind: ImplementHandoff, Name: "handoff-03.md", Iteration: 3, Role: "implement", Extension: "md"}, true},
+		{"evidence-1", Artifact{Kind: EvidenceDirectory, Name: "evidence-1", Iteration: 1, Role: "implement"}, true},
+		{"evidence-12", Artifact{Kind: EvidenceDirectory, Name: "evidence-12", Iteration: 12, Role: "implement"}, true},
 		{"handoff-03-gate-02.md", Artifact{Kind: ImplementHandoff, Name: "handoff-03-gate-02.md", Iteration: 3, Role: "implement", Extension: "md", Attempt: 2}, true},
 		{"branch-point-quality.sh", Artifact{Kind: GateScript, Name: "branch-point-quality.sh", Standalone: true, Extension: "sh"}, true},
 		{"iteration-03-gate.txt", Artifact{Kind: NoGateFile, Name: "iteration-03-gate.txt", Iteration: 3, Role: "gate", Extension: "txt"}, true},
@@ -36,6 +38,9 @@ func TestParseArtifactName(t *testing.T) {
 		{"iteration-01-verdict.txt", Artifact{Kind: VerdictFile, Name: "iteration-01-verdict.txt", Iteration: 1, Role: "verdict", Extension: "txt"}, true},
 		{"metadata.txt", Artifact{}, false},
 		{"handoff-00.md", Artifact{}, false},
+		{"evidence-0", Artifact{}, false},
+		{"evidence-01", Artifact{}, false},
+		{"evidence-x", Artifact{}, false},
 		{"handoff-x.md", Artifact{}, false},
 		{"handoff-01.txt", Artifact{}, false},
 		{"iteration-", Artifact{}, false},
@@ -79,6 +84,7 @@ func TestArtifactNameMatchesParsedName(t *testing.T) {
 		{ImplementFeed, 2, "iteration-02-implement.feed"},
 		{ImplementTranscript, 2, "iteration-02-implement.transcript"},
 		{ImplementHandoff, 2, "handoff-02.md"},
+		{EvidenceDirectory, 1, "evidence-1"},
 		{ReviewDiff, 12, "iteration-12-review.diff"},
 		{ReviewFeed, 1, "iteration-01-review.feed"},
 		{ReviewTranscript, 1, "iteration-01-review.transcript"},
@@ -249,7 +255,12 @@ func TestParseSummaryKeepsFirstOccurrenceAndRejectsBadIterations(t *testing.T) {
 }
 
 func TestParseSummaryReadsPublicationOutcome(t *testing.T) {
-	got := ParseSummary([]byte("Publication: failed\nPublication step: pull request\nPublication error:\n  gh pr create failed\n  permission denied\nDiff stat:\n file.go | 1 +\n"))
+	got := ParseSummary([]byte("Publication: published\nPublication notice:\n  Could not attach PR-worthy Evidence image Dashboard\n  gh pr edit failed: unknown flag: --attach\nDiff stat:\n file.go | 1 +\n"))
+	if got.PublicationNotice != "Could not attach PR-worthy Evidence image Dashboard\ngh pr edit failed: unknown flag: --attach" {
+		t.Fatalf("ParseSummary().PublicationNotice = %q, want the complete publication notice", got.PublicationNotice)
+	}
+
+	got = ParseSummary([]byte("Publication: failed\nPublication step: pull request\nPublication error:\n  gh pr create failed\n  permission denied\nDiff stat:\n file.go | 1 +\n"))
 	want := Publication{Status: PublicationFailed, Step: PublicationStepPullRequest, Error: "gh pr create failed\npermission denied"}
 	if !reflect.DeepEqual(got.Publication, want) {
 		t.Fatalf("ParseSummary().Publication = %#v, want %#v", got.Publication, want)

@@ -36,6 +36,7 @@ type SummaryInput struct {
 	ExhaustionReason   string
 	NitBudgetOverrides []NitBudgetOverride
 	PullRequestURL     string
+	PublicationNotice  string
 	Publication        Publication
 }
 
@@ -117,6 +118,11 @@ func (writer *Writer) HandoffPath(iteration int) string {
 // GateHandoffPath returns a distinct handoff path for a Gate-driven turn.
 func (writer *Writer) GateHandoffPath(iteration, turn int) string {
 	return filepath.Join(writer.directory, fmt.Sprintf("handoff-%02d-gate-%02d.md", iteration, turn))
+}
+
+// EvidenceDirectory returns the Evidence directory for one implementer iteration.
+func (writer *Writer) EvidenceDirectory(iteration int) string {
+	return filepath.Join(writer.directory, ArtifactName(EvidenceDirectory, iteration))
 }
 
 // GateScriptPath returns the artifact path for the branch-point Gate script.
@@ -296,6 +302,7 @@ var iterationArtifactFormats = map[ArtifactKind]string{
 	VerdictFile:         "iteration-%02d-verdict.txt",
 	ImplementFailure:    "iteration-%02d-implement.failure.txt",
 	ReviewFailure:       "iteration-%02d-review.failure.txt",
+	EvidenceDirectory:   "evidence-%d",
 }
 
 // FailureArtifactName returns the stable name for a failed Role artifact.
@@ -359,6 +366,7 @@ func FormatSummary(summary SummaryInput) string {
 	appendSummaryWorktree(&builder, summary.WorktreePath)
 	appendSummaryExhaustion(&builder, summary.ExhaustionReason)
 	appendSummaryPublication(&builder, summary.Publication)
+	appendIndentedBlock(&builder, "Publication notice", summary.PublicationNotice)
 	appendSummaryPullRequest(&builder, summary)
 	appendSummaryDiffStat(&builder, summary.DiffStat)
 	return builder.String()
@@ -402,8 +410,15 @@ func appendSummaryPublication(builder *strings.Builder, publication Publication)
 	if publication.Error == "" {
 		return
 	}
-	builder.WriteString("Publication error:\n")
-	for _, line := range strings.Split(strings.ReplaceAll(publication.Error, "\r\n", "\n"), "\n") {
+	appendIndentedBlock(builder, "Publication error", publication.Error)
+}
+
+func appendIndentedBlock(builder *strings.Builder, heading, contents string) {
+	if contents == "" {
+		return
+	}
+	fmt.Fprintf(builder, "%s:\n", heading)
+	for _, line := range strings.Split(strings.ReplaceAll(contents, "\r\n", "\n"), "\n") {
 		fmt.Fprintf(builder, "  %s\n", line)
 	}
 }

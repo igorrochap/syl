@@ -98,6 +98,10 @@ func (r *memoryRunRecorder) ImplementGateHandoffPath(iteration, turn int) string
 	return filepath.Join(r.dir, fmt.Sprintf("handoff-%02d-gate-%02d.md", iteration, turn))
 }
 
+func (r *memoryRunRecorder) EvidenceDirectory(iteration int) string {
+	return filepath.Join(r.dir, runrecord.ArtifactName(runrecord.EvidenceDirectory, iteration))
+}
+
 func (r *memoryRunRecorder) RecordGateScript(contents []byte, executable bool) (string, error) {
 	name := "branch-point-quality.sh"
 	r.files[name] = string(contents)
@@ -354,7 +358,7 @@ func TestRunImplementIterationsRecordsReviseThenApproveInMemory(t *testing.T) {
 		}},
 	}
 
-	iterations, final, _, err := runImplementIterations(context.Background(), implementIterationsParams{
+	iterations, final, _, _, err := runImplementIterations(context.Background(), implementIterationsParams{
 		git:           staticImplementGit{branchPoint: "branch-point", diff: "diff --git a/a b/a\n"},
 		implementer:   implementer,
 		reviewer:      reviewer,
@@ -441,7 +445,7 @@ func TestRunImplementIterationsUsesWorktreeHandoffToStartFreshSeededSession(t *t
 		}},
 	}
 
-	iterations, final, _, err := runImplementIterations(context.Background(), implementIterationsParams{
+	iterations, final, _, _, err := runImplementIterations(context.Background(), implementIterationsParams{
 		git:                  staticImplementGit{branchPoint: "branch-point", diff: "diff --git a/a b/a\n"},
 		implementer:          implementer,
 		reviewer:             reviewer,
@@ -518,7 +522,7 @@ func TestRunImplementIterationsRollsOverAfterRecoveredImplementTurn(t *testing.T
 		}},
 	}
 
-	iterations, final, _, err := runImplementIterations(context.Background(), implementIterationsParams{
+	iterations, final, _, _, err := runImplementIterations(context.Background(), implementIterationsParams{
 		git:           staticImplementGit{branchPoint: "branch-point", diff: "diff --git a/worker.go b/worker.go\n"},
 		implementer:   implementer,
 		reviewer:      reviewer,
@@ -579,7 +583,7 @@ func TestRunImplementIterationsAllowsRolloverOnFinalIteration(t *testing.T) {
 		{Type: harness.EventAssistantText, Text: "VERDICT: approve\nSUMMARY: Ready\nFINDINGS:\n"},
 	}}}
 
-	iterations, final, _, err := runImplementIterations(context.Background(), implementIterationsParams{
+	iterations, final, _, _, err := runImplementIterations(context.Background(), implementIterationsParams{
 		git:           staticImplementGit{branchPoint: "branch-point", diff: "diff --git a/a b/a\n"},
 		implementer:   implementer,
 		reviewer:      reviewer,
@@ -624,7 +628,7 @@ func TestRunImplementIterationsFallsBackToFreshRunWhenImplementResumeFails(t *te
 		}},
 	}
 
-	iterations, final, _, err := runImplementIterations(context.Background(), implementIterationsParams{
+	iterations, final, _, _, err := runImplementIterations(context.Background(), implementIterationsParams{
 		git:           staticImplementGit{branchPoint: "branch-point", diff: "diff --git a/a b/a\n"},
 		implementer:   implementer,
 		reviewer:      reviewer,
@@ -648,7 +652,9 @@ func TestRunImplementIterationsFallsBackToFreshRunWhenImplementResumeFails(t *te
 	}
 	wantPrompt := composeImplementPrompt(ticket, []verdict.Finding{{
 		Kind: verdict.Blocking, Location: "worker.go (location unverified)", Issue: "handle the error",
-	}}, 2, recorder.ImplementHandoffPath(2), "", "")
+	}}, 2, implementPromptOptions{
+		handoffPath: recorder.ImplementHandoffPath(2), evidenceDirectory: recorder.EvidenceDirectory(2),
+	})
 	if got := implementer.resumeCalls[0].prompt; got != wantPrompt {
 		t.Fatalf("implement resume prompt = %q, want %q", got, wantPrompt)
 	}
@@ -689,7 +695,7 @@ func TestRunImplementIterationsStopsFailedResumeBeforeFreshRun(t *testing.T) {
 		}},
 	}
 
-	_, final, _, err := runImplementIterations(context.Background(), implementIterationsParams{
+	_, final, _, _, err := runImplementIterations(context.Background(), implementIterationsParams{
 		git:           staticImplementGit{branchPoint: "branch-point", diff: "diff --git a/a b/a\n"},
 		implementer:   implementer,
 		reviewer:      reviewer,
@@ -739,7 +745,7 @@ func TestRunImplementIterationsStartsVerdictOnANewLineAfterReviewProse(t *testin
 	}
 	var output strings.Builder
 
-	_, _, _, err := runImplementIterations(context.Background(), implementIterationsParams{
+	_, _, _, _, err := runImplementIterations(context.Background(), implementIterationsParams{
 		git:           staticImplementGit{branchPoint: "branch-point", diff: "diff --git a/a b/a\n"},
 		implementer:   implementer,
 		reviewer:      reviewer,
@@ -774,7 +780,7 @@ func TestRunImplementIterationsReportsReviewSeparatorWriteError(t *testing.T) {
 		}},
 	}
 
-	_, _, _, err := runImplementIterations(context.Background(), implementIterationsParams{
+	_, _, _, _, err := runImplementIterations(context.Background(), implementIterationsParams{
 		git:           staticImplementGit{branchPoint: "branch-point", diff: "diff --git a/a b/a\n"},
 		implementer:   implementer,
 		reviewer:      reviewer,
@@ -812,7 +818,7 @@ func TestRunImplementIterationsContinuesWhenUsageRecordingFails(t *testing.T) {
 		{Type: harness.EventAssistantText, Text: "VERDICT: approve\nSUMMARY: Ready\nFINDINGS:\n"},
 	}}}
 
-	iterations, final, _, err := runImplementIterations(context.Background(), implementIterationsParams{
+	iterations, final, _, _, err := runImplementIterations(context.Background(), implementIterationsParams{
 		git:           staticImplementGit{branchPoint: "branch-point", diff: "diff --git a/a b/a\n"},
 		implementer:   implementer,
 		reviewer:      reviewer,
@@ -849,7 +855,7 @@ func TestRunImplementIterationsReportsImplementSessionWriteError(t *testing.T) {
 		{Type: harness.EventAssistantText, Text: "VERDICT: approve\nSUMMARY: Ready\nFINDINGS:\n"},
 	}}}
 
-	_, _, _, err := runImplementIterations(context.Background(), implementIterationsParams{
+	_, _, _, _, err := runImplementIterations(context.Background(), implementIterationsParams{
 		git:           staticImplementGit{branchPoint: "branch-point", diff: "diff --git a/a b/a\n"},
 		implementer:   implementer,
 		reviewer:      reviewer,
@@ -880,7 +886,7 @@ func TestRunImplementIterationsReportsReviewSessionWriteError(t *testing.T) {
 		{Type: harness.EventAssistantText, Text: "VERDICT: approve\nSUMMARY: Ready\nFINDINGS:\n"},
 	}}}
 
-	_, _, _, err := runImplementIterations(context.Background(), implementIterationsParams{
+	_, _, _, _, err := runImplementIterations(context.Background(), implementIterationsParams{
 		git:           staticImplementGit{branchPoint: "branch-point", diff: "diff --git a/a b/a\n"},
 		implementer:   implementer,
 		reviewer:      reviewer,
@@ -1005,8 +1011,8 @@ func TestRunImplementPublishesApprovedDiffAndSkipsEmptyDiff(t *testing.T) {
 				if publisher.request == nil || publisher.request.Head != "feat/add-resilient-workflow" || publisher.request.Base != "main" {
 					t.Fatalf("pull request = %#v, want branch head and start branch base", publisher.request)
 				}
-				if publisher.request.Body != "Closes #42\n\nReviewed implementation.\n\n- [ ] internal/example.go (location unverified) — Rename this helper." {
-					t.Fatalf("pull request body = %q, want summary and nit task", publisher.request.Body)
+				if publisher.request.Body != "Closes #42\n\nReviewed implementation.\n\n## Verification\n\nGates: none (no Gate ran).\n\nEvidence: none (no evidence.md was recorded).\n\n- [ ] internal/example.go (location unverified) — Rename this helper." {
+					t.Fatalf("pull request body = %q, want summary, verification section, and nit task", publisher.request.Body)
 				}
 				if !strings.Contains(recorder.files[artifactFilename(verdictArtifact, 1)], "internal/example.go (location unverified)") {
 					t.Fatalf("verdict artifact = %q, want checked location", recorder.files[artifactFilename(verdictArtifact, 1)])
@@ -1052,17 +1058,12 @@ func TestRunImplementPublishesApprovedDiffAndSkipsEmptyDiff(t *testing.T) {
 
 func TestRunImplementUsesCommitgenForPublication(t *testing.T) {
 	root, branchPoint, git := newPublicationTestRepository(t)
-	bareRemote := filepath.Join(t.TempDir(), "origin.git")
-	if _, err := git.Run(context.Background(), "init", "--bare", bareRemote); err != nil {
-		t.Fatalf("create bare origin: %v", err)
-	}
-	if _, err := git.Run(context.Background(), "remote", "add", "origin", bareRemote); err != nil {
-		t.Fatalf("add origin: %v", err)
-	}
+	branchPoint = addPublicationGate(t, root, git)
+	addPublicationBareOrigin(t, git)
 
 	commitgen := &recordingCommitgenRunner{
 		available: true,
-		prOutput:  "Title: feat: generated PR\n\nGenerated details.",
+		prOutput:  "Title: feat: generated PR\n\nGenerated details.\n\n## Verification\n\nStale commitgen verification.",
 		commit: func(ctx context.Context, workRoot string) error {
 			_, err := (gitadapter.ExecGitRunner{Dir: workRoot}).Run(ctx, "commit", "-m", "feat: generated by commitgen")
 			return err
@@ -1071,27 +1072,19 @@ func TestRunImplementUsesCommitgenForPublication(t *testing.T) {
 
 	publisher := &recordingPullRequestTracker{}
 	recorder := newMemoryRunRecorder()
-	options := ImplementOptions{
-		OriginRoot: root, WorkRoot: root,
-		OpenRun: func(RunSpec) (RunRecorder, error) { return recorder, nil },
-		ProjectConfig: config.Config{
-			Tracker: config.TrackerConfig{Issues: config.TrackerGitHub},
-			Roles: config.RolesConfig{
-				Implement: config.RoleConfig{Harness: config.HarnessCodex},
-				Review:    config.RoleConfig{Harness: config.HarnessClaude},
-			},
-			Loop: config.LoopConfig{MaxIterations: 1, NitBudget: 5},
-		},
-		IssueTracker: publisher,
-		Ticket:       tracker.Ticket{Number: 42, Title: "Add resilient workflow"},
-		Implementer: &writingImplementAdapter{
-			capturingImplementAdapter: &capturingImplementAdapter{response: "Implemented the ticket."},
-			root:                      root,
-		},
-		Reviewer: &capturingImplementAdapter{response: "VERDICT: approve\nSUMMARY: Reviewed implementation.\n" +
-			"FINDINGS:\n- [nit] internal/example.go:9 — Rename this helper.\n"},
-		Git: git, OriginGit: git, Commitgen: commitgen, Input: strings.NewReader(""), Output: io.Discard, PublishOnApprove: true,
-	}
+	recorder.dir = t.TempDir()
+	writePublicationEvidence(t, recorder, "# Evidence\n\n## Exercise: publication\n"+
+		"- What was exercised: the published body includes its Gate results.\n"+
+		"- How it was exercised: RunImplement used fake commitgen and Tracker adapters.\n"+
+		"- What was observed: the body included all seven Gate results.\n"+
+		"- Outcome: pass.\n\n![PR-worthy screenshot](./screen.png)\n<img src=\"screen.html\">\n")
+	options := publicationImplementOptions(root, git, publisher, recorder, commitgen)
+	options.Reviewer = &capturingImplementAdapter{response: "VERDICT: approve\nSUMMARY: Reviewed implementation.\n" +
+		"FINDINGS:\n- [nit] internal/example.go:9 — Rename this helper.\n"}
+	options.GateRunner = &staticPublicationGateRunner{results: []GateExecution{
+		{ExitStatus: 0, Output: qualitySummary("FAIL")},
+		{ExitStatus: 0, Output: qualitySummary("PASS")},
+	}}
 	if err := RunImplement(context.Background(), options); err != nil {
 		t.Fatalf("RunImplement() error = %v", err)
 	}
@@ -1104,8 +1097,21 @@ func TestRunImplementUsesCommitgenForPublication(t *testing.T) {
 	if publisher.request == nil || publisher.request.Title != "feat: generated PR" || publisher.request.Base != "main" {
 		t.Fatalf("pull request = %#v, want generated title and branch base", publisher.request)
 	}
-	if publisher.request.Body != "Generated details.\n\nCloses #42\n\n- [ ] internal/example.go (location unverified) — Rename this helper." {
-		t.Fatalf("pull request body = %q, want generated description, close reference, and nit", publisher.request.Body)
+	assertContainsAll(t, publisher.request.Body,
+		"Generated details.", "Closes #42", "## Verification", "format: PASS", "vet: PASS",
+		"style: PASS", "complexity: PASS", "coverage: PASS", "tests: PASS", "architecture: PASS",
+		"Evidence summary:", "Exercised: the published body includes its Gate results.",
+		"How: RunImplement used fake commitgen and Tracker adapters.",
+		"Outcome: pass.", "Stale commitgen verification.",
+		"- [ ] internal/example.go (location unverified) — Rename this helper.")
+	if strings.Count(publisher.request.Body, "## Verification") != 1 ||
+		!strings.Contains(publisher.request.Body, "Stale commitgen verification") ||
+		strings.Contains(publisher.request.Body, "tests: FAIL") ||
+		strings.Contains(publisher.request.Body, "![") || strings.Contains(publisher.request.Body, "<img") {
+		t.Fatalf("pull request body = %q, want generated content preserved and verification appended using the last Gate attempt", publisher.request.Body)
+	}
+	if strings.Count(publisher.request.Body, "Closes #42") != 1 {
+		t.Fatalf("pull request body = %q, want one closing reference", publisher.request.Body)
 	}
 	if len(commitgen.calls) != 2 || commitgen.calls[0].workRoot != root || commitgen.calls[1].workRoot != root {
 		t.Fatalf("commitgen calls = %#v, want commit and PR in the work root", commitgen.calls)
@@ -1121,6 +1127,351 @@ func TestRunImplementUsesCommitgenForPublication(t *testing.T) {
 			t.Fatalf("commitgen arguments contain %q: %#v", forbidden, commitgen.calls)
 		}
 	}
+}
+
+func TestRunImplementPublishesEvidenceLinksAsPlainText(t *testing.T) {
+	root, _, git := newPublicationTestRepository(t)
+	addPublicationGate(t, root, git)
+	addPublicationBareOrigin(t, git)
+
+	publisher := &recordingPullRequestTracker{}
+	recorder := newMemoryRunRecorder()
+	recorder.dir = t.TempDir()
+	writePublicationEvidence(t, recorder, "Full output: [integration.log](integration.log).\n"+
+		"Docs: [docs](https://example.com/docs).\n")
+
+	options := publicationImplementOptions(root, git, publisher, recorder, nil)
+	options.GateRunner = &staticPublicationGateRunner{}
+	if err := RunImplement(context.Background(), options); err != nil {
+		t.Fatalf("RunImplement() error = %v", err)
+	}
+	if publisher.request == nil {
+		t.Fatal("pull request = nil, want a recorded pull request")
+	}
+	body := publisher.request.Body
+	if !strings.Contains(body, "Full output: integration.log.") ||
+		!strings.Contains(body, "[docs](https://example.com/docs)") {
+		t.Fatalf("pull request body = %q, want local link label and unchanged remote link", body)
+	}
+	if strings.Contains(body, "[integration.log]") || strings.Contains(body, "](integration.log)") {
+		t.Fatalf("pull request body = %q, want no local Evidence link", body)
+	}
+}
+
+func TestRunImplementAttachesOnlyPRWorthyEvidenceImages(t *testing.T) {
+	tests := []struct {
+		name          string
+		evidence      string
+		wantImagePath bool
+	}{
+		{
+			name: "marked image is attached after pull request creation",
+			evidence: "# Evidence\n\n" +
+				"![Dashboard](./screens/dashboard.png) — PR-worthy\n" +
+				"![Console](./screens/console.png)\n",
+			wantImagePath: true,
+		},
+		{
+			name: "unmarked image does not run attachment command",
+			evidence: "# Evidence\n\n" +
+				"![Dashboard](./screens/dashboard.png)\n",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			root, _, git := newPublicationTestRepository(t)
+			addPublicationBareOrigin(t, git)
+			publisher := &recordingPullRequestTracker{}
+			recorder := newMemoryRunRecorder()
+			recorder.dir = t.TempDir()
+			writePublicationEvidence(t, recorder, test.evidence)
+			imagePath := filepath.Join(recorder.EvidenceDirectory(1), "screens", "dashboard.png")
+			writeEvidenceImage(t, imagePath)
+
+			if err := RunImplement(context.Background(), publicationImplementOptions(root, git, publisher, recorder, nil)); err != nil {
+				t.Fatalf("RunImplement() error = %v", err)
+			}
+			if publisher.createCalls != 1 {
+				t.Fatalf("pull request creation calls = %d, want exactly one", publisher.createCalls)
+			}
+			if !test.wantImagePath {
+				if len(publisher.attachments) != 0 {
+					t.Fatalf("attachment calls = %#v, want none", publisher.attachments)
+				}
+				return
+			}
+			if len(publisher.attachments) != 1 || publisher.attachments[0] != (tracker.PullRequestEvidenceImage{
+				Path: imagePath, Alt: "Dashboard",
+			}) {
+				t.Fatalf("attachment calls = %#v, want only the marked Dashboard image", publisher.attachments)
+			}
+			if !slices.Equal(publisher.events, []string{"create", "attach"}) {
+				t.Fatalf("publication calls = %v, want attachment after pull request creation", publisher.events)
+			}
+		})
+	}
+}
+
+func TestRunImplementKeepsPublicationWhenEvidenceAttachmentFails(t *testing.T) {
+	root, _, git := newPublicationTestRepository(t)
+	addPublicationBareOrigin(t, git)
+	attachmentError := errors.New("gh pr edit failed: unknown flag: --attach")
+	publisher := &recordingPullRequestTracker{attachmentError: attachmentError}
+	recorder := newMemoryRunRecorder()
+	recorder.dir = t.TempDir()
+	writePublicationEvidence(t, recorder, "# Evidence\n\n![Dashboard](./dashboard.png) PR-worthy\n")
+	writeEvidenceImage(t, filepath.Join(recorder.EvidenceDirectory(1), "dashboard.png"))
+	var output strings.Builder
+	options := publicationImplementOptions(root, git, publisher, recorder, nil)
+	options.Output = &output
+
+	if err := RunImplement(context.Background(), options); err != nil {
+		t.Fatalf("RunImplement() error = %v, want publication to remain successful", err)
+	}
+	summary := runrecord.ParseSummary([]byte(recorder.files[artifactFilename(summaryArtifact, 0)]))
+	if summary.Publication.Status != runrecord.PublicationPublished ||
+		summary.Publication.URL != "https://github.com/example/project/pull/23" {
+		t.Fatalf("recorded publication = %#v, want published pull request after attachment failure", summary.Publication)
+	}
+	if !strings.Contains(summary.PublicationNotice, "Dashboard") ||
+		!strings.Contains(summary.PublicationNotice, "dashboard.png") ||
+		!strings.Contains(summary.PublicationNotice, attachmentError.Error()) {
+		t.Fatalf("recorded publication notice = %q, want image name and command error", summary.PublicationNotice)
+	}
+	if publisher.createCalls != 1 || len(publisher.attachments) != 1 {
+		t.Fatalf("publication calls = %#v, want one creation and one attachment attempt", publisher)
+	}
+	if !strings.Contains(output.String(), attachmentError.Error()) {
+		t.Fatalf("implement output = %q, want the attachment failure notice", output.String())
+	}
+}
+
+func TestRunImplementRecordsNoticeWhenTrackerCannotAttachEvidence(t *testing.T) {
+	root, _, git := newPublicationTestRepository(t)
+	addPublicationBareOrigin(t, git)
+	publisher := &recordingPullRequestTracker{}
+	issueTracker := &existingPullRequestTracker{creator: publisher}
+	recorder := newMemoryRunRecorder()
+	recorder.dir = t.TempDir()
+	writePublicationEvidence(t, recorder, "# Evidence\n\n![Dashboard](./dashboard.png) PR-worthy\n")
+	writeEvidenceImage(t, filepath.Join(recorder.EvidenceDirectory(1), "dashboard.png"))
+	var output strings.Builder
+	options := publicationImplementOptions(root, git, issueTracker, recorder, nil)
+	options.Output = &output
+
+	if err := RunImplement(context.Background(), options); err != nil {
+		t.Fatalf("RunImplement() error = %v, want publication to remain successful", err)
+	}
+	summary := runrecord.ParseSummary([]byte(recorder.files[artifactFilename(summaryArtifact, 0)]))
+	if summary.Publication.Status != runrecord.PublicationPublished || publisher.createCalls != 1 {
+		t.Fatalf("publication = %#v, create calls = %d; want one published pull request", summary.Publication, publisher.createCalls)
+	}
+	if !strings.Contains(summary.PublicationNotice, "Dashboard") ||
+		!strings.Contains(summary.PublicationNotice, "dashboard.png") ||
+		!strings.Contains(summary.PublicationNotice, "tracker does not support") {
+		t.Fatalf("publication notice = %q, want image name and unsupported Tracker reason", summary.PublicationNotice)
+	}
+	if strings.Contains(summary.PublicationNotice, "commitgen unavailable") || len(publisher.attachments) != 0 {
+		t.Fatalf("publication notice = %q, attachments = %#v; want only attachment notices and no attachment command", summary.PublicationNotice, publisher.attachments)
+	}
+	if !strings.Contains(output.String(), "tracker does not support") {
+		t.Fatalf("implement output = %q, want unsupported Tracker notice", output.String())
+	}
+}
+
+func TestRunImplementRecordsNoticeForMarkedRemoteEvidenceImage(t *testing.T) {
+	root, _, git := newPublicationTestRepository(t)
+	addPublicationBareOrigin(t, git)
+	publisher := &recordingPullRequestTracker{}
+	recorder := newMemoryRunRecorder()
+	recorder.dir = t.TempDir()
+	writePublicationEvidence(t, recorder, "# Evidence\n\n![Hosted dashboard](https://cdn.example.test/dashboard.png) PR-worthy\n")
+	options := publicationImplementOptions(root, git, publisher, recorder, nil)
+
+	if err := RunImplement(context.Background(), options); err != nil {
+		t.Fatalf("RunImplement() error = %v, want publication to remain successful", err)
+	}
+	summary := runrecord.ParseSummary([]byte(recorder.files[artifactFilename(summaryArtifact, 0)]))
+	if summary.Publication.Status != runrecord.PublicationPublished || publisher.createCalls != 1 {
+		t.Fatalf("publication = %#v, create calls = %d; want one published pull request", summary.Publication, publisher.createCalls)
+	}
+	if !strings.Contains(summary.PublicationNotice, "Hosted dashboard") ||
+		!strings.Contains(summary.PublicationNotice, "https://cdn.example.test/dashboard.png") ||
+		!strings.Contains(summary.PublicationNotice, "not a local Evidence file") {
+		t.Fatalf("publication notice = %q, want remote image name, path, and reason", summary.PublicationNotice)
+	}
+	if len(publisher.attachments) != 0 {
+		t.Fatalf("attachment calls = %#v, want no command for remote Evidence images", publisher.attachments)
+	}
+}
+
+func TestRunImplementPublishesOverallGateResultWhenPerGateResultsAreUnavailable(t *testing.T) {
+	root, _, git := newPublicationTestRepository(t)
+	addPublicationGate(t, root, git)
+	addPublicationBareOrigin(t, git)
+	publisher := &recordingPullRequestTracker{}
+	recorder := newMemoryRunRecorder()
+	recorder.dir = t.TempDir()
+	writePublicationEvidence(t, recorder, "# Evidence\n\n- What was exercised: the review Evidence behavior.\n"+
+		"- How it was exercised: checked the prepared pull request body.\n"+
+		"- What was observed: the runtime service was unavailable.\n"+
+		"- Outcome: not exercised — local runtime service is unavailable.\n")
+	options := publicationImplementOptions(root, git, publisher, recorder, nil)
+	options.GateRunner = &staticPublicationGateRunner{results: []GateExecution{{
+		ExitStatus: 0, Output: "legacy Gate output without summary",
+	}}}
+	if err := RunImplement(context.Background(), options); err != nil {
+		t.Fatalf("RunImplement() error = %v", err)
+	}
+	assertContainsAll(t, publisher.request.Body,
+		"## Verification", "Gate: overall PASS (per-Gate results unavailable).",
+		"Outcome: not exercised — local runtime service is unavailable.",
+		"Reviewed implementation.", "Closes #42")
+	if strings.Contains(publisher.request.Body, "![") || strings.Contains(publisher.request.Body, "<img") {
+		t.Fatalf("pull request body = %q, want no Evidence images", publisher.request.Body)
+	}
+}
+
+func TestRunImplementFallbackBodyIncludesPerGateResultsAndEvidence(t *testing.T) {
+	root, _, git := newPublicationTestRepository(t)
+	addPublicationGate(t, root, git)
+	addPublicationBareOrigin(t, git)
+	publisher := &recordingPullRequestTracker{}
+	recorder := newMemoryRunRecorder()
+	recorder.dir = t.TempDir()
+	writePublicationEvidence(t, recorder, "# Evidence\n\n- **What was exercised:** fallback publication.\n"+
+		"- **How it was exercised:** called RunImplement with a fake Tracker.\n"+
+		"- **What was observed:** each Gate result appeared in the body.\n"+
+		"- **Outcome:** pass.\n")
+	options := publicationImplementOptions(root, git, publisher, recorder, nil)
+	options.GateRunner = &staticPublicationGateRunner{results: []GateExecution{{
+		ExitStatus: 0, Output: qualitySummary("PASS"),
+	}}}
+	if err := RunImplement(context.Background(), options); err != nil {
+		t.Fatalf("RunImplement() error = %v", err)
+	}
+	assertContainsAll(t, publisher.request.Body,
+		"## Verification", "format: PASS", "vet: PASS", "style: PASS", "complexity: PASS",
+		"coverage: PASS", "tests: PASS", "architecture: PASS",
+		"- Outcome: pass.\n  - Exercised: fallback publication.\n"+
+			"  - How: called RunImplement with a fake Tracker.\n"+
+			"  - Observed: each Gate result appeared in the body.",
+		"Closes #42")
+}
+
+func TestRunImplementPublishesEvidenceReadErrorInNotice(t *testing.T) {
+	root, _, git := newPublicationTestRepository(t)
+	addPublicationBareOrigin(t, git)
+	publisher := &recordingPullRequestTracker{}
+	recorder := newMemoryRunRecorder()
+	recorder.dir = t.TempDir()
+	evidencePath := recorder.EvidenceDirectory(1)
+	if err := os.WriteFile(evidencePath, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var output strings.Builder
+	options := publicationImplementOptions(root, git, publisher, recorder, nil)
+	options.Output = &output
+	if err := RunImplement(context.Background(), options); err != nil {
+		t.Fatalf("RunImplement() error = %v", err)
+	}
+	if publisher.request == nil {
+		t.Fatal("pull request was not published")
+	}
+	body := publisher.request.Body
+	if !strings.Contains(body, "Evidence: unavailable (evidence.md could not be read).") ||
+		strings.Contains(body, evidencePath) {
+		t.Fatalf("pull request body = %q, want safe unavailable message without local path", body)
+	}
+	if !strings.Contains(output.String(), "Evidence could not be included in the pull request: read evidence.md:") ||
+		!strings.Contains(output.String(), evidencePath) {
+		t.Fatalf("RunImplement output = %q, want the wrapped Evidence read error in the publish notice", output.String())
+	}
+}
+
+func addPublicationBareOrigin(t *testing.T, git GitRunner) {
+	t.Helper()
+	bareRemote := filepath.Join(t.TempDir(), "origin.git")
+	if _, err := git.Run(context.Background(), "init", "--bare", bareRemote); err != nil {
+		t.Fatalf("create bare origin: %v", err)
+	}
+	if _, err := git.Run(context.Background(), "remote", "add", "origin", bareRemote); err != nil {
+		t.Fatalf("add origin: %v", err)
+	}
+}
+
+func addPublicationGate(t *testing.T, root string, git gitadapter.ExecGitRunner) string {
+	t.Helper()
+	path := filepath.Join(root, "scripts", "quality.sh")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	contents := "#!/bin/sh\nexit 0\n"
+	if err := os.WriteFile(path, []byte(contents), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := git.Run(context.Background(), "add", "scripts/quality.sh"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := git.Run(context.Background(), "commit", "-m", "add Gate script"); err != nil {
+		t.Fatal(err)
+	}
+	return gitOutput(t, git, "rev-parse", "HEAD")
+}
+
+func writePublicationEvidence(t *testing.T, recorder *memoryRunRecorder, contents string) {
+	t.Helper()
+	directory := recorder.EvidenceDirectory(1)
+	if err := os.MkdirAll(directory, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(directory, "evidence.md"), []byte(contents), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func publicationImplementOptions(
+	root string,
+	git gitadapter.ExecGitRunner,
+	publisher tracker.Tracker,
+	recorder *memoryRunRecorder,
+	commitgen CommitgenRunner,
+) ImplementOptions {
+	return ImplementOptions{
+		OriginRoot: root, WorkRoot: root,
+		OpenRun: func(RunSpec) (RunRecorder, error) { return recorder, nil },
+		ProjectConfig: config.Config{
+			Tracker: config.TrackerConfig{Issues: config.TrackerGitHub},
+			Roles: config.RolesConfig{
+				Implement: config.RoleConfig{Harness: config.HarnessCodex},
+				Review:    config.RoleConfig{Harness: config.HarnessClaude},
+			},
+			Loop: config.LoopConfig{MaxIterations: 1, MaxGateAttempts: 2, NitBudget: 5},
+		},
+		IssueTracker: publisher,
+		Ticket:       tracker.Ticket{Number: 42, Title: "Add resilient workflow"},
+		Implementer: &writingImplementAdapter{
+			capturingImplementAdapter: &capturingImplementAdapter{response: "Implemented the ticket."},
+			root:                      root,
+		},
+		Reviewer: &capturingImplementAdapter{response: "VERDICT: approve\nSUMMARY: Reviewed implementation.\nFINDINGS:\n"},
+		Git:      git, OriginGit: git, Commitgen: commitgen,
+		Input: strings.NewReader(""), Output: io.Discard, PublishOnApprove: true,
+	}
+}
+
+type staticPublicationGateRunner struct {
+	results []GateExecution
+}
+
+func (runner *staticPublicationGateRunner) Run(context.Context, string, string, string) GateExecution {
+	if len(runner.results) == 0 {
+		return GateExecution{ExitStatus: 0, Output: qualitySummary("PASS")}
+	}
+	result := runner.results[0]
+	runner.results = runner.results[1:]
+	return result
 }
 
 type recordingCommitgenCall struct {
@@ -1167,13 +1518,7 @@ func TestRunImplementFallsBackWhenCommitgenDoesNotCreateACommit(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			root, branchPoint, git := newPublicationTestRepository(t)
-			bareRemote := filepath.Join(t.TempDir(), "origin.git")
-			if _, err := git.Run(context.Background(), "init", "--bare", bareRemote); err != nil {
-				t.Fatalf("create bare origin: %v", err)
-			}
-			if _, err := git.Run(context.Background(), "remote", "add", "origin", bareRemote); err != nil {
-				t.Fatalf("add origin: %v", err)
-			}
+			addPublicationBareOrigin(t, git)
 
 			commitgen := &recordingCommitgenRunner{available: true, prOutput: "Title: feat: generated PR\n\nGenerated description."}
 			switch test.mode {
@@ -1542,16 +1887,32 @@ func (g *publishingTestGit) Run(_ context.Context, args ...string) (string, erro
 
 type recordingPullRequestTracker struct {
 	branchSetupTracker
-	request *tracker.PullRequest
+	request         *tracker.PullRequest
+	createCalls     int
+	attachments     []tracker.PullRequestEvidenceImage
+	attachmentError error
+	events          []string
 }
 
 func (tracker *recordingPullRequestTracker) CreatePullRequest(_ context.Context, request tracker.PullRequest) (string, error) {
 	tracker.request = &request
+	tracker.createCalls++
+	tracker.events = append(tracker.events, "create")
 	return "https://github.com/example/project/pull/23", nil
 }
 
 func (*recordingPullRequestTracker) CreatePullRequestCommand(request tracker.PullRequest) []string {
 	return githubPullRequestTestCommand(request)
+}
+
+func (tracker *recordingPullRequestTracker) AttachPullRequestEvidence(
+	_ context.Context,
+	_ string,
+	image tracker.PullRequestEvidenceImage,
+) error {
+	tracker.attachments = append(tracker.attachments, image)
+	tracker.events = append(tracker.events, "attach")
+	return tracker.attachmentError
 }
 
 type failingPullRequestTracker struct {

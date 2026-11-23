@@ -44,13 +44,14 @@ type Session struct {
 
 // Summary contains the interpreted values stored in summary.txt.
 type Summary struct {
-	Contents       string
-	Iterations     int
-	FinalVerdict   string
-	Text           string
-	DiffStat       string
-	PullRequestURL string
-	Publication    Publication
+	Contents          string
+	Iterations        int
+	FinalVerdict      string
+	Text              string
+	DiffStat          string
+	PullRequestURL    string
+	PublicationNotice string
+	Publication       Publication
 }
 
 // PublicationStatus is the outcome of publishing an approved implementation.
@@ -125,9 +126,11 @@ const (
 	GateOutput
 	// NoGateFile records that the branch point has no Gate script.
 	NoGateFile
+	// EvidenceDirectory is the Evidence directory for one implementer iteration.
+	EvidenceDirectory
 )
 
-// Artifact describes a recognized file in a Run directory.
+// Artifact describes a recognized file or directory in a Run directory.
 type Artifact struct {
 	Kind       ArtifactKind
 	Name       string
@@ -257,7 +260,7 @@ func (reader *Reader) readEntry(record *Record, runDir string, entry os.DirEntry
 		record.HighestIteration = max(record.HighestIteration, ParseIterationNumber(entry.Name()))
 	}
 	artifact, ok := ParseArtifactName(entry.Name())
-	if !ok || entry.IsDir() {
+	if !ok || !matchesArtifactEntryType(entry, artifact) {
 		return
 	}
 	if info, err := entry.Info(); err == nil {
@@ -267,6 +270,13 @@ func (reader *Reader) readEntry(record *Record, runDir string, entry os.DirEntry
 	if artifact.Kind == VerdictFile {
 		reader.readVerdict(record, runDir, artifact)
 	}
+}
+
+func matchesArtifactEntryType(entry os.DirEntry, artifact Artifact) bool {
+	if artifact.Kind == EvidenceDirectory {
+		return entry.IsDir()
+	}
+	return !entry.IsDir()
 }
 
 func (reader *Reader) readVerdict(record *Record, runDir string, artifact Artifact) {
@@ -551,6 +561,7 @@ func ParseSummary(contents []byte) Summary {
 	if index := firstLineIndex(lines, "Pull request:"); index >= 0 {
 		summary.PullRequestURL = fieldValue(lines[index], "Pull request:")
 	}
+	summary.PublicationNotice = parseSummaryNotice(lines)
 	summary.Publication = parseSummaryPublication(lines)
 	if summary.Publication.Status == PublicationPublished && summary.Publication.URL == "" {
 		summary.Publication.URL = summary.PullRequestURL
@@ -561,28 +572,37 @@ func ParseSummary(contents []byte) Summary {
 	return summary
 }
 
+func parseSummaryNotice(lines []string) string {
+	return parseIndentedBlock(lines, "Publication notice:")
+}
+
 func parseSummaryPublication(lines []string) Publication {
 	publication := Publication{}
-	for index, line := range lines {
+	for _, line := range lines {
 		if strings.HasPrefix(line, "Publication:") && publication.Status == "" {
 			publication.Status = PublicationStatus(fieldValue(line, "Publication:"))
 		}
 		if strings.HasPrefix(line, "Publication step:") && publication.Step == "" {
 			publication.Step = PublicationStep(fieldValue(line, "Publication step:"))
 		}
-		if !strings.HasPrefix(line, "Publication error:") || publication.Error != "" {
-			continue
-		}
-		var errorLines []string
-		for _, continuation := range lines[index+1:] {
-			if !strings.HasPrefix(continuation, "  ") {
-				break
-			}
-			errorLines = append(errorLines, strings.TrimPrefix(continuation, "  "))
-		}
-		publication.Error = strings.Join(errorLines, "\n")
 	}
+	publication.Error = parseIndentedBlock(lines, "Publication error:")
 	return publication
+}
+
+func parseIndentedBlock(lines []string, heading string) string {
+	index := firstLineIndex(lines, heading)
+	if index < 0 {
+		return ""
+	}
+	var contents []string
+	for _, continuation := range lines[index+1:] {
+		if !strings.HasPrefix(continuation, "  ") {
+			break
+		}
+		contents = append(contents, strings.TrimPrefix(continuation, "  "))
+	}
+	return strings.Join(contents, "\n")
 }
 
 // firstPositiveIterations skips Iterations lines that are not positive numbers.
@@ -628,6 +648,9 @@ func ParseArtifactName(name string) (Artifact, bool) {
 	if artifact, ok := parseStandaloneArtifact(name); ok {
 		return artifact, true
 	}
+	if artifact, ok := parseEvidenceDirectory(name); ok {
+		return artifact, true
+	}
 	if artifact, ok := parseHandoffArtifact(name); ok {
 		return artifact, true
 	}
@@ -635,6 +658,18 @@ func ParseArtifactName(name string) (Artifact, bool) {
 		return artifact, true
 	}
 	return parseIterationArtifact(name)
+}
+
+func parseEvidenceDirectory(name string) (Artifact, bool) {
+	iterationText, found := strings.CutPrefix(name, "evidence-")
+	if !found {
+		return Artifact{}, false
+	}
+	iteration, err := strconv.Atoi(iterationText)
+	if err != nil || iteration <= 0 || name != fmt.Sprintf("evidence-%d", iteration) {
+		return Artifact{}, false
+	}
+	return Artifact{Kind: EvidenceDirectory, Name: name, Iteration: iteration, Role: "implement"}, true
 }
 
 func parseStandaloneArtifact(name string) (Artifact, bool) {

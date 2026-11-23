@@ -5,6 +5,10 @@ package tracker
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net/url"
+	"strconv"
+	"strings"
 )
 
 // ErrNoRemote identifies remote tracker failures caused by a missing Git
@@ -50,6 +54,43 @@ type PullRequest struct {
 type PullRequestCreator interface {
 	CreatePullRequest(ctx context.Context, request PullRequest) (string, error)
 	CreatePullRequestCommand(request PullRequest) []string
+}
+
+// PullRequestEvidenceImage describes one local image recorded in a Run's Evidence.
+type PullRequestEvidenceImage struct {
+	Path string
+	Alt  string
+}
+
+// PullRequestEvidenceAttacher adds a local Evidence image to an existing pull request.
+type PullRequestEvidenceAttacher interface {
+	AttachPullRequestEvidence(ctx context.Context, pullRequestURL string, image PullRequestEvidenceImage) error
+}
+
+func pullRequestNumberFromURL(pullRequestURL, resourceName, resourceSegment string) (string, error) {
+	parsed, err := url.Parse(strings.TrimSpace(pullRequestURL))
+	validURL := err == nil && parsed.Scheme != "" && parsed.Host != ""
+	if !validURL {
+		return "", fmt.Errorf("invalid %s URL %q", resourceName, pullRequestURL)
+	}
+	segments := strings.Split(strings.Trim(parsed.Path, "/"), "/")
+	if len(segments) < 2 || segments[len(segments)-2] != resourceSegment {
+		return "", fmt.Errorf("%s URL %q has no number", resourceName, pullRequestURL)
+	}
+	number := segments[len(segments)-1]
+	parsedNumber, err := strconv.Atoi(number)
+	if err != nil || parsedNumber < 1 {
+		return "", fmt.Errorf("%s URL %q has no number", resourceName, pullRequestURL)
+	}
+	return number, nil
+}
+
+func pullRequestEvidencePath(image PullRequestEvidenceImage, forgeName string) (string, error) {
+	path := strings.TrimSpace(image.Path)
+	if path == "" {
+		return "", fmt.Errorf("cannot attach a %s Evidence image without a file path", forgeName)
+	}
+	return path, nil
 }
 
 // RequirePullRequestCreator rejects a Tracker that cannot publish approved implementations.
