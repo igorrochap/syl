@@ -9,8 +9,10 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/igorrochap/syl/internal/runrecord"
@@ -560,6 +562,10 @@ func prWorthyEvidenceImages(directory, contents string) ([]tracker.PullRequestEv
 	return images, notices
 }
 
+func isCodeFenceDelimiter(line string) bool {
+	return strings.HasPrefix(line, "```")
+}
+
 func evidenceImageSource(match []string) string {
 	if match[2] != "" {
 		return match[2]
@@ -678,17 +684,21 @@ func validateEvidenceImage(path string) error {
 
 func summarizeEvidenceText(contents string) string {
 	contents = strings.ReplaceAll(contents, "\r\n", "\n")
+	contents = rewriteEvidenceLinks(contents)
 	contents = markdownImagePattern.ReplaceAllStringFunc(contents, markdownImageSummary)
 	contents = htmlImagePattern.ReplaceAllString(contents, "[Image omitted]")
 	exercises := parseEvidenceExercises(contents)
+	var summary string
 	if len(exercises) == 0 {
-		return summarizeUnstructuredEvidence(contents)
+		summary = summarizeUnstructuredEvidence(contents)
+	} else {
+		lines := make([]string, 0, len(exercises))
+		for _, exercise := range exercises {
+			lines = append(lines, formatEvidenceExercise(exercise))
+		}
+		summary = strings.Join(lines, "\n")
 	}
-	lines := make([]string, 0, len(exercises))
-	for _, exercise := range exercises {
-		lines = append(lines, formatEvidenceExercise(exercise))
-	}
-	return limitEvidenceSummary(strings.Join(lines, "\n"))
+	return limitEvidenceSummary(summary)
 }
 
 type evidenceExercise struct {
@@ -719,8 +729,36 @@ type evidenceExerciseParser struct {
 	exercises             []evidenceExercise
 	current               evidenceExercise
 	currentField          evidenceFieldKind
-	insideCodeBlock       bool
+	fence                 evidenceFenceState
 	awaitingOutcomeReason bool
+}
+
+type evidenceTildeFence struct {
+	length int
+}
+
+type evidenceFenceState struct {
+	insideSummaryCode bool
+	tildeFence        evidenceTildeFence
+}
+
+type evidenceFenceLine struct {
+	summaryDelimiter  bool
+	hiddenFromSummary bool
+	insideTildeFence  bool
+}
+
+type evidenceReferenceDefinition struct {
+	target   string
+	local    bool
+	lineFrom int
+	lineTo   int
+}
+
+type evidenceLinkEdit struct {
+	start int
+	end   int
+	text  string
 }
 
 func markdownImageSummary(match string) string {
@@ -729,6 +767,454 @@ func markdownImageSummary(match string) string {
 		return "[Image omitted]"
 	}
 	return "[Image omitted: " + strings.TrimSpace(parts[1]) + "]"
+}
+
+func rewriteEvidenceLinks(contents string) string {
+	lines := strings.Split(contents, "\n")
+	scanner := evidenceLinkScanner{
+		definitions: make(map[string]evidenceReferenceDefinition, len(lines)/4),
+	}
+	lineOffset := 0
+	for lineIndex, line := range lines {
+		lineEnd := lineOffset + len(line)
+		if lineIndex < len(lines)-1 {
+			lineEnd++
+		}
+		scanner.scanLine(line, lineOffset, lineEnd)
+		lineOffset = lineEnd
+	}
+	return applyEvidenceLinkEdits(contents, scanner.definitions, scanner.localDefinitions, scanner.links)
+}
+
+type evidenceLinkScanner struct {
+	definitions      map[string]evidenceReferenceDefinition
+	localDefinitions []evidenceReferenceDefinition
+	links            []evidenceMarkdownLink
+	fence            evidenceFenceState
+	codeSpanLength   int
+}
+
+func (scanner *evidenceLinkScanner) scanLine(line string, lineStart, lineEnd int) {
+	fenceLine := scanner.fence.consumeLine(line)
+	if fenceLine.hiddenFromSummary {
+		scanner.codeSpanLength = 0
+		return
+	}
+	if fenceLine.insideTildeFence {
+		scanner.links = append(scanner.links, scanEvidenceMarkdownLinks(line, lineStart, &scanner.codeSpanLength)...)
+		scanner.codeSpanLength = 0
+		return
+	}
+	if scanner.scanReferenceDefinition(line, lineStart, lineEnd) {
+		return
+	}
+	scanner.links = append(scanner.links, scanEvidenceMarkdownLinks(line, lineStart, &scanner.codeSpanLength)...)
+}
+
+func (scanner *evidenceLinkScanner) scanReferenceDefinition(line string, lineStart, lineEnd int) bool {
+	if scanner.codeSpanLength > 0 {
+		return false
+	}
+	key, target, isDefinition := parseEvidenceReferenceDefinition(line)
+	if !isDefinition {
+		return false
+	}
+	recordEvidenceReferenceDefinition(scanner.definitions, &scanner.localDefinitions, key, target, lineStart, lineEnd)
+	return true
+}
+
+func recordEvidenceReferenceDefinition(
+	definitions map[string]evidenceReferenceDefinition,
+	localDefinitions *[]evidenceReferenceDefinition,
+	key, target string,
+	lineFrom, lineTo int,
+) {
+	definition := evidenceReferenceDefinition{
+		target: target, local: !hasHTTPOrHTTPSScheme(target),
+		lineFrom: lineFrom, lineTo: lineTo,
+	}
+	if definition.local {
+		*localDefinitions = append(*localDefinitions, definition)
+	}
+	if _, exists := definitions[key]; !exists {
+		definitions[key] = definition
+	}
+}
+
+func parseEvidenceReferenceDefinition(line string) (string, string, bool) {
+	indent := len(line) - len(strings.TrimLeft(line, " "))
+	if indent > 3 {
+		return "", "", false
+	}
+	line = line[indent:]
+	labelEnd, label, ok := evidenceBracketLabel(line, 0)
+	if !ok || labelEnd >= len(line) || line[labelEnd] != ':' {
+		return "", "", false
+	}
+	destination := strings.TrimSpace(line[labelEnd+1:])
+	target, consumed, ok := parseEvidenceLinkDestination(destination)
+	if !ok || label == "" || strings.TrimSpace(target) == "" {
+		return "", "", false
+	}
+	title := strings.TrimSpace(destination[consumed:])
+	if title != "" && !isEvidenceReferenceTitle(title) {
+		return "", "", false
+	}
+	return normalizeEvidenceReferenceLabel(label), target, true
+}
+
+func isEvidenceReferenceTitle(title string) bool {
+	return (strings.HasPrefix(title, "\"") && strings.HasSuffix(title, "\"")) ||
+		(strings.HasPrefix(title, "'") && strings.HasSuffix(title, "'")) ||
+		(strings.HasPrefix(title, "(") && strings.HasSuffix(title, ")"))
+}
+
+func scanEvidenceMarkdownLinks(line string, lineOffset int, codeSpanLength *int) []evidenceMarkdownLink {
+	var links []evidenceMarkdownLink
+	for position := 0; position < len(line); {
+		if next, consumed := skipEvidenceCodeOrEscape(line, position, codeSpanLength); consumed {
+			position = next
+			continue
+		}
+		link, ok := parseEvidenceMarkdownLink(line, position)
+		if !ok {
+			position++
+			continue
+		}
+		if isMarkdownImageLink(line, position) {
+			position = link.end
+			continue
+		}
+		linkEnd := link.end
+		link.start = lineOffset + position
+		link.end += lineOffset
+		links = append(links, link)
+		position = linkEnd
+	}
+	return links
+}
+
+func skipEvidenceCodeOrEscape(line string, position int, codeSpanLength *int) (int, bool) {
+	if *codeSpanLength > 0 {
+		end, ok := evidenceCodeSpanClosingEnd(line, position, *codeSpanLength)
+		if !ok {
+			return len(line), true
+		}
+		*codeSpanLength = 0
+		return end, true
+	}
+	if line[position] == '\\' && position+1 < len(line) {
+		return position + 2, true
+	}
+	if line[position] != '`' {
+		return position, false
+	}
+	length := evidenceBacktickRun(line, position)
+	if end, ok := evidenceCodeSpanClosingEnd(line, position+length, length); ok {
+		return end, true
+	}
+	*codeSpanLength = length
+	return len(line), true
+}
+
+func isMarkdownImageLink(line string, position int) bool {
+	return position > 0 && line[position] == '[' && line[position-1] == '!'
+}
+
+func applyEvidenceLinkEdits(
+	contents string,
+	definitions map[string]evidenceReferenceDefinition,
+	localDefinitions []evidenceReferenceDefinition,
+	links []evidenceMarkdownLink,
+) string {
+	var edits []evidenceLinkEdit
+	for _, link := range links {
+		if link.isReference {
+			definition, exists := definitions[link.reference]
+			if !exists || !definition.local {
+				continue
+			}
+			edits = append(edits, evidenceLinkEdit{
+				start: link.start, end: link.end, text: evidenceLinkLabel(link.label, definition.target),
+			})
+			continue
+		}
+		if hasHTTPOrHTTPSScheme(link.target) {
+			continue
+		}
+		edits = append(edits, evidenceLinkEdit{
+			start: link.start, end: link.end, text: evidenceLinkLabel(link.label, link.target),
+		})
+	}
+	for _, definition := range localDefinitions {
+		edits = append(edits, evidenceLinkEdit{start: definition.lineFrom, end: definition.lineTo})
+	}
+	return applyEvidenceEdits(contents, edits)
+}
+
+func applyEvidenceEdits(contents string, edits []evidenceLinkEdit) string {
+	sort.Slice(edits, func(left, right int) bool {
+		return edits[left].start < edits[right].start
+	})
+	var result strings.Builder
+	position := 0
+	for _, edit := range edits {
+		if edit.start < position {
+			continue
+		}
+		result.WriteString(contents[position:edit.start])
+		result.WriteString(edit.text)
+		position = edit.end
+	}
+	result.WriteString(contents[position:])
+	return result.String()
+}
+
+type evidenceMarkdownLink struct {
+	label       string
+	target      string
+	reference   string
+	start       int
+	end         int
+	isReference bool
+}
+
+func parseEvidenceMarkdownLink(line string, start int) (evidenceMarkdownLink, bool) {
+	labelEnd, label, ok := evidenceBracketLabel(line, start)
+	if !ok {
+		return evidenceMarkdownLink{}, false
+	}
+	link := evidenceMarkdownLink{label: label, start: start}
+	if labelEnd >= len(line) {
+		return evidenceMarkdownLink{}, false
+	}
+	switch line[labelEnd] {
+	case '(':
+		target, consumed, ok := parseEvidenceLinkDestination(line[labelEnd+1:])
+		if !ok {
+			return evidenceMarkdownLink{}, false
+		}
+		closing, ok := evidenceInlineLinkEnd(line, labelEnd+1+consumed)
+		if !ok {
+			return evidenceMarkdownLink{}, false
+		}
+		link.target = target
+		link.end = closing
+	case '[':
+		referenceEnd, reference, ok := evidenceBracketLabel(line, labelEnd)
+		if !ok {
+			return evidenceMarkdownLink{}, false
+		}
+		if reference == "" {
+			reference = label
+		}
+		link.reference = normalizeEvidenceReferenceLabel(reference)
+		link.end = referenceEnd
+		link.isReference = true
+	default:
+		return evidenceMarkdownLink{}, false
+	}
+	return link, true
+}
+
+func evidenceBracketLabel(line string, start int) (int, string, bool) {
+	if start >= len(line) || line[start] != '[' {
+		return 0, "", false
+	}
+	depth := 1
+	for position := start + 1; position < len(line); position++ {
+		if line[position] == '\\' {
+			position++
+			continue
+		}
+		switch line[position] {
+		case '[':
+			depth++
+		case ']':
+			depth--
+			if depth == 0 {
+				return position + 1, line[start+1 : position], true
+			}
+		}
+	}
+	return 0, "", false
+}
+
+func parseEvidenceLinkDestination(text string) (string, int, bool) {
+	leadingSpaces := len(text) - len(strings.TrimLeft(text, " \t"))
+	text = text[leadingSpaces:]
+	if len(text) > 0 && text[0] == '<' {
+		return parseAngleEvidenceDestination(text, leadingSpaces)
+	}
+	return parseBareEvidenceDestination(text, leadingSpaces)
+}
+
+func parseAngleEvidenceDestination(text string, leadingSpaces int) (string, int, bool) {
+	for position := 1; position < len(text); position++ {
+		if text[position] == '\\' {
+			position++
+			continue
+		}
+		if text[position] == '>' {
+			return text[1:position], leadingSpaces + position + 1, true
+		}
+	}
+	return "", 0, false
+}
+
+func parseBareEvidenceDestination(text string, leadingSpaces int) (string, int, bool) {
+	depth := 0
+	for position := 0; position < len(text); position++ {
+		if text[position] == '\\' {
+			position++
+			continue
+		}
+		switch text[position] {
+		case '(':
+			depth++
+		case ')':
+			if depth == 0 {
+				return text[:position], leadingSpaces + position, true
+			}
+			depth--
+		case ' ', '\t':
+			if depth == 0 {
+				return text[:position], leadingSpaces + position, true
+			}
+		}
+	}
+	return text, leadingSpaces + len(text), true
+}
+
+func evidenceInlineLinkEnd(line string, start int) (int, bool) {
+	var quote byte
+	depth := 0
+	for position := start; position < len(line); position++ {
+		if line[position] == '\\' {
+			position++
+			continue
+		}
+		if quote != 0 {
+			if line[position] == quote {
+				quote = 0
+			}
+			continue
+		}
+		switch line[position] {
+		case '"', '\'':
+			quote = line[position]
+		case '(':
+			depth++
+		case ')':
+			if depth == 0 {
+				return position + 1, true
+			}
+			depth--
+		}
+	}
+	return 0, false
+}
+
+func evidenceBacktickRun(line string, start int) int {
+	length := 1
+	for start+length < len(line) && line[start+length] == '`' {
+		length++
+	}
+	return length
+}
+
+func evidenceCodeSpanClosingEnd(line string, start, length int) (int, bool) {
+	for position := start; position < len(line); position++ {
+		if line[position] != '`' {
+			continue
+		}
+		runLength := evidenceBacktickRun(line, position)
+		if runLength == length {
+			end := position + runLength
+			return end, true
+		}
+		position += runLength - 1
+	}
+	return 0, false
+}
+
+func evidenceLinkLabel(label, target string) string {
+	if strings.TrimSpace(label) != "" {
+		return label
+	}
+	if strings.HasPrefix(target, "#") {
+		return strings.TrimPrefix(target, "#")
+	}
+	parsed, err := url.Parse(target)
+	if err == nil && parsed.Path != "" {
+		target = parsed.Path
+	}
+	if target == "" {
+		return ""
+	}
+	return path.Base(target)
+}
+
+func normalizeEvidenceReferenceLabel(label string) string {
+	return strings.ToLower(strings.Join(strings.Fields(label), " "))
+}
+
+func hasHTTPOrHTTPSScheme(target string) bool {
+	target = strings.ToLower(target)
+	return strings.HasPrefix(target, "http:") || strings.HasPrefix(target, "https:")
+}
+
+func (fence *evidenceFenceState) consumeLine(line string) evidenceFenceLine {
+	if isCodeFenceDelimiter(strings.TrimSpace(line)) {
+		fence.insideSummaryCode = !fence.insideSummaryCode
+		return evidenceFenceLine{summaryDelimiter: true, hiddenFromSummary: true}
+	}
+	if fence.insideSummaryCode {
+		return evidenceFenceLine{hiddenFromSummary: true}
+	}
+	if !fence.tildeFence.consumeLine(line) {
+		return evidenceFenceLine{}
+	}
+	return evidenceFenceLine{insideTildeFence: true}
+}
+
+func (fence *evidenceTildeFence) consumeLine(line string) bool {
+	if fence.length > 0 {
+		if fence.isClosingLine(line) {
+			fence.length = 0
+		}
+		return true
+	}
+	delimiter, length, _, ok := markdownFenceMarker(line)
+	if !ok || delimiter != '~' {
+		return false
+	}
+	fence.length = length
+	return true
+}
+
+func (fence evidenceTildeFence) isClosingLine(line string) bool {
+	delimiter, length, remainder, ok := markdownFenceMarker(line)
+	return ok && delimiter == '~' && length >= fence.length && strings.TrimSpace(remainder) == ""
+}
+
+func markdownFenceMarker(line string) (byte, int, string, bool) {
+	indent := len(line) - len(strings.TrimLeft(line, " "))
+	if indent > 3 || indent == len(line) {
+		return 0, 0, "", false
+	}
+	delimiter := line[indent]
+	if delimiter != '`' && delimiter != '~' {
+		return 0, 0, "", false
+	}
+	length := 1
+	for indent+length < len(line) && line[indent+length] == delimiter {
+		length++
+	}
+	if length < 3 {
+		return 0, 0, "", false
+	}
+	return delimiter, length, line[indent+length:], true
 }
 
 func parseEvidenceExercises(contents string) []evidenceExercise {
@@ -742,10 +1228,13 @@ func parseEvidenceExercises(contents string) []evidenceExercise {
 
 func (parser *evidenceExerciseParser) addLine(line string) {
 	trimmed := strings.TrimSpace(line)
-	if parser.consumeCodeFence(trimmed) {
+	fenceLine := parser.fence.consumeLine(line)
+	if fenceLine.summaryDelimiter {
+		parser.currentField = evidenceFieldUnknown
+		parser.awaitingOutcomeReason = false
 		return
 	}
-	if parser.insideCodeBlock {
+	if fenceLine.hiddenFromSummary {
 		return
 	}
 	if parser.setFieldFromLine(trimmed) {
@@ -758,16 +1247,6 @@ func (parser *evidenceExerciseParser) addLine(line string) {
 		return
 	}
 	appendEvidenceContinuation(&parser.current, parser.currentField, trimmed)
-}
-
-func (parser *evidenceExerciseParser) consumeCodeFence(line string) bool {
-	if !isCodeFenceDelimiter(line) {
-		return false
-	}
-	parser.insideCodeBlock = !parser.insideCodeBlock
-	parser.currentField = evidenceFieldUnknown
-	parser.awaitingOutcomeReason = false
-	return true
 }
 
 func (parser *evidenceExerciseParser) setFieldFromLine(line string) bool {
@@ -911,14 +1390,13 @@ func formatEvidenceExercise(exercise evidenceExercise) string {
 
 func summarizeUnstructuredEvidence(contents string) string {
 	var lines []string
-	insideCodeBlock := false
+	var fence evidenceFenceState
 	for _, line := range strings.Split(contents, "\n") {
 		trimmed := strings.TrimSpace(line)
-		if isCodeFenceDelimiter(trimmed) {
-			insideCodeBlock = !insideCodeBlock
+		if fence.consumeLine(line).hiddenFromSummary {
 			continue
 		}
-		if !isUnstructuredEvidenceContentLine(trimmed, insideCodeBlock) {
+		if !isUnstructuredEvidenceContentLine(trimmed) {
 			continue
 		}
 		lines = append(lines, trimmed)
@@ -929,12 +1407,8 @@ func summarizeUnstructuredEvidence(contents string) string {
 	return limitEvidenceSummary(strings.Join(lines, " "))
 }
 
-func isCodeFenceDelimiter(trimmed string) bool {
-	return strings.HasPrefix(trimmed, "```")
-}
-
-func isUnstructuredEvidenceContentLine(trimmed string, insideCodeBlock bool) bool {
-	return !insideCodeBlock && trimmed != "" && !strings.HasPrefix(trimmed, "#")
+func isUnstructuredEvidenceContentLine(trimmed string) bool {
+	return trimmed != "" && !strings.HasPrefix(trimmed, "#")
 }
 
 const maxPublicationEvidenceSummaryRunes = 2000

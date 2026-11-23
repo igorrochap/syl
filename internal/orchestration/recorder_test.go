@@ -1129,6 +1129,35 @@ func TestRunImplementUsesCommitgenForPublication(t *testing.T) {
 	}
 }
 
+func TestRunImplementPublishesEvidenceLinksAsPlainText(t *testing.T) {
+	root, _, git := newPublicationTestRepository(t)
+	addPublicationGate(t, root, git)
+	addPublicationBareOrigin(t, git)
+
+	publisher := &recordingPullRequestTracker{}
+	recorder := newMemoryRunRecorder()
+	recorder.dir = t.TempDir()
+	writePublicationEvidence(t, recorder, "Full output: [integration.log](integration.log).\n"+
+		"Docs: [docs](https://example.com/docs).\n")
+
+	options := publicationImplementOptions(root, git, publisher, recorder, nil)
+	options.GateRunner = &staticPublicationGateRunner{}
+	if err := RunImplement(context.Background(), options); err != nil {
+		t.Fatalf("RunImplement() error = %v", err)
+	}
+	if publisher.request == nil {
+		t.Fatal("pull request = nil, want a recorded pull request")
+	}
+	body := publisher.request.Body
+	if !strings.Contains(body, "Full output: integration.log.") ||
+		!strings.Contains(body, "[docs](https://example.com/docs)") {
+		t.Fatalf("pull request body = %q, want local link label and unchanged remote link", body)
+	}
+	if strings.Contains(body, "[integration.log]") || strings.Contains(body, "](integration.log)") {
+		t.Fatalf("pull request body = %q, want no local Evidence link", body)
+	}
+}
+
 func TestRunImplementAttachesOnlyPRWorthyEvidenceImages(t *testing.T) {
 	tests := []struct {
 		name          string
