@@ -244,6 +244,141 @@ func TestSummarizeEvidenceKeepsStandaloneNotExercisedReason(t *testing.T) {
 	}
 }
 
+func TestSummarizeEvidenceRendersLocalLinksAsPlainText(t *testing.T) {
+	contents := "Full output: [integration.log](integration.log).\n" +
+		"Docs: [docs](https://example.com/docs).\n" +
+		"See [run log](<logs/integration output.log> \"full output\"), [](<reports/latest.txt>), " +
+		"[outcome](#outcome), []( #outcome), [mail](mailto:user@example.com) and [custom](task:result).\n"
+	got := summarizeEvidenceText(contents)
+	want := "Full output: integration.log. Docs: [docs](https://example.com/docs). " +
+		"See run log, latest.txt, outcome, outcome, mail and custom."
+	if got != want {
+		t.Fatalf("Evidence summary = %q, want %q", got, want)
+	}
+}
+
+func TestSummarizeEvidencePreservesShortcutLikeEvidenceText(t *testing.T) {
+	contents := "Read the [report] now and [summary]\n" +
+		"[report]: reports/local.log\n[summary]: reports/summary.log\n"
+	want := "Read the [report] now and [summary]"
+	if got := summarizeEvidenceText(contents); got != want {
+		t.Fatalf("Evidence summary = %q, want bracketed text preserved and local definitions removed", got)
+	}
+}
+
+func TestSummarizeEvidencePreservesUnreferencedBracketedDefinitions(t *testing.T) {
+	contents := "[Image omitted: screenshot]: screen output omitted\n" +
+		"[PASS]: passed the quality checks\n"
+	want := "[Image omitted: screenshot]: screen output omitted [PASS]: passed the quality checks"
+	if got := summarizeEvidenceText(contents); got != want {
+		t.Fatalf("Evidence summary = %q, want bracketed text unchanged", got)
+	}
+}
+
+func TestSummarizeEvidenceRemovesUnusedLocalReferenceDefinitions(t *testing.T) {
+	contents := "Status: pass\n[local]: logs/run.log\n[remote]: https://example.com/run.log\n" +
+		"[duplicate]: https://example.com/first.log\n[duplicate]: logs/second.log\n"
+	want := "Status: pass [remote]: https://example.com/run.log [duplicate]: https://example.com/first.log"
+	if got := summarizeEvidenceText(contents); got != want {
+		t.Fatalf("Evidence summary = %q, want unused local definition removed and remote definition retained", got)
+	}
+}
+
+func TestSummarizeEvidenceRendersLocalReferenceLinksAsPlainText(t *testing.T) {
+	contents := "Use [logs][local] and [docs][remote].\n" +
+		"[local]: <logs/integration.log> \"run output\"\n" +
+		"[remote]: https://example.com/docs \"documentation\"\n"
+	got := summarizeEvidenceText(contents)
+	if !strings.Contains(got, "Use logs and [docs][remote].") ||
+		strings.Contains(got, "[local]:") || !strings.Contains(got, `[remote]: https://example.com/docs "documentation"`) {
+		t.Fatalf("Evidence summary = %q, want local reference as label and remote definition retained", got)
+	}
+}
+
+func TestSummarizeEvidenceKeepsLinksInCodeUnchanged(t *testing.T) {
+	contents := "Example: `[relative](integration.log)`\n\n" +
+		"Long code: `open\n[relative](integration.log)` and literal \\[relative](integration.log).\n\n" +
+		"```markdown\n[relative](integration.log)\n```\n"
+	got := summarizeEvidenceText(contents)
+	if !strings.Contains(got, "`[relative](integration.log)`") ||
+		!strings.Contains(got, "`open [relative](integration.log)`") ||
+		!strings.Contains(got, `\[relative](integration.log)`) ||
+		strings.Contains(got, "```markdown") {
+		t.Fatalf("Evidence summary = %q, want inline code unchanged and fenced code omitted", got)
+	}
+}
+
+func TestSummarizeEvidencePreservesLegacyFencesWithoutLinks(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		contents string
+		want     string
+	}{
+		{name: "tilde fences remain visible", contents: "before\n~~~\ninside\n~~~\nafter", want: "before ~~~ inside ~~~ after"},
+		{name: "four-space backtick fences remain hidden", contents: "before\n    ```text\nhidden\n    ```\nafter", want: "before after"},
+		{name: "shorter backtick closer still closes", contents: "````\nhidden\n```\nvisible", want: "visible"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := summarizeEvidenceText(test.contents); got != test.want {
+				t.Fatalf("Evidence summary = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
+func TestSummarizeEvidenceScansLinksAfterLegacyFenceClosers(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		contents string
+	}{
+		{
+			name:     "shorter closer ends longer fence",
+			contents: "````markdown\n[hidden](hidden.log)\n```\n[visible](visible.log)",
+		},
+		{
+			name:     "closer with trailing text ends fence",
+			contents: "```markdown\nhidden\n``` trailing text\n[visible](visible.log)",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got, want := summarizeEvidenceText(test.contents), "visible"; got != want {
+				t.Fatalf("Evidence summary = %q, want link after legacy fence closer %q", got, want)
+			}
+		})
+	}
+}
+
+func TestSummarizeEvidenceKeepsLegacyFenceSummaryWithRemoteLinks(t *testing.T) {
+	contents := "before\n~~~\ninside\n~~~\n[docs](https://example.com/docs)\nafter"
+	want := "before ~~~ inside ~~~ [docs](https://example.com/docs) after"
+	if got := summarizeEvidenceText(contents); got != want {
+		t.Fatalf("Evidence summary = %q, want remote links to preserve legacy fence summary %q", got, want)
+	}
+}
+
+func TestSummarizeEvidenceRendersLocalFenceOpenerLinkAsPlainText(t *testing.T) {
+	contents := "before\n~~~[log](integration.log)\ninside\n~~~\nafter"
+	want := "before ~~~log inside ~~~ after"
+	if got := summarizeEvidenceText(contents); got != want {
+		t.Fatalf("Evidence summary = %q, want fence opener link label without local target %q", got, want)
+	}
+}
+
+func TestSummarizeEvidenceRewritesLocalTildeFenceLinkWithoutDroppingBlock(t *testing.T) {
+	contents := "before\n~~~\n[log](integration.log)\n~~~\nafter"
+	want := "before ~~~ log ~~~ after"
+	if got := summarizeEvidenceText(contents); got != want {
+		t.Fatalf("Evidence summary = %q, want local link as text with tilde block retained %q", got, want)
+	}
+}
+
+func TestSummarizeEvidenceRewritesLocalReferenceInsideTildeFence(t *testing.T) {
+	contents := "~~~\n[log][local]\n~~~\n[local]: logs/run.log"
+	if got, want := summarizeEvidenceText(contents), "~~~ log ~~~"; got != want {
+		t.Fatalf("Evidence summary = %q, want local reference as text and tilde block retained %q", got, want)
+	}
+}
+
 func TestAppendVerificationSectionMergesCommitgenVerification(t *testing.T) {
 	commitgenBody := "Generated details.\n\n## Verification\n\nCommitgen's verification.\n\n## Notes\nKept notes."
 	body := appendVerificationSection(commitgenBody, publicationVerification{
