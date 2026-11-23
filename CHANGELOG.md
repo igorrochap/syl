@@ -2,6 +2,45 @@
 
 <!-- version list -->
 
+## v1.50.0 (2026-11-23)
+
+### Features
+
+- **orchestration**: Add verification section to published pull requests
+  ([#293](https://github.com/igorrochap/syl/pull/293),
+  [`879fb36`](https://github.com/igorrochap/syl/commit/879fb364deb94657bfd81e962621685e66972834))
+
+- **orchestration**: Attach evidence images after PR creation
+  ([#293](https://github.com/igorrochap/syl/pull/293),
+  [`879fb36`](https://github.com/igorrochap/syl/commit/879fb364deb94657bfd81e962621685e66972834))
+
+- **orchestration**: Attach PR-worthy Evidence images after PR creation
+  ([#293](https://github.com/igorrochap/syl/pull/293),
+  [`879fb36`](https://github.com/igorrochap/syl/commit/879fb364deb94657bfd81e962621685e66972834))
+
+- **orchestration**: Include review evidence in prompts and review rules
+  ([#293](https://github.com/igorrochap/syl/pull/293),
+  [`879fb36`](https://github.com/igorrochap/syl/commit/879fb364deb94657bfd81e962621685e66972834))
+
+- **orchestration**: Record evidence with a vendored verify skill
+  ([#293](https://github.com/igorrochap/syl/pull/293),
+  [`879fb36`](https://github.com/igorrochap/syl/commit/879fb364deb94657bfd81e962621685e66972834))
+
+- **verification**: Add verification and evidence features
+  ([#293](https://github.com/igorrochap/syl/pull/293),
+  [`879fb36`](https://github.com/igorrochap/syl/commit/879fb364deb94657bfd81e962621685e66972834))
+
+### Refactoring
+
+- **orchestration**: Format evidence exercises as multi-line lists
+  ([#293](https://github.com/igorrochap/syl/pull/293),
+  [`879fb36`](https://github.com/igorrochap/syl/commit/879fb364deb94657bfd81e962621685e66972834))
+
+- **orchestration**: Rewrite local evidence links to plain text
+  ([#293](https://github.com/igorrochap/syl/pull/293),
+  [`879fb36`](https://github.com/igorrochap/syl/commit/879fb364deb94657bfd81e962621685e66972834))
+
+
 ## v1.49.0 (2026-11-21)
 
 ### Features
