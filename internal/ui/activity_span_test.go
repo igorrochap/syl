@@ -79,15 +79,16 @@ func TestActivitySpanViewRedrawsThenLeavesPermanentTerminalLine(t *testing.T) {
 		t.Fatalf("End() error = %v", err)
 	}
 	got := terminal.String()
-	if !strings.HasSuffix(got, "\r\x1b[K1/2 — implementing (4.1s)\n") {
+	if !strings.HasSuffix(got, "\x1b[1A\r\x1b[K1/2 — implementing (4.1s)\n\r\x1b[K") {
 		t.Fatalf("terminal output = %q, want permanent duration line after clearing live region", got)
 	}
-	for _, line := range strings.Split(got, "\r") {
-		if strings.Contains(line, "\x1b[K") {
-			visible := stripANSI(strings.TrimPrefix(line, "\x1b[K"))
-			if width := lipgloss.Width(visible); width > 32 {
-				t.Fatalf("live line width = %d, want at most terminal width 32: %q", width, visible)
-			}
+	if !strings.Contains(got, "\n\r\x1b[K  └ Bash — a very long tool gis…") {
+		t.Fatalf("terminal output = %q, want the truncated tool gist below the Activity label", got)
+	}
+	visible := stripANSI(strings.ReplaceAll(got, "\r", "\n"))
+	for _, row := range strings.Split(visible, "\n") {
+		if width := lipgloss.Width(row); width > 32 {
+			t.Fatalf("live row width = %d, want at most terminal width 32: %q", width, row)
 		}
 	}
 }
@@ -108,8 +109,8 @@ func TestActivitySpanViewDefaultTerminalGolden(t *testing.T) {
 		t.Fatalf("End() error = %v", err)
 	}
 	want := "\r\x1b[K⠋ 1/2 — implementing (0.0s)" +
-		"\r\x1b[K⠙ 1/2 — implementing — Bash — go test ./... (0.0s)" +
-		"\r\x1b[K1/2 — implementing (2.0s)\n"
+		"\r\x1b[K⠙ 1/2 — implementing (0.0s)\n\r\x1b[K  └ Bash — go test ./..." +
+		"\x1b[1A\r\x1b[K1/2 — implementing (2.0s)\n\r\x1b[K"
 	if got := terminal.String(); got != want {
 		t.Fatalf("terminal output = %q, want golden %q", got, want)
 	}
@@ -125,16 +126,20 @@ func TestActivitySpanViewKeepsMutedColorForLiveAndPermanentLines(t *testing.T) {
 	if err := span.Start("reviewing", clock.Now()); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
+	span.Tool("Bash", "go test ./ui")
 	if err := span.End(clock.Now().Add(time.Second), "completed"); err != nil {
 		t.Fatalf("End() error = %v", err)
 	}
 
 	got := terminal.String()
 	for _, line := range []string{"⠋ reviewing (0.0s)", "reviewing (1.0s)"} {
-		want := activityToneStyles[0].Render(line)
+		want := activitySpanLabelStyle.Render(line)
 		if !strings.Contains(got, want) {
-			t.Errorf("terminal output = %q, want muted color around %q", got, line)
+			t.Errorf("terminal output = %q, want heading color around %q", got, line)
 		}
+	}
+	if want := activityToneStyles[0].Render("  └ Bash — go test ./ui"); !strings.Contains(got, want) {
+		t.Errorf("terminal output = %q, want muted color around tool gist", got)
 	}
 }
 
@@ -185,6 +190,40 @@ func TestActivitySpanPauseKeepsVerboseOutputBelowAnchoredSpan(t *testing.T) {
 	}
 	if !strings.Contains(got, "\x1b[2A\r\x1b[K1/1 — reviewing (1.0s)\x1b[2B\r") {
 		t.Fatalf("terminal output = %q, want final span line rewritten above verbose prose", got)
+	}
+}
+
+func TestActivitySpanPauseKeepsToolGistBelowLabelAndAboveVerboseOutput(t *testing.T) {
+	previousTerminal := isTerminal
+	isTerminal = func(fd uintptr) bool { return fd == 42 }
+	t.Cleanup(func() { isTerminal = previousTerminal })
+	clock := &testClock{now: time.Date(2026, 11, 23, 18, 0, 0, 0, time.UTC)}
+	terminal := &testTerminal{}
+	span := NewActivitySpanView(terminal, Caps{Width: 80, Height: 24}, clock, time.Second)
+	if err := span.Start("1/1 — reviewing", clock.Now()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	span.Tool("Bash", "go test ./ui")
+	span.Pause()
+	verboseOutput := "Verbose prose.\n"
+	if _, err := terminal.WriteString(verboseOutput); err != nil {
+		t.Fatal(err)
+	}
+	span.RecordOutput(verboseOutput)
+	span.Resume()
+	if err := span.End(clock.Now().Add(time.Second), "completed"); err != nil {
+		t.Fatalf("End() error = %v", err)
+	}
+
+	got := terminal.String()
+	if !strings.Contains(got, "\x1b[3A\r\x1b[K⠹ 1/1 — reviewing (0.0s)\n\r\x1b[K  └ Bash — go test ./ui\x1b[2B\r") {
+		t.Fatalf("terminal output = %q, want the two-row Activity region redrawn above the cursor", got)
+	}
+	if !strings.Contains(got, "\nVerbose prose.\n") {
+		t.Fatalf("terminal output = %q, want verbose output preserved below the Activity region", got)
+	}
+	if !strings.Contains(got, "\x1b[3A\r\x1b[K1/1 — reviewing (1.0s)\n\r\x1b[K\x1b[2B\r") {
+		t.Fatalf("terminal output = %q, want the completed Activity line to clear its tool row", got)
 	}
 }
 
@@ -245,7 +284,7 @@ func TestActivitySpanCountsWrappedVerboseOutput(t *testing.T) {
 	if regexp.MustCompile(`\x1b\[[0-9]+A`).MatchString(got) {
 		t.Fatalf("terminal output = %q, want wrapped rows to detach the old span line", got)
 	}
-	if !strings.HasSuffix(got, verboseOutput+"\r\nreviewing (1.0s)\n") {
+	if !strings.HasSuffix(got, verboseOutput+"\r\nreviewi…\n") {
 		t.Fatalf("terminal output = %q, want permanent line after wrapped output", got)
 	}
 }

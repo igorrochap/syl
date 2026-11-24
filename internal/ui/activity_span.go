@@ -28,6 +28,7 @@ type ActivitySpanView struct {
 	anchorVisible bool
 	rowsBelow     int
 	outputColumn  int
+	renderedRows  int
 	label         string
 	gist          string
 	started       time.Time
@@ -101,6 +102,7 @@ func (view *ActivitySpanView) Start(label string, started time.Time) error {
 	view.anchored = false
 	view.rowsBelow = 0
 	view.outputColumn = 0
+	view.renderedRows = 0
 	if view.terminal == nil {
 		view.mu.Unlock()
 		return view.writeLine("starting " + label)
@@ -129,7 +131,7 @@ func (view *ActivitySpanView) Tool(name, gist string) {
 	view.draw()
 }
 
-// Pause anchors the live line above verbose output and suspends redraws until Resume.
+// Pause anchors the live region above verbose output and suspends redraws until Resume.
 func (view *ActivitySpanView) Pause() {
 	view.renderMu.Lock()
 	defer view.renderMu.Unlock()
@@ -142,9 +144,9 @@ func (view *ActivitySpanView) Pause() {
 	view.paused = true
 	if firstPause {
 		view.anchored = true
-		view.rowsBelow = 1
+		view.rowsBelow = max(1, view.renderedRows)
 		view.outputColumn = 0
-		view.anchorVisible = view.caps.Width > 0 && view.caps.Height > 1
+		view.anchorVisible = view.caps.Width > 0 && view.caps.Height > view.rowsBelow
 	}
 	view.mu.Unlock()
 	if firstPause {
@@ -185,38 +187,14 @@ func (view *ActivitySpanView) End(ended time.Time, outcome string) error {
 		view.mu.Unlock()
 		return fmt.Errorf("end Activity span: no span is active")
 	}
-	label, started, frame := view.label, view.started, view.frame
+	label, started := view.label, view.started
 	view.active = false
 	stopCh, doneCh := view.stopCh, view.doneCh
 	terminal := view.terminal
 	view.mu.Unlock()
 
 	if terminal != nil {
-		close(stopCh)
-		<-doneCh
-		view.renderMu.Lock()
-		view.mu.Lock()
-		anchored, anchorVisible, rowsBelow, outputColumn := view.anchored, view.anchorVisible, view.rowsBelow, view.outputColumn
-		view.mu.Unlock()
-		line := terminalActivitySpanLine(label, ended.Sub(started), outcome)
-		if view.caps.Color {
-			line = renderActivityTone(line, frame)
-		}
-		if anchored {
-			if anchorVisible {
-				view.recordWriteError(view.writeTerminal(cursorUp(rowsBelow) + "\r\x1b[K" + line + cursorDown(rowsBelow) + "\r"))
-			} else {
-				lineBreak := ""
-				if outputColumn != 0 {
-					lineBreak = "\r\n"
-				}
-				view.recordWriteError(view.writeTerminal(lineBreak + line + "\n"))
-			}
-		} else {
-			view.clear()
-			view.recordWriteError(view.writeTerminal(line + "\n"))
-		}
-		view.renderMu.Unlock()
+		view.finishTerminalSpan(stopCh, doneCh, label, started, ended, outcome)
 	} else {
 		if err := view.writeLine(fmt.Sprintf("finished %s — %s (%s)", label, outcome, formatElapsed(ended.Sub(started)))); err != nil {
 			return err
@@ -227,6 +205,58 @@ func (view *ActivitySpanView) End(ended time.Time, outcome string) error {
 	view.writeErr = nil
 	view.mu.Unlock()
 	return writeErr
+}
+
+func (view *ActivitySpanView) finishTerminalSpan(stopCh chan struct{}, doneCh chan struct{}, label string, started, ended time.Time, outcome string) {
+	close(stopCh)
+	<-doneCh
+	view.renderMu.Lock()
+	defer view.renderMu.Unlock()
+
+	view.mu.Lock()
+	anchored, anchorVisible := view.anchored, view.anchorVisible
+	rowsBelow, outputColumn, renderedRows := view.rowsBelow, view.outputColumn, view.renderedRows
+	view.mu.Unlock()
+
+	line := terminalActivitySpanLine(label, ended.Sub(started), outcome)
+	if view.caps.Width > 0 {
+		line = truncateDisplayWidth(line, view.caps.Width)
+	}
+	if view.caps.Color {
+		line = activitySpanLabelStyle.Render(line)
+	}
+	if !anchored {
+		view.finishUnanchoredTerminalSpan(line, renderedRows)
+		return
+	}
+	view.finishAnchoredTerminalSpan(line, anchorVisible, rowsBelow, outputColumn, renderedRows)
+}
+
+func (view *ActivitySpanView) finishUnanchoredTerminalSpan(line string, renderedRows int) {
+	value := cursorUp(max(0, renderedRows-1)) + "\r\x1b[K" + line + "\n"
+	if renderedRows > 1 {
+		value += "\r\x1b[K"
+	}
+	view.recordWriteError(view.writeTerminal(value))
+}
+
+func (view *ActivitySpanView) finishAnchoredTerminalSpan(line string, anchorVisible bool, rowsBelow, outputColumn, renderedRows int) {
+	if !anchorVisible {
+		lineBreak := ""
+		if outputColumn != 0 {
+			lineBreak = "\r\n"
+		}
+		view.recordWriteError(view.writeTerminal(lineBreak + line + "\n"))
+		return
+	}
+	value := cursorUp(rowsBelow) + "\r\x1b[K" + line
+	clearedRows := 0
+	if renderedRows > 1 {
+		value += "\n\r\x1b[K"
+		clearedRows = 1
+	}
+	value += cursorDown(max(0, rowsBelow-clearedRows)) + "\r"
+	view.recordWriteError(view.writeTerminal(value))
 }
 
 func (view *ActivitySpanView) run(stopCh chan struct{}, doneCh chan struct{}) {
@@ -252,25 +282,53 @@ func (view *ActivitySpanView) draw() {
 		return
 	}
 	label, gist, started, frame := view.label, view.gist, view.started, view.frame
-	anchored, anchorVisible, rowsBelow := view.anchored, view.anchorVisible, view.rowsBelow
+	anchored, anchorVisible, rowsBelow, renderedRows := view.anchored, view.anchorVisible, view.rowsBelow, view.renderedRows
 	view.frame++
 	view.mu.Unlock()
+	lines := renderActivitySpanFrame(label, gist, view.clock.Now().Sub(started), frame, view.caps.Width)
+	if view.caps.Color {
+		lines = styleActivitySpanFrame(lines, frame)
+	}
 	if anchored && !anchorVisible {
+		view.mu.Lock()
+		view.renderedRows = len(lines)
+		view.mu.Unlock()
 		return
 	}
-	line := renderActivitySpanFrame(label, gist, view.clock.Now().Sub(started), frame, view.caps.Width)
-	if view.caps.Color {
-		line = renderActivityTone(line, frame)
-	}
+	var value string
 	if anchored {
-		view.recordWriteError(view.writeTerminal(cursorUp(rowsBelow) + "\r\x1b[K" + line + cursorDown(rowsBelow) + "\r"))
+		value = anchoredActivityFrame(lines, renderedRows, rowsBelow)
 	} else {
-		view.recordWriteError(view.writeTerminal("\r\x1b[K" + line))
+		value = unanchoredActivityFrame(lines, renderedRows)
 	}
+	view.recordWriteError(view.writeTerminal(value))
+	view.mu.Lock()
+	view.renderedRows = len(lines)
+	view.mu.Unlock()
 }
 
-func (view *ActivitySpanView) clear() {
-	view.recordWriteError(view.writeTerminal("\r\x1b[K"))
+func unanchoredActivityFrame(lines []string, previousRows int) string {
+	value := cursorUp(max(0, previousRows-1)) + "\r\x1b[K" + lines[0]
+	if len(lines) > 1 {
+		return value + "\n\r\x1b[K" + lines[1]
+	}
+	if previousRows > 1 {
+		return value + "\n\r\x1b[K" + cursorUp(1) + "\r"
+	}
+	return value
+}
+
+func anchoredActivityFrame(lines []string, previousRows, rowsBelow int) string {
+	value := cursorUp(rowsBelow) + "\r\x1b[K" + lines[0]
+	occupiedRows := 0
+	if len(lines) > 1 {
+		value += "\n\r\x1b[K" + lines[1]
+		occupiedRows = 1
+	} else if previousRows > 1 {
+		value += "\n\r\x1b[K"
+		occupiedRows = 1
+	}
+	return value + cursorDown(max(0, rowsBelow-occupiedRows)) + "\r"
 }
 
 func (view *ActivitySpanView) recordWriteError(err error) {
@@ -448,23 +506,40 @@ func (view *ActivitySpanView) writeTerminal(value string) error {
 	return nil
 }
 
-func renderActivitySpanFrame(label, gist string, elapsed time.Duration, frame, width int) string {
+func renderActivitySpanFrame(label, gist string, elapsed time.Duration, frame, width int) []string {
 	spinner := activityFrames[positiveModulo(frame, len(activityFrames))]
 	timeText := " (" + formatElapsed(elapsed) + ")"
-	line := spinner + " " + label
-	if gist != "" {
-		line += " — " + gist
+	labelPrefix := spinner + " "
+	if width > 0 {
+		available := width - lipgloss.Width(labelPrefix) - lipgloss.Width(timeText)
+		if available <= 0 {
+			return []string{truncateDisplayWidth(labelPrefix+label+timeText, width)}
+		}
+		label = truncateDisplayWidth(label, available)
 	}
-	line += timeText
-	if width <= 0 || lipgloss.Width(line) <= width {
-		return line
+	lines := []string{labelPrefix + label + timeText}
+	if gist == "" {
+		return lines
 	}
-	base := spinner + " " + label + timeText
-	available := width - lipgloss.Width(base) - lipgloss.Width(" — ")
-	if available <= 0 {
-		return truncateDisplayWidth(base, width)
+	detailPrefix := "  └ "
+	if width > 0 {
+		available := width - lipgloss.Width(detailPrefix)
+		if available <= 0 {
+			return append(lines, truncateDisplayWidth(detailPrefix, width))
+		}
+		gist = truncateDisplayWidth(gist, available)
 	}
-	return spinner + " " + label + " — " + truncateDisplayWidth(gist, available) + timeText
+	return append(lines, detailPrefix+gist)
+}
+
+func styleActivitySpanFrame(lines []string, frame int) []string {
+	styled := append([]string(nil), lines...)
+	styled[0] = activitySpanLabelStyle.Render(styled[0])
+	if len(styled) > 1 {
+		tone := positiveModulo(frame/activityToneFrameCount, len(activityToneStyles))
+		styled[1] = activityToneStyles[tone].Render(styled[1])
+	}
+	return styled
 }
 
 func truncateDisplayWidth(value string, width int) string {
