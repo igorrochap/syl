@@ -1,0 +1,12 @@
+{
+  "status": "running",
+  "activity": "verifying",
+  "iteration": 1,
+  "max_iterations": 2,
+  "pid": 42,
+  "hostname": "builder",
+  "started_at": "2026-09-23T19:00:00Z",
+  "updated_at": "2026-09-23T19:01:00Z",
+  "kind": "implement",
+  "ticket_ref": "#297"
+}

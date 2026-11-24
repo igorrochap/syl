@@ -59,6 +59,7 @@ type ImplementOptions struct {
 	Notifier             Notifier
 	Input                io.Reader
 	Output               io.Writer
+	ErrorOutput          io.Writer
 	Context              string
 	ReviewContext        string
 	Verbose              bool
@@ -67,6 +68,7 @@ type ImplementOptions struct {
 	PublishOnApprove     bool
 	GateRunner           GateRunner
 	ProvisionedWorktree  *Worktree
+	WorktreeSetup        string
 	IdentificationBanner func(artifactDir string) error
 }
 
@@ -98,7 +100,7 @@ func RunImplement(ctx context.Context, options ImplementOptions) (returnErr erro
 			}
 		}()
 	}
-	run, err := prepareImplementRun(ctx, options, originGit)
+	run, err := prepareImplementRunWithWorktree(ctx, options, originGit)
 	if err != nil {
 		return finishFailedImplementRun(ctx, options, run, err)
 	}
@@ -197,7 +199,7 @@ func executeImplementRun(ctx context.Context, options ImplementOptions, run impl
 		exhaustionReason:   run.runState.state.ExhaustionReason,
 		nitBudgetOverrides: run.runState.state.NitBudgetOverrides,
 	}
-	publicationErr := publishApprovedSummary(ctx, options, run.setup, run.recorder, &summary)
+	publicationErr := publishApprovedSummary(ctx, options, run.setup, run.recorder, run.runState, &summary)
 	if err := completeImplementRun(ctx, options, run, summary); err != nil {
 		return err
 	}
@@ -209,6 +211,7 @@ func publishApprovedSummary(
 	options ImplementOptions,
 	setup implementSetup,
 	recorder RunRecorder,
+	runState *runStateTracker,
 	summary *implementSummary,
 ) error {
 	if !options.PublishOnApprove {
@@ -230,7 +233,7 @@ func publishApprovedSummary(
 	}
 
 	var notices, attachmentNotices []string
-	summary.publication, notices, attachmentNotices = publishApprovedImplement(ctx, options, setup, *summary)
+	summary.publication, notices, attachmentNotices = publishApprovedImplement(ctx, options, setup, *summary, runState)
 	summary.publishNotice = strings.Join(notices, "\n")
 	summary.attachmentNotice = strings.Join(attachmentNotices, "\n")
 	if evidenceErr != nil {
@@ -270,21 +273,66 @@ func prepareImplementRun(ctx context.Context, options ImplementOptions, originGi
 	if err := validateImplementOptions(options); err != nil {
 		return implementRunState{}, err
 	}
-	var (
-		setup implementSetup
-		err   error
+	setup, err := prepareImplementWithPullRequestBase(
+		ctx, options.Git, originGit, options.IssueTracker, options.Ticket, options.PublishOnApprove,
 	)
-	if options.ProvisionedWorktree != nil {
-		setup, err = prepareProvisionedImplement(ctx, options.Git, options.IssueTracker, options.Ticket, *options.ProvisionedWorktree)
-	} else {
-		setup, err = prepareImplementWithPullRequestBase(
-			ctx, options.Git, originGit, options.IssueTracker, options.Ticket, options.PublishOnApprove,
-		)
-	}
 	if err != nil {
 		return implementRunState{}, err
 	}
 	return initializeImplementRun(options, setup)
+}
+
+func prepareImplementRunWithWorktree(
+	ctx context.Context,
+	options ImplementOptions,
+	originGit GitRunner,
+) (implementRunState, error) {
+	if options.ProvisionedWorktree == nil {
+		return prepareImplementRun(ctx, options, originGit)
+	}
+	if err := validateImplementOptions(options); err != nil {
+		return implementRunState{}, err
+	}
+	setup, err := prepareProvisionedImplement(ctx, options.Git, options.Ticket, *options.ProvisionedWorktree)
+	if err != nil {
+		return implementRunState{}, err
+	}
+	preparation, err := prepareImplementWorktree(ctx, options)
+	if err != nil {
+		return implementRunState{}, err
+	}
+	if err := options.IssueTracker.UpdateStatus(ctx, options.Ticket.Number, "doing"); err != nil {
+		return implementRunState{}, fmt.Errorf("mark ticket #%d as doing: %w", options.Ticket.Number, err)
+	}
+	run, err := initializeImplementRun(options, setup)
+	if err != nil {
+		return run, err
+	}
+	if err := recordActivitySpan(run.runState, 0, runrecord.Preparing, "preparing worktree", preparation); err != nil {
+		return run, fmt.Errorf("record worktree preparation Activity: %w", err)
+	}
+	return run, nil
+}
+
+func prepareImplementWorktree(ctx context.Context, options ImplementOptions) (activitySpanTiming, error) {
+	mode := harnessOutputMode(options.Verbose, options.Raw)
+	span, err := startUnrecordedActivitySpan(options.Output, mode, options.Clock, "preparing worktree")
+	if err != nil {
+		return activitySpanTiming{}, err
+	}
+	stdout, stderr := options.Output, options.ErrorOutput
+	var trackedStdout *lineTrackingWriter
+	if span.view != nil {
+		trackedStdout = newLineTrackingWriter(activitySpanOutput{output: stdout, view: span.view})
+		stdout = trackedStdout
+		stderr = activitySpanOutput{output: stderr, view: span.view}
+	}
+	setupErr := RunWorktreeSetup(ctx, options.WorktreeSetup, options.WorkRoot, stdout, stderr)
+	if trackedStdout != nil && !trackedStdout.AtLineStart() {
+		_, lineErr := io.WriteString(trackedStdout, "\n")
+		setupErr = errors.Join(setupErr, lineErr)
+	}
+	return span.finishUnrecorded(ctx, setupErr)
 }
 
 func validateImplementOptions(options ImplementOptions) error {
@@ -466,7 +514,6 @@ func prepareImplementWithPullRequestBase(
 func prepareProvisionedImplement(
 	ctx context.Context,
 	workGit GitRunner,
-	issueTracker tracker.Tracker,
 	ticket tracker.Ticket,
 	worktree Worktree,
 ) (implementSetup, error) {
@@ -484,9 +531,6 @@ func prepareProvisionedImplement(
 	branch := strings.TrimSpace(worktree.Branch)
 	if branch == "" {
 		return implementSetup{}, errors.New("implement worktree branch is required")
-	}
-	if err := issueTracker.UpdateStatus(ctx, ticket.Number, "doing"); err != nil {
-		return implementSetup{}, fmt.Errorf("mark ticket #%d as doing: %w", ticket.Number, err)
 	}
 	return implementSetup{
 		git: workGit, branch: branch, branchPoint: branchPoint,
@@ -719,7 +763,6 @@ func runImplementerGateTurn(
 	if err != nil {
 		return implementGateTurnResult{}, err
 	}
-	params.runState.setActivity(runrecord.Verifying)
 	rolloverSeedPath, previousSession, err := nextImplementerTurn(handoffPath, implementResult.SessionIDs)
 	if err != nil {
 		return implementGateTurnResult{}, err
@@ -833,7 +876,7 @@ func runImplementReview(ctx context.Context, params implementIterationsParams, r
 		resumePrompt = appendProtectedPaths(resumePrompt, reviewParams.protectedPaths)
 		reviewOptions.resumePrompt = appendGateResultPath(resumePrompt, reviewParams.gateResultPath)
 	}
-	span, err := startRoleActivitySpan(
+	span, err := startActivitySpan(
 		params.runState, params.output, reviewParams.mode, params.clock,
 		reviewParams.iteration, runrecord.Reviewing, label,
 	)
@@ -1002,7 +1045,7 @@ func runImplementTurn(
 			return implementExecution{}, err
 		}
 	}
-	span, err := startRoleActivitySpan(params.runState, params.output, turn.mode, params.clock, turn.iteration, runrecord.Implementing, label)
+	span, err := startActivitySpan(params.runState, params.output, turn.mode, params.clock, turn.iteration, runrecord.Implementing, label)
 	if err != nil {
 		return implementExecution{}, err
 	}

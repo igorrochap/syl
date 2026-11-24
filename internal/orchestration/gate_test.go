@@ -63,17 +63,24 @@ func TestImplementStartsNewTurnAfterRedGateWithinIterationThenReviews(t *testing
 	if len(reviewer.runRequests) != 1 || gateRunner.calls != 2 {
 		t.Fatalf("reviewer calls = %d, Gate calls = %d, want one review after two Gate attempts", len(reviewer.runRequests), gateRunner.calls)
 	}
-	if len(recorder.states) < 4 || recorder.states[3].Activity != runrecord.Verifying {
-		t.Fatalf("state after implementer turn = %#v, want verifying", recorder.states)
+	if len(recorder.states) < 4 || recorder.states[3].Activity != runrecord.Gating {
+		t.Fatalf("state during Gate attempt = %#v, want gating", recorder.states)
 	}
 	var activityLabels []string
+	var spanOutcomes []string
 	for _, event := range recorder.activities {
 		if event.Start != nil {
 			activityLabels = append(activityLabels, event.Start.Label)
 		}
+		if event.End != nil {
+			spanOutcomes = append(spanOutcomes, event.End.Outcome)
+		}
 	}
-	if got, want := strings.Join(activityLabels, "|"), "1/1 — implementing|1/1 — addressing Gate failure|1/1 — reviewing"; got != want {
+	if got, want := strings.Join(activityLabels, "|"), "1/1 — implementing|1/1 — running Gates (attempt 1)|1/1 — addressing Gate failure|1/1 — running Gates (attempt 2)|1/1 — reviewing"; got != want {
 		t.Fatalf("Activity labels = %q, want %q", got, want)
+	}
+	if got, want := strings.Join(spanOutcomes, "|"), "completed|red|completed|green|completed"; got != want {
+		t.Fatalf("Activity outcomes = %q, want %q", got, want)
 	}
 	gateAttemptPrompt := implementer.resumeCalls[0].prompt
 	for _, want := range []string{"Failed Gates: tests (FAIL)", filepath.Join(recorder.dir, "iteration-01-gate-attempt-01.output.txt")} {
@@ -98,6 +105,74 @@ func TestImplementStartsNewTurnAfterRedGateWithinIterationThenReviews(t *testing
 		!strings.Contains(recorder.files["iteration-01-gate-attempt-01.output.txt"], "QUALITY GATE") {
 		t.Errorf("first Gate attempt was not fully recorded: %#v", recorder.files)
 	}
+}
+
+func TestRunImplementPersistsGatingActivityWhileGateRuns(t *testing.T) {
+	repo, _, git := newPublicationTestRepository(t)
+	branchPoint := addPublicationGate(t, repo, git)
+	originRoot := t.TempDir()
+	var runDirectory string
+	gateRunner := &persistedActivityGateRunner{t: t, runDirectory: &runDirectory, branchPoint: branchPoint}
+	options := ImplementOptions{
+		OriginRoot: originRoot, WorkRoot: repo,
+		OpenRun: func(spec RunSpec) (RunRecorder, error) {
+			recorder, err := openDiskRecorder(originRoot, spec)
+			if err == nil {
+				runDirectory = recorder.dir
+			}
+			return recorder, err
+		},
+		ProjectConfig: config.Config{
+			Roles: config.RolesConfig{
+				Implement: config.RoleConfig{Harness: config.HarnessCodex},
+				Review:    config.RoleConfig{Harness: config.HarnessClaude},
+			},
+			Loop: config.LoopConfig{MaxIterations: 1, MaxGateAttempts: 2},
+		},
+		IssueTracker: branchSetupTracker{},
+		Ticket:       tracker.Ticket{Number: 297, Title: "Deterministic Activity spans"},
+		Implementer: &writingImplementAdapter{
+			capturingImplementAdapter: &capturingImplementAdapter{response: "Implemented the ticket."},
+			root:                      repo,
+		},
+		Reviewer:   &capturingImplementAdapter{response: "VERDICT: approve\nSUMMARY: Ready\nFINDINGS:\n"},
+		Git:        git,
+		OriginGit:  git,
+		Input:      strings.NewReader(""),
+		Output:     io.Discard,
+		GateRunner: gateRunner,
+	}
+	if err := RunImplement(context.Background(), options); err != nil {
+		t.Fatalf("RunImplement() error = %v", err)
+	}
+	if gateRunner.activity != runrecord.Gating {
+		t.Fatalf("Run state during Gate = %q, want gating", gateRunner.activity)
+	}
+	activities, err := runrecord.ReadActivities(runDirectory, nil)
+	if err != nil {
+		t.Fatalf("ReadActivities() error = %v", err)
+	}
+	assertActivitySpanOutcome(t, activities, "1/1 — running Gates (attempt 1)", string(activitySpanGreen))
+}
+
+type persistedActivityGateRunner struct {
+	t            *testing.T
+	runDirectory *string
+	branchPoint  string
+	activity     runrecord.Activity
+}
+
+func (runner *persistedActivityGateRunner) Run(_ context.Context, _ string, _ string, branchPoint string) GateExecution {
+	runner.t.Helper()
+	if branchPoint != runner.branchPoint {
+		runner.t.Fatalf("Gate branch point = %q, want %q", branchPoint, runner.branchPoint)
+	}
+	state, err := runrecord.Read(runrecord.Path(*runner.runDirectory))
+	if err != nil {
+		runner.t.Fatalf("read Run state during Gate: %v", err)
+	}
+	runner.activity = state.Activity
+	return GateExecution{Output: qualitySummary("PASS")}
 }
 
 func TestImplementUsesGateExitStatusWhenSummaryIsUnavailable(t *testing.T) {
@@ -452,8 +527,8 @@ func (runner *scriptedGateRunner) Run(_ context.Context, scriptPath, workRoot, b
 	if workRoot != runner.workRoot || branchPoint != runner.branchPoint {
 		runner.t.Errorf("Gate args = (work root %q, branch point %q), want (%q, %q)", workRoot, branchPoint, runner.workRoot, runner.branchPoint)
 	}
-	if len(runner.recorder.states) == 0 || runner.recorder.states[len(runner.recorder.states)-1].Activity != runrecord.Verifying {
-		runner.t.Errorf("Run activity during Gate = %#v, want verifying", runner.recorder.states)
+	if len(runner.recorder.states) == 0 || runner.recorder.states[len(runner.recorder.states)-1].Activity != runrecord.Gating {
+		runner.t.Errorf("Run activity during Gate = %#v, want gating", runner.recorder.states)
 	}
 	contents, err := os.ReadFile(scriptPath)
 	if err != nil {

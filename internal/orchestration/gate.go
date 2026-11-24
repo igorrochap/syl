@@ -232,6 +232,14 @@ func recordGateAttempt(
 	if runner == nil {
 		runner = CommandGateRunner{}
 	}
+	label := fmt.Sprintf("%d/%d — running Gates (attempt %d)", iteration, params.projectConfig.Loop.MaxIterations, attemptNumber)
+	span, err := startActivitySpan(
+		params.runState, params.output, harnessOutputMode(params.verbose, params.raw), params.clock,
+		iteration, runrecord.Gating, label,
+	)
+	if err != nil {
+		return gateAttemptFeedback{}, "", false, err
+	}
 	result := runner.Run(ctx, scriptPath, params.workRoot, params.branchPoint)
 	summary := parseGateSummary(result.Output)
 	green := gateAttemptIsGreen(result, summary)
@@ -241,16 +249,21 @@ func recordGateAttempt(
 		Green: green, Output: result.Output,
 	})
 	if err != nil {
-		return gateAttemptFeedback{}, "", false, fmt.Errorf("record Gate attempt: %w", err)
+		err = fmt.Errorf("record Gate attempt: %w", err)
+		return gateAttemptFeedback{}, "", false, span.finish(ctx, err)
 	}
 	if err := ctx.Err(); err != nil {
-		return gateAttemptFeedback{}, paths.Result, green, err
+		return gateAttemptFeedback{}, paths.Result, green, span.finish(ctx, err)
 	}
 	feedback := gateAttemptFeedback{
 		resultsAvailable: summary.valid, results: summary.results,
 		outputPath: paths.Output, exitStatus: result.ExitStatus,
 	}
-	return feedback, paths.Result, green, nil
+	outcome := activitySpanRed
+	if green {
+		outcome = activitySpanGreen
+	}
+	return feedback, paths.Result, green, span.finishWithOutcome(ctx, nil, outcome)
 }
 
 func gateScriptPath(script branchGateScript) string {

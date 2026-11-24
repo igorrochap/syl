@@ -64,6 +64,16 @@ func TestWriteAndReadRoundTrip(t *testing.T) {
 	}
 }
 
+func TestReadMapsLegacyVerifyingActivityToGating(t *testing.T) {
+	state, err := Read(filepath.Join("testdata", "legacy-verifying-run-state.json"))
+	if err != nil {
+		t.Fatalf("Read() error = %v", err)
+	}
+	if state.Activity != Gating {
+		t.Fatalf("Activity = %q, want %q", state.Activity, Gating)
+	}
+}
+
 func TestWriteReplacesStateAtomically(t *testing.T) {
 	runDir := t.TempDir()
 	path := Path(runDir)
