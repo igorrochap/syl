@@ -52,7 +52,7 @@ type HarnessOutputMode uint8
 const (
 	ParsedHarnessOutput HarnessOutputMode = iota
 	RawHarnessOutput
-	QuietHarnessOutput
+	ProgressHarnessOutput
 )
 
 type ReviewOptions struct {
@@ -73,6 +73,7 @@ type ReviewOptions struct {
 	Notifier             Notifier
 	Git                  GitRunner
 	IdentificationBanner func() error
+	Clock                ui.Clock
 }
 
 type reviewPreparation struct {
@@ -210,30 +211,32 @@ func runStandaloneReview(ctx context.Context, options ReviewOptions, preparation
 	notifier = withNotificationContext(notifier, options.OriginRoot, options.Git)
 	questions := NewQuestionHandler(options.Input, options.Output, options.TicketRef, notifier, preparation.runState)
 	preparation.runState.setIteration(1)
-	preparation.runState.setActivity(runrecord.Reviewing)
-	mode := QuietHarnessOutput
-	if options.Verbose {
-		mode = ParsedHarnessOutput
-	}
-	if options.Raw {
-		mode = RawHarnessOutput
-	}
-	if !options.Raw {
+	mode := harnessOutputMode(options.Verbose, options.Raw)
+	if mode == ParsedHarnessOutput {
 		if err := writeRoleSection(options.Output, "Reviewer"); err != nil {
 			return standaloneReviewRun{}, fmt.Errorf("write review role: %w", err)
 		}
 	}
-	startedAt := time.Now().UTC()
+	span, err := startRoleActivitySpan(
+		preparation.runState, options.Output, mode, options.Clock, 0, runrecord.Reviewing, "reviewing",
+	)
+	if err != nil {
+		return standaloneReviewRun{}, err
+	}
+	questions.setActivitySpan(span.view)
+	defer questions.setActivitySpan(nil)
+	startedAt := span.start.StartedAt
 	review, err := runReview(ctx, options.Adapter, harness.Request{
 		Completion: harness.CompletionReviewVerdict,
 		Model:      options.ProjectConfig.Roles.Review.Model, Effort: options.ProjectConfig.Roles.Review.Effort,
 		Prompt: prompt, MCP: options.ProjectConfig.Roles.Review.MCP,
 		SandboxMode: options.ProjectConfig.Roles.Review.SandboxMode,
-	}, options.Output, mode, questions)
-	endedAt := time.Now().UTC()
+	}, options.Output, mode, questions, span.view)
+	endErr := span.finish(ctx, err)
+	endedAt := spanNow(options.Clock)
 	run := standaloneReviewRun{review: review, startedAt: startedAt, endedAt: endedAt}
-	if err != nil {
-		return run, err
+	if endErr != nil {
+		return run, endErr
 	}
 	run.review.Verdict = verifyVerdictLocations(options.WorkRoot, run.review.Verdict)
 	return run, nil
@@ -349,8 +352,8 @@ func prepareReviewWithOpener(
 	return reviewPreparation{branchPoint: branchPoint, diffPath: diffPath, protectedPaths: protectedPathsInDiff(diff, options.ProjectConfig.Gate.ProtectedPaths), recorder: recorder, runState: runState}, nil
 }
 
-func runReview(ctx context.Context, adapter harness.Adapter, request harness.Request, output io.Writer, mode HarnessOutputMode, questions *QuestionHandler) (ReviewExecution, error) {
-	return RunReviewExecutionWithProgress(ctx, adapter, request, output, mode, questions)
+func runReview(ctx context.Context, adapter harness.Adapter, request harness.Request, output io.Writer, mode HarnessOutputMode, questions *QuestionHandler, span *ui.ActivitySpanView) (ReviewExecution, error) {
+	return RunReviewExecutionWithActivitySpan(ctx, adapter, request, output, mode, questions, span)
 }
 
 func recordStandaloneReviewArtifacts(recorder RunRecorder, review ReviewExecution) error {
@@ -367,12 +370,13 @@ func RunReviewExecution(ctx context.Context, adapter harness.Adapter, request ha
 	return runReviewExecution(ctx, adapter, request, output, mode, questions, nil)
 }
 
-func RunReviewExecutionWithProgress(ctx context.Context, adapter harness.Adapter, request harness.Request, output io.Writer, mode HarnessOutputMode, questions *QuestionHandler) (ReviewExecution, error) {
-	visibleOutput := newLiveHarnessOutput(output, mode, "review")
+// RunReviewExecutionWithActivitySpan runs a review Role while updating its shared Activity span view.
+func RunReviewExecutionWithActivitySpan(ctx context.Context, adapter harness.Adapter, request harness.Request, output io.Writer, mode HarnessOutputMode, questions *QuestionHandler, span *ui.ActivitySpanView) (ReviewExecution, error) {
+	visibleOutput := newLiveHarnessOutput(output, mode, "review", span)
 	if mode == RawHarnessOutput {
 		return runReviewExecution(ctx, adapter, request, visibleOutput, mode, questions, nil)
 	}
-	progress := newReviewProgressWriter(visibleOutput)
+	progress := newReviewProgressWriter(visibleOutput, mode)
 	return runReviewExecution(ctx, adapter, request, progress, mode, questions, progress)
 }
 
@@ -399,6 +403,7 @@ type reviewResumeOptions struct {
 	output       io.Writer
 	mode         HarnessOutputMode
 	questions    *QuestionHandler
+	span         *ui.ActivitySpanView
 }
 
 func runReviewExecution(ctx context.Context, adapter harness.Adapter, request harness.Request, output io.Writer, mode HarnessOutputMode, questions *QuestionHandler, turnOutput reviewTurnOutput) (ReviewExecution, error) {
@@ -418,11 +423,11 @@ func runReviewExecution(ctx context.Context, adapter harness.Adapter, request ha
 func runReviewExecutionWithResumeFallback(ctx context.Context, adapter harness.Adapter, options reviewResumeOptions) (ReviewExecution, error) {
 	sessionID, hasSession := normalizeSessionID(options.sessionID)
 	if !hasSession {
-		return RunReviewExecutionWithProgress(ctx, adapter, options.request, options.output, options.mode, options.questions)
+		return RunReviewExecutionWithActivitySpan(ctx, adapter, options.request, options.output, options.mode, options.questions, options.span)
 	}
 
-	visibleOutput := newLiveHarnessOutput(options.output, options.mode, "review")
-	progress := newReviewProgressWriter(visibleOutput)
+	visibleOutput := newLiveHarnessOutput(options.output, options.mode, "review", options.span)
+	progress := newReviewProgressWriter(visibleOutput, options.mode)
 	resumeRequest := options.request
 	resumeRequest.Prompt = options.resumePrompt
 	review, err := runReviewExecutionFrom(ctx, adapter, reviewExecutionOptions{

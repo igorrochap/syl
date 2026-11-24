@@ -56,7 +56,7 @@ func TestRunReviewExecutionRecoversStalledSessionWithFinishedSubagentReports(t *
 	}
 
 	review, err := RunReviewExecution(
-		context.Background(), adapter, harness.Request{Prompt: "original review"}, io.Discard, QuietHarnessOutput, nil,
+		context.Background(), adapter, harness.Request{Prompt: "original review"}, io.Discard, ProgressHarnessOutput, nil,
 	)
 	if err != nil {
 		t.Fatalf("RunReviewExecution() error = %v", err)
@@ -107,7 +107,7 @@ func TestRunReviewExecutionFailsWhenStalledRecoveryAlsoStalls(t *testing.T) {
 		resumeWaitErrors: []error{secondStall},
 	}
 
-	review, err := RunReviewExecution(context.Background(), adapter, harness.Request{}, io.Discard, QuietHarnessOutput, nil)
+	review, err := RunReviewExecution(context.Background(), adapter, harness.Request{}, io.Discard, ProgressHarnessOutput, nil)
 	if err == nil || !strings.Contains(err.Error(), "no-progress limit") || !strings.Contains(err.Error(), "second session summary") {
 		t.Fatalf("RunReviewExecution() error = %v, want second no-progress limit and session summary", err)
 	}
@@ -146,7 +146,7 @@ func TestRunReviewExecutionResumesAfterNoProgressLimit(t *testing.T) {
 		runWaitErrors: []error{stall},
 	}
 
-	review, err := RunReviewExecution(context.Background(), adapter, harness.Request{}, io.Discard, QuietHarnessOutput, nil)
+	review, err := RunReviewExecution(context.Background(), adapter, harness.Request{}, io.Discard, ProgressHarnessOutput, nil)
 	if err != nil {
 		t.Fatalf("RunReviewExecution() error = %v", err)
 	}
@@ -197,7 +197,7 @@ func TestRunReviewExecutionFallsBackWhenStalledSessionResumeCannotStart(t *testi
 		resumeStartErrors: []error{errors.New("session is unavailable")},
 	}
 
-	review, err := RunReviewExecution(context.Background(), adapter, harness.Request{Prompt: "original review"}, io.Discard, QuietHarnessOutput, nil)
+	review, err := RunReviewExecution(context.Background(), adapter, harness.Request{Prompt: "original review"}, io.Discard, ProgressHarnessOutput, nil)
 	if err != nil {
 		t.Fatalf("RunReviewExecution() error = %v", err)
 	}
@@ -317,7 +317,7 @@ func TestRunReviewExecutionRecoversWhenVerdictReaskStalls(t *testing.T) {
 		resumeWaitErrors: []error{stall, nil},
 	}
 
-	review, err := RunReviewExecution(context.Background(), adapter, harness.Request{}, io.Discard, QuietHarnessOutput, nil)
+	review, err := RunReviewExecution(context.Background(), adapter, harness.Request{}, io.Discard, ProgressHarnessOutput, nil)
 	if err != nil {
 		t.Fatalf("RunReviewExecution() error = %v, want recovery after stalled verdict re-ask", err)
 	}
@@ -613,6 +613,9 @@ func TestRunReviewExecutionRawOutputStillForwardsBothHarnessLines(t *testing.T) 
 	}
 	if review.Transcript != conversationTestVerdict {
 		t.Fatalf("transcript = %q, want one assistant message", review.Transcript)
+	}
+	if got, want := review.Feed, deltaRaw+resultRaw; got != want {
+		t.Fatalf("raw feed = %q, want unchanged harness lines %q", got, want)
 	}
 }
 

@@ -36,6 +36,7 @@ func TestReviewOutputMatchesPlainAndStyledGolden(t *testing.T) {
 				{Type: harness.EventAssistantText, Text: "Done.\n" + approveVerdictText},
 			}}
 			fixture := newReviewFixture(t, harness)
+			fixture.app.deps.Clock = fixedActivityClock{}
 			var output io.Writer = &strings.Builder{}
 			if test.styled {
 				output = newStyledTerminalCapture(t)
@@ -46,6 +47,41 @@ func TestReviewOutputMatchesPlainAndStyledGolden(t *testing.T) {
 			}
 			actual := output.(interface{ String() string }).String()
 			assertCLIGolden(t, test.name+"-review.golden", []byte(actual))
+		})
+	}
+}
+
+func TestReviewDefaultOutputMatchesPlainAndStyledGolden(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		styled bool
+	}{
+		{name: "plain"},
+		{name: "styled", styled: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if test.styled {
+				t.Setenv("NO_COLOR", "")
+			} else {
+				t.Setenv("NO_COLOR", "1")
+			}
+			harness := &scriptedHarness{first: []harness.Event{
+				{Type: harness.EventSession, SessionID: "review-session"},
+				{Type: harness.EventAssistantText, Text: "Reviewer internal prose.\n"},
+				{Type: harness.EventToolUse, ToolName: "Bash", ArgumentGist: `{"command":"cat review.diff"}`},
+				{Type: harness.EventAssistantText, Text: "Done.\n" + approveVerdictText},
+			}}
+			fixture := newReviewFixture(t, harness)
+			fixture.app.deps.Clock = fixedActivityClock{}
+			var output io.Writer = &strings.Builder{}
+			if test.styled {
+				output = newStyledTerminalCapture(t)
+			}
+			code := fixture.app.Run(context.Background(), []string{"review"}, output, &fixture.stderr)
+			if code != 0 {
+				t.Fatalf("review code = %d, stderr = %q", code, fixture.stderr.String())
+			}
+			assertCLIGolden(t, test.name+"-default-review.golden", []byte(output.(interface{ String() string }).String()))
 		})
 	}
 }
@@ -414,7 +450,7 @@ func TestReviewReportsDiffComputationFailureBeforeRunningHarness(t *testing.T) {
 	}
 }
 
-func TestReviewTopSeamQuietSuppressesToolCalls(t *testing.T) {
+func TestReviewDefaultShowsActivitySpansWithoutProseOrTools(t *testing.T) {
 	harness := &scriptedHarness{first: []harness.Event{
 		{Type: harness.EventSession, SessionID: "session-quiet"},
 		{Type: harness.EventAssistantText, Text: "Reviewer internal prose.\n"},
@@ -428,11 +464,15 @@ func TestReviewTopSeamQuietSuppressesToolCalls(t *testing.T) {
 		t.Fatalf("review code = %d, stderr = %q", code, fixture.stderr.String())
 	}
 	output := fixture.stdout.String()
-	if !strings.Contains(output, "Reviewer internal prose.") || !strings.Contains(output, "VERDICT: approve") {
-		t.Fatalf("stdout = %q, want assistant prose and rendered verdict", output)
+	for _, expected := range []string{"starting reviewing", "finished reviewing — completed (", "VERDICT: approve"} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("stdout = %q, want %q", output, expected)
+		}
 	}
-	if strings.Contains(output, "tool: Bash — {\"command\":\"cat review.diff\"}") {
-		t.Fatalf("stdout = %q, want tool call suppressed", output)
+	for _, suppressed := range []string{"Reviewer internal prose.", "tool: Bash — {\"command\":\"cat review.diff\"}"} {
+		if strings.Contains(output, suppressed) {
+			t.Fatalf("stdout = %q, want %q suppressed", output, suppressed)
+		}
 	}
 }
 

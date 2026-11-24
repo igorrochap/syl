@@ -27,7 +27,7 @@ func TestLineTrackingWritersTrackLineBoundaries(t *testing.T) {
 		t.Fatal("lineTrackingWriter.AtLineStart() = false after newline")
 	}
 
-	progress := newReviewProgressWriter(&output)
+	progress := newReviewProgressWriter(&output, ParsedHarnessOutput)
 	if !progress.AtLineStart() {
 		t.Fatal("newReviewProgressWriter() starts mid-line, want line start")
 	}

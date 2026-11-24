@@ -151,9 +151,14 @@ func TestRunReviewSeparatesRenderedVerdictForOpaqueOutputWriter(t *testing.T) {
 		t.Fatalf("RunReview() error = %v, want nil", err)
 	}
 
-	want := "Reviewer prose.\nVERDICT: approve\nSUMMARY: Ready\nFINDINGS:\n- (none)\n"
-	if output.value.String() != want {
-		t.Fatalf("standalone review output = %q, want %q", output.value.String(), want)
+	got := output.value.String()
+	for _, want := range []string{"starting reviewing", "Reviewer prose.", "finished reviewing — completed (", "VERDICT: approve", "SUMMARY: Ready"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("standalone review output = %q, want %q", got, want)
+		}
+	}
+	if strings.Contains(got, "1/1 — reviewing") {
+		t.Fatalf("standalone review output = %q, want no iteration prefix", got)
 	}
 }
 

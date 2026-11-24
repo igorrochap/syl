@@ -22,6 +22,8 @@ type RunRecorder interface {
 	RecordGateAttempt(iteration int, attempt runrecord.GateAttempt) (runrecord.GateAttemptPaths, error)
 	RecordNoGate(iteration int) (string, error)
 	RecordState(state runrecord.State)
+	RecordActivityStart(start runrecord.ActivitySpanStart) error
+	RecordActivityEnd(end runrecord.ActivitySpanEnd) error
 	RecordUsage(entry usage.Entry) error
 	RecordImplementTurn(iteration int, feed, transcript string) error
 	RecordImplementReviewFeed(iteration, turn int, feed string) (string, error)
@@ -132,6 +134,14 @@ func (recorder *diskRunRecorder) RecordState(state runrecord.State) {
 	if state.Status != runrecord.Running {
 		recorder.removeLiveRunMarker()
 	}
+}
+
+func (recorder *diskRunRecorder) RecordActivityStart(start runrecord.ActivitySpanStart) error {
+	return recorder.writer.AppendActivityStart(start)
+}
+
+func (recorder *diskRunRecorder) RecordActivityEnd(end runrecord.ActivitySpanEnd) error {
+	return recorder.writer.AppendActivityEnd(end)
 }
 
 func (recorder *diskRunRecorder) removeLiveRunMarker() {

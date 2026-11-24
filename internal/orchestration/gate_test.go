@@ -63,8 +63,17 @@ func TestImplementStartsNewTurnAfterRedGateWithinIterationThenReviews(t *testing
 	if len(reviewer.runRequests) != 1 || gateRunner.calls != 2 {
 		t.Fatalf("reviewer calls = %d, Gate calls = %d, want one review after two Gate attempts", len(reviewer.runRequests), gateRunner.calls)
 	}
-	if len(recorder.states) < 3 || recorder.states[2].Activity != runrecord.Verifying {
+	if len(recorder.states) < 4 || recorder.states[3].Activity != runrecord.Verifying {
 		t.Fatalf("state after implementer turn = %#v, want verifying", recorder.states)
+	}
+	var activityLabels []string
+	for _, event := range recorder.activities {
+		if event.Start != nil {
+			activityLabels = append(activityLabels, event.Start.Label)
+		}
+	}
+	if got, want := strings.Join(activityLabels, "|"), "1/1 — implementing|1/1 — addressing Gate failure|1/1 — reviewing"; got != want {
+		t.Fatalf("Activity labels = %q, want %q", got, want)
 	}
 	gateAttemptPrompt := implementer.resumeCalls[0].prompt
 	for _, want := range []string{"Failed Gates: tests (FAIL)", filepath.Join(recorder.dir, "iteration-01-gate-attempt-01.output.txt")} {
