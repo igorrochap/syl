@@ -901,6 +901,7 @@ func runImplementReview(ctx context.Context, params implementIterationsParams, r
 	params.questions.setActivitySpan(span.view)
 	defer params.questions.setActivitySpan(nil)
 	reviewOptions.span = span.view
+	reviewOptions.childSpans = span
 	reviewStartedAt := span.start.StartedAt
 	reviewResult, err := runReviewExecutionWithResumeFallback(ctx, params.reviewer, reviewOptions)
 	err = span.finish(ctx, err)
@@ -1069,12 +1070,15 @@ func runImplementTurn(
 	implementResult, err := runImplementRoleWithResumeFallback(
 		ctx,
 		params.implementer,
-		implementRequest,
-		turn.previousSession,
-		params.output,
-		turn.mode,
-		params.questions,
-		span.view,
+		implementExecutionOptions{
+			request:          implementRequest,
+			initialSessionID: turn.previousSession,
+			output:           params.output,
+			mode:             turn.mode,
+			questions:        params.questions,
+			span:             span.view,
+			childSpans:       span,
+		},
 	)
 	params.questions.setActivitySpan(nil)
 	err = span.finish(ctx, err)
@@ -1195,61 +1199,34 @@ type implementExecutionOptions struct {
 	mode             HarnessOutputMode
 	questions        *QuestionHandler
 	span             *ui.ActivitySpanView
+	childSpans       subagentEventSink
 	initialSessionID string
 	start            harnessStreamStarter
 }
 
-func runImplementRole(
-	ctx context.Context,
-	adapter harness.Adapter,
-	request harness.Request,
-	output io.Writer,
-	mode HarnessOutputMode,
-	questions *QuestionHandler,
-	span *ui.ActivitySpanView,
-) (implementExecution, error) {
-	return runImplementRoleFrom(ctx, adapter, implementExecutionOptions{
-		request:   request,
-		output:    output,
-		mode:      mode,
-		questions: questions,
-		span:      span,
-		start: func(runContext context.Context) (harness.Stream, error) {
-			return adapter.Run(runContext, request)
-		},
-	})
+func runImplementRole(ctx context.Context, adapter harness.Adapter, options implementExecutionOptions) (implementExecution, error) {
+	options.initialSessionID = ""
+	options.start = func(runContext context.Context) (harness.Stream, error) {
+		return adapter.Run(runContext, options.request)
+	}
+	return runImplementRoleFrom(ctx, adapter, options)
 }
 
-func runImplementRoleWithResumeFallback(
-	ctx context.Context,
-	adapter harness.Adapter,
-	request harness.Request,
-	sessionID string,
-	output io.Writer,
-	mode HarnessOutputMode,
-	questions *QuestionHandler,
-	span *ui.ActivitySpanView,
-) (implementExecution, error) {
-	sessionID, hasSession := normalizeSessionID(sessionID)
+func runImplementRoleWithResumeFallback(ctx context.Context, adapter harness.Adapter, options implementExecutionOptions) (implementExecution, error) {
+	sessionID, hasSession := normalizeSessionID(options.initialSessionID)
 	if !hasSession {
-		return runImplementRole(ctx, adapter, request, output, mode, questions, span)
+		return runImplementRole(ctx, adapter, options)
 	}
 
-	result, err := runImplementRoleFrom(ctx, adapter, implementExecutionOptions{
-		request:          request,
-		output:           output,
-		mode:             mode,
-		questions:        questions,
-		span:             span,
-		initialSessionID: sessionID,
-		start: func(runContext context.Context) (harness.Stream, error) {
-			stream, resumeErr := adapter.Resume(runContext, sessionID, request)
-			if resumeErr != nil {
-				return nil, &implementResumeError{cause: resumeErr}
-			}
-			return stream, nil
-		},
-	})
+	options.initialSessionID = sessionID
+	options.start = func(runContext context.Context) (harness.Stream, error) {
+		stream, resumeErr := adapter.Resume(runContext, sessionID, options.request)
+		if resumeErr != nil {
+			return nil, &implementResumeError{cause: resumeErr}
+		}
+		return stream, nil
+	}
+	result, err := runImplementRoleFrom(ctx, adapter, options)
 	if err == nil {
 		return result, nil
 	}
@@ -1258,7 +1235,7 @@ func runImplementRoleWithResumeFallback(
 	if !errors.As(err, &resumeErr) {
 		return result, err
 	}
-	fresh, freshErr := runImplementRole(ctx, adapter, request, output, mode, questions, span)
+	fresh, freshErr := runImplementRole(ctx, adapter, options)
 	if freshErr != nil {
 		return appendImplementExecutions(result, fresh), freshErr
 	}
@@ -1287,13 +1264,14 @@ func runImplementRoleFrom(
 	}
 	artifactOutput := newPlainHarnessOutput(&feed, options.mode)
 	result, err := runHarnessConversation(ctx, adapter, options.start, conversationOptions{
-		request:   options.request,
-		output:    visibleOutput,
-		artifact:  artifactOutput,
-		mode:      options.mode,
-		questions: options.questions,
-		role:      "implement",
-		sessionID: options.initialSessionID,
+		request:    options.request,
+		output:     visibleOutput,
+		artifact:   artifactOutput,
+		mode:       options.mode,
+		questions:  options.questions,
+		role:       "implement",
+		sessionID:  options.initialSessionID,
+		childSpans: options.childSpans,
 	})
 	if err != nil {
 		execution := implementExecution{
@@ -1350,13 +1328,14 @@ func recoverStalledImplementer(
 	recovery, err := runHarnessConversation(ctx, adapter, func(runContext context.Context) (harness.Stream, error) {
 		return adapter.Resume(runContext, sessionID, request)
 	}, conversationOptions{
-		request:   request,
-		output:    output,
-		artifact:  recoveryArtifact,
-		mode:      options.mode,
-		questions: options.questions,
-		role:      "implement",
-		sessionID: sessionID,
+		request:    request,
+		output:     output,
+		artifact:   recoveryArtifact,
+		mode:       options.mode,
+		questions:  options.questions,
+		role:       "implement",
+		sessionID:  sessionID,
+		childSpans: options.childSpans,
 	})
 	resumed := implementExecution{
 		Feed: recoveryFeed.String(), Transcript: recovery.Transcript, SessionIDs: recovery.SessionIDs,

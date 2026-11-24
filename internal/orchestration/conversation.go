@@ -17,13 +17,14 @@ const QuestionInputHelp = "When a harness asks a QUESTION, syl prints it as a bl
 type harnessStreamStarter func(context.Context) (harness.Stream, error)
 
 type conversationOptions struct {
-	request   harness.Request
-	output    io.Writer
-	artifact  io.Writer
-	mode      HarnessOutputMode
-	questions *QuestionHandler
-	sessionID string
-	role      string
+	request    harness.Request
+	output     io.Writer
+	artifact   io.Writer
+	mode       HarnessOutputMode
+	questions  *QuestionHandler
+	sessionID  string
+	role       string
+	childSpans subagentEventSink
 }
 
 type harnessEventRenderer interface {
@@ -291,6 +292,7 @@ func runHarnessConversation(ctx context.Context, adapter harness.Adapter, start 
 			options.artifact,
 			options.mode,
 			!known,
+			options.childSpans,
 		)
 		appendTranscript(&transcript, result.Transcript)
 		sessionIDs = append(sessionIDs, result.SessionIDs...)
@@ -370,7 +372,7 @@ func questionAnswerable(questions *QuestionHandler, sessionID string) error {
 }
 
 func consumeHarnessStream(stream harness.Stream, output io.Writer, mode HarnessOutputMode) (harnessStreamResult, error) {
-	return consumeHarnessStreamWithArtifact(stream, output, nil, mode, true)
+	return consumeHarnessStreamWithArtifact(stream, output, nil, mode, true, nil)
 }
 
 func consumeHarnessStreamWithArtifact(
@@ -379,6 +381,7 @@ func consumeHarnessStreamWithArtifact(
 	artifact io.Writer,
 	mode HarnessOutputMode,
 	captureSessionEvents bool,
+	childSpans subagentEventSink,
 ) (harnessStreamResult, error) {
 	startHarnessTurn(output)
 	var transcript strings.Builder
@@ -400,6 +403,7 @@ func consumeHarnessStreamWithArtifact(
 	options := streamEventOptions{
 		output: output, artifact: artifact, mode: mode, artifactMode: artifactMode,
 		parser: parser, pendingRaw: &pendingRaw, artifactPendingRaw: &artifactPendingRaw,
+		childSpans: childSpans,
 	}
 	if blocked, err := consumeHarnessEvents(events, stream, &state, options); err != nil {
 		return currentHarnessStreamResult(&state, sessionIDs), err
@@ -483,6 +487,7 @@ type streamEventOptions struct {
 	parser             *questionParser
 	pendingRaw         *[]harness.Event
 	artifactPendingRaw *[]harness.Event
+	childSpans         subagentEventSink
 }
 
 type harnessStreamState struct {
@@ -494,33 +499,93 @@ type harnessStreamState struct {
 }
 
 func (s *harnessStreamState) process(event harness.Event, options streamEventOptions) (bool, error) {
-	if s.captureSessionEvents && event.SessionID != "" {
-		*s.sessionIDs = append(*s.sessionIDs, event.SessionID)
-	}
+	s.captureSessionID(event)
 	useEventText := eventCarriesTranscriptText(event, s.assistantTextSeen)
 	parsed := questionParseResult{}
 	if useEventText {
 		parsed = options.parser.Feed(event.Text)
 	}
-	if err := renderHarnessEvent(options.output, options.mode, event, parsed, options.parser, options.pendingRaw); err != nil {
+	if err := processSubagentEvent(event, options.childSpans); err != nil {
 		return false, err
 	}
-	if options.artifact != nil {
-		if err := renderHarnessEvent(options.artifact, options.artifactMode, event, parsed, options.parser, options.artifactPendingRaw); err != nil {
-			return false, err
-		}
+	if err := s.renderEvent(event, parsed, options); err != nil {
+		return false, err
 	}
+	s.recordEventText(event, parsed, useEventText)
+	if parsed.Found {
+		s.question = parsed.Question
+		return true, nil
+	}
+	return false, harnessResultError(event)
+}
+
+func (s *harnessStreamState) captureSessionID(event harness.Event) {
+	if s.captureSessionEvents && event.SessionID != "" {
+		*s.sessionIDs = append(*s.sessionIDs, event.SessionID)
+	}
+}
+
+func (s *harnessStreamState) renderEvent(event harness.Event, parsed questionParseResult, options streamEventOptions) error {
+	if err := renderHarnessEvent(options.output, options.mode, event, parsed, options.parser, options.pendingRaw); err != nil {
+		return err
+	}
+	if options.artifact == nil {
+		return nil
+	}
+	return renderHarnessEvent(options.artifact, options.artifactMode, event, parsed, options.parser, options.artifactPendingRaw)
+}
+
+func (s *harnessStreamState) recordEventText(event harness.Event, parsed questionParseResult, useEventText bool) {
 	if useEventText {
 		s.transcript.WriteString(parsed.VisibleText)
 	}
 	if event.Type == harness.EventAssistantText {
 		s.assistantTextSeen = true
 	}
-	if parsed.Found {
-		s.question = parsed.Question
-		return true, nil
+}
+
+func processSubagentEvent(event harness.Event, spans subagentEventSink) error {
+	if spans == nil {
+		return nil
 	}
-	return false, harnessResultError(event)
+	switch event.Type {
+	case harness.EventSubagentStarted:
+		return processSubagentStarted(event, spans)
+	case harness.EventSubagentFinished:
+		return processSubagentFinished(event, spans)
+	case harness.EventToolUse:
+		processSubagentTool(event, spans)
+	}
+	return nil
+}
+
+func processSubagentStarted(event harness.Event, spans subagentEventSink) error {
+	id := strings.TrimSpace(event.SubagentID)
+	label := strings.TrimSpace(event.SubagentLabel)
+	if id == "" || label == "" {
+		return errors.New("record subagent start: id and label are required")
+	}
+	if err := spans.SubagentStarted(id, label); err != nil {
+		return fmt.Errorf("record subagent start: %w", err)
+	}
+	return nil
+}
+
+func processSubagentFinished(event harness.Event, spans subagentEventSink) error {
+	id := strings.TrimSpace(event.SubagentID)
+	if id == "" {
+		return nil
+	}
+	if err := spans.SubagentFinished(id); err != nil {
+		return fmt.Errorf("record subagent finish: %w", err)
+	}
+	return nil
+}
+
+func processSubagentTool(event harness.Event, spans subagentEventSink) {
+	if id := strings.TrimSpace(event.SubagentID); id != "" {
+		spans.SubagentTool(id, event.ToolName, event.ArgumentGist)
+	}
 }
 
 func eventCarriesTranscriptText(event harness.Event, assistantTextSeen bool) bool {
@@ -561,6 +626,9 @@ func pausesActivity(event harness.Event, parsed questionParseResult) bool {
 }
 
 func renderParsedHarnessEvent(output io.Writer, mode HarnessOutputMode, event harness.Event, parsed questionParseResult) error {
+	if event.Type == harness.EventToolUse && event.SubagentID != "" {
+		return nil
+	}
 	if mode == ProgressHarnessOutput {
 		if event.Type != harness.EventToolUse {
 			return nil

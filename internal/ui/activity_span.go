@@ -12,6 +12,26 @@ import (
 	"github.com/charmbracelet/x/term"
 )
 
+const activitySpanLiveChildLimit = 4
+
+const (
+	activityChildOutcomeCompleted = "completed"
+	activityChildOutcomeGreen     = "green"
+)
+
+type activitySpanChild struct {
+	id      string
+	label   string
+	gist    string
+	started time.Time
+	ended   time.Time
+	outcome string
+}
+
+func (child activitySpanChild) finished() bool {
+	return !child.ended.IsZero()
+}
+
 // ActivitySpanView renders one recorded Activity span in the terminal.
 type ActivitySpanView struct {
 	output   io.Writer
@@ -31,6 +51,8 @@ type ActivitySpanView struct {
 	renderedRows  int
 	label         string
 	gist          string
+	children      []activitySpanChild
+	childIndexes  map[string]int
 	started       time.Time
 	frame         int
 	stopCh        chan struct{}
@@ -97,6 +119,8 @@ func (view *ActivitySpanView) Start(label string, started time.Time) error {
 	view.active = true
 	view.label = label
 	view.gist = ""
+	view.children = nil
+	view.childIndexes = make(map[string]int)
 	view.started = started
 	view.frame = 0
 	view.anchored = false
@@ -113,6 +137,70 @@ func (view *ActivitySpanView) Start(label string, started time.Time) error {
 	view.mu.Unlock()
 	view.draw()
 	go view.run(stopCh, doneCh)
+	return nil
+}
+
+// SubagentStarted adds a child span under the open Activity span. The caller
+// supplies normalized child IDs and labels.
+func (view *ActivitySpanView) SubagentStarted(id, label string, started time.Time) error {
+	view.mu.Lock()
+	if !view.active {
+		view.mu.Unlock()
+		return fmt.Errorf("start child Activity span %q: parent Activity span is closed", label)
+	}
+	if _, exists := view.childIndexes[id]; exists {
+		view.mu.Unlock()
+		return fmt.Errorf("start child Activity span %q: id is already active", id)
+	}
+	view.childIndexes[id] = len(view.children)
+	view.children = append(view.children, activitySpanChild{id: id, label: label, started: started})
+	terminal := view.terminal
+	view.mu.Unlock()
+	if terminal == nil {
+		return view.writeLine("    starting " + label)
+	}
+	view.draw()
+	return nil
+}
+
+// SubagentTool updates the latest tool gist for one open child span.
+func (view *ActivitySpanView) SubagentTool(id, name, gist string) {
+	view.mu.Lock()
+	index, found := view.childIndexes[id]
+	if !view.active || !found || view.children[index].finished() {
+		view.mu.Unlock()
+		return
+	}
+	tool := strings.TrimSpace(name)
+	if detail := strings.TrimSpace(gist); detail != "" {
+		tool += " " + detail
+	}
+	view.children[index].gist = tool
+	view.mu.Unlock()
+	view.draw()
+}
+
+// SubagentFinished closes one child span and refreshes the live region.
+func (view *ActivitySpanView) SubagentFinished(id string, ended time.Time, outcome string) error {
+	view.mu.Lock()
+	index, found := view.childIndexes[id]
+	if !view.active || !found {
+		view.mu.Unlock()
+		return fmt.Errorf("finish child Activity span %q: no child span is open", id)
+	}
+	if view.children[index].finished() {
+		view.mu.Unlock()
+		return nil
+	}
+	view.children[index].ended = ended
+	view.children[index].outcome = outcome
+	child := view.children[index]
+	terminal := view.terminal
+	view.mu.Unlock()
+	if terminal == nil {
+		return view.writeLine(finishedChildEventLine(child))
+	}
+	view.draw()
 	return nil
 }
 
@@ -188,13 +276,14 @@ func (view *ActivitySpanView) End(ended time.Time, outcome string) error {
 		return fmt.Errorf("end Activity span: no span is active")
 	}
 	label, started := view.label, view.started
+	children := view.finishOpenChildrenLocked(ended, outcome)
 	view.active = false
 	stopCh, doneCh := view.stopCh, view.doneCh
 	terminal := view.terminal
 	view.mu.Unlock()
 
 	if terminal != nil {
-		view.finishTerminalSpan(stopCh, doneCh, label, started, ended, outcome)
+		view.finishTerminalSpan(stopCh, doneCh, label, started, ended, outcome, children)
 	} else {
 		if err := view.writeLine(fmt.Sprintf("finished %s — %s (%s)", label, outcome, formatElapsed(ended.Sub(started)))); err != nil {
 			return err
@@ -207,7 +296,18 @@ func (view *ActivitySpanView) End(ended time.Time, outcome string) error {
 	return writeErr
 }
 
-func (view *ActivitySpanView) finishTerminalSpan(stopCh chan struct{}, doneCh chan struct{}, label string, started, ended time.Time, outcome string) {
+func (view *ActivitySpanView) finishOpenChildrenLocked(ended time.Time, outcome string) []activitySpanChild {
+	for index := range view.children {
+		if view.children[index].finished() {
+			continue
+		}
+		view.children[index].ended = ended
+		view.children[index].outcome = outcome
+	}
+	return append([]activitySpanChild(nil), view.children...)
+}
+
+func (view *ActivitySpanView) finishTerminalSpan(stopCh chan struct{}, doneCh chan struct{}, label string, started, ended time.Time, outcome string, children []activitySpanChild) {
 	close(stopCh)
 	<-doneCh
 	view.renderMu.Lock()
@@ -218,44 +318,46 @@ func (view *ActivitySpanView) finishTerminalSpan(stopCh chan struct{}, doneCh ch
 	rowsBelow, outputColumn, renderedRows := view.rowsBelow, view.outputColumn, view.renderedRows
 	view.mu.Unlock()
 
-	line := terminalActivitySpanLine(label, ended.Sub(started), outcome)
-	if view.caps.Width > 0 {
-		line = truncateDisplayWidth(line, view.caps.Width)
-	}
+	lines := permanentActivitySpanLines(label, started, ended, outcome, children)
+	lines = truncateActivitySpanLines(lines, view.caps.Width)
 	if view.caps.Color {
-		line = activitySpanLabelStyle.Render(line)
+		lines = styleActivitySpanFrame(lines, 0)
 	}
 	if !anchored {
-		view.finishUnanchoredTerminalSpan(line, renderedRows)
+		view.finishUnanchoredTerminalSpan(lines, renderedRows)
 		return
 	}
-	view.finishAnchoredTerminalSpan(line, anchorVisible, rowsBelow, outputColumn, renderedRows)
+	view.finishAnchoredTerminalSpan(lines, anchorVisible, rowsBelow, outputColumn, renderedRows)
 }
 
-func (view *ActivitySpanView) finishUnanchoredTerminalSpan(line string, renderedRows int) {
-	value := cursorUp(max(0, renderedRows-1)) + "\r\x1b[K" + line + "\n"
-	if renderedRows > 1 {
+func (view *ActivitySpanView) finishUnanchoredTerminalSpan(lines []string, renderedRows int) {
+	value := cursorUp(max(0, renderedRows-1)) + "\r\x1b[K" + strings.Join(lines, "\n\r\x1b[K") + "\n"
+	for range max(0, renderedRows-len(lines)) {
 		value += "\r\x1b[K"
 	}
 	view.recordWriteError(view.writeTerminal(value))
 }
 
-func (view *ActivitySpanView) finishAnchoredTerminalSpan(line string, anchorVisible bool, rowsBelow, outputColumn, renderedRows int) {
+func (view *ActivitySpanView) finishAnchoredTerminalSpan(lines []string, anchorVisible bool, rowsBelow, outputColumn, renderedRows int) {
 	if !anchorVisible {
 		lineBreak := ""
 		if outputColumn != 0 {
 			lineBreak = "\r\n"
 		}
-		view.recordWriteError(view.writeTerminal(lineBreak + line + "\n"))
+		view.recordWriteError(view.writeTerminal(lineBreak + strings.Join(lines, "\n") + "\n"))
 		return
 	}
-	value := cursorUp(rowsBelow) + "\r\x1b[K" + line
-	clearedRows := 0
-	if renderedRows > 1 {
-		value += "\n\r\x1b[K"
-		clearedRows = 1
+	extraRows := max(0, len(lines)-renderedRows)
+	value := ""
+	if extraRows > 0 {
+		value += cursorUp(max(0, rowsBelow-renderedRows)) + insertLines(extraRows) + cursorUp(renderedRows)
 	}
-	value += cursorDown(max(0, rowsBelow-clearedRows)) + "\r"
+	value += cursorUp(rowsBelow) + "\r\x1b[K" + strings.Join(lines, "\n\r\x1b[K")
+	clearedRows := max(0, renderedRows-len(lines))
+	for range clearedRows {
+		value += "\n\r\x1b[K"
+	}
+	value += cursorDown(max(0, rowsBelow+extraRows-max(len(lines), renderedRows)+1)) + "\r"
 	view.recordWriteError(view.writeTerminal(value))
 }
 
@@ -282,10 +384,11 @@ func (view *ActivitySpanView) draw() {
 		return
 	}
 	label, gist, started, frame := view.label, view.gist, view.started, view.frame
+	children := append([]activitySpanChild(nil), view.children...)
 	anchored, anchorVisible, rowsBelow, renderedRows := view.anchored, view.anchorVisible, view.rowsBelow, view.renderedRows
 	view.frame++
 	view.mu.Unlock()
-	lines := renderActivitySpanFrame(label, gist, view.clock.Now().Sub(started), frame, view.caps.Width)
+	lines := renderActivitySpanFrame(label, gist, view.clock.Now().Sub(started), frame, view.caps.Width, children, view.clock.Now())
 	if view.caps.Color {
 		lines = styleActivitySpanFrame(lines, frame)
 	}
@@ -297,7 +400,19 @@ func (view *ActivitySpanView) draw() {
 	}
 	var value string
 	if anchored {
-		value = anchoredActivityFrame(lines, renderedRows, rowsBelow)
+		extraRows := 0
+		if len(children) > 0 {
+			extraRows = max(0, len(lines)-renderedRows)
+		}
+		if extraRows > 0 {
+			outputRowsBelow := max(0, rowsBelow-renderedRows)
+			value = cursorUp(outputRowsBelow) + insertLines(extraRows) + cursorDown(outputRowsBelow+extraRows)
+			rowsBelow += extraRows
+			view.mu.Lock()
+			view.rowsBelow = rowsBelow
+			view.mu.Unlock()
+		}
+		value += anchoredActivityFrame(lines, renderedRows, rowsBelow)
 	} else {
 		value = unanchoredActivityFrame(lines, renderedRows)
 	}
@@ -308,27 +423,30 @@ func (view *ActivitySpanView) draw() {
 }
 
 func unanchoredActivityFrame(lines []string, previousRows int) string {
-	value := cursorUp(max(0, previousRows-1)) + "\r\x1b[K" + lines[0]
-	if len(lines) > 1 {
-		return value + "\n\r\x1b[K" + lines[1]
-	}
-	if previousRows > 1 {
-		return value + "\n\r\x1b[K" + cursorUp(1) + "\r"
+	value := cursorUp(max(0, previousRows-1)) + "\r\x1b[K" + strings.Join(lines, "\n\r\x1b[K")
+	if previousRows > len(lines) {
+		for range previousRows - len(lines) {
+			value += "\n\r\x1b[K"
+		}
+		return value + cursorUp(previousRows-len(lines)) + "\r"
 	}
 	return value
 }
 
 func anchoredActivityFrame(lines []string, previousRows, rowsBelow int) string {
-	value := cursorUp(rowsBelow) + "\r\x1b[K" + lines[0]
-	occupiedRows := 0
-	if len(lines) > 1 {
-		value += "\n\r\x1b[K" + lines[1]
-		occupiedRows = 1
-	} else if previousRows > 1 {
+	value := cursorUp(rowsBelow) + "\r\x1b[K" + strings.Join(lines, "\n\r\x1b[K")
+	occupiedRows := max(len(lines), previousRows) - 1
+	for row := len(lines); row < previousRows; row++ {
 		value += "\n\r\x1b[K"
-		occupiedRows = 1
 	}
 	return value + cursorDown(max(0, rowsBelow-occupiedRows)) + "\r"
+}
+
+func insertLines(count int) string {
+	if count <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("\x1b[%dL", count)
 }
 
 func (view *ActivitySpanView) recordWriteError(err error) {
@@ -482,7 +600,7 @@ func cursorDown(rows int) string {
 }
 
 func terminalActivitySpanLine(label string, duration time.Duration, outcome string) string {
-	if outcome != "completed" {
+	if outcome != activityChildOutcomeCompleted {
 		label += " — " + outcome
 	}
 	return fmt.Sprintf("%s (%s)", label, formatElapsed(duration))
@@ -506,7 +624,7 @@ func (view *ActivitySpanView) writeTerminal(value string) error {
 	return nil
 }
 
-func renderActivitySpanFrame(label, gist string, elapsed time.Duration, frame, width int) []string {
+func renderActivitySpanFrame(label, gist string, elapsed time.Duration, frame, width int, children []activitySpanChild, now time.Time) []string {
 	spinner := activityFrames[positiveModulo(frame, len(activityFrames))]
 	timeText := " (" + formatElapsed(elapsed) + ")"
 	labelPrefix := spinner + " "
@@ -518,26 +636,96 @@ func renderActivitySpanFrame(label, gist string, elapsed time.Duration, frame, w
 		label = truncateDisplayWidth(label, available)
 	}
 	lines := []string{labelPrefix + label + timeText}
-	if gist == "" {
+	if gist != "" {
+		lines = append(lines, truncateActivityLine("  └ "+gist, width))
+	}
+	visibleChildren, doneCount := liveActivityChildren(children)
+	for childIndex, child := range visibleChildren {
+		lines = append(lines, renderActivityChild(child, frame+childIndex, width, now))
+	}
+	if doneCount > 0 {
+		lines = append(lines, truncateActivityLine(fmt.Sprintf("    +%d done", doneCount), width))
+	}
+	return lines
+}
+
+func liveActivityChildren(children []activitySpanChild) ([]activitySpanChild, int) {
+	if len(children) <= activitySpanLiveChildLimit {
+		return children, 0
+	}
+	var open []activitySpanChild
+	doneCount := 0
+	for _, child := range children {
+		if child.finished() {
+			doneCount++
+			continue
+		}
+		open = append(open, child)
+	}
+	return open, doneCount
+}
+
+func renderActivityChild(child activitySpanChild, frame, width int, now time.Time) string {
+	if child.finished() {
+		return truncateActivityLine(finishedChildEventLine(child), width)
+	}
+	spinner := activityFrames[positiveModulo(frame, len(activityFrames))]
+	line := fmt.Sprintf("    %s %s", spinner, child.label)
+	if child.gist != "" {
+		line += " — " + child.gist
+	}
+	line += " (" + formatElapsed(now.Sub(child.started)) + ")"
+	return truncateActivityLine(line, width)
+}
+
+func truncateActivityLine(line string, width int) string {
+	if width <= 0 {
+		return line
+	}
+	return truncateDisplayWidth(line, width)
+}
+
+func permanentChildLine(child activitySpanChild) string {
+	return fmt.Sprintf("    - %s (%s)", child.label, formatElapsed(child.ended.Sub(child.started)))
+}
+
+func finishedChildEventLine(child activitySpanChild) string {
+	icon := "✓"
+	if !successfulActivityChildOutcome(child.outcome) {
+		icon = "×"
+	}
+	return fmt.Sprintf("    %s %s (%s)", icon, child.label, formatElapsed(child.ended.Sub(child.started)))
+}
+
+func successfulActivityChildOutcome(outcome string) bool {
+	return outcome == activityChildOutcomeCompleted || outcome == activityChildOutcomeGreen
+}
+
+func permanentActivitySpanLines(label string, started, ended time.Time, outcome string, children []activitySpanChild) []string {
+	lines := []string{terminalActivitySpanLine(label, ended.Sub(started), outcome)}
+	for _, child := range children {
+		lines = append(lines, permanentChildLine(child))
+	}
+	return lines
+}
+
+func truncateActivitySpanLines(lines []string, width int) []string {
+	if width <= 0 {
 		return lines
 	}
-	detailPrefix := "  └ "
-	if width > 0 {
-		available := width - lipgloss.Width(detailPrefix)
-		if available <= 0 {
-			return append(lines, truncateDisplayWidth(detailPrefix, width))
-		}
-		gist = truncateDisplayWidth(gist, available)
+	truncated := make([]string, len(lines))
+	for index, line := range lines {
+		truncated[index] = truncateDisplayWidth(line, width)
 	}
-	return append(lines, detailPrefix+gist)
+	return truncated
 }
 
 func styleActivitySpanFrame(lines []string, frame int) []string {
 	styled := append([]string(nil), lines...)
 	styled[0] = activitySpanLabelStyle.Render(styled[0])
-	if len(styled) > 1 {
-		tone := positiveModulo(frame/activityToneFrameCount, len(activityToneStyles))
-		styled[1] = activityToneStyles[tone].Render(styled[1])
+	for index := 1; index < len(styled); index++ {
+		tone := positiveModulo(frame/activityToneFrameCount+index-1, len(activityToneStyles))
+		styled[index] = activityToneStyles[tone].Render(styled[index])
 	}
 	return styled
 }

@@ -296,15 +296,35 @@ func isAgentTranscript(path string) bool {
 }
 
 func subagentIsFinished(path string) bool {
+	metadata, ok := readSubagentSpanMetadata(path)
+	return ok && metadata.Finished
+}
+
+type claudeSubagentMetadata struct {
+	Finished  bool
+	ToolUseID string
+}
+
+func readSubagentSpanMetadata(path string) (claudeSubagentMetadata, bool) {
 	metadataPath := strings.TrimSuffix(path, ".jsonl") + ".meta.json"
 	contents, err := os.ReadFile(metadataPath)
 	if err != nil {
-		return false
+		return claudeSubagentMetadata{}, false
 	}
-	var metadata struct {
-		Finished bool `json:"finished"`
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(contents, &fields); err != nil {
+		return claudeSubagentMetadata{}, false
 	}
-	return json.Unmarshal(contents, &metadata) == nil && metadata.Finished
+	var metadata claudeSubagentMetadata
+	for key, value := range fields {
+		switch strings.ToLower(strings.ReplaceAll(key, "_", "")) {
+		case "finished":
+			_ = json.Unmarshal(value, &metadata.Finished)
+		case "tooluseid":
+			_ = json.Unmarshal(value, &metadata.ToolUseID)
+		}
+	}
+	return metadata, true
 }
 
 func readFinalAssistantText(path string, limit int) (string, bool, error) {

@@ -13,6 +13,90 @@ import (
 
 const conversationTestVerdict = "VERDICT: approve\nSUMMARY: The working tree is ready\nFINDINGS:\n"
 
+func TestProcessSubagentEventNormalizesAndValidatesIdentifiers(t *testing.T) {
+	sink := &recordingSubagentEventSink{}
+	events := []harness.Event{
+		{Type: harness.EventSubagentStarted, SubagentID: " child-1 ", SubagentLabel: " Child review "},
+		{Type: harness.EventToolUse, SubagentID: " child-1 ", ToolName: "Read", ArgumentGist: "file.go"},
+		{Type: harness.EventSubagentFinished, SubagentID: " child-1 "},
+	}
+	for _, event := range events {
+		if err := processSubagentEvent(event, sink); err != nil {
+			t.Fatalf("process event %#v: %v", event, err)
+		}
+	}
+	if len(sink.started) != 1 || sink.started[0] != (recordingSubagentStart{id: "child-1", label: "Child review"}) {
+		t.Fatalf("started children = %#v, want normalized id and label", sink.started)
+	}
+	if len(sink.tools) != 1 || sink.tools[0] != (recordedSubagentTool{id: "child-1", name: "Read", gist: "file.go"}) {
+		t.Fatalf("tool events = %#v, want normalized child id", sink.tools)
+	}
+	if len(sink.finished) != 1 || sink.finished[0] != "child-1" {
+		t.Fatalf("finished child ids = %#v, want normalized id", sink.finished)
+	}
+}
+
+func TestProcessSubagentEventRejectsEmptyStartAndIgnoresEmptyFollowupIDs(t *testing.T) {
+	for _, event := range []harness.Event{
+		{Type: harness.EventSubagentStarted, SubagentID: " ", SubagentLabel: "Child"},
+		{Type: harness.EventSubagentStarted, SubagentID: "child-1", SubagentLabel: "\t"},
+	} {
+		t.Run("invalid start "+event.SubagentID+"/"+event.SubagentLabel, func(t *testing.T) {
+			sink := &recordingSubagentEventSink{}
+			if err := processSubagentEvent(event, sink); err == nil || !strings.Contains(err.Error(), "id and label are required") {
+				t.Fatalf("processSubagentEvent() error = %v, want empty id/label validation", err)
+			}
+			if len(sink.started) != 0 {
+				t.Fatalf("started children = %#v, want no start for invalid event", sink.started)
+			}
+		})
+	}
+
+	sink := &recordingSubagentEventSink{}
+	for _, event := range []harness.Event{
+		{Type: harness.EventSubagentFinished, SubagentID: " \t "},
+		{Type: harness.EventToolUse, SubagentID: "  ", ToolName: "Read", ArgumentGist: "file.go"},
+	} {
+		if err := processSubagentEvent(event, sink); err != nil {
+			t.Fatalf("process empty-id event %#v: %v", event, err)
+		}
+	}
+	if len(sink.finished) != 0 || len(sink.tools) != 0 {
+		t.Fatalf("empty-id follow-up events reached sink: finished=%#v tools=%#v", sink.finished, sink.tools)
+	}
+}
+
+type recordingSubagentStart struct {
+	id    string
+	label string
+}
+
+type recordedSubagentTool struct {
+	id   string
+	name string
+	gist string
+}
+
+type recordingSubagentEventSink struct {
+	started  []recordingSubagentStart
+	finished []string
+	tools    []recordedSubagentTool
+}
+
+func (sink *recordingSubagentEventSink) SubagentStarted(id, label string) error {
+	sink.started = append(sink.started, recordingSubagentStart{id: id, label: label})
+	return nil
+}
+
+func (sink *recordingSubagentEventSink) SubagentTool(id, name, gist string) {
+	sink.tools = append(sink.tools, recordedSubagentTool{id: id, name: name, gist: gist})
+}
+
+func (sink *recordingSubagentEventSink) SubagentFinished(id string) error {
+	sink.finished = append(sink.finished, id)
+	return nil
+}
+
 func TestRunReviewExecutionKeepsPartialOutputWhenHarnessWaitFails(t *testing.T) {
 	adapter := &failedConversationAdapter{
 		events: []harness.Event{

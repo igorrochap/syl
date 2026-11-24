@@ -226,12 +226,15 @@ func runStandaloneReview(ctx context.Context, options ReviewOptions, preparation
 	questions.setActivitySpan(span.view)
 	defer questions.setActivitySpan(nil)
 	startedAt := span.start.StartedAt
-	review, err := runReview(ctx, options.Adapter, harness.Request{
-		Completion: harness.CompletionReviewVerdict,
-		Model:      options.ProjectConfig.Roles.Review.Model, Effort: options.ProjectConfig.Roles.Review.Effort,
-		Prompt: prompt, MCP: options.ProjectConfig.Roles.Review.MCP,
-		SandboxMode: options.ProjectConfig.Roles.Review.SandboxMode,
-	}, options.Output, mode, questions, span.view)
+	review, err := runReviewExecutionWithActivitySpan(ctx, options.Adapter, reviewExecutionOptions{
+		request: harness.Request{
+			Completion: harness.CompletionReviewVerdict,
+			Model:      options.ProjectConfig.Roles.Review.Model, Effort: options.ProjectConfig.Roles.Review.Effort,
+			Prompt: prompt, MCP: options.ProjectConfig.Roles.Review.MCP,
+			SandboxMode: options.ProjectConfig.Roles.Review.SandboxMode,
+		},
+		output: options.Output, mode: mode, questions: questions, span: span.view, childSpans: span,
+	})
 	endErr := span.finish(ctx, err)
 	endedAt := spanNow(options.Clock)
 	run := standaloneReviewRun{review: review, startedAt: startedAt, endedAt: endedAt}
@@ -352,10 +355,6 @@ func prepareReviewWithOpener(
 	return reviewPreparation{branchPoint: branchPoint, diffPath: diffPath, protectedPaths: protectedPathsInDiff(diff, options.ProjectConfig.Gate.ProtectedPaths), recorder: recorder, runState: runState}, nil
 }
 
-func runReview(ctx context.Context, adapter harness.Adapter, request harness.Request, output io.Writer, mode HarnessOutputMode, questions *QuestionHandler, span *ui.ActivitySpanView) (ReviewExecution, error) {
-	return RunReviewExecutionWithActivitySpan(ctx, adapter, request, output, mode, questions, span)
-}
-
 func recordStandaloneReviewArtifacts(recorder RunRecorder, review ReviewExecution) error {
 	if err := recorder.RecordReviewOutput(0, review); err != nil {
 		return err
@@ -367,17 +366,21 @@ func recordStandaloneReviewArtifacts(recorder RunRecorder, review ReviewExecutio
 }
 
 func RunReviewExecution(ctx context.Context, adapter harness.Adapter, request harness.Request, output io.Writer, mode HarnessOutputMode, questions *QuestionHandler) (ReviewExecution, error) {
-	return runReviewExecution(ctx, adapter, request, output, mode, questions, nil)
+	return runReviewExecution(ctx, adapter, reviewExecutionOptions{
+		request: request, output: output, mode: mode, questions: questions,
+	})
 }
 
-// RunReviewExecutionWithActivitySpan runs a review Role while updating its shared Activity span view.
-func RunReviewExecutionWithActivitySpan(ctx context.Context, adapter harness.Adapter, request harness.Request, output io.Writer, mode HarnessOutputMode, questions *QuestionHandler, span *ui.ActivitySpanView) (ReviewExecution, error) {
-	visibleOutput := newLiveHarnessOutput(output, mode, "review", span)
-	if mode == RawHarnessOutput {
-		return runReviewExecution(ctx, adapter, request, visibleOutput, mode, questions, nil)
+func runReviewExecutionWithActivitySpan(ctx context.Context, adapter harness.Adapter, options reviewExecutionOptions) (ReviewExecution, error) {
+	visibleOutput := newLiveHarnessOutput(options.output, options.mode, "review", options.span)
+	options.output = visibleOutput
+	if options.mode == RawHarnessOutput {
+		return runReviewExecution(ctx, adapter, options)
 	}
-	progress := newReviewProgressWriter(visibleOutput, mode)
-	return runReviewExecution(ctx, adapter, request, progress, mode, questions, progress)
+	progress := newReviewProgressWriter(visibleOutput, options.mode)
+	options.output = progress
+	options.turnOutput = progress
+	return runReviewExecution(ctx, adapter, options)
 }
 
 type reviewTurnOutput interface {
@@ -390,10 +393,12 @@ type reviewExecutionOptions struct {
 	output           io.Writer
 	mode             HarnessOutputMode
 	questions        *QuestionHandler
+	span             *ui.ActivitySpanView
 	turnOutput       reviewTurnOutput
 	initialSessionID string
 	disableRecovery  bool
 	start            harnessStreamStarter
+	childSpans       subagentEventSink
 }
 
 type reviewResumeOptions struct {
@@ -404,26 +409,24 @@ type reviewResumeOptions struct {
 	mode         HarnessOutputMode
 	questions    *QuestionHandler
 	span         *ui.ActivitySpanView
+	childSpans   subagentEventSink
 }
 
-func runReviewExecution(ctx context.Context, adapter harness.Adapter, request harness.Request, output io.Writer, mode HarnessOutputMode, questions *QuestionHandler, turnOutput reviewTurnOutput) (ReviewExecution, error) {
-	return runReviewExecutionFrom(ctx, adapter, reviewExecutionOptions{
-		request:      request,
-		freshRequest: request,
-		output:       output,
-		mode:         mode,
-		questions:    questions,
-		turnOutput:   turnOutput,
-		start: func(runContext context.Context) (harness.Stream, error) {
-			return adapter.Run(runContext, request)
-		},
-	})
+func runReviewExecution(ctx context.Context, adapter harness.Adapter, options reviewExecutionOptions) (ReviewExecution, error) {
+	options.freshRequest = options.request
+	options.start = func(runContext context.Context) (harness.Stream, error) {
+		return adapter.Run(runContext, options.request)
+	}
+	return runReviewExecutionFrom(ctx, adapter, options)
 }
 
 func runReviewExecutionWithResumeFallback(ctx context.Context, adapter harness.Adapter, options reviewResumeOptions) (ReviewExecution, error) {
 	sessionID, hasSession := normalizeSessionID(options.sessionID)
 	if !hasSession {
-		return RunReviewExecutionWithActivitySpan(ctx, adapter, options.request, options.output, options.mode, options.questions, options.span)
+		return runReviewExecutionWithActivitySpan(ctx, adapter, reviewExecutionOptions{
+			request: options.request, output: options.output, mode: options.mode,
+			questions: options.questions, span: options.span, childSpans: options.childSpans,
+		})
 	}
 
 	visibleOutput := newLiveHarnessOutput(options.output, options.mode, "review", options.span)
@@ -437,6 +440,7 @@ func runReviewExecutionWithResumeFallback(ctx context.Context, adapter harness.A
 		mode:             options.mode,
 		questions:        options.questions,
 		turnOutput:       progress,
+		childSpans:       options.childSpans,
 		initialSessionID: sessionID,
 		start: func(runContext context.Context) (harness.Stream, error) {
 			stream, resumeErr := adapter.Resume(runContext, sessionID, resumeRequest)
@@ -464,6 +468,7 @@ func runReviewExecutionWithResumeFallback(ctx context.Context, adapter harness.A
 		mode:         options.mode,
 		questions:    options.questions,
 		turnOutput:   progress,
+		childSpans:   options.childSpans,
 		start: func(runContext context.Context) (harness.Stream, error) {
 			return adapter.Run(runContext, options.request)
 		},
@@ -497,13 +502,14 @@ func runReviewExecutionFrom(ctx context.Context, adapter harness.Adapter, option
 	var feed bytes.Buffer
 	artifactOutput := newPlainHarnessOutput(&feed, options.mode)
 	first, err := runHarnessConversation(ctx, adapter, options.start, conversationOptions{
-		request:   options.request,
-		output:    options.output,
-		artifact:  artifactOutput,
-		mode:      options.mode,
-		questions: options.questions,
-		role:      "review",
-		sessionID: options.initialSessionID,
+		request:    options.request,
+		output:     options.output,
+		artifact:   artifactOutput,
+		mode:       options.mode,
+		questions:  options.questions,
+		role:       "review",
+		sessionID:  options.initialSessionID,
+		childSpans: options.childSpans,
 	})
 	if err != nil {
 		return handleReviewConversationError(ctx, adapter, options, first, &feed, artifactOutput, err)
@@ -631,13 +637,14 @@ func recoverStalledReview(
 	request := options.request
 	request.Prompt = stalledReviewRecoveryPrompt(stalled.Reports, stalled.Limit)
 	retryOptions := conversationOptions{
-		request:   request,
-		output:    options.output,
-		artifact:  artifact,
-		mode:      options.mode,
-		questions: options.questions,
-		role:      "review",
-		sessionID: sessionID,
+		request:    request,
+		output:     options.output,
+		artifact:   artifact,
+		mode:       options.mode,
+		questions:  options.questions,
+		role:       "review",
+		sessionID:  sessionID,
+		childSpans: options.childSpans,
 	}
 	retry, retryErr := retryReviewDetails(ctx, adapter, retryOptions)
 	turnErr := endReviewTurn(options.turnOutput)
@@ -683,6 +690,7 @@ func rerunStalledReviewInFreshSession(
 		mode:            options.mode,
 		questions:       options.questions,
 		turnOutput:      options.turnOutput,
+		childSpans:      options.childSpans,
 		disableRecovery: true,
 		start: func(runContext context.Context) (harness.Stream, error) {
 			return adapter.Run(runContext, request)

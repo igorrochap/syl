@@ -33,6 +33,180 @@ func TestActivitySpanViewWritesStartAndEndLinesForRedirectedOutput(t *testing.T)
 	}
 }
 
+func TestActivitySpanViewPrintsChildEventsInTimeOrderWhenRedirected(t *testing.T) {
+	var output bytes.Buffer
+	started := time.Date(2026, 11, 24, 18, 0, 0, 0, time.UTC)
+	clock := &testClock{now: started}
+	span := NewActivitySpanView(&output, Caps{Width: 100}, clock, time.Second)
+	if err := span.Start("reviewing", started); err != nil {
+		t.Fatal(err)
+	}
+	if err := span.SubagentStarted("child-a", "Standards review", started); err != nil {
+		t.Fatal(err)
+	}
+	if err := span.SubagentStarted("child-b", "Spec review", started.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if err := span.SubagentFinished("child-b", started.Add(2*time.Second), "completed"); err != nil {
+		t.Fatal(err)
+	}
+	if err := span.SubagentFinished("child-a", started.Add(3*time.Second), "completed"); err != nil {
+		t.Fatal(err)
+	}
+	if err := span.End(started.Add(4*time.Second), "completed"); err != nil {
+		t.Fatal(err)
+	}
+
+	want := []string{
+		"starting reviewing",
+		"    starting Standards review",
+		"    starting Spec review",
+		"    ✓ Spec review (1.0s)",
+		"    ✓ Standards review (3.0s)",
+		"finished reviewing — completed (4.0s)",
+	}
+	got := strings.Split(strings.TrimSuffix(output.String(), "\n"), "\n")
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("Activity span output = %#v, want chronological child lines %#v", got, want)
+	}
+}
+
+func TestActivitySpanViewKeepsFinishedChildrenAndPrintsFinalTree(t *testing.T) {
+	previousTerminal := isTerminal
+	isTerminal = func(fd uintptr) bool { return fd == 42 }
+	t.Cleanup(func() { isTerminal = previousTerminal })
+	started := time.Date(2026, 11, 24, 18, 0, 0, 0, time.UTC)
+	clock := &testClock{now: started}
+	terminal := &testTerminal{}
+	span := NewActivitySpanView(terminal, Caps{Width: 100, Unicode: true}, clock, time.Second)
+	if err := span.Start("1/5 — reviewing", started); err != nil {
+		t.Fatal(err)
+	}
+	if err := span.SubagentStarted("standards", "Standards review", started); err != nil {
+		t.Fatal(err)
+	}
+	if err := span.SubagentStarted("spec", "Spec review", started.Add(10*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if err := span.SubagentFinished("spec", started.Add(2*time.Minute), "completed"); err != nil {
+		t.Fatal(err)
+	}
+	clock.now = started.Add(2*time.Minute + 31*time.Second)
+	span.SubagentTool("standards", "Read", "internal/ui/stream.go")
+	children := []activitySpanChild{
+		{id: "standards", label: "Standards review", gist: "Read internal/ui/stream.go", started: started},
+		{id: "spec", label: "Spec review", started: started.Add(10 * time.Second), ended: started.Add(2 * time.Minute), outcome: activityChildOutcomeCompleted},
+	}
+	live := renderActivitySpanFrame("1/5 — reviewing", "", 2*time.Minute+31*time.Second, 4, 100, children, clock.Now())
+	wantLive := []string{
+		"⠼ 1/5 — reviewing (2m31s)",
+		"    ⠼ Standards review — Read internal/ui/stream.go (2m31s)",
+		"    ✓ Spec review (1m50s)",
+	}
+	if strings.Join(live, "\n") != strings.Join(wantLive, "\n") {
+		t.Fatalf("live Activity golden = %#v, want %#v", live, wantLive)
+	}
+	wantLiveWrite := "\x1b[2A\r\x1b[K" + strings.Join(wantLive, "\n\r\x1b[K")
+	if got := terminal.String(); !strings.HasSuffix(got, wantLiveWrite) {
+		t.Fatalf("terminal live region = %q, want final frame %q", got, wantLiveWrite)
+	}
+
+	ended := started.Add(3*time.Minute + 2*time.Second)
+	if err := span.End(ended, "completed"); err != nil {
+		t.Fatal(err)
+	}
+	children[0].ended = ended
+	children[0].outcome = activityChildOutcomeCompleted
+	permanent := permanentActivitySpanLines("1/5 — reviewing", started, ended, activityChildOutcomeCompleted, children)
+	wantPermanent := []string{
+		"1/5 — reviewing (3m02s)",
+		"    - Standards review (3m02s)",
+		"    - Spec review (1m50s)",
+	}
+	if strings.Join(permanent, "\n") != strings.Join(wantPermanent, "\n") {
+		t.Fatalf("permanent Activity golden = %#v, want %#v", permanent, wantPermanent)
+	}
+	wantPermanentWrite := "\x1b[2A\r\x1b[K" + strings.Join(wantPermanent, "\n\r\x1b[K") + "\n"
+	if got := terminal.String(); !strings.HasSuffix(got, wantPermanentWrite) {
+		t.Fatalf("terminal permanent block = %q, want final block %q", got, wantPermanentWrite)
+	}
+}
+
+func TestActivitySpanLiveRegionCollapsesFinishedChildren(t *testing.T) {
+	started := time.Date(2026, 11, 24, 18, 0, 0, 0, time.UTC)
+	children := []activitySpanChild{
+		{id: "a", label: "Done A", started: started, ended: started.Add(time.Second), outcome: "completed"},
+		{id: "b", label: "Done B", started: started, ended: started.Add(time.Second), outcome: "completed"},
+		{id: "c", label: "Done C", started: started, ended: started.Add(time.Second), outcome: "completed"},
+		{id: "d", label: "Open D", gist: "Read file.go", started: started},
+		{id: "e", label: "Open E", started: started},
+	}
+	got := renderActivitySpanFrame("reviewing", "", time.Second, 0, 80, children, started.Add(5*time.Second))
+	want := []string{
+		"⠋ reviewing (1.0s)",
+		"    ⠋ Open D — Read file.go (5.0s)",
+		"    ⠙ Open E (5.0s)",
+		"    +3 done",
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("live Activity lines = %#v, want collapsed lines %#v", got, want)
+	}
+}
+
+func TestActivitySpanPermanentBlockIncludesCollapsedChildren(t *testing.T) {
+	previousTerminal := isTerminal
+	isTerminal = func(fd uintptr) bool { return fd == 42 }
+	t.Cleanup(func() { isTerminal = previousTerminal })
+	started := time.Date(2026, 11, 24, 18, 0, 0, 0, time.UTC)
+	clock := &testClock{now: started}
+	terminal := &testTerminal{}
+	span := NewActivitySpanView(terminal, Caps{Width: 100}, clock, time.Second)
+	if err := span.Start("reviewing", started); err != nil {
+		t.Fatal(err)
+	}
+	labels := []string{"Done A", "Done B", "Done C", "Open D", "Open E"}
+	for index, label := range labels {
+		if err := span.SubagentStarted(label, label, started.Add(time.Duration(index)*time.Second)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for index, label := range labels[:3] {
+		if err := span.SubagentFinished(label, started.Add(time.Duration(index+1)*time.Second), "completed"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := span.End(started.Add(20*time.Second), "completed"); err != nil {
+		t.Fatal(err)
+	}
+	children := make([]activitySpanChild, len(labels))
+	for index, label := range labels {
+		children[index] = activitySpanChild{label: label, started: started.Add(time.Duration(index) * time.Second)}
+		if index < 3 {
+			children[index].ended = started.Add(time.Duration(index+1) * time.Second)
+			children[index].outcome = activityChildOutcomeCompleted
+		} else {
+			children[index].ended = started.Add(20 * time.Second)
+			children[index].outcome = activityChildOutcomeCompleted
+		}
+	}
+	permanent := permanentActivitySpanLines("reviewing", started, started.Add(20*time.Second), activityChildOutcomeCompleted, children)
+	wantPermanent := []string{
+		"reviewing (20.0s)",
+		"    - Done A (1.0s)",
+		"    - Done B (1.0s)",
+		"    - Done C (1.0s)",
+		"    - Open D (17.0s)",
+		"    - Open E (16.0s)",
+	}
+	if strings.Join(permanent, "\n") != strings.Join(wantPermanent, "\n") {
+		t.Fatalf("permanent collapsed Activity golden = %#v, want %#v", permanent, wantPermanent)
+	}
+	wantPermanentWrite := "\x1b[3A\r\x1b[K" + strings.Join(wantPermanent, "\n\r\x1b[K") + "\n"
+	if got := terminal.String(); !strings.HasSuffix(got, wantPermanentWrite) {
+		t.Fatalf("terminal collapsed permanent block = %q, want final block %q", got, wantPermanentWrite)
+	}
+}
+
 func TestActivitySpanViewReadsMissingTerminalGeometry(t *testing.T) {
 	master, terminal, err := pty.Open()
 	if err != nil {
