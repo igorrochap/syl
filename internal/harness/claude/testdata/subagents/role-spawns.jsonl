@@ -1,0 +1,4 @@
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu-standards","name":"Task","input":{"description":"Standards review","prompt":"Review standards"}}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu-spec","name":"Agent","input":{"description":"Spec review","prompt":"Review ticket acceptance criteria"}}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu-standards","content":[{"type":"text","text":"Background agent launched"}]}]},"toolUseResult":{"status":"async_launched","agentId":"standards"}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu-spec","content":[{"type":"text","text":"Background agent launched"}]}]},"toolUseResult":{"status":"async_launched","agentId":"spec"}}

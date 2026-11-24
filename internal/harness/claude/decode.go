@@ -61,9 +61,77 @@ func attachSessionArgs(sessionID string, request harness.Request) ([]string, err
 
 type claudeContentBlock struct {
 	Type  string          `json:"type"`
+	ID    string          `json:"id"`
 	Name  string          `json:"name"`
 	Text  string          `json:"text"`
 	Input json.RawMessage `json:"input"`
+}
+
+func subagentToolLabel(input json.RawMessage) string {
+	var values struct {
+		Description string `json:"description"`
+		Prompt      string `json:"prompt"`
+	}
+	if err := json.Unmarshal(input, &values); err != nil {
+		return "sub-agent"
+	}
+	if label := normalizeSubagentLabel(values.Description); label != "" {
+		return label
+	}
+	if label := normalizeSubagentLabel(values.Prompt); label != "" {
+		return label
+	}
+	return "sub-agent"
+}
+
+func normalizeSubagentLabel(label string) string {
+	return strings.Join(strings.Fields(label), " ")
+}
+
+func subagentToolGist(input json.RawMessage) string {
+	var values map[string]string
+	if err := json.Unmarshal(input, &values); err != nil {
+		return argumentGist(input)
+	}
+	for _, key := range []string{"file_path", "path", "command", "pattern"} {
+		if value := strings.TrimSpace(values[key]); value != "" {
+			return value
+		}
+	}
+	return argumentGist(input)
+}
+
+func isSubagentTool(name string) bool {
+	return name == "Agent" || name == "Task"
+}
+
+func transcriptSubagentLink(raw json.RawMessage) (string, string) {
+	var value any
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return "", ""
+	}
+	fields := make(map[string]string)
+	collectTranscriptIdentifiers(value, fields)
+	return fields["agentid"], fields["tooluseid"]
+}
+
+func collectTranscriptIdentifiers(value any, fields map[string]string) {
+	switch value := value.(type) {
+	case map[string]any:
+		for key, nested := range value {
+			normalizedKey := strings.ToLower(strings.ReplaceAll(key, "_", ""))
+			if text, ok := nested.(string); ok && (normalizedKey == "agentid" || normalizedKey == "tooluseid") {
+				if fields[normalizedKey] == "" {
+					fields[normalizedKey] = strings.TrimSpace(text)
+				}
+			}
+			collectTranscriptIdentifiers(nested, fields)
+		}
+	case []any:
+		for _, nested := range value {
+			collectTranscriptIdentifiers(nested, fields)
+		}
+	}
 }
 
 func argumentGist(input json.RawMessage) string {

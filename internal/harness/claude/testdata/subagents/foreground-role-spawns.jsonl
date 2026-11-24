@@ -1,0 +1,2 @@
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu-foreground","name":"Agent","input":{"description":"Foreground standards review","prompt":"Review standards"}}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu-foreground","content":[{"type":"text","text":"Review complete"}]}]},"toolUseResult":{"status":"completed","agentId":"foreground"}}
