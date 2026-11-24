@@ -36,12 +36,18 @@ const (
 	Preparing Activity = "preparing"
 	// Implementing means the implementer Role is active.
 	Implementing Activity = "implementing"
-	// Verifying means syl is running the branch-point Gates.
-	Verifying Activity = "verifying"
+	// Gating means syl is running the branch-point Gates.
+	Gating Activity = "gating"
 	// Reviewing means the reviewer Role is active.
 	Reviewing Activity = "reviewing"
 	// AwaitingAnswer means the Run is paused for a user answer.
 	AwaitingAnswer Activity = "awaiting-answer"
+	// Committing means syl is creating the approved implementation commit.
+	Committing Activity = "committing"
+	// Pushing means syl is pushing the approved implementation branch.
+	Pushing Activity = "pushing"
+	// Publishing means syl is opening the pull request for the approved implementation.
+	Publishing Activity = "publishing"
 )
 
 // Kind identifies the command that created a Run.
@@ -140,6 +146,10 @@ func Parse(path string, contents []byte) (State, error) {
 	var state State
 	if err := json.Unmarshal(contents, &state); err != nil {
 		return State{}, fmt.Errorf("decode run state %s: %w", path, err)
+	}
+	// Run records written before the rename used "verifying" for this Activity.
+	if state.Activity == Activity("verifying") {
+		state.Activity = Gating
 	}
 	if err := validate(state); err != nil {
 		return State{}, fmt.Errorf("decode run state %s: %w", path, err)

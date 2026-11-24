@@ -91,7 +91,7 @@ The lifecycle outcome a Run records for itself: running, approved, exhausted (a 
 _Avoid_: result, state
 
 **Activity**:
-What a running Run is doing right now: preparing, implementing, verifying, reviewing, or awaiting-answer. When an Activity span is open and no question is pending, a Run's current Activity equals the Activity of its innermost open span; while a question is pending, the Activity is awaiting-answer and the Role span remains open. Distinct from Role — preparing, verifying, and awaiting-answer belong to no Role.
+What a running Run is doing right now: preparing, implementing, gating, reviewing, awaiting-answer, committing, pushing, or publishing. When an Activity span is open and no question is pending, a Run's current Activity equals the Activity of its innermost open span; while a question is pending, the Activity is awaiting-answer and the Role span remains open. Distinct from Role — preparing, gating, awaiting-answer, committing, pushing, and publishing belong to no Role.
 _Avoid_: stage, step, phase
 
 **Activity span**:

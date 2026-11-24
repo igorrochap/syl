@@ -878,10 +878,18 @@ var activityToneStyles = []lipgloss.Style{
 	newActivityToneStyle("#858585"),
 }
 
+var activitySpanLabelStyle = newActivitySpanLabelStyle()
+
 func newActivityToneStyle(color string) lipgloss.Style {
 	renderer := lipgloss.NewRenderer(io.Discard, termenv.WithProfile(termenv.TrueColor), termenv.WithUnsafe())
 	renderer.SetColorProfile(termenv.TrueColor)
 	return renderer.NewStyle().Foreground(lipgloss.Color(color))
+}
+
+func newActivitySpanLabelStyle() lipgloss.Style {
+	renderer := lipgloss.NewRenderer(io.Discard, termenv.WithProfile(termenv.TrueColor), termenv.WithUnsafe())
+	renderer.SetColorProfile(termenv.TrueColor)
+	return renderer.NewStyle().Bold(true).Foreground(lipgloss.Color("#7DD3FC"))
 }
 
 // renderActivityFrame produces one complete transient activity line. The
@@ -893,6 +901,10 @@ func renderActivityFrame(label, gist string, elapsed time.Duration, frameIndex i
 		line += " — " + shortGist(gist, 48)
 	}
 	line += " (" + formatElapsed(elapsed) + ")"
+	return renderActivityTone(line, frameIndex)
+}
+
+func renderActivityTone(line string, frameIndex int) string {
 	tone := positiveModulo(frameIndex/activityToneFrameCount, len(activityToneStyles))
 	return activityToneStyles[tone].Render(line)
 }
