@@ -24,7 +24,7 @@ func TestReadActivitiesReadsRunDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	events, err := ReadActivities(runDirectory)
+	events, err := ReadActivities(runDirectory, nil)
 	if err != nil {
 		t.Fatalf("ReadActivities() error = %v", err)
 	}
@@ -34,7 +34,7 @@ func TestReadActivitiesReadsRunDirectory(t *testing.T) {
 }
 
 func TestReadActivitiesReportsMissingLog(t *testing.T) {
-	_, err := ReadActivities(t.TempDir())
+	_, err := ReadActivities(t.TempDir(), nil)
 	if err == nil || !strings.Contains(err.Error(), "read Activity log") {
 		t.Fatalf("ReadActivities() error = %v, want Activity log read failure", err)
 	}

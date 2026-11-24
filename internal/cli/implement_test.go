@@ -2458,7 +2458,7 @@ func TestImplementWorktreeRunsSetupBeforeHarnessInWorktree(t *testing.T) {
 	if err != nil || len(runDirs) != 1 {
 		t.Fatalf("Run directories = %v, error = %v; want one Run", runDirs, err)
 	}
-	activities, err := runrecord.ReadActivities(runDirs[0])
+	activities, err := runrecord.ReadActivities(runDirs[0], nil)
 	if err != nil {
 		t.Fatalf("ReadActivities() error = %v", err)
 	}

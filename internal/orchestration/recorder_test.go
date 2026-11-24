@@ -1787,7 +1787,7 @@ func TestRunImplementPushFailureKeepsApprovedCommitAndPrintsRemainingCommands(t 
 		summary.Publication.Step != runrecord.PublicationStepPush || !strings.Contains(summary.Publication.Error, "push implementation branch") {
 		t.Fatalf("recorded publication = %#v, error = %v, want push failure details", summary.Publication, err)
 	}
-	activities, err := runrecord.ReadActivities(runDirs[0])
+	activities, err := runrecord.ReadActivities(runDirs[0], nil)
 	if err != nil {
 		t.Fatalf("ReadActivities() error = %v", err)
 	}

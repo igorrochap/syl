@@ -44,16 +44,12 @@ func startActivitySpan(
 	if err != nil {
 		return nil, err
 	}
-	span := &activitySpan{start: start, clock: clock, state: state}
-	if mode == RawHarnessOutput {
-		return span, nil
-	}
-	span.view = ui.NewActivitySpanView(output, ui.DetectCaps(output), clock, ui.DefaultActivityTickerInterval)
-	if err := span.view.Start(label, startedAt); err != nil {
+	view, err := startActivitySpanView(output, mode, clock, label, startedAt)
+	if err != nil {
 		_ = state.endActivitySpan(start.SpanID, activitySpanFailed, spanNow(clock))
 		return nil, err
 	}
-	return span, nil
+	return &activitySpan{start: start, view: view, clock: clock, state: state}, nil
 }
 
 func startUnrecordedActivitySpan(
@@ -63,17 +59,30 @@ func startUnrecordedActivitySpan(
 	label string,
 ) (*activitySpan, error) {
 	startedAt := spanNow(clock)
-	span := &activitySpan{clock: clock}
-	if mode == RawHarnessOutput {
-		span.start.StartedAt = startedAt
-		return span, nil
-	}
-	span.view = ui.NewActivitySpanView(output, ui.DetectCaps(output), clock, ui.DefaultActivityTickerInterval)
-	if err := span.view.Start(label, startedAt); err != nil {
+	view, err := startActivitySpanView(output, mode, clock, label, startedAt)
+	if err != nil {
 		return nil, err
 	}
-	span.start.StartedAt = startedAt
-	return span, nil
+	return &activitySpan{
+		start: runrecord.ActivitySpanStart{StartedAt: startedAt}, view: view, clock: clock,
+	}, nil
+}
+
+func startActivitySpanView(
+	output io.Writer,
+	mode HarnessOutputMode,
+	clock ui.Clock,
+	label string,
+	startedAt time.Time,
+) (*ui.ActivitySpanView, error) {
+	if mode == RawHarnessOutput {
+		return nil, nil
+	}
+	view := ui.NewActivitySpanView(output, ui.DetectCaps(output), clock, ui.DefaultActivityTickerInterval)
+	if err := view.Start(label, startedAt); err != nil {
+		return nil, err
+	}
+	return view, nil
 }
 
 func (span *activitySpan) finishUnrecorded(ctx context.Context, operationErr error) (activitySpanTiming, error) {

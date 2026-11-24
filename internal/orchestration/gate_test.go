@@ -148,7 +148,7 @@ func TestRunImplementPersistsGatingActivityWhileGateRuns(t *testing.T) {
 	if gateRunner.activity != runrecord.Gating {
 		t.Fatalf("Run state during Gate = %q, want gating", gateRunner.activity)
 	}
-	activities, err := runrecord.ReadActivities(runDirectory)
+	activities, err := runrecord.ReadActivities(runDirectory, nil)
 	if err != nil {
 		t.Fatalf("ReadActivities() error = %v", err)
 	}

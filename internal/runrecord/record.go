@@ -255,13 +255,16 @@ func (reader *Reader) readRecordFiles(record *Record, runDir string) error {
 		record.State = state
 		record.HasState = true
 	}
-	if contents, err := reader.files.ReadFile(filePath(runDir, activitiesFile)); err == nil {
-		activities, parseErr := ParseActivities(contents)
-		if parseErr != nil {
-			return parseErr
+	activities, err := ReadActivities(runDir, reader.files)
+	if err != nil {
+		var readError *activityLogReadError
+		if errors.As(err, &readError) {
+			// Optional Activity-log read failures retain the Reader's previous behavior.
+			return nil
 		}
-		record.Activities = activities
+		return err
 	}
+	record.Activities = activities
 	return nil
 }
 

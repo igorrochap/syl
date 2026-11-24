@@ -13,13 +13,29 @@ import (
 const activitiesFile = "activities.jsonl"
 
 // ReadActivities decodes the Activity log inside a Run directory.
-func ReadActivities(runDirectory string) ([]ActivityEvent, error) {
+func ReadActivities(runDirectory string, files FileSystem) ([]ActivityEvent, error) {
+	if files == nil {
+		files = osFileSystem{}
+	}
 	path := filepath.Join(runDirectory, activitiesFile)
-	contents, err := os.ReadFile(path)
+	contents, err := files.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("read Activity log %s: %w", path, err)
+		return nil, &activityLogReadError{path: path, err: err}
 	}
 	return ParseActivities(contents)
+}
+
+type activityLogReadError struct {
+	path string
+	err  error
+}
+
+func (readError *activityLogReadError) Error() string {
+	return fmt.Sprintf("read Activity log %s: %v", readError.path, readError.err)
+}
+
+func (readError *activityLogReadError) Unwrap() error {
+	return readError.err
 }
 
 // ActivityEventType identifies one append-only Activity log event.
