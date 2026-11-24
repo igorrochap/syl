@@ -154,6 +154,12 @@ func TestImplementLoopApprovesOnFirstIteration(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("implement code = %d, want 0; stderr = %q", code, fixture.stderr.String())
 	}
+	output := fixture.stdout.String()
+	preparingIndex := strings.Index(output, "finished preparing worktree — completed (")
+	implementingIndex := strings.Index(output, "starting 1/3 — implementing")
+	if preparingIndex < 0 || implementingIndex < 0 || preparingIndex >= implementingIndex {
+		t.Fatalf("Activity output = %q, want preparation span before direct-workroot implementation", output)
+	}
 
 	if got := gitOutput(t, fixture.root, "branch", "--show-current"); got != "feat/add-resilient-workflow" {
 		t.Fatalf("branch = %q, want feat/add-resilient-workflow", got)
@@ -193,6 +199,13 @@ func TestImplementLoopApprovesOnFirstIteration(t *testing.T) {
 	runDirs, err := filepath.Glob(filepath.Join(fixture.root, ".syl", "runs", "*-42"))
 	if err != nil || len(runDirs) != 1 {
 		t.Fatalf("run directories = %v, err = %v; want one issue artifact directory", runDirs, err)
+	}
+	activities, err := runrecord.ReadActivities(runDirs[0], nil)
+	if err != nil {
+		t.Fatalf("ReadActivities() error = %v", err)
+	}
+	if len(activities) == 0 || activities[0].Start == nil || activities[0].Start.Label != "preparing worktree" {
+		t.Fatalf("first Activity = %#v, want preparing worktree", activities)
 	}
 	for _, artifact := range []struct {
 		name string

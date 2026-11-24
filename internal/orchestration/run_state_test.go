@@ -236,17 +236,25 @@ func TestRunImplementRecordsRunStateLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read Run Activity log: %v", err)
 	}
-	if len(activityRecord.Activities) != 8 {
-		t.Fatalf("Activity log has %d events, want four start/end span pairs", len(activityRecord.Activities))
+	if len(activityRecord.Activities) != 10 {
+		t.Fatalf("Activity log has %d events, want preparation and four Role start/end span pairs", len(activityRecord.Activities))
+	}
+	preparationStart, preparationEnd := activityRecord.Activities[0], activityRecord.Activities[1]
+	if preparationStart.Type != runrecord.ActivityStart || preparationStart.Start == nil ||
+		preparationStart.Start.Activity != runrecord.Preparing || preparationStart.Start.Label != "preparing worktree" ||
+		preparationEnd.Type != runrecord.ActivityEnd || preparationEnd.End == nil ||
+		preparationEnd.End.SpanID != preparationStart.Start.SpanID || preparationEnd.End.Outcome != "completed" {
+		t.Fatalf("preparation Activity events = %#v, want completed preparing-worktree span", activityRecord.Activities[:2])
 	}
 	wantActivityLabels := []string{
 		"1/2 — implementing", "1/2 — reviewing", "2/2 — revising 1 finding(s)", "2/2 — reviewing",
 	}
 	for spanIndex, wantLabel := range wantActivityLabels {
-		start := activityRecord.Activities[spanIndex*2]
-		end := activityRecord.Activities[spanIndex*2+1]
+		start := activityRecord.Activities[(spanIndex+1)*2]
+		end := activityRecord.Activities[(spanIndex+1)*2+1]
 		if start.Type != runrecord.ActivityStart || start.Start == nil || end.Type != runrecord.ActivityEnd || end.End == nil {
-			t.Fatalf("Activity events for span %d = %#v, want start then end", spanIndex, activityRecord.Activities[spanIndex*2:spanIndex*2+2])
+			eventIndex := (spanIndex + 1) * 2
+			t.Fatalf("Activity events for span %d = %#v, want start then end", spanIndex, activityRecord.Activities[eventIndex:eventIndex+2])
 		}
 		if start.Start.Label != wantLabel || start.Start.ParentSpanID != "" || start.Start.Iteration == "" {
 			t.Errorf("Activity start %d = %#v, want label %q and loop metadata", spanIndex, *start.Start, wantLabel)
@@ -460,8 +468,8 @@ func TestRunImplementRecordsLifecycleThroughMemoryOpenRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunImplement() error = %v", err)
 	}
-	if len(recorder.states) != 10 {
-		t.Fatalf("recorded states = %#v, want span start/end states between workflow activities", recorder.states)
+	if len(recorder.states) != 12 {
+		t.Fatalf("recorded states = %#v, want preparation and span start/end states between workflow activities", recorder.states)
 	}
 	want := []struct {
 		activity  runrecord.Activity
@@ -469,6 +477,8 @@ func TestRunImplementRecordsLifecycleThroughMemoryOpenRun(t *testing.T) {
 		status    runrecord.Status
 	}{
 		{activity: runrecord.Preparing, status: runrecord.Running},
+		{activity: runrecord.Preparing, status: runrecord.Running},
+		{status: runrecord.Running},
 		{activity: runrecord.Implementing, iteration: 1, status: runrecord.Running},
 		{iteration: 1, status: runrecord.Running},
 		{activity: runrecord.Reviewing, iteration: 1, status: runrecord.Running},

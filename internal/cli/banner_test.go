@@ -47,8 +47,11 @@ func TestImplementPrintsIdentificationBannerWithResolvedConfigAndArtifacts(t *te
 		"  reviewer:        claude · claude-custom-reviewer · effort low\n" +
 		"  max iterations:  2\n" +
 		"  run artifacts:   " + relativeRunDir + "\n"
-	if got := fixture.stdout.String(); !strings.HasPrefix(got, wantPrefix) {
-		t.Fatalf("stdout = %q, want prefix %q", got, wantPrefix)
+	got := fixture.stdout.String()
+	preparationEnd := strings.Index(got, "finished preparing worktree — completed (")
+	banner := strings.Index(got, "syl implement #42 — Add resilient workflow")
+	if preparationEnd < 0 || banner < 0 || preparationEnd >= banner || !strings.HasPrefix(got[banner:], wantPrefix) {
+		t.Fatalf("stdout = %q, want preparation span before banner prefix %q", got, wantPrefix)
 	}
 }
 

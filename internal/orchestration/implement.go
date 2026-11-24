@@ -273,13 +273,35 @@ func prepareImplementRun(ctx context.Context, options ImplementOptions, originGi
 	if err := validateImplementOptions(options); err != nil {
 		return implementRunState{}, err
 	}
-	setup, err := prepareImplementWithPullRequestBase(
-		ctx, options.Git, originGit, options.IssueTracker, options.Ticket, options.PublishOnApprove,
+	preparationSpan, err := startUnrecordedActivitySpan(
+		options.Output, harnessOutputMode(options.Verbose, options.Raw), options.Clock, "preparing worktree",
 	)
 	if err != nil {
 		return implementRunState{}, err
 	}
-	return initializeImplementRun(options, setup)
+	setup, err := prepareImplementWithPullRequestBase(
+		ctx, options.Git, originGit, options.IssueTracker, options.Ticket, options.PublishOnApprove,
+	)
+	preparation, preparationErr := preparationSpan.finishUnrecorded(ctx, err)
+	if preparationErr != nil {
+		return implementRunState{}, preparationErr
+	}
+	return initializePreparedImplementRun(options, setup, preparation)
+}
+
+func initializePreparedImplementRun(
+	options ImplementOptions,
+	setup implementSetup,
+	preparation activitySpanTiming,
+) (implementRunState, error) {
+	run, err := initializeImplementRun(options, setup)
+	if err != nil {
+		return run, err
+	}
+	if err := recordActivitySpan(run.runState, 0, runrecord.Preparing, "preparing worktree", preparation); err != nil {
+		return run, fmt.Errorf("record worktree preparation Activity: %w", err)
+	}
+	return run, nil
 }
 
 func prepareImplementRunWithWorktree(
@@ -304,14 +326,7 @@ func prepareImplementRunWithWorktree(
 	if err := options.IssueTracker.UpdateStatus(ctx, options.Ticket.Number, "doing"); err != nil {
 		return implementRunState{}, fmt.Errorf("mark ticket #%d as doing: %w", options.Ticket.Number, err)
 	}
-	run, err := initializeImplementRun(options, setup)
-	if err != nil {
-		return run, err
-	}
-	if err := recordActivitySpan(run.runState, 0, runrecord.Preparing, "preparing worktree", preparation); err != nil {
-		return run, fmt.Errorf("record worktree preparation Activity: %w", err)
-	}
-	return run, nil
+	return initializePreparedImplementRun(options, setup, preparation)
 }
 
 func prepareImplementWorktree(ctx context.Context, options ImplementOptions) (activitySpanTiming, error) {
