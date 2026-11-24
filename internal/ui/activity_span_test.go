@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/creack/pty"
 )
 
 func TestActivitySpanViewWritesStartAndEndLinesForRedirectedOutput(t *testing.T) {
@@ -29,6 +30,28 @@ func TestActivitySpanViewWritesStartAndEndLinesForRedirectedOutput(t *testing.T)
 	lines := strings.Split(strings.TrimSuffix(got, "\n"), "\n")
 	if len(lines) != 2 || lines[0] != "starting 2/3 — revising 4 finding(s)" || lines[1] != "finished 2/3 — revising 4 finding(s) — completed (2m03s)" {
 		t.Fatalf("span lines = %#v, want one start and one outcome/duration line", lines)
+	}
+}
+
+func TestActivitySpanViewReadsMissingTerminalGeometry(t *testing.T) {
+	master, terminal, err := pty.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = master.Close()
+		_ = terminal.Close()
+	})
+	if err := pty.Setsize(terminal, &pty.Winsize{Cols: 80, Rows: 24}); err != nil {
+		t.Fatal(err)
+	}
+
+	view := NewActivitySpanView(terminal, Caps{}, nil, 0)
+	if view.caps.Width != 80 || view.caps.Height != 24 {
+		t.Fatalf("terminal geometry = %dx%d, want 80x24", view.caps.Width, view.caps.Height)
+	}
+	if view.interval != DefaultActivityTickerInterval {
+		t.Fatalf("ticker interval = %s, want default %s", view.interval, DefaultActivityTickerInterval)
 	}
 }
 
@@ -171,6 +194,36 @@ func TestActivitySpanDoesNotRedrawAfterVerboseOutputScrollsOffScreen(t *testing.
 	}
 	if !strings.Contains(got, "verbose output line\n") || !strings.HasSuffix(got, "verbose output line\nreviewing (1.0s)\n") {
 		t.Fatalf("terminal output = %q, want all verbose rows preserved and the permanent span appended", got)
+	}
+}
+
+func TestActivitySpanCountsWrappedVerboseOutput(t *testing.T) {
+	previousTerminal := isTerminal
+	isTerminal = func(fd uintptr) bool { return fd == 42 }
+	t.Cleanup(func() { isTerminal = previousTerminal })
+	clock := &testClock{now: time.Date(2026, 11, 23, 18, 0, 0, 0, time.UTC)}
+	terminal := &testTerminal{}
+	span := NewActivitySpanView(terminal, Caps{Width: 8, Height: 4}, clock, time.Second)
+	if err := span.Start("reviewing", clock.Now()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	span.Pause()
+	verboseOutput := strings.Repeat("abcdefgh", 4) + "xy"
+	if _, err := terminal.WriteString(verboseOutput); err != nil {
+		t.Fatal(err)
+	}
+	span.RecordOutput(verboseOutput)
+	span.Resume()
+	if err := span.End(clock.Now().Add(time.Second), "completed"); err != nil {
+		t.Fatalf("End() error = %v", err)
+	}
+
+	got := terminal.String()
+	if regexp.MustCompile(`\x1b\[[0-9]+A`).MatchString(got) {
+		t.Fatalf("terminal output = %q, want wrapped rows to detach the old span line", got)
+	}
+	if !strings.HasSuffix(got, verboseOutput+"\r\nreviewing (1.0s)\n") {
+		t.Fatalf("terminal output = %q, want permanent line after wrapped output", got)
 	}
 }
 

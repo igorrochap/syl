@@ -46,22 +46,33 @@ func NewActivitySpanView(output io.Writer, caps Caps, clock Clock, interval time
 	interval = normalizedTickerInterval(interval)
 	terminal, isTTY := terminalWriter(output)
 	view := &ActivitySpanView{output: output, caps: caps, clock: clock, interval: interval}
-	if isTTY {
-		view.terminal = terminal
-		if view.caps.Width <= 0 || view.caps.Height <= 0 {
-			if file, ok := terminal.(interface{ Fd() uintptr }); ok {
-				if width, height, err := term.GetSize(file.Fd()); err == nil {
-					if view.caps.Width <= 0 && width > 0 {
-						view.caps.Width = width
-					}
-					if view.caps.Height <= 0 && height > 0 {
-						view.caps.Height = height
-					}
-				}
-			}
-		}
+	if !isTTY {
+		return view
 	}
+	view.terminal = terminal
+	view.caps = completeTerminalCaps(view.caps, terminal)
 	return view
+}
+
+func completeTerminalCaps(caps Caps, terminal io.Writer) Caps {
+	if caps.Width > 0 && caps.Height > 0 {
+		return caps
+	}
+	file, ok := terminal.(interface{ Fd() uintptr })
+	if !ok {
+		return caps
+	}
+	width, height, err := term.GetSize(file.Fd())
+	if err != nil {
+		return caps
+	}
+	if caps.Width <= 0 && width > 0 {
+		caps.Width = width
+	}
+	if caps.Height <= 0 && height > 0 {
+		caps.Height = height
+	}
+	return caps
 }
 
 func normalizedTickerInterval(interval time.Duration) time.Duration {
@@ -270,52 +281,63 @@ func (view *ActivitySpanView) recordWriteError(err error) {
 func (view *ActivitySpanView) advanceOutputLocked(value string) {
 	for index := 0; index < len(value); {
 		if value[index] == '\x1b' {
-			start := index
-			index = skipANSISequence(value, index)
-			if index > start+1 && value[start+1] == '[' && !safeOutputCSI(value, index) {
-				view.anchorVisible = false
-				view.outputColumn = -1
-			}
+			index = view.advanceANSIOutputLocked(value, index)
 			continue
 		}
 		runeValue, size := utf8.DecodeRuneInString(value[index:])
 		index += size
-		if runeValue == '\n' {
-			view.advanceOutputRowLocked()
-			view.outputColumn = 0
-			continue
-		}
-		if runeValue == '\r' {
-			view.outputColumn = 0
-			continue
-		}
-		if runeValue == '\b' {
-			if view.outputColumn > 0 {
-				view.outputColumn--
-			}
-			continue
-		}
-		if runeValue == '\t' {
-			if view.caps.Width <= 0 || view.outputColumn < 0 {
-				view.outputColumn = -1
-				continue
-			}
-			tabStop := (view.outputColumn/8 + 1) * 8
-			for view.outputColumn < tabStop {
-				view.advanceOutputCellLocked(1)
-			}
-			continue
-		}
-		runeWidth := lipgloss.Width(string(runeValue))
-		if runeWidth <= 0 {
-			continue
-		}
-		if view.caps.Width <= 0 || view.outputColumn < 0 {
-			view.outputColumn = -1
-			continue
-		}
-		view.advanceOutputCellLocked(runeWidth)
+		view.advanceOutputRuneLocked(runeValue)
 	}
+}
+
+func (view *ActivitySpanView) advanceANSIOutputLocked(value string, start int) int {
+	end := skipANSISequence(value, start)
+	if end > start+1 && value[start+1] == '[' && !safeOutputCSI(value, end) {
+		view.anchorVisible = false
+		view.outputColumn = -1
+	}
+	return end
+}
+
+func (view *ActivitySpanView) advanceOutputRuneLocked(runeValue rune) {
+	switch runeValue {
+	case '\n':
+		view.advanceOutputRowLocked()
+		view.outputColumn = 0
+	case '\r':
+		view.outputColumn = 0
+	case '\b':
+		if view.outputColumn > 0 {
+			view.outputColumn--
+		}
+	case '\t':
+		view.advanceOutputTabLocked()
+	default:
+		view.advanceOutputCharacterLocked(runeValue)
+	}
+}
+
+func (view *ActivitySpanView) advanceOutputTabLocked() {
+	if view.caps.Width <= 0 || view.outputColumn < 0 {
+		view.outputColumn = -1
+		return
+	}
+	tabStop := (view.outputColumn/8 + 1) * 8
+	for view.outputColumn < tabStop {
+		view.advanceOutputCellLocked(1)
+	}
+}
+
+func (view *ActivitySpanView) advanceOutputCharacterLocked(runeValue rune) {
+	runeWidth := lipgloss.Width(string(runeValue))
+	if runeWidth <= 0 {
+		return
+	}
+	if view.caps.Width <= 0 || view.outputColumn < 0 {
+		view.outputColumn = -1
+		return
+	}
+	view.advanceOutputCellLocked(runeWidth)
 }
 
 func (view *ActivitySpanView) advanceOutputCellLocked(width int) {
@@ -353,19 +375,29 @@ func skipANSISequence(value string, start int) int {
 	}
 	switch value[start+1] {
 	case '[':
-		for index := start + 2; index < len(value); index++ {
-			if value[index] >= 0x40 && value[index] <= 0x7e {
-				return index + 1
-			}
-		}
+		return skipCSISequence(value, start)
 	case ']':
-		for index := start + 2; index < len(value); index++ {
-			if value[index] == '\a' {
-				return index + 1
-			}
-			if value[index] == '\x1b' && index+1 < len(value) && value[index+1] == '\\' {
-				return index + 2
-			}
+		return skipOSCSequence(value, start)
+	}
+	return min(start+2, len(value))
+}
+
+func skipCSISequence(value string, start int) int {
+	for index := start + 2; index < len(value); index++ {
+		if value[index] >= 0x40 && value[index] <= 0x7e {
+			return index + 1
+		}
+	}
+	return min(start+2, len(value))
+}
+
+func skipOSCSequence(value string, start int) int {
+	for index := start + 2; index < len(value); index++ {
+		if value[index] == '\a' {
+			return index + 1
+		}
+		if value[index] == '\x1b' && index+1 < len(value) && value[index+1] == '\\' {
+			return index + 2
 		}
 	}
 	return min(start+2, len(value))
