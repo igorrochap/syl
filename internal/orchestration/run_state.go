@@ -117,12 +117,12 @@ func (r *runStateTracker) startChildActivitySpan(
 	return start, nil
 }
 
-func (r *runStateTracker) endChildActivitySpan(spanID string, outcome activitySpanOutcome, endedAt time.Time) error {
+func (r *runStateTracker) endChildActivitySpan(spanID string, outcome activitySpanOutcome, endedAt time.Time, answer string) error {
 	if r.finalized {
 		return errors.New("end child Activity span after Run finished")
 	}
 	if err := r.recorder.RecordActivityEnd(runrecord.ActivitySpanEnd{
-		SpanID: spanID, EndedAt: endedAt, Outcome: string(outcome),
+		SpanID: spanID, EndedAt: endedAt, Outcome: string(outcome), Answer: answer,
 	}); err != nil {
 		return fmt.Errorf("record child Activity span end: %w", err)
 	}

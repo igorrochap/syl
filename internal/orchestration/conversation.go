@@ -62,7 +62,28 @@ type QuestionHandler struct {
 	notifier      Notifier
 	target        string
 	stateObserver questionStateObserver
-	span          *ui.ActivitySpanView
+	span          *activitySpan
+}
+
+type questionPresentation interface {
+	pause(*activitySpan) error
+	resume(*activitySpan) error
+	printQuestion(*QuestionHandler, string, string) error
+	printAnswerPrompt(*QuestionHandler) error
+	printEmptyAnswerHint(*QuestionHandler) error
+	recordAnswer(*QuestionHandler, string)
+	printResume(*QuestionHandler, string) error
+}
+
+type compactQuestionPresentation struct{}
+
+type framedQuestionPresentation struct{}
+
+func questionPresentationFor(mode HarnessOutputMode) questionPresentation {
+	if mode == ProgressHarnessOutput {
+		return compactQuestionPresentation{}
+	}
+	return framedQuestionPresentation{}
 }
 
 type harnessStreamResult struct {
@@ -94,20 +115,23 @@ func NewQuestionHandler(
 }
 
 func (h *QuestionHandler) Handle(ctx context.Context, question string) (string, error) {
-	return h.handle(ctx, "harness", question)
+	return h.handle(ctx, "harness", question, framedQuestionPresentation{})
 }
 
-func (h *QuestionHandler) setActivitySpan(span *ui.ActivitySpanView) {
+func (h *QuestionHandler) setActivitySpan(span *activitySpan) {
 	if h != nil {
 		h.span = span
 	}
 }
 
-func (h *QuestionHandler) handle(ctx context.Context, role, question string) (string, error) {
+func (h *QuestionHandler) handle(ctx context.Context, role, question string, presentation questionPresentation) (answer string, returnErr error) {
 	role = questionRole(role)
-	if h.span != nil {
-		h.span.Pause()
-		defer h.span.Resume()
+	session, err := h.beginQuestion(question, presentation)
+	if session != nil {
+		defer func() { returnErr = errors.Join(returnErr, session.close(ctx, returnErr)) }()
+	}
+	if err != nil {
+		return "", err
 	}
 	if h.stateObserver != nil {
 		h.stateObserver.questionAsked(question)
@@ -115,49 +139,87 @@ func (h *QuestionHandler) handle(ctx context.Context, role, question string) (st
 	if h.notifier != nil {
 		_ = h.notifier.Notify(ctx, fmt.Sprintf("syl is waiting for your answer on %s", h.target))
 	}
-	if err := h.printQuestion(role, question); err != nil {
+	if err := presentation.printQuestion(h, role, question); err != nil {
 		return "", err
 	}
-	answer, err := h.readAnswer()
+	answer, err = h.readAnswer(presentation)
 	if err != nil {
 		return "", err
 	}
-	if h.span != nil {
-		h.span.RecordOutput(answer + "\n")
+	presentation.recordAnswer(h, answer)
+	if err := session.answer(answer); err != nil {
+		return "", err
 	}
 	if h.stateObserver != nil {
 		h.stateObserver.questionAnswered()
 	}
-	if err := h.printResume(role); err != nil {
+	if err := presentation.printResume(h, role); err != nil {
 		return "", err
 	}
 	return answer, nil
 }
 
-func (h *QuestionHandler) readAnswer() (string, error) {
+func (h *QuestionHandler) beginQuestion(question string, presentation questionPresentation) (*questionSpanSession, error) {
+	session := &questionSpanSession{span: h.span, presentation: presentation}
+	if h.span == nil {
+		return session, nil
+	}
+	child, err := h.span.startAwaitingAnswer(question)
+	if err != nil {
+		return nil, err
+	}
+	session.child = child
+	session.paused = true
+	return session, presentation.pause(h.span)
+}
+
+type questionSpanSession struct {
+	span         *activitySpan
+	child        *childActivitySpan
+	presentation questionPresentation
+	paused       bool
+}
+
+func (session *questionSpanSession) answer(answer string) error {
+	if session.child == nil {
+		return nil
+	}
+	return session.span.finishAwaitingAnswer(session.child, answer, activitySpanCompleted)
+}
+
+func (session *questionSpanSession) close(ctx context.Context, operationErr error) error {
+	var closeErr error
+	if session.child != nil && !session.child.ended {
+		outcome := activitySpanOutcomeFor(ctx, operationErr, activitySpanCompleted)
+		closeErr = session.span.finishAwaitingAnswer(session.child, "", outcome)
+	}
+	if !session.paused {
+		return closeErr
+	}
+	return errors.Join(closeErr, session.presentation.resume(session.span))
+}
+
+func (h *QuestionHandler) readAnswer(presentation questionPresentation) (string, error) {
 	if h.answers == nil {
 		return "", errors.New("cannot answer harness question: terminal input is unavailable")
 	}
+	return h.readAnswerLines(presentation)
+}
 
+func (h *QuestionHandler) readAnswerLines(presentation questionPresentation) (string, error) {
 	var lines []string
 	for {
-		line, err := h.answers.ReadString('\n')
-		if err != nil && !errors.Is(err, io.EOF) {
-			return "", fmt.Errorf("read answer to harness question: %w", err)
-		}
-		line = strings.TrimSuffix(line, "\n")
-		line = strings.TrimSuffix(line, "\r")
-		continuation := strings.HasSuffix(line, `\`)
-		if continuation {
-			line = strings.TrimSuffix(line, `\`)
+		line, continuation, eof, err := h.readAnswerLine()
+		if err != nil {
+			return "", err
 		}
 		lines = append(lines, line)
 
 		if continuation {
-			if errors.Is(err, io.EOF) {
+			if eof {
 				return "", errors.New("cannot answer harness question: terminal input is unavailable")
 			}
-			if err := h.printAnswerPrompt(); err != nil {
+			if err := presentation.printAnswerPrompt(h); err != nil {
 				return "", err
 			}
 			continue
@@ -167,70 +229,127 @@ func (h *QuestionHandler) readAnswer() (string, error) {
 		if answer != "" {
 			return answer, nil
 		}
-		if errors.Is(err, io.EOF) {
+		if eof {
 			return "", errors.New("cannot answer harness question: terminal input is unavailable")
 		}
 		lines = nil
-		if err := h.printEmptyAnswerHint(); err != nil {
+		if err := presentation.printEmptyAnswerHint(h); err != nil {
 			return "", err
 		}
 	}
 }
 
-func (h *QuestionHandler) printQuestion(role, question string) error {
+func (h *QuestionHandler) readAnswerLine() (line string, continuation, eof bool, err error) {
+	line, err = h.answers.ReadString('\n')
+	eof = errors.Is(err, io.EOF)
+	if err != nil && !eof {
+		return "", false, false, fmt.Errorf("read answer to harness question: %w", err)
+	}
+	line = strings.TrimSuffix(line, "\n")
+	line = strings.TrimSuffix(line, "\r")
+	continuation = strings.HasSuffix(line, `\`)
+	if continuation {
+		line = strings.TrimSuffix(line, `\`)
+	}
+	return line, continuation, eof, nil
+}
+
+func (h *QuestionHandler) writeOutput(value, action string) error {
 	if h.output == nil {
 		return nil
 	}
-	value := fmt.Sprintf("\n---\n%s question on %s\n%s\nanswer> ", role, h.target, question)
 	if _, err := io.WriteString(h.output, value); err != nil {
-		return fmt.Errorf("print harness question: %w", err)
-	}
-	if h.span != nil {
-		h.span.RecordOutput(value)
+		return fmt.Errorf("%s: %w", action, err)
 	}
 	return nil
 }
 
-func (h *QuestionHandler) printAnswerPrompt() error {
+func (h *QuestionHandler) writeFramedOutput(value, action string) error {
 	if h.output == nil {
 		return nil
 	}
-	value := "\nanswer> "
-	if _, err := io.WriteString(h.output, value); err != nil {
-		return fmt.Errorf("print harness answer prompt: %w", err)
+	if err := h.writeOutput(value, action); err != nil {
+		return err
 	}
-	if h.span != nil {
-		h.span.RecordOutput(value)
-	}
+	h.recordSpanOutput(value)
 	return nil
 }
 
-func (h *QuestionHandler) printEmptyAnswerHint() error {
-	if h.output == nil {
-		return nil
+func (h *QuestionHandler) recordSpanOutput(value string) {
+	if h.span == nil {
+		return
 	}
+	h.span.recordOutput(value)
+}
+
+func awaitingAnswerOutput(question string) string {
+	var output strings.Builder
+	output.WriteString("    awaiting answer\n")
+	for _, line := range strings.Split(question, "\n") {
+		fmt.Fprintf(&output, "    ┃ %s\n", line)
+	}
+	output.WriteString("    answer> ")
+	return output.String()
+}
+
+func (compactQuestionPresentation) pause(span *activitySpan) error {
+	return span.pauseForQuestion()
+}
+
+func (compactQuestionPresentation) resume(span *activitySpan) error {
+	return span.resumeAfterQuestion()
+}
+
+func (compactQuestionPresentation) printQuestion(handler *QuestionHandler, _, question string) error {
+	return handler.writeOutput(awaitingAnswerOutput(question), "print harness question")
+}
+
+func (compactQuestionPresentation) printAnswerPrompt(handler *QuestionHandler) error {
+	return handler.writeOutput("\n    answer> ", "print harness answer prompt")
+}
+
+func (compactQuestionPresentation) printEmptyAnswerHint(handler *QuestionHandler) error {
+	value := "\n    answer cannot be empty; please try again\n    answer> "
+	return handler.writeOutput(value, "print harness answer hint")
+}
+
+func (compactQuestionPresentation) recordAnswer(*QuestionHandler, string) {}
+
+func (compactQuestionPresentation) printResume(*QuestionHandler, string) error {
+	return nil
+}
+
+func (framedQuestionPresentation) pause(span *activitySpan) error {
+	span.pauseForFramedQuestion()
+	return nil
+}
+
+func (framedQuestionPresentation) resume(span *activitySpan) error {
+	span.resumeAfterFramedQuestion()
+	return nil
+}
+
+func (framedQuestionPresentation) printQuestion(handler *QuestionHandler, role, question string) error {
+	value := fmt.Sprintf("\n---\n%s question on %s\n%s\nanswer> ", role, handler.target, question)
+	return handler.writeFramedOutput(value, "print harness question")
+}
+
+func (framedQuestionPresentation) printAnswerPrompt(handler *QuestionHandler) error {
+	return handler.writeFramedOutput("\nanswer> ", "print harness answer prompt")
+}
+
+func (framedQuestionPresentation) printEmptyAnswerHint(handler *QuestionHandler) error {
 	value := "\nanswer cannot be empty; please try again\nanswer> "
-	if _, err := io.WriteString(h.output, value); err != nil {
-		return fmt.Errorf("print harness answer hint: %w", err)
-	}
-	if h.span != nil {
-		h.span.RecordOutput(value)
-	}
-	return nil
+	return handler.writeFramedOutput(value, "print harness answer hint")
 }
 
-func (h *QuestionHandler) printResume(role string) error {
-	if h.output == nil {
-		return nil
-	}
+func (framedQuestionPresentation) recordAnswer(handler *QuestionHandler, answer string) {
+	handler.recordSpanOutput(answer + "\n")
+}
+
+func (framedQuestionPresentation) printResume(handler *QuestionHandler, role string) error {
 	value := fmt.Sprintf("\nanswer sent — resuming %s…\n--- %s output resumes ---\n", roleNoun(role), role)
-	if _, err := io.WriteString(h.output, value); err != nil {
-		return fmt.Errorf("print harness resume confirmation: %w", err)
-	}
-	if h.span != nil {
-		h.span.RecordOutput(value)
-	}
-	return nil
+	return handler.writeFramedOutput(value, "print harness resume confirmation")
 }
 
 func questionRole(role string) string {
@@ -268,6 +387,7 @@ func runHarnessConversation(ctx context.Context, adapter harness.Adapter, start 
 	var sessionIDs []string
 	sessionID, _ := normalizeSessionID(options.sessionID)
 	next := start
+	questionPresentation := questionPresentationFor(options.mode)
 
 	// Returning stops every harness this conversation started, so a
 	// conversation that fails mid-stream cannot keep its harness running
@@ -308,7 +428,7 @@ func runHarnessConversation(ctx context.Context, adapter harness.Adapter, start 
 			return currentConversationTranscript(&transcript, sessionIDs, sessionID), err
 		}
 
-		answer, err := options.questions.handle(ctx, options.role, result.Question)
+		answer, err := options.questions.handle(ctx, options.role, result.Question, questionPresentation)
 		if err != nil {
 			return currentConversationTranscript(&transcript, sessionIDs, sessionID), err
 		}

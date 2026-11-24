@@ -223,7 +223,7 @@ func runStandaloneReview(ctx context.Context, options ReviewOptions, preparation
 	if err != nil {
 		return standaloneReviewRun{}, err
 	}
-	questions.setActivitySpan(span.view)
+	questions.setActivitySpan(span)
 	defer questions.setActivitySpan(nil)
 	startedAt := span.start.StartedAt
 	review, err := runReviewExecutionWithActivitySpan(ctx, options.Adapter, reviewExecutionOptions{

@@ -65,6 +65,7 @@ type ActivitySpanEnd struct {
 	SpanID  string            `json:"span_id"`
 	EndedAt time.Time         `json:"ended_at"`
 	Outcome string            `json:"outcome"`
+	Answer  string            `json:"answer,omitempty"`
 }
 
 // ActivityEvent is one decoded Activity log line.

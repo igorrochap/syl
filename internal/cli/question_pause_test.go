@@ -45,8 +45,56 @@ func TestImplementQuestionPausesAndResumesTheSameSession(t *testing.T) {
 	if len(notifier.messages) < 1 || notifier.messages[0] != wantNotification {
 		t.Fatalf("notifications = %v, want %q", notifier.messages, wantNotification)
 	}
-	if !strings.Contains(fixture.stdout.String(), "implement question on #42") || strings.Contains(fixture.stdout.String(), "QUESTION:") || !strings.Contains(fixture.stdout.String(), "answer sent — resuming implementer…") || !strings.Contains(fixture.stdout.String(), "Iterations: 1") || !strings.Contains(fixture.stdout.String(), "Final verdict: approve") {
-		t.Fatalf("stdout = %q, want question and one-iteration approval", fixture.stdout.String())
+	stdout := fixture.stdout.String()
+	if !strings.Contains(stdout, "awaiting answer") || !strings.Contains(stdout, "Which database should this use?") || !strings.Contains(stdout, "answer> ") {
+		t.Fatalf("stdout = %q, want the full question and terminal answer prompt", stdout)
+	}
+	if strings.Contains(stdout, "Before the decision.") || strings.Contains(stdout, "--- implement output resumes ---") || strings.Contains(stdout, "answer sent — resuming implementer…") {
+		t.Fatalf("stdout = %q, want compact question output without preceding prose or resume framing", stdout)
+	}
+	if !strings.Contains(stdout, "Iterations: 1") || !strings.Contains(stdout, "Final verdict: approve") {
+		t.Fatalf("stdout = %q, want one-iteration approval", stdout)
+	}
+}
+
+func TestImplementVerboseQuestionKeepsExistingFraming(t *testing.T) {
+	fixture := newImplementLoopFixture(t)
+	loop := &questionHarness{
+		root: fixture.root,
+		runs: [][]harness.Event{
+			{{Type: harness.EventSession, SessionID: "implement-session"}, {Type: harness.EventAssistantText, Text: "Before the decision.\nQUESTION:\nWhich database should this use?\nEND QUESTION"}},
+			{{Type: harness.EventSession, SessionID: "review-session"}, {Type: harness.EventAssistantText, Text: approveVerdictText}},
+		},
+		resumeStreams: [][]harness.Event{
+			{{Type: harness.EventSession, SessionID: "implement-session"}, {Type: harness.EventAssistantText, Text: "Continuing after the answer."}},
+		},
+	}
+	fixture.harnesses["codex"] = loop
+	fixture.harnesses["claude"] = loop
+	fixture.app.deps.GH = fixedGH(&loopGHRunner{})
+	fixture.app.deps.Input = strings.NewReader("Use SQLite.\n")
+
+	code := fixture.app.Run(context.Background(), []string{"implement", "#42", "--verbose"}, &fixture.stdout, &fixture.stderr)
+	if code != 0 {
+		t.Fatalf("implement code = %d, stderr = %q", code, fixture.stderr.String())
+	}
+	stdout := fixture.stdout.String()
+	for _, expected := range []string{
+		"Before the decision.",
+		"implement question on #42",
+		"Which database should this use?",
+		"answer> ",
+		"answer sent — resuming implementer…",
+		"--- implement output resumes ---",
+		"Continuing after the",
+		"answer.",
+	} {
+		if !strings.Contains(stdout, expected) {
+			t.Fatalf("verbose stdout = %q, want %q", stdout, expected)
+		}
+	}
+	if strings.Contains(stdout, "    awaiting answer") {
+		t.Fatalf("verbose stdout = %q, want the existing verbose question framing", stdout)
 	}
 }
 
