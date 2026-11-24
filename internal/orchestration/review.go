@@ -217,7 +217,7 @@ func runStandaloneReview(ctx context.Context, options ReviewOptions, preparation
 			return standaloneReviewRun{}, fmt.Errorf("write review role: %w", err)
 		}
 	}
-	span, err := startRoleActivitySpan(
+	span, err := startActivitySpan(
 		preparation.runState, options.Output, mode, options.Clock, 0, runrecord.Reviewing, "reviewing",
 	)
 	if err != nil {

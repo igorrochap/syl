@@ -9,6 +9,37 @@ import (
 	"time"
 )
 
+func TestReadActivitiesReadsRunDirectory(t *testing.T) {
+	runDirectory := t.TempDir()
+	startedAt := time.Date(2026, time.November, 23, 18, 0, 0, 0, time.UTC)
+	writer := NewWriter(runDirectory)
+	if err := writer.AppendActivityStart(ActivitySpanStart{
+		SpanID: "span-001", Activity: Gating, Label: "1/1 — running Gates (attempt 1)", StartedAt: startedAt,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.AppendActivityEnd(ActivitySpanEnd{
+		SpanID: "span-001", EndedAt: startedAt.Add(time.Second), Outcome: "green",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	events, err := ReadActivities(runDirectory)
+	if err != nil {
+		t.Fatalf("ReadActivities() error = %v", err)
+	}
+	if len(events) != 2 || events[0].Start == nil || events[1].End == nil || events[0].Start.Activity != Gating || events[1].End.Outcome != "green" {
+		t.Fatalf("ReadActivities() = %#v, want green gating span", events)
+	}
+}
+
+func TestReadActivitiesReportsMissingLog(t *testing.T) {
+	_, err := ReadActivities(t.TempDir())
+	if err == nil || !strings.Contains(err.Error(), "read Activity log") {
+		t.Fatalf("ReadActivities() error = %v, want Activity log read failure", err)
+	}
+}
+
 func TestActivityLogAppendsStartAndEndEvents(t *testing.T) {
 	runDir := t.TempDir()
 	writer := NewWriter(runDir)

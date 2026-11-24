@@ -375,11 +375,13 @@ func (a *App) runImplementLoop(
 		Notifier:  a.notifier(projectConfig.Notifications.Enabled), Input: cmd.InOrStdin(), Output: cmd.OutOrStdout(),
 		Context:             commandOptions.additionalContext,
 		ReviewContext:       commandOptions.reviewContext,
+		ErrorOutput:         cmd.ErrOrStderr(),
 		Verbose:             commandOptions.verbose,
 		Raw:                 commandOptions.raw,
 		Clock:               a.deps.Clock,
 		PublishOnApprove:    commandOptions.publishOnApprove,
 		ProvisionedWorktree: provisionedWorktree,
+		WorktreeSetup:       projectConfig.Worktree.Setup,
 		IdentificationBanner: func(artifactDir string) error {
 			worktreePath := provisionedWorktreePath(provisionedWorktree)
 			relativeArtifactDir, err := filepath.Rel(a.originRoot, artifactDir)
@@ -457,7 +459,6 @@ func (a *App) prepareImplementCommandWorktree(
 	}
 	provisionedWorktree, statusTracker, err := a.provisionImplementWorktree(
 		cmd.Context(), projectConfig, ticket, commandOptions.base, issueTracker, commandOptions.publishOnApprove,
-		cmd.OutOrStdout(), cmd.ErrOrStderr(),
 	)
 	if err != nil {
 		return nil, nil, "", err
@@ -472,8 +473,6 @@ func (a *App) provisionImplementWorktree(
 	base string,
 	issueTracker tracker.Tracker,
 	capturePullRequestBase bool,
-	stdout io.Writer,
-	stderr io.Writer,
 ) (*orchestration.Worktree, tracker.Tracker, error) {
 	provisioned, err := orchestration.ProvisionWorktree(ctx, orchestration.WorktreeOptions{
 		OriginRoot:             a.originRoot,
@@ -487,9 +486,6 @@ func (a *App) provisionImplementWorktree(
 	})
 	if err != nil {
 		return nil, nil, err
-	}
-	if err := orchestration.RunWorktreeSetup(ctx, projectConfig.Worktree.Setup, provisioned.Path, stdout, stderr); err != nil {
-		return nil, nil, a.cleanupProvisionedWorktree(ctx, &provisioned, err)
 	}
 	statusTracker := issueTracker
 	if projectConfig.Tracker.Issues == config.TrackerLocal {

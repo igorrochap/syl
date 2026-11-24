@@ -41,15 +41,6 @@ func (r *runStateTracker) setIteration(iteration int) {
 	r.save()
 }
 
-func (r *runStateTracker) setActivity(activity runrecord.Activity) {
-	if r.finalized || r.state.Activity == activity {
-		return
-	}
-	r.state.Activity = activity
-	r.state.Question = ""
-	r.save()
-}
-
 func (r *runStateTracker) startActivitySpan(
 	iteration int,
 	activity runrecord.Activity,

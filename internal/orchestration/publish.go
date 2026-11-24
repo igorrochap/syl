@@ -53,36 +53,26 @@ func publishApprovedImplement(
 	options ImplementOptions,
 	setup implementSetup,
 	summary implementSummary,
+	runState *runStateTracker,
 ) (runrecord.Publication, []string, []string) {
 	var notices []string
 	attachmentNotices := append([]string(nil), summary.verification.evidenceImageNotices...)
 	notices = append(notices, attachmentNotices...)
-	hasChanges, err := stageApprovedImplementation(ctx, setup)
-	if err != nil {
-		return failedPublication(runrecord.PublicationStepCommit, err), notices, attachmentNotices
+	spans := newActivitySpanContext(options, runState, summary.iterations)
+	hasChanges, commitNotice, commitErr := commitApprovedImplementationWithActivity(ctx, options, setup, spans)
+	if commitNotice != "" {
+		notices = append(notices, commitNotice)
+	}
+	if commitErr != nil {
+		return failedPublication(runrecord.PublicationStepCommit, commitErr), notices, attachmentNotices
 	}
 	if !hasChanges {
 		return runrecord.Publication{Status: runrecord.PublicationSkipped}, notices, attachmentNotices
 	}
-	message, err := implementationCommitMessage(options, setup.branch)
-	if err != nil {
-		return failedPublication(runrecord.PublicationStepCommit, err), notices, attachmentNotices
+	if err := pushApprovedImplementationWithActivity(ctx, setup, spans); err != nil {
+		return failedPublication(runrecord.PublicationStepPush, err), notices, attachmentNotices
 	}
-	notice, err := commitApprovedImplementation(ctx, options, setup, message)
-	if notice != "" {
-		notices = append(notices, notice)
-	}
-	if err != nil {
-		return failedPublication(runrecord.PublicationStepCommit, fmt.Errorf("commit approved implementation: %w", err)), notices, attachmentNotices
-	}
-	if _, err := setup.git.Run(ctx, "push", "-u", "origin", setup.branch); err != nil {
-		return failedPublication(runrecord.PublicationStepPush, fmt.Errorf("push implementation branch %q: %w", setup.branch, err)), notices, attachmentNotices
-	}
-	pullRequest, notice := commitgenPullRequest(ctx, options, setup, summary)
-	if notice != "" {
-		notices = append(notices, notice)
-	}
-	publication, notices := createDraftPullRequest(ctx, options, pullRequest, notices)
+	publication, notices := openApprovedPullRequestWithActivity(ctx, options, setup, summary, spans, notices)
 	if publication.Status != runrecord.PublicationPublished {
 		return publication, notices, attachmentNotices
 	}
@@ -95,6 +85,83 @@ func publishApprovedImplement(
 	attachmentNotices = append(attachmentNotices, attachmentFailures...)
 	notices = append(notices, attachmentFailures...)
 	return publication, notices, attachmentNotices
+}
+
+func commitApprovedImplementationWithActivity(
+	ctx context.Context,
+	options ImplementOptions,
+	setup implementSetup,
+	spans activitySpanContext,
+) (bool, string, error) {
+	var hasChanges bool
+	var notice string
+	err := spans.run(
+		ctx, runrecord.Committing, "approved — committing",
+		func() error {
+			var stagingErr error
+			hasChanges, stagingErr = stageApprovedImplementation(ctx, setup)
+			if stagingErr != nil || !hasChanges {
+				return stagingErr
+			}
+			message, messageErr := implementationCommitMessage(options, setup.branch)
+			if messageErr != nil {
+				return messageErr
+			}
+			var commitErr error
+			notice, commitErr = commitApprovedImplementation(ctx, options, setup, message)
+			if commitErr != nil {
+				return fmt.Errorf("commit approved implementation: %w", commitErr)
+			}
+			return nil
+		},
+	)
+	return hasChanges, notice, err
+}
+
+func pushApprovedImplementationWithActivity(
+	ctx context.Context,
+	setup implementSetup,
+	spans activitySpanContext,
+) error {
+	return spans.run(
+		ctx, runrecord.Pushing, "approved — pushing",
+		func() error {
+			if _, err := setup.git.Run(ctx, "push", "-u", "origin", setup.branch); err != nil {
+				return fmt.Errorf("push implementation branch %q: %w", setup.branch, err)
+			}
+			return nil
+		},
+	)
+}
+
+func openApprovedPullRequestWithActivity(
+	ctx context.Context,
+	options ImplementOptions,
+	setup implementSetup,
+	summary implementSummary,
+	spans activitySpanContext,
+	notices []string,
+) (runrecord.Publication, []string) {
+	var publication runrecord.Publication
+	openingErr := spans.run(
+		ctx, runrecord.Publishing, "approved — opening PR",
+		func() error {
+			pullRequest, notice := commitgenPullRequest(ctx, options, setup, summary)
+			if notice != "" {
+				notices = append(notices, notice)
+			}
+			pullRequestURL, err := createDraftPullRequest(ctx, options, pullRequest)
+			if err != nil {
+				return err
+			}
+			publication = runrecord.Publication{Status: runrecord.PublicationPublished, URL: pullRequestURL}
+			return nil
+		},
+	)
+	if openingErr != nil {
+		return failedPublication(runrecord.PublicationStepPullRequest, openingErr), notices
+	}
+	return publication, notices
 }
 
 func stageApprovedImplementation(ctx context.Context, setup implementSetup) (bool, error) {
@@ -112,21 +179,20 @@ func createDraftPullRequest(
 	ctx context.Context,
 	options ImplementOptions,
 	request tracker.PullRequest,
-	notices []string,
-) (runrecord.Publication, []string) {
+) (string, error) {
 	publisher, ok := options.IssueTracker.(tracker.PullRequestCreator)
 	if !ok {
-		return failedPublication(runrecord.PublicationStepPullRequest, fmt.Errorf("create pull request: Tracker cannot create pull requests")), notices
+		return "", fmt.Errorf("create pull request: Tracker cannot create pull requests")
 	}
 	pullRequestURL, err := publisher.CreatePullRequest(ctx, request)
 	if err != nil {
-		return failedPublication(runrecord.PublicationStepPullRequest, fmt.Errorf("create draft pull request: %w", err)), notices
+		return "", fmt.Errorf("create draft pull request: %w", err)
 	}
 	pullRequestURL = strings.TrimSpace(pullRequestURL)
 	if pullRequestURL == "" {
-		return failedPublication(runrecord.PublicationStepPullRequest, fmt.Errorf("create draft pull request: tracker returned an empty URL")), notices
+		return "", errors.New("create draft pull request: tracker returned an empty URL")
 	}
-	return runrecord.Publication{Status: runrecord.PublicationPublished, URL: pullRequestURL}, notices
+	return pullRequestURL, nil
 }
 
 func attachPullRequestEvidence(

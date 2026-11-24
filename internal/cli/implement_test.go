@@ -18,6 +18,7 @@ import (
 	"github.com/igorrochap/syl/internal/config"
 	"github.com/igorrochap/syl/internal/harness"
 	"github.com/igorrochap/syl/internal/harness/codex"
+	"github.com/igorrochap/syl/internal/runrecord"
 	"github.com/igorrochap/syl/internal/usage"
 )
 
@@ -2443,6 +2444,28 @@ func TestImplementWorktreeRunsSetupBeforeHarnessInWorktree(t *testing.T) {
 	if !strings.Contains(fixture.stderr.String(), "setup-stderr") {
 		t.Fatalf("stderr = %q, want setup stderr streamed to the user", fixture.stderr.String())
 	}
+	output := fixture.stdout.String()
+	preparingIndex := strings.Index(output, "finished preparing worktree — completed (")
+	implementingIndex := strings.Index(output, "starting 1/3 — implementing")
+	if preparingIndex < 0 || implementingIndex < 0 || preparingIndex >= implementingIndex {
+		t.Fatalf("Activity output = %q, want timed worktree preparation before implementation", output)
+	}
+	preparingLine := strings.SplitN(output[preparingIndex:], "\n", 2)[0]
+	if !strings.HasSuffix(preparingLine, "s)") {
+		t.Fatalf("worktree preparation line = %q, want duration", preparingLine)
+	}
+	runDirs, err := filepath.Glob(filepath.Join(fixture.root, ".syl", "runs", "*-42"))
+	if err != nil || len(runDirs) != 1 {
+		t.Fatalf("Run directories = %v, error = %v; want one Run", runDirs, err)
+	}
+	activities, err := runrecord.ReadActivities(runDirs[0])
+	if err != nil {
+		t.Fatalf("ReadActivities() error = %v", err)
+	}
+	if len(activities) < 2 || activities[0].Start == nil || activities[0].Start.Activity != runrecord.Preparing ||
+		activities[0].Start.Label != "preparing worktree" {
+		t.Fatalf("first Activity events = %#v, want preparing worktree start", activities[:min(2, len(activities))])
+	}
 }
 
 func TestImplementWorktreeSetupFailureRollsBackBeforeHarnessStarts(t *testing.T) {
@@ -2451,19 +2474,33 @@ func TestImplementWorktreeSetupFailureRollsBackBeforeHarnessStarts(t *testing.T)
 	configureWorktreeSetup(t, fixture.root, worktreeRoot, "printf setup-failed >&2; exit 17")
 
 	harnessCalled := false
-	fixture.app.deps.Harnesses = func(string) map[string]harness.Adapter {
+	var loop *loopHarness
+	fixture.app.deps.Harnesses = func(root string) map[string]harness.Adapter {
+		loop = &loopHarness{root: root}
 		harnessCalled = true
-		return map[string]harness.Adapter{}
+		return map[string]harness.Adapter{"codex": loop, "claude": loop}
 	}
-	fixture.app.deps.GH = fixedGH(&loopGHRunner{})
+	github := &loopGHRunner{}
+	fixture.app.deps.GH = fixedGH(github)
 
 	code := fixture.app.Run(context.Background(), []string{"implement", "#42", "--worktree"}, &fixture.stdout, &fixture.stderr)
 	if code == 0 || !strings.Contains(fixture.stderr.String(), "run worktree setup") ||
 		!strings.Contains(fixture.stderr.String(), "setup-failed") {
 		t.Fatalf("implement worktree code = %d, stderr = %q, want setup failure", code, fixture.stderr.String())
 	}
-	if harnessCalled {
-		t.Fatal("harness factory was called after setup failed")
+	if !harnessCalled || loop == nil || len(loop.requests) != 0 {
+		t.Fatalf("harness setup = (called %v, loop %#v), want adapters initialized but no Harness turn", harnessCalled, loop)
+	}
+	if !strings.Contains(fixture.stdout.String(), "finished preparing worktree — failed (") {
+		t.Fatalf("stdout = %q, want failed worktree Activity span", fixture.stdout.String())
+	}
+	if runDirs, err := filepath.Glob(filepath.Join(fixture.root, ".syl", "runs", "*-42")); err != nil || len(runDirs) != 0 {
+		t.Fatalf("Run directories after setup failure = %v, error = %v; want no Run", runDirs, err)
+	}
+	for _, call := range github.calls {
+		if strings.Contains(call, "issue edit 42 --add-label doing") {
+			t.Fatalf("GitHub calls after setup failure = %v, want no ticket status update", github.calls)
+		}
 	}
 
 	worktreePath := filepath.Join(worktreeRoot, filepath.Base(fixture.root), "feat-add-resilient-workflow")
@@ -2482,7 +2519,12 @@ func TestImplementWorktreeSetupCancellationRollsBack(t *testing.T) {
 	fixture := newImplementLoopFixture(t)
 	worktreeRoot := filepath.Join(t.TempDir(), "worktrees")
 	configureWorktreeSetup(t, fixture.root, worktreeRoot, "touch setup-started; sleep 30")
-	fixture.app.deps.GH = fixedGH(&loopGHRunner{})
+	fixture.app.deps.Harnesses = func(root string) map[string]harness.Adapter {
+		loop := &loopHarness{root: root}
+		return map[string]harness.Adapter{"codex": loop, "claude": loop}
+	}
+	github := &loopGHRunner{}
+	fixture.app.deps.GH = fixedGH(github)
 	worktreePath := filepath.Join(worktreeRoot, filepath.Base(fixture.root), "feat-add-resilient-workflow")
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -2497,7 +2539,7 @@ func TestImplementWorktreeSetupCancellationRollsBack(t *testing.T) {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("setup process did not start")
+			t.Fatalf("setup process did not start; stdout=%q stderr=%q", fixture.stdout.String(), fixture.stderr.String())
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -2514,6 +2556,14 @@ func TestImplementWorktreeSetupCancellationRollsBack(t *testing.T) {
 
 	if _, err := os.Stat(worktreePath); !os.IsNotExist(err) {
 		t.Fatalf("worktree path stat error = %v, want path removed after cancellation", err)
+	}
+	if runDirs, err := filepath.Glob(filepath.Join(fixture.root, ".syl", "runs", "*-42")); err != nil || len(runDirs) != 0 {
+		t.Fatalf("Run directories after setup cancellation = %v, error = %v; want no Run", runDirs, err)
+	}
+	for _, call := range github.calls {
+		if strings.Contains(call, "issue edit 42 --add-label doing") {
+			t.Fatalf("GitHub calls after setup cancellation = %v, want no ticket status update", github.calls)
+		}
 	}
 }
 
