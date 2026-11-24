@@ -9,15 +9,32 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/creack/pty"
 	"github.com/igorrochap/syl/internal/harness"
 	"github.com/igorrochap/syl/internal/orchestration"
 	"github.com/igorrochap/syl/internal/sylhome"
 	"github.com/igorrochap/syl/internal/tracker"
+	"github.com/igorrochap/syl/internal/ui"
 )
 
 var updateCLIGolden = flag.Bool("update-cli-golden", false, "rewrite CLI golden files")
+
+type fixedActivityClock struct{}
+
+func (fixedActivityClock) Now() time.Time {
+	return time.Date(2026, 11, 23, 12, 0, 0, 0, time.UTC)
+}
+
+func (fixedActivityClock) NewTicker(time.Duration) ui.Ticker {
+	return fixedActivityTicker{}
+}
+
+type fixedActivityTicker struct{}
+
+func (fixedActivityTicker) C() <-chan time.Time { return nil }
+func (fixedActivityTicker) Stop()               {}
 
 type topSeamFixture struct {
 	root      string

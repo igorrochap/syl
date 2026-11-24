@@ -62,6 +62,8 @@ type ImplementOptions struct {
 	Context              string
 	ReviewContext        string
 	Verbose              bool
+	Raw                  bool
+	Clock                ui.Clock
 	PublishOnApprove     bool
 	GateRunner           GateRunner
 	ProvisionedWorktree  *Worktree
@@ -77,6 +79,9 @@ type implementRunState struct {
 }
 
 func RunImplement(ctx context.Context, options ImplementOptions) (returnErr error) {
+	if options.Raw && options.Verbose {
+		return errors.New("implement: --raw and --verbose are mutually exclusive")
+	}
 	originGit := options.OriginGit
 	if originGit == nil {
 		originGit = options.Git
@@ -165,6 +170,8 @@ func executeImplementRun(ctx context.Context, options ImplementOptions, run impl
 		additionalContext:    options.Context,
 		reviewContext:        options.ReviewContext,
 		verbose:              options.Verbose,
+		raw:                  options.Raw,
+		clock:                options.Clock,
 		allowEmptyDiff:       options.PublishOnApprove,
 		gateRunner:           options.GateRunner,
 	})
@@ -503,6 +510,8 @@ type implementIterationsParams struct {
 	additionalContext    string
 	reviewContext        string
 	verbose              bool
+	raw                  bool
+	clock                ui.Clock
 	allowEmptyDiff       bool
 	gateRunner           GateRunner
 }
@@ -545,10 +554,7 @@ func runImplementIterations(
 	iterations := 0
 	for iteration := 1; iteration <= params.projectConfig.Loop.MaxIterations; iteration++ {
 		iterations = iteration
-		mode := QuietHarnessOutput
-		if params.verbose {
-			mode = ParsedHarnessOutput
-		}
+		mode := harnessOutputMode(params.verbose, params.raw)
 		handoffPath, err := prepareIterationHandoffPath(params, iteration)
 		if err != nil {
 			return 0, verdict.Verdict{}, nil, publicationGateVerification{}, err
@@ -784,7 +790,12 @@ func ensureImplementRunState(params implementIterationsParams) *runStateTracker 
 }
 
 func runImplementReview(ctx context.Context, params implementIterationsParams, reviewParams implementReviewParams) (ReviewExecution, error) {
-	params.runState.setActivity(runrecord.Reviewing)
+	label := fmt.Sprintf("%d/%d — reviewing", reviewParams.iteration, params.projectConfig.Loop.MaxIterations)
+	if reviewParams.mode == ParsedHarnessOutput {
+		if err := writeRoleSection(params.output, "Reviewer"); err != nil {
+			return ReviewExecution{}, err
+		}
+	}
 	promptContext := reviewPromptContext{
 		diffPath:             reviewParams.diffPath,
 		evidence:             inspectReviewEvidence(params.recorder.EvidenceDirectory(reviewParams.iteration)),
@@ -810,13 +821,6 @@ func runImplementReview(ctx context.Context, params implementIterationsParams, r
 		MCP:         params.projectConfig.Roles.Review.MCP,
 		SandboxMode: params.projectConfig.Roles.Review.SandboxMode,
 	}
-	renderer := ui.New(params.output, ui.DetectCaps(params.output))
-	if err := writeRoleSection(params.output, "Reviewer"); err != nil {
-		return ReviewExecution{}, fmt.Errorf("write review role: %w", err)
-	}
-	if err := renderer.Step(ui.Step{Label: fmt.Sprintf("iteration %d/%d — reviewing", reviewParams.iteration, params.projectConfig.Loop.MaxIterations)}); err != nil {
-		return ReviewExecution{}, fmt.Errorf("write review progress: %w", err)
-	}
 	reviewOptions := reviewResumeOptions{
 		sessionID: reviewParams.previousReviewerSession,
 		request:   reviewRequest,
@@ -829,9 +833,20 @@ func runImplementReview(ctx context.Context, params implementIterationsParams, r
 		resumePrompt = appendProtectedPaths(resumePrompt, reviewParams.protectedPaths)
 		reviewOptions.resumePrompt = appendGateResultPath(resumePrompt, reviewParams.gateResultPath)
 	}
-	reviewStartedAt := time.Now().UTC()
+	span, err := startRoleActivitySpan(
+		params.runState, params.output, reviewParams.mode, params.clock,
+		reviewParams.iteration, runrecord.Reviewing, label,
+	)
+	if err != nil {
+		return ReviewExecution{}, err
+	}
+	params.questions.setActivitySpan(span.view)
+	defer params.questions.setActivitySpan(nil)
+	reviewOptions.span = span.view
+	reviewStartedAt := span.start.StartedAt
 	reviewResult, err := runReviewExecutionWithResumeFallback(ctx, params.reviewer, reviewOptions)
-	reviewEndedAt := time.Now().UTC()
+	err = span.finish(ctx, err)
+	reviewEndedAt := spanNow(params.clock)
 	if err != nil {
 		return ReviewExecution{}, recordImplementReviewFailure(
 			params, reviewParams, reviewResult, reviewStartedAt, reviewEndedAt, err,
@@ -979,12 +994,20 @@ func runImplementTurn(
 	params implementIterationsParams,
 	turn implementTurnParams,
 ) (implementExecution, error) {
-	params.runState.startActivity(turn.iteration, runrecord.Implementing)
-	if err := presentImplementTurn(params, turn); err != nil {
+	implementRequest := buildImplementRequest(params, turn)
+	activity := implementActivityLabel(turn)
+	label := fmt.Sprintf("%d/%d — %s", turn.iteration, params.projectConfig.Loop.MaxIterations, activity)
+	if turn.mode == ParsedHarnessOutput {
+		if err := writeRoleSection(params.output, "Implementer"); err != nil {
+			return implementExecution{}, err
+		}
+	}
+	span, err := startRoleActivitySpan(params.runState, params.output, turn.mode, params.clock, turn.iteration, runrecord.Implementing, label)
+	if err != nil {
 		return implementExecution{}, err
 	}
-	implementRequest := buildImplementRequest(params, turn)
-	implementStartedAt := time.Now().UTC()
+	params.questions.setActivitySpan(span.view)
+	implementStartedAt := span.start.StartedAt
 	implementResult, err := runImplementRoleWithResumeFallback(
 		ctx,
 		params.implementer,
@@ -993,8 +1016,11 @@ func runImplementTurn(
 		params.output,
 		turn.mode,
 		params.questions,
+		span.view,
 	)
-	implementEndedAt := time.Now().UTC()
+	params.questions.setActivitySpan(nil)
+	err = span.finish(ctx, err)
+	implementEndedAt := spanNow(params.clock)
 	if err != nil {
 		recordRoleUsage(params.recorder, implementUsage(params, turn, implementResult, implementStartedAt, implementEndedAt))
 		return implementExecution{}, recordFailedImplementExecution(params.recorder, turn.iteration, implementResult, err)
@@ -1006,21 +1032,14 @@ func runImplementTurn(
 	return implementResult, nil
 }
 
-func presentImplementTurn(params implementIterationsParams, turn implementTurnParams) error {
-	activity := "implementing"
+func implementActivityLabel(turn implementTurnParams) string {
 	if turn.gateAttemptFeedback != nil {
-		activity = "addressing Gate failure"
-	} else if turn.iteration > 1 {
-		activity = fmt.Sprintf("revising %d finding(s)", len(turn.findings))
+		return "addressing Gate failure"
 	}
-	renderer := ui.New(params.output, ui.DetectCaps(params.output))
-	if err := writeRoleSection(params.output, "Implementer"); err != nil {
-		return fmt.Errorf("write implement role: %w", err)
+	if turn.iteration > 1 {
+		return fmt.Sprintf("revising %d finding(s)", len(turn.findings))
 	}
-	if err := renderer.Step(ui.Step{Label: fmt.Sprintf("iteration %d/%d — %s", turn.iteration, params.projectConfig.Loop.MaxIterations, activity)}); err != nil {
-		return fmt.Errorf("write implement progress: %w", err)
-	}
-	return nil
+	return "implementing"
 }
 
 func buildImplementRequest(params implementIterationsParams, turn implementTurnParams) harness.Request {
@@ -1117,6 +1136,7 @@ type implementExecutionOptions struct {
 	output           io.Writer
 	mode             HarnessOutputMode
 	questions        *QuestionHandler
+	span             *ui.ActivitySpanView
 	initialSessionID string
 	start            harnessStreamStarter
 }
@@ -1128,12 +1148,14 @@ func runImplementRole(
 	output io.Writer,
 	mode HarnessOutputMode,
 	questions *QuestionHandler,
+	span *ui.ActivitySpanView,
 ) (implementExecution, error) {
 	return runImplementRoleFrom(ctx, adapter, implementExecutionOptions{
 		request:   request,
 		output:    output,
 		mode:      mode,
 		questions: questions,
+		span:      span,
 		start: func(runContext context.Context) (harness.Stream, error) {
 			return adapter.Run(runContext, request)
 		},
@@ -1148,10 +1170,11 @@ func runImplementRoleWithResumeFallback(
 	output io.Writer,
 	mode HarnessOutputMode,
 	questions *QuestionHandler,
+	span *ui.ActivitySpanView,
 ) (implementExecution, error) {
 	sessionID, hasSession := normalizeSessionID(sessionID)
 	if !hasSession {
-		return runImplementRole(ctx, adapter, request, output, mode, questions)
+		return runImplementRole(ctx, adapter, request, output, mode, questions, span)
 	}
 
 	result, err := runImplementRoleFrom(ctx, adapter, implementExecutionOptions{
@@ -1159,6 +1182,7 @@ func runImplementRoleWithResumeFallback(
 		output:           output,
 		mode:             mode,
 		questions:        questions,
+		span:             span,
 		initialSessionID: sessionID,
 		start: func(runContext context.Context) (harness.Stream, error) {
 			stream, resumeErr := adapter.Resume(runContext, sessionID, request)
@@ -1176,7 +1200,7 @@ func runImplementRoleWithResumeFallback(
 	if !errors.As(err, &resumeErr) {
 		return result, err
 	}
-	fresh, freshErr := runImplementRole(ctx, adapter, request, output, mode, questions)
+	fresh, freshErr := runImplementRole(ctx, adapter, request, output, mode, questions, span)
 	if freshErr != nil {
 		return appendImplementExecutions(result, fresh), freshErr
 	}
@@ -1201,7 +1225,7 @@ func runImplementRoleFrom(
 	var feed bytes.Buffer
 	visibleOutput := options.output
 	if options.mode != RawHarnessOutput {
-		visibleOutput = newLiveHarnessOutput(options.output, options.mode, "implement")
+		visibleOutput = newLiveHarnessOutput(options.output, options.mode, "implement", options.span)
 	}
 	artifactOutput := newPlainHarnessOutput(&feed, options.mode)
 	result, err := runHarnessConversation(ctx, adapter, options.start, conversationOptions{

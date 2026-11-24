@@ -266,8 +266,8 @@ func TestReadLegacyRunFixtureWithoutRunState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Read() legacy fixture error = %v", err)
 	}
-	if !IsRunDirectory(runDir) || record.HasState {
-		t.Fatalf("legacy directory validation/state = (%t, %t), want valid and no state", IsRunDirectory(runDir), record.HasState)
+	if !IsRunDirectory(runDir) || record.HasState || len(record.Activities) != 0 {
+		t.Fatalf("legacy directory validation/state/activities = (%t, %t, %d), want valid and no state or Activity spans", IsRunDirectory(runDir), record.HasState, len(record.Activities))
 	}
 	if record.Metadata.Kind != Implement || record.Metadata.Branch != "feat/implementer-session-resume" ||
 		record.Metadata.BranchPoint != "b2662efdc2856d6eb55af72123269d2fe083546a" ||

@@ -71,6 +71,7 @@ type memoryRunRecorder struct {
 	dir         string
 	files       map[string]string
 	states      []runrecord.State
+	activities  []runrecord.ActivityEvent
 	usage       []usage.Entry
 	sessions    []string
 	sessionKeys map[sessionKey]struct{}
@@ -154,6 +155,16 @@ func (r *memoryRunRecorder) RecordNoGate(iteration int) (string, error) {
 
 func (r *memoryRunRecorder) RecordState(state runrecord.State) {
 	r.states = append(r.states, state)
+}
+
+func (r *memoryRunRecorder) RecordActivityStart(start runrecord.ActivitySpanStart) error {
+	r.activities = append(r.activities, runrecord.ActivityEvent{Type: runrecord.ActivityStart, Start: &start})
+	return nil
+}
+
+func (r *memoryRunRecorder) RecordActivityEnd(end runrecord.ActivitySpanEnd) error {
+	r.activities = append(r.activities, runrecord.ActivityEvent{Type: runrecord.ActivityEnd, End: &end})
+	return nil
 }
 
 func (r *memoryRunRecorder) RecordUsage(entry usage.Entry) error {

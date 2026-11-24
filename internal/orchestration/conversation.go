@@ -61,6 +61,7 @@ type QuestionHandler struct {
 	notifier      Notifier
 	target        string
 	stateObserver questionStateObserver
+	span          *ui.ActivitySpanView
 }
 
 type harnessStreamResult struct {
@@ -95,8 +96,18 @@ func (h *QuestionHandler) Handle(ctx context.Context, question string) (string, 
 	return h.handle(ctx, "harness", question)
 }
 
+func (h *QuestionHandler) setActivitySpan(span *ui.ActivitySpanView) {
+	if h != nil {
+		h.span = span
+	}
+}
+
 func (h *QuestionHandler) handle(ctx context.Context, role, question string) (string, error) {
 	role = questionRole(role)
+	if h.span != nil {
+		h.span.Pause()
+		defer h.span.Resume()
+	}
 	if h.stateObserver != nil {
 		h.stateObserver.questionAsked(question)
 	}
@@ -109,6 +120,9 @@ func (h *QuestionHandler) handle(ctx context.Context, role, question string) (st
 	answer, err := h.readAnswer()
 	if err != nil {
 		return "", err
+	}
+	if h.span != nil {
+		h.span.RecordOutput(answer + "\n")
 	}
 	if h.stateObserver != nil {
 		h.stateObserver.questionAnswered()
@@ -166,8 +180,12 @@ func (h *QuestionHandler) printQuestion(role, question string) error {
 	if h.output == nil {
 		return nil
 	}
-	if _, err := fmt.Fprintf(h.output, "\n---\n%s question on %s\n%s\nanswer> ", role, h.target, question); err != nil {
+	value := fmt.Sprintf("\n---\n%s question on %s\n%s\nanswer> ", role, h.target, question)
+	if _, err := io.WriteString(h.output, value); err != nil {
 		return fmt.Errorf("print harness question: %w", err)
+	}
+	if h.span != nil {
+		h.span.RecordOutput(value)
 	}
 	return nil
 }
@@ -176,8 +194,12 @@ func (h *QuestionHandler) printAnswerPrompt() error {
 	if h.output == nil {
 		return nil
 	}
-	if _, err := io.WriteString(h.output, "\nanswer> "); err != nil {
+	value := "\nanswer> "
+	if _, err := io.WriteString(h.output, value); err != nil {
 		return fmt.Errorf("print harness answer prompt: %w", err)
+	}
+	if h.span != nil {
+		h.span.RecordOutput(value)
 	}
 	return nil
 }
@@ -186,8 +208,12 @@ func (h *QuestionHandler) printEmptyAnswerHint() error {
 	if h.output == nil {
 		return nil
 	}
-	if _, err := io.WriteString(h.output, "\nanswer cannot be empty; please try again\nanswer> "); err != nil {
+	value := "\nanswer cannot be empty; please try again\nanswer> "
+	if _, err := io.WriteString(h.output, value); err != nil {
 		return fmt.Errorf("print harness answer hint: %w", err)
+	}
+	if h.span != nil {
+		h.span.RecordOutput(value)
 	}
 	return nil
 }
@@ -196,8 +222,12 @@ func (h *QuestionHandler) printResume(role string) error {
 	if h.output == nil {
 		return nil
 	}
-	if _, err := fmt.Fprintf(h.output, "\nanswer sent — resuming %s…\n--- %s output resumes ---\n", roleNoun(role), role); err != nil {
+	value := fmt.Sprintf("\nanswer sent — resuming %s…\n--- %s output resumes ---\n", roleNoun(role), role)
+	if _, err := io.WriteString(h.output, value); err != nil {
 		return fmt.Errorf("print harness resume confirmation: %w", err)
+	}
+	if h.span != nil {
+		h.span.RecordOutput(value)
 	}
 	return nil
 }
@@ -357,7 +387,7 @@ func consumeHarnessStreamWithArtifact(
 	var pendingRaw []harness.Event
 	var artifactPendingRaw []harness.Event
 	artifactMode := mode
-	if mode == QuietHarnessOutput {
+	if mode == ProgressHarnessOutput {
 		artifactMode = ParsedHarnessOutput
 	}
 	state := harnessStreamState{
@@ -380,7 +410,7 @@ func consumeHarnessStreamWithArtifact(
 		}, nil
 	}
 
-	if err := flushHarnessStream(parser, &state, output, artifact, mode, pendingRaw, artifactPendingRaw); err != nil {
+	if err := flushHarnessStream(parser, &state, output, artifact, mode, artifactMode, pendingRaw, artifactPendingRaw); err != nil {
 		return currentHarnessStreamResult(&state, sessionIDs), err
 	}
 	if err := finishHarnessOutput(output); err != nil {
@@ -422,7 +452,7 @@ func consumeHarnessEvents(events <-chan harness.Event, stream harness.Stream, st
 	return false, nil
 }
 
-func flushHarnessStream(parser *questionParser, state *harnessStreamState, output, artifact io.Writer, mode HarnessOutputMode, pendingRaw, artifactPendingRaw []harness.Event) error {
+func flushHarnessStream(parser *questionParser, state *harnessStreamState, output, artifact io.Writer, mode, artifactMode HarnessOutputMode, pendingRaw, artifactPendingRaw []harness.Event) error {
 	if err := flushRawEvents(output, pendingRaw); err != nil {
 		return err
 	}
@@ -439,7 +469,7 @@ func flushHarnessStream(parser *questionParser, state *harnessStreamState, outpu
 			return err
 		}
 	}
-	if artifact == nil || mode == RawHarnessOutput {
+	if artifact == nil || artifactMode == RawHarnessOutput {
 		return nil
 	}
 	return writeParsedEvent(artifact, harness.Event{Type: harness.EventAssistantText, Text: flush})
@@ -515,12 +545,12 @@ func renderHarnessEvent(output io.Writer, mode HarnessOutputMode, event harness.
 	if mode == RawHarnessOutput {
 		return renderRawHarnessEvent(output, event, parsed, parser, pendingRaw)
 	}
-	if renderer, ok := output.(harnessEventRenderer); ok && pausesActivity(event, parsed) {
+	if renderer, ok := output.(harnessEventRenderer); ok && mode != ProgressHarnessOutput && pausesActivity(event, parsed) {
 		if err := renderer.BeforeEvent(); err != nil {
 			return err
 		}
 	}
-	return renderParsedHarnessEvent(output, event, parsed)
+	return renderParsedHarnessEvent(output, mode, event, parsed)
 }
 
 func pausesActivity(event harness.Event, parsed questionParseResult) bool {
@@ -530,7 +560,17 @@ func pausesActivity(event harness.Event, parsed questionParseResult) bool {
 	return event.Type == harness.EventResult && parsed.VisibleText != ""
 }
 
-func renderParsedHarnessEvent(output io.Writer, event harness.Event, parsed questionParseResult) error {
+func renderParsedHarnessEvent(output io.Writer, mode HarnessOutputMode, event harness.Event, parsed questionParseResult) error {
+	if mode == ProgressHarnessOutput {
+		if event.Type != harness.EventToolUse {
+			return nil
+		}
+		renderer, ok := output.(harnessEventRenderer)
+		if !ok {
+			return nil
+		}
+		return renderer.Tool(event.ToolName, event.ArgumentGist)
+	}
 	visibleEvent := event
 	visibleEvent.Text = parsed.VisibleText
 	return writeParsedEvent(output, visibleEvent)
@@ -585,7 +625,7 @@ func startHarnessTurn(output io.Writer) {
 	renderer.StartTurn()
 }
 
-func newLiveHarnessOutput(output io.Writer, mode HarnessOutputMode, role string) io.Writer {
+func newLiveHarnessOutput(output io.Writer, mode HarnessOutputMode, role string, span *ui.ActivitySpanView) io.Writer {
 	if mode == RawHarnessOutput {
 		return output
 	}
@@ -593,16 +633,19 @@ func newLiveHarnessOutput(output io.Writer, mode HarnessOutputMode, role string)
 	return ui.NewStream(output, caps, ui.StreamOptions{
 		Gutter:    liveHarnessGutter(caps),
 		ShowTools: mode == ParsedHarnessOutput,
-		Activity:  mode == QuietHarnessOutput,
+		Span:      span,
 		Role:      role,
 	})
 }
 
-func liveHarnessGutter(caps ui.Caps) string {
-	if !caps.Color || caps.Width <= 0 {
-		return ""
+func harnessOutputMode(verbose, raw bool) HarnessOutputMode {
+	if raw {
+		return RawHarnessOutput
 	}
-	return "│ "
+	if verbose {
+		return ParsedHarnessOutput
+	}
+	return ProgressHarnessOutput
 }
 
 func writeRoleSection(output io.Writer, role string) error {
@@ -610,7 +653,17 @@ func writeRoleSection(output io.Writer, role string) error {
 	if !caps.Color || caps.Width <= 0 {
 		return nil
 	}
-	return ui.New(output, caps).Section(role)
+	if err := ui.New(output, caps).Section(role); err != nil {
+		return fmt.Errorf("write %s role section: %w", strings.ToLower(role), err)
+	}
+	return nil
+}
+
+func liveHarnessGutter(caps ui.Caps) string {
+	if !caps.Color || caps.Width <= 0 {
+		return ""
+	}
+	return "│ "
 }
 
 func newPlainHarnessOutput(output io.Writer, mode HarnessOutputMode) io.Writer {

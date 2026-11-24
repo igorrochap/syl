@@ -91,8 +91,16 @@ The lifecycle outcome a Run records for itself: running, approved, exhausted (a 
 _Avoid_: result, state
 
 **Activity**:
-What a running Run is doing right now: preparing, implementing, verifying, reviewing, or awaiting-answer. Distinct from Role — preparing, verifying, and awaiting-answer belong to no Role.
+What a running Run is doing right now: preparing, implementing, verifying, reviewing, or awaiting-answer. When an Activity span is open and no question is pending, a Run's current Activity equals the Activity of its innermost open span; while a question is pending, the Activity is awaiting-answer and the Role span remains open. Distinct from Role — preparing, verifying, and awaiting-answer belong to no Role.
 _Avoid_: stage, step, phase
+
+**Activity span**:
+One recorded, timed occurrence of an Activity in a Run. An Activity span can have child spans.
+_Avoid_: progress line, activity entry
+
+**Activity log**:
+The append-only file of Activity spans in a Run record.
+_Avoid_: activity transcript
 
 **Live-run marker**:
 A user-level pointer a Run creates when it starts and removes when it ends, so what is running right now can be found without walking any Project's history. Points to the Run; holds none of its state. A marker whose Run is Interrupted is an orphan, and dismissing it never touches the Run.

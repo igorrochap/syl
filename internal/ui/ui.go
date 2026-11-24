@@ -19,6 +19,7 @@ import (
 type Caps struct {
 	Color   bool
 	Width   int
+	Height  int
 	Unicode bool
 }
 
@@ -527,7 +528,7 @@ func DetectCaps(output io.Writer) Caps {
 	}
 
 	caps.Color = true
-	caps.Width = terminalWidth(fileDescriptor)
+	caps.Width, caps.Height = terminalSize(fileDescriptor)
 	return caps
 }
 
@@ -553,10 +554,10 @@ func terminalFileDescriptor(output io.Writer) (uintptr, bool) {
 	return 0, false
 }
 
-func terminalWidth(fileDescriptor uintptr) int {
-	width, _, err := term.GetSize(fileDescriptor)
-	if err != nil || width < 1 {
-		return 0
+func terminalSize(fileDescriptor uintptr) (int, int) {
+	width, height, err := term.GetSize(fileDescriptor)
+	if err != nil || width < 1 || height < 1 {
+		return 0, 0
 	}
-	return width
+	return width, height
 }

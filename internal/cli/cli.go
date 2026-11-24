@@ -39,6 +39,7 @@ type Dependencies struct {
 	Updater       updater.Runner
 	BrowserOpener func(url string) error
 	Listen        func(network, address string) (net.Listener, error)
+	Clock         ui.Clock
 }
 
 type App struct {
@@ -53,6 +54,7 @@ type implementCommandOptions struct {
 	additionalContext string
 	reviewContext     string
 	verbose           bool
+	raw               bool
 	useWorktree       bool
 	base              string
 	publishOnApprove  bool
@@ -275,6 +277,7 @@ func (a *App) syncCommand() *cobra.Command {
 }
 
 func (a *App) implementCommand() *cobra.Command {
+	var raw bool
 	var verbose bool
 	var additionalContext string
 	var reviewContext string
@@ -296,18 +299,21 @@ func (a *App) implementCommand() *cobra.Command {
 				additionalContext: additionalContext,
 				reviewContext:     reviewContext,
 				verbose:           verbose,
+				raw:               raw,
 				useWorktree:       useWorktree,
 				base:              base,
 				publishOnApprove:  publishOnApprove,
 			})
 		},
 	}
-	command.Flags().BoolVar(&verbose, "verbose", false, "stream assistant prose in addition to progress output")
+	command.Flags().BoolVar(&verbose, "verbose", false, "stream assistant prose and tool lines under Activity spans")
+	command.Flags().BoolVar(&raw, "raw", false, "pass the harness output through untouched")
 	command.Flags().StringVar(&additionalContext, "implement-context", "", "additional context for the implementer Role")
 	command.Flags().StringVar(&reviewContext, "review-context", "", "additional context for the reviewer Role")
 	command.Flags().BoolVar(&useWorktree, "worktree", false, "run in a dedicated worktree; fresh worktrees contain only the tracked tree, so use [worktree] setup to provision dependencies")
 	command.Flags().StringVar(&base, "base", "", "branch the worktree from this ref (defaults to HEAD)")
 	command.Flags().BoolVar(&publishOnApprove, "pr-on-approve", false, "commit, push, and open a draft pull request after approval")
+	command.MarkFlagsMutuallyExclusive("raw", "verbose")
 	return command
 }
 
@@ -370,6 +376,8 @@ func (a *App) runImplementLoop(
 		Context:             commandOptions.additionalContext,
 		ReviewContext:       commandOptions.reviewContext,
 		Verbose:             commandOptions.verbose,
+		Raw:                 commandOptions.raw,
+		Clock:               a.deps.Clock,
 		PublishOnApprove:    commandOptions.publishOnApprove,
 		ProvisionedWorktree: provisionedWorktree,
 		IdentificationBanner: func(artifactDir string) error {
@@ -550,7 +558,7 @@ func (a *App) reviewCommand() *cobra.Command {
 			return orchestration.RunReview(cmd.Context(), orchestration.ReviewOptions{
 				OriginRoot: a.originRoot, WorkRoot: a.workRoot, OpenRun: orchestration.NewDiskRunOpener(a.originRoot, a.sylHome, cmd.ErrOrStderr()), ProjectConfig: projectConfig, IssueTracker: issueTracker,
 				Ticket: ticket, TicketRef: ticketRef, Context: additionalContext, Adapter: adapter, Input: cmd.InOrStdin(), Output: cmd.OutOrStdout(),
-				Raw: raw, Verbose: verbose, Notifier: a.notifier(projectConfig.Notifications.Enabled), Git: a.gitRunner(a.workRoot),
+				Raw: raw, Verbose: verbose, Clock: a.deps.Clock, Notifier: a.notifier(projectConfig.Notifications.Enabled), Git: a.gitRunner(a.workRoot),
 				TranscriptUsage: projectConfig.Roles.Review.Harness == config.HarnessClaude,
 				IdentificationBanner: func() error {
 					heading := "syl review — working tree"
@@ -570,7 +578,7 @@ func (a *App) reviewCommand() *cobra.Command {
 		},
 	}
 	command.Flags().BoolVar(&raw, "raw", false, "pass the harness output through untouched")
-	command.Flags().BoolVar(&verbose, "verbose", false, "stream assistant prose in addition to progress output")
+	command.Flags().BoolVar(&verbose, "verbose", false, "stream assistant prose and tool lines under Activity spans")
 	command.Flags().StringVar(&additionalContext, "context", "", "additional context for the reviewer Role")
 	command.MarkFlagsMutuallyExclusive("raw", "verbose")
 	return command

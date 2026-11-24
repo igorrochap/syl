@@ -86,11 +86,12 @@ func lineMarkerPrefixLength(value, marker string) int {
 type reviewProgressWriter struct {
 	output      io.Writer
 	parser      *streamMarkerParser
+	mode        HarnessOutputMode
 	atLineStart bool
 }
 
-func newReviewProgressWriter(output io.Writer) *reviewProgressWriter {
-	return &reviewProgressWriter{output: output, parser: newStreamMarkerParser(verdict.BlockStartMarker), atLineStart: true}
+func newReviewProgressWriter(output io.Writer, mode HarnessOutputMode) *reviewProgressWriter {
+	return &reviewProgressWriter{output: output, parser: newStreamMarkerParser(verdict.BlockStartMarker), mode: mode, atLineStart: true}
 }
 
 func (w *reviewProgressWriter) Unwrap() io.Writer {
@@ -120,6 +121,10 @@ func (w *reviewProgressWriter) StartTurn() {
 }
 
 func (w *reviewProgressWriter) Assistant(text string) error {
+	if w.mode == RawHarnessOutput {
+		_, err := io.WriteString(w.output, text)
+		return err
+	}
 	return w.writeVisible(w.parser.Feed(text))
 }
 
@@ -186,7 +191,7 @@ func (w *reviewProgressWriter) EndTurn() error {
 }
 
 func (w *reviewProgressWriter) writeVisible(visible string) error {
-	if visible == "" {
+	if visible == "" || w.mode == ProgressHarnessOutput {
 		return nil
 	}
 	if renderer, ok := w.output.(harnessEventRenderer); ok {

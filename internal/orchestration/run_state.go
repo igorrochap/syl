@@ -3,6 +3,8 @@ package orchestration
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/igorrochap/syl/internal/runrecord"
@@ -12,6 +14,8 @@ type runStateTracker struct {
 	recorder         RunRecorder
 	state            runrecord.State
 	previousActivity runrecord.Activity
+	openSpans        []runrecord.ActivitySpanStart
+	nextSpanID       int
 	finalized        bool
 }
 
@@ -46,18 +50,63 @@ func (r *runStateTracker) setActivity(activity runrecord.Activity) {
 	r.save()
 }
 
-func (r *runStateTracker) startActivity(iteration int, activity runrecord.Activity) {
+func (r *runStateTracker) startActivitySpan(
+	iteration int,
+	activity runrecord.Activity,
+	label string,
+	startedAt time.Time,
+) (runrecord.ActivitySpanStart, error) {
 	if r.finalized {
-		return
+		return runrecord.ActivitySpanStart{}, errors.New("start Activity span after Run finished")
 	}
-	changed := r.state.Iteration != iteration || r.state.Activity != activity || r.state.Question != ""
-	if !changed {
-		return
+	r.nextSpanID++
+	parentSpanID := ""
+	if len(r.openSpans) > 0 {
+		parentSpanID = r.openSpans[len(r.openSpans)-1].SpanID
 	}
-	r.state.Iteration = iteration
+	iterationValue := ""
+	if iteration > 0 {
+		iterationValue = strconv.Itoa(iteration)
+	}
+	start := runrecord.ActivitySpanStart{
+		SpanID: fmt.Sprintf("span-%06d", r.nextSpanID), ParentSpanID: parentSpanID,
+		Activity: activity, Iteration: iterationValue, Label: label, StartedAt: startedAt,
+	}
+	if err := r.recorder.RecordActivityStart(start); err != nil {
+		return runrecord.ActivitySpanStart{}, fmt.Errorf("record Activity span start: %w", err)
+	}
+	r.openSpans = append(r.openSpans, start)
+	if iteration > 0 {
+		r.state.Iteration = iteration
+	}
 	r.state.Activity = activity
 	r.state.Question = ""
 	r.save()
+	return start, nil
+}
+
+func (r *runStateTracker) endActivitySpan(spanID string, outcome activitySpanOutcome, endedAt time.Time) error {
+	if len(r.openSpans) == 0 {
+		return errors.New("end Activity span: no span is open")
+	}
+	last := r.openSpans[len(r.openSpans)-1]
+	if last.SpanID != spanID {
+		return fmt.Errorf("end Activity span %q: innermost open span is %q", spanID, last.SpanID)
+	}
+	writeErr := r.recorder.RecordActivityEnd(runrecord.ActivitySpanEnd{
+		SpanID: spanID, EndedAt: endedAt, Outcome: string(outcome),
+	})
+	r.openSpans = r.openSpans[:len(r.openSpans)-1]
+	r.state.Activity = ""
+	if openCount := len(r.openSpans); openCount > 0 {
+		r.state.Activity = r.openSpans[openCount-1].Activity
+	}
+	r.state.Question = ""
+	r.save()
+	if writeErr != nil {
+		return fmt.Errorf("record Activity span end: %w", writeErr)
+	}
+	return nil
 }
 
 func (r *runStateTracker) setExhaustionReason(reason string) {
@@ -90,7 +139,11 @@ func (r *runStateTracker) questionAnswered() {
 	if r.finalized {
 		return
 	}
-	r.state.Activity = r.previousActivity
+	if len(r.openSpans) > 0 {
+		r.state.Activity = r.openSpans[len(r.openSpans)-1].Activity
+	} else {
+		r.state.Activity = r.previousActivity
+	}
 	r.state.Question = ""
 	r.save()
 }

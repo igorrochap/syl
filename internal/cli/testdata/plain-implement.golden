@@ -3,9 +3,11 @@ syl implement #42 — Add resilient workflow
   reviewer:        claude · claude-sonnet-5 · effort medium
   max iterations:  3
   run artifacts:   .syl/runs/<run-dir>
-◆ iteration 1/3 — implementing
+starting 1/3 — implementing
 Implementer is working.
-◆ iteration 1/3 — reviewing
+finished 1/3 — implementing — completed (0.0s)
+starting 1/3 — reviewing
+finished 1/3 — reviewing — completed (0.0s)
 VERDICT: approve
 SUMMARY: The working tree is ready
 FINDINGS:

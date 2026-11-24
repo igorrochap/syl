@@ -36,6 +36,7 @@ func TestImplementOutputMatchesPlainAndStyledGolden(t *testing.T) {
 				t.Setenv("NO_COLOR", "1")
 			}
 			fixture := newImplementLoopFixture(t)
+			fixture.app.deps.Clock = fixedActivityClock{}
 			loop := &loopHarness{
 				root: fixture.root,
 				streams: [][]harness.Event{
@@ -63,6 +64,54 @@ func TestImplementOutputMatchesPlainAndStyledGolden(t *testing.T) {
 			}
 			actual := normalizeImplementGoldenOutput(output.(interface{ String() string }).String())
 			assertCLIGolden(t, test.name+"-implement.golden", []byte(actual))
+		})
+	}
+}
+
+func TestImplementDefaultOutputMatchesPlainAndStyledGolden(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		styled bool
+	}{
+		{name: "plain"},
+		{name: "styled", styled: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if test.styled {
+				t.Setenv("NO_COLOR", "")
+			} else {
+				t.Setenv("NO_COLOR", "1")
+			}
+			fixture := newImplementLoopFixture(t)
+			fixture.app.deps.Clock = fixedActivityClock{}
+			loop := &loopHarness{
+				root: fixture.root,
+				streams: [][]harness.Event{
+					{
+						{Type: harness.EventSession, SessionID: "implement-session"},
+						{Type: harness.EventToolUse, ToolName: "Bash", ArgumentGist: "go test ./..."},
+						{Type: harness.EventAssistantText, Text: "Implementer internal prose.\n"},
+					},
+					{
+						{Type: harness.EventSession, SessionID: "review-session"},
+						{Type: harness.EventAssistantText, Text: "Reviewer internal prose.\n" + approveVerdictText},
+					},
+				},
+			}
+			fixture.harnesses["codex"] = loop
+			fixture.harnesses["claude"] = loop
+			fixture.app.deps.GH = fixedGH(&loopGHRunner{})
+
+			var output io.Writer = &strings.Builder{}
+			if test.styled {
+				output = newStyledTerminalCapture(t)
+			}
+			code := fixture.app.Run(context.Background(), []string{"implement", "#42"}, output, &fixture.stderr)
+			if code != 0 {
+				t.Fatalf("implement code = %d, stderr = %q", code, fixture.stderr.String())
+			}
+			actual := normalizeImplementGoldenOutput(output.(interface{ String() string }).String())
+			assertCLIGolden(t, test.name+"-default-implement.golden", []byte(actual))
 		})
 	}
 }
@@ -143,6 +192,23 @@ func TestImplementLoopApprovesOnFirstIteration(t *testing.T) {
 	runDirs, err := filepath.Glob(filepath.Join(fixture.root, ".syl", "runs", "*-42"))
 	if err != nil || len(runDirs) != 1 {
 		t.Fatalf("run directories = %v, err = %v; want one issue artifact directory", runDirs, err)
+	}
+	for _, artifact := range []struct {
+		name string
+		want string
+	}{
+		{name: "iteration-01-implement.feed", want: "Implemented the ticket.\n"},
+		{name: "iteration-01-implement.transcript", want: "Implemented the ticket.\n"},
+		{name: "iteration-01-review.feed", want: approveVerdictText},
+		{name: "iteration-01-review.transcript", want: approveVerdictText},
+	} {
+		contents, err := os.ReadFile(filepath.Join(runDirs[0], artifact.name))
+		if err != nil {
+			t.Fatalf("read %s: %v", artifact.name, err)
+		}
+		if string(contents) != artifact.want {
+			t.Errorf("%s = %q, want current parsed harness content %q", artifact.name, contents, artifact.want)
+		}
 	}
 	artifactText := readAllFiles(t, runDirs[0])
 	for _, expected := range []string{"implement-session", "review-session", "VERDICT: approve"} {
@@ -1394,6 +1460,7 @@ func TestImplementLoopStreamsImplementerAndReviewerProgress(t *testing.T) {
 }
 
 func TestImplementLoopQuietlyShowsProgressWithoutToolCalls(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
 	fixture := newImplementLoopFixture(t)
 	loop := &loopHarness{
 		root: fixture.root,
@@ -1415,17 +1482,18 @@ func TestImplementLoopQuietlyShowsProgressWithoutToolCalls(t *testing.T) {
 	fixture.harnesses["claude"] = loop
 	fixture.app.deps.GH = fixedGH(&loopGHRunner{})
 
-	code := fixture.app.Run(context.Background(), []string{"implement", "#42"}, &fixture.stdout, &fixture.stderr)
+	terminal := newStyledTerminalCapture(t)
+	code := fixture.app.Run(context.Background(), []string{"implement", "#42"}, terminal, &fixture.stderr)
 	if code != 0 {
 		t.Fatalf("implement code = %d, stderr = %q", code, fixture.stderr.String())
 	}
 
-	output := fixture.stdout.String()
+	output := terminal.String()
 	for _, expected := range []string{
-		"iteration 1/3 — implementing",
-		"iteration 1/3 — reviewing",
-		"Implementer internal prose.",
-		"Reviewer internal prose.",
+		"1/3 — implementing",
+		"1/3 — reviewing",
+		"edit — change.txt",
+		"cat — iteration review diff",
 		"VERDICT: approve",
 		"SUMMARY: The working tree is ready",
 	} {
@@ -1433,13 +1501,75 @@ func TestImplementLoopQuietlyShowsProgressWithoutToolCalls(t *testing.T) {
 			t.Fatalf("stdout = %q, want %q", output, expected)
 		}
 	}
-	if strings.Contains(output, "│ ") || strings.Contains(output, "◆ Implementer") || strings.Contains(output, "◆ Reviewer") {
-		t.Fatalf("stdout = %q, want plain output without role decoration", output)
-	}
-	for _, suppressed := range []string{"tool: edit — change.txt", "tool: cat — iteration review diff"} {
+	for _, suppressed := range []string{
+		"Implementer internal prose.", "Reviewer internal prose.", "tool: edit", "tool: cat",
+	} {
 		if strings.Contains(output, suppressed) {
 			t.Fatalf("stdout = %q, want tool call %q suppressed", output, suppressed)
 		}
+	}
+	if !strings.Contains(output, "\r\x1b[K") {
+		t.Fatalf("stdout = %q, want terminal live-region redraws", output)
+	}
+}
+
+func TestImplementRawPassesHarnessEventsWithoutActivityLines(t *testing.T) {
+	fixture := newImplementLoopFixture(t)
+	implementRaw := `{"type":"assistant","message":"implement raw"}` + "\n"
+	reviewRaw := `{"type":"assistant","message":"review raw"}` + "\n"
+	loop := &loopHarness{
+		root: fixture.root,
+		streams: [][]harness.Event{
+			{{Type: harness.EventAssistantText, Text: "implemented", Raw: implementRaw}},
+			{{Type: harness.EventAssistantText, Text: approveVerdictText, Raw: reviewRaw}},
+		},
+	}
+	fixture.harnesses["codex"] = loop
+	fixture.harnesses["claude"] = loop
+	fixture.app.deps.GH = fixedGH(&loopGHRunner{})
+
+	code := fixture.app.Run(context.Background(), []string{"implement", "--raw", "#42"}, &fixture.stdout, &fixture.stderr)
+	if code != 0 {
+		t.Fatalf("implement code = %d, stderr = %q", code, fixture.stderr.String())
+	}
+	output := fixture.stdout.String()
+	for _, rawLine := range []string{implementRaw, reviewRaw} {
+		if !strings.Contains(output, rawLine) {
+			t.Fatalf("stdout = %q, want untouched harness line %q", output, rawLine)
+		}
+	}
+	if strings.Contains(output, "starting ") || strings.Contains(output, "finished ") || strings.Contains(output, "⠋") {
+		t.Fatalf("stdout = %q, want no Activity span lines in raw mode", output)
+	}
+	runDirs, err := filepath.Glob(filepath.Join(fixture.root, ".syl", "runs", "*-42"))
+	if err != nil || len(runDirs) != 1 {
+		t.Fatalf("run directories = %v, error = %v; want one Run", runDirs, err)
+	}
+	for _, artifact := range []struct {
+		name string
+		want string
+	}{
+		{name: "iteration-01-implement.feed", want: implementRaw},
+		{name: "iteration-01-review.feed", want: reviewRaw},
+	} {
+		contents, err := os.ReadFile(filepath.Join(runDirs[0], artifact.name))
+		if err != nil {
+			t.Fatalf("read %s: %v", artifact.name, err)
+		}
+		if string(contents) != artifact.want {
+			t.Errorf("%s = %q, want unchanged raw harness content %q", artifact.name, contents, artifact.want)
+		}
+	}
+}
+
+func TestImplementRawAndVerboseAreMutuallyExclusive(t *testing.T) {
+	fixture := newImplementLoopFixture(t)
+	code := fixture.app.Run(context.Background(), []string{"implement", "--raw", "--verbose", "#42"}, &fixture.stdout, &fixture.stderr)
+	if code == 0 || !strings.Contains(fixture.stderr.String(), "[raw verbose]") {
+		t.Fatalf("implement code = %d, stderr = %q, want mutually-exclusive flag error", code, fixture.stderr.String())
+	}
+	if fixture.stdout.String() != "" {
+		t.Fatalf("stdout = %q, want no output for invalid flag combination", fixture.stdout.String())
 	}
 }
 
@@ -1990,7 +2120,7 @@ func TestImplementLoopStillIteratesForNitOnlyRevisionAndSummarizesNits(t *testin
 	if strings.Contains(finalSummary, "style could be clearer") {
 		t.Fatalf("final summary = %q, want earlier nit omitted", finalSummary)
 	}
-	if !strings.Contains(fixture.stdout.String(), "iteration 2/3 — revising 1 finding(s)") {
+	if !strings.Contains(fixture.stdout.String(), "starting 2/3 — revising 1 finding(s)") {
 		t.Fatalf("stdout = %q, want revision transition with one finding", fixture.stdout.String())
 	}
 	if got := strings.Count(fixture.stdout.String(), "style could be clearer"); got != 1 {
@@ -2118,8 +2248,8 @@ func TestImplementLoopCapReturnsNonZeroAfterThreeRevisions(t *testing.T) {
 		t.Fatalf("stdout = %q, want capped revise summary", fixture.stdout.String())
 	}
 	for _, expected := range []string{
-		"iteration 2/3 — revising 1 finding(s)",
-		"iteration 3/3 — revising 1 finding(s)",
+		"starting 2/3 — revising 1 finding(s)",
+		"starting 3/3 — revising 1 finding(s)",
 	} {
 		if !strings.Contains(fixture.stdout.String(), expected) {
 			t.Fatalf("stdout = %q, want %q", fixture.stdout.String(), expected)
@@ -2800,9 +2930,9 @@ func readAllFiles(t *testing.T, root string) string {
 		if info.IsDir() {
 			return nil
 		}
-		// Lifecycle timestamps and process metadata are intentionally run-specific;
+		// Lifecycle state and Activity spans contain run-specific timestamps;
 		// this helper compares the stable role artifacts.
-		if filepath.Base(path) == "run-state.json" {
+		if filepath.Base(path) == "run-state.json" || filepath.Base(path) == "activities.jsonl" {
 			return nil
 		}
 		data, err := os.ReadFile(path)
