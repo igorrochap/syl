@@ -893,6 +893,10 @@ func renderActivityFrame(label, gist string, elapsed time.Duration, frameIndex i
 		line += " — " + shortGist(gist, 48)
 	}
 	line += " (" + formatElapsed(elapsed) + ")"
+	return renderActivityTone(line, frameIndex)
+}
+
+func renderActivityTone(line string, frameIndex int) string {
 	tone := positiveModulo(frameIndex/activityToneFrameCount, len(activityToneStyles))
 	return activityToneStyles[tone].Render(line)
 }

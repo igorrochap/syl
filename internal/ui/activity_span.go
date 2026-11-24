@@ -185,7 +185,7 @@ func (view *ActivitySpanView) End(ended time.Time, outcome string) error {
 		view.mu.Unlock()
 		return fmt.Errorf("end Activity span: no span is active")
 	}
-	label, started := view.label, view.started
+	label, started, frame := view.label, view.started, view.frame
 	view.active = false
 	stopCh, doneCh := view.stopCh, view.doneCh
 	terminal := view.terminal
@@ -199,6 +199,9 @@ func (view *ActivitySpanView) End(ended time.Time, outcome string) error {
 		anchored, anchorVisible, rowsBelow, outputColumn := view.anchored, view.anchorVisible, view.rowsBelow, view.outputColumn
 		view.mu.Unlock()
 		line := terminalActivitySpanLine(label, ended.Sub(started), outcome)
+		if view.caps.Color {
+			line = renderActivityTone(line, frame)
+		}
 		if anchored {
 			if anchorVisible {
 				view.recordWriteError(view.writeTerminal(cursorUp(rowsBelow) + "\r\x1b[K" + line + cursorDown(rowsBelow) + "\r"))
@@ -256,6 +259,9 @@ func (view *ActivitySpanView) draw() {
 		return
 	}
 	line := renderActivitySpanFrame(label, gist, view.clock.Now().Sub(started), frame, view.caps.Width)
+	if view.caps.Color {
+		line = renderActivityTone(line, frame)
+	}
 	if anchored {
 		view.recordWriteError(view.writeTerminal(cursorUp(rowsBelow) + "\r\x1b[K" + line + cursorDown(rowsBelow) + "\r"))
 	} else {

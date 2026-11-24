@@ -212,7 +212,7 @@ func runStandaloneReview(ctx context.Context, options ReviewOptions, preparation
 	questions := NewQuestionHandler(options.Input, options.Output, options.TicketRef, notifier, preparation.runState)
 	preparation.runState.setIteration(1)
 	mode := harnessOutputMode(options.Verbose, options.Raw)
-	if mode == ParsedHarnessOutput {
+	if mode != RawHarnessOutput {
 		if err := writeRoleSection(options.Output, "Reviewer"); err != nil {
 			return standaloneReviewRun{}, fmt.Errorf("write review role: %w", err)
 		}

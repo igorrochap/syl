@@ -791,7 +791,7 @@ func ensureImplementRunState(params implementIterationsParams) *runStateTracker 
 
 func runImplementReview(ctx context.Context, params implementIterationsParams, reviewParams implementReviewParams) (ReviewExecution, error) {
 	label := fmt.Sprintf("%d/%d — reviewing", reviewParams.iteration, params.projectConfig.Loop.MaxIterations)
-	if reviewParams.mode == ParsedHarnessOutput {
+	if reviewParams.mode != RawHarnessOutput {
 		if err := writeRoleSection(params.output, "Reviewer"); err != nil {
 			return ReviewExecution{}, err
 		}
@@ -997,7 +997,7 @@ func runImplementTurn(
 	implementRequest := buildImplementRequest(params, turn)
 	activity := implementActivityLabel(turn)
 	label := fmt.Sprintf("%d/%d — %s", turn.iteration, params.projectConfig.Loop.MaxIterations, activity)
-	if turn.mode == ParsedHarnessOutput {
+	if turn.mode != RawHarnessOutput {
 		if err := writeRoleSection(params.output, "Implementer"); err != nil {
 			return implementExecution{}, err
 		}

@@ -115,6 +115,29 @@ func TestActivitySpanViewDefaultTerminalGolden(t *testing.T) {
 	}
 }
 
+func TestActivitySpanViewKeepsMutedColorForLiveAndPermanentLines(t *testing.T) {
+	previousTerminal := isTerminal
+	isTerminal = func(fd uintptr) bool { return fd == 42 }
+	t.Cleanup(func() { isTerminal = previousTerminal })
+	clock := &testClock{now: time.Date(2026, 11, 23, 18, 0, 0, 0, time.UTC)}
+	terminal := &testTerminal{}
+	span := NewActivitySpanView(terminal, Caps{Color: true, Width: 80}, clock, time.Second)
+	if err := span.Start("reviewing", clock.Now()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if err := span.End(clock.Now().Add(time.Second), "completed"); err != nil {
+		t.Fatalf("End() error = %v", err)
+	}
+
+	got := terminal.String()
+	for _, line := range []string{"⠋ reviewing (0.0s)", "reviewing (1.0s)"} {
+		want := activityToneStyles[0].Render(line)
+		if !strings.Contains(got, want) {
+			t.Errorf("terminal output = %q, want muted color around %q", got, line)
+		}
+	}
+}
+
 func TestActivitySpanViewFailureEndShowsOutcomeOnTerminal(t *testing.T) {
 	previousTerminal := isTerminal
 	isTerminal = func(fd uintptr) bool { return fd == 42 }
