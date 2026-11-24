@@ -898,7 +898,7 @@ func runImplementReview(ctx context.Context, params implementIterationsParams, r
 	if err != nil {
 		return ReviewExecution{}, err
 	}
-	params.questions.setActivitySpan(span.view)
+	params.questions.setActivitySpan(span)
 	defer params.questions.setActivitySpan(nil)
 	reviewOptions.span = span.view
 	reviewOptions.childSpans = span
@@ -1065,7 +1065,7 @@ func runImplementTurn(
 	if err != nil {
 		return implementExecution{}, err
 	}
-	params.questions.setActivitySpan(span.view)
+	params.questions.setActivitySpan(span)
 	implementStartedAt := span.start.StartedAt
 	implementResult, err := runImplementRoleWithResumeFallback(
 		ctx,

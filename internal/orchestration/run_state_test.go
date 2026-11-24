@@ -548,6 +548,42 @@ func TestRunImplementRecordsQuestionPauseAndResume(t *testing.T) {
 	if resumedState.Activity != runrecord.Implementing || resumedState.Question != "" {
 		t.Fatalf("resumed state = %#v, want implementing without question", resumedState)
 	}
+
+	activities, err := runrecord.ReadActivities(filepath.Dir(statePath()), nil)
+	if err != nil {
+		t.Fatalf("read Activity log: %v", err)
+	}
+	starts := make(map[string]runrecord.ActivitySpanStart)
+	ends := make(map[string]runrecord.ActivitySpanEnd)
+	for _, event := range activities {
+		if event.Start != nil {
+			starts[event.Start.SpanID] = *event.Start
+		}
+		if event.End != nil {
+			ends[event.End.SpanID] = *event.End
+		}
+	}
+	var questionSpan *runrecord.ActivitySpanStart
+	for _, start := range starts {
+		if start.Activity == runrecord.AwaitingAnswer {
+			questionSpan = &start
+			break
+		}
+	}
+	if questionSpan == nil {
+		t.Fatal("Activity log has no awaiting-answer child span")
+	}
+	parent, parentExists := starts[questionSpan.ParentSpanID]
+	if !parentExists || parent.Activity != runrecord.Implementing {
+		t.Fatalf("question span parent = %#v, want implementing Role span", parent)
+	}
+	if questionSpan.Label != "Which option?" || questionSpan.StartedAt.IsZero() {
+		t.Fatalf("question span = %#v, want full question and start time", questionSpan)
+	}
+	end, ended := ends[questionSpan.SpanID]
+	if !ended || end.Answer != "Use option A" || end.EndedAt.IsZero() || end.EndedAt.Before(questionSpan.StartedAt) {
+		t.Fatalf("question span end = %#v, want answer and end time after start", end)
+	}
 }
 
 func TestRunImplementRecordsQuestionPauseThroughMemoryOpenRun(t *testing.T) {

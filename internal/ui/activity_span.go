@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -123,10 +124,8 @@ func (view *ActivitySpanView) Start(label string, started time.Time) error {
 	view.childIndexes = make(map[string]int)
 	view.started = started
 	view.frame = 0
-	view.anchored = false
-	view.rowsBelow = 0
-	view.outputColumn = 0
-	view.renderedRows = 0
+	view.paused = false
+	view.resetLiveRegionLocked()
 	if view.terminal == nil {
 		view.mu.Unlock()
 		return view.writeLine("starting " + label)
@@ -138,6 +137,14 @@ func (view *ActivitySpanView) Start(label string, started time.Time) error {
 	view.draw()
 	go view.run(stopCh, doneCh)
 	return nil
+}
+
+func (view *ActivitySpanView) resetLiveRegionLocked() {
+	view.anchored = false
+	view.anchorVisible = false
+	view.rowsBelow = 0
+	view.outputColumn = 0
+	view.renderedRows = 0
 }
 
 // SubagentStarted adds a child span under the open Activity span. The caller
@@ -242,6 +249,45 @@ func (view *ActivitySpanView) Pause() {
 	}
 }
 
+// PauseForQuestion clears the live frame and leaves a static Role label before
+// the caller prints an awaiting-answer child span.
+func (view *ActivitySpanView) PauseForQuestion() error {
+	view.renderMu.Lock()
+	defer view.renderMu.Unlock()
+	view.mu.Lock()
+	if !view.active {
+		view.mu.Unlock()
+		return errors.New("pause Activity span for question: no span is active")
+	}
+	view.paused = true
+	if view.terminal == nil {
+		view.mu.Unlock()
+		return nil
+	}
+	label := view.label
+	renderedRows := max(1, view.renderedRows)
+	anchored := view.anchored
+	rowsBelow := view.rowsBelow
+	view.mu.Unlock()
+
+	start := renderedRows - 1
+	if anchored {
+		start = rowsBelow
+	}
+	value := cursorUp(start) + "\r\x1b[K" + label + "\n"
+	for range max(0, renderedRows-1) {
+		value += "\r\x1b[K\n"
+	}
+	if err := view.writeTerminal(value); err != nil {
+		return err
+	}
+
+	view.mu.Lock()
+	view.resetLiveRegionLocked()
+	view.mu.Unlock()
+	return nil
+}
+
 // Resume redraws the live region after verbose output.
 func (view *ActivitySpanView) Resume() {
 	view.mu.Lock()
@@ -252,6 +298,27 @@ func (view *ActivitySpanView) Resume() {
 	view.paused = false
 	view.mu.Unlock()
 	view.draw()
+}
+
+// ResumeAfterQuestion starts a fresh live region below the printed answer.
+func (view *ActivitySpanView) ResumeAfterQuestion() error {
+	view.renderMu.Lock()
+	defer view.renderMu.Unlock()
+	view.mu.Lock()
+	if !view.active || !view.paused {
+		view.mu.Unlock()
+		return nil
+	}
+	view.paused = false
+	view.resetLiveRegionLocked()
+	view.frame = 0
+	terminal := view.terminal
+	view.mu.Unlock()
+	if terminal == nil {
+		return view.writeLine("")
+	}
+	view.drawLocked()
+	return nil
 }
 
 // RecordOutput tracks lines written below the anchored span so redraws can
@@ -378,6 +445,10 @@ func (view *ActivitySpanView) run(stopCh chan struct{}, doneCh chan struct{}) {
 func (view *ActivitySpanView) draw() {
 	view.renderMu.Lock()
 	defer view.renderMu.Unlock()
+	view.drawLocked()
+}
+
+func (view *ActivitySpanView) drawLocked() {
 	view.mu.Lock()
 	if !view.active || view.paused || view.terminal == nil {
 		view.mu.Unlock()

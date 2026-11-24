@@ -4,10 +4,16 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/creack/pty"
 	"github.com/igorrochap/syl/internal/harness"
+	"github.com/igorrochap/syl/internal/runrecord"
+	"github.com/igorrochap/syl/internal/ui"
 	"github.com/igorrochap/syl/internal/verdict"
 )
 
@@ -584,6 +590,224 @@ func TestRunHarnessConversationRendersQuestionAndConfirmsResume(t *testing.T) {
 		t.Fatalf("transcript = %q, want question prefix and resumed output", result.Transcript)
 	}
 }
+
+func TestRunHarnessConversationQuestionOutputMatchesGolden(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		mode HarnessOutputMode
+	}{
+		{name: "default", mode: ProgressHarnessOutput},
+		{name: "verbose", mode: ParsedHarnessOutput},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			adapter := &scriptedConversationAdapter{
+				runs: [][]harness.Event{{
+					{Type: harness.EventSession, SessionID: "implement-session"},
+					{Type: harness.EventAssistantText, Text: "The implementation plan has a decision.\nQUESTION:\nWhich retry budget should apply per Gate attempt or per iteration?\nShould this be per iteration?\nEND QUESTION"},
+				}},
+				resumes: [][]harness.Event{{
+					{Type: harness.EventSession, SessionID: "implement-session"},
+					{Type: harness.EventAssistantText, Text: "The implementation continues."},
+				}},
+			}
+			var output strings.Builder
+			recorder := newMemoryRunRecorder()
+			state := newRunStateTracker(recorder, newRunState(RunSpec{Kind: runrecord.Implement}))
+			span, err := startActivitySpan(
+				state, &output, test.mode,
+				fixedConversationClock{now: time.Date(2026, 11, 24, 18, 0, 0, 0, time.UTC)},
+				1, runrecord.Implementing, "1/1 — implementing",
+			)
+			if err != nil {
+				t.Fatalf("start implementing Activity span: %v", err)
+			}
+			questions := NewQuestionHandler(strings.NewReader("Per iteration.\n"), &output, "#300", nil, nil)
+			questions.setActivitySpan(span)
+			defer questions.setActivitySpan(nil)
+			_, err = runHarnessConversation(context.Background(), adapter, func(ctx context.Context) (harness.Stream, error) {
+				return adapter.Run(ctx, harness.Request{})
+			}, conversationOptions{
+				output: &output, mode: test.mode, questions: questions, role: "implement",
+			})
+			if err != nil {
+				t.Fatalf("runHarnessConversation() error = %v", err)
+			}
+			if err := span.finish(context.Background(), nil); err != nil {
+				t.Fatalf("finish implementing Activity span: %v", err)
+			}
+
+			goldenPath := filepath.Join("testdata", "question-"+test.name+".golden")
+			want, err := os.ReadFile(goldenPath)
+			if err != nil {
+				t.Fatalf("read question golden: %v", err)
+			}
+			if got := output.String(); got != string(want) {
+				t.Fatalf("question output mismatch:\n got: %q\nwant: %q", got, string(want))
+			}
+		})
+	}
+}
+
+func TestVerboseQuestionAccountsForTerminalAnswerEchoBeforeResume(t *testing.T) {
+	master, terminal, err := pty.Open()
+	if err != nil {
+		t.Fatalf("open PTY: %v", err)
+	}
+	defer func() {
+		if err := master.Close(); err != nil {
+			t.Errorf("close PTY master: %v", err)
+		}
+	}()
+	terminalClosed := false
+	defer func() {
+		if !terminalClosed {
+			if err := terminal.Close(); err != nil {
+				t.Errorf("close PTY terminal: %v", err)
+			}
+		}
+	}()
+	if err := pty.Setsize(terminal, &pty.Winsize{Rows: 24, Cols: 80}); err != nil {
+		t.Fatalf("size PTY: %v", err)
+	}
+	outputCh := make(chan []byte, 1)
+	go func() {
+		output, _ := io.ReadAll(master)
+		outputCh <- output
+	}()
+
+	recorder := newMemoryRunRecorder()
+	state := newRunStateTracker(recorder, newRunState(RunSpec{Kind: runrecord.Implement}))
+	clock := fixedConversationClock{now: time.Date(2026, 11, 24, 18, 0, 0, 0, time.UTC)}
+	span, err := startActivitySpan(state, terminal, ParsedHarnessOutput, clock, 1, runrecord.Implementing, "1/1 — implementing")
+	if err != nil {
+		t.Fatalf("start implementing Activity span: %v", err)
+	}
+	questions := NewQuestionHandler(&terminalEchoReader{output: terminal, answer: "Per iteration.\n"}, terminal, "#300", nil, nil)
+	questions.setActivitySpan(span)
+	if _, err := questions.handle(context.Background(), "implement", "Which retry budget?", framedQuestionPresentation{}); err != nil {
+		t.Fatalf("handle verbose question: %v", err)
+	}
+	if err := span.finish(context.Background(), nil); err != nil {
+		t.Fatalf("finish implementing Activity span: %v", err)
+	}
+	if err := terminal.Close(); err != nil {
+		t.Fatalf("close PTY terminal: %v", err)
+	}
+	terminalClosed = true
+	output := <-outputCh
+	if !strings.Contains(string(output), "\x1b[9A\r\x1b[K") {
+		t.Fatalf("verbose terminal output = %q, want the live region redrawn nine rows above the cursor after the echoed answer", output)
+	}
+}
+
+func TestQuestionSpanClosesWhenAnswerReadFailsOrContextIsCancelled(t *testing.T) {
+	for _, test := range []struct {
+		name         string
+		cancelOnRead bool
+		wantOutcome  activitySpanOutcome
+	}{
+		{name: "read fails", wantOutcome: activitySpanFailed},
+		{name: "context is cancelled during read", cancelOnRead: true, wantOutcome: activitySpanCancelled},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			recorder := newMemoryRunRecorder()
+			state := newRunStateTracker(recorder, newRunState(RunSpec{Kind: runrecord.Implement}))
+			clock := fixedConversationClock{now: time.Date(2026, 11, 24, 18, 0, 0, 0, time.UTC)}
+			span, err := startActivitySpan(state, io.Discard, RawHarnessOutput, clock, 1, runrecord.Implementing, "1/1 — implementing")
+			if err != nil {
+				t.Fatalf("start implementing Activity span: %v", err)
+			}
+			ctx := context.Background()
+			var cancel context.CancelFunc
+			if test.cancelOnRead {
+				ctx, cancel = context.WithCancel(ctx)
+				defer cancel()
+			}
+			reader := questionInputErrorReader{
+				err: errors.New("terminal input read failed"),
+			}
+			if cancel != nil {
+				reader.onRead = cancel
+			}
+			questions := NewQuestionHandler(reader, io.Discard, "#300", nil, nil)
+			questions.setActivitySpan(span)
+
+			_, err = questions.handle(ctx, "implement", "Which option?", compactQuestionPresentation{})
+			if err == nil || !strings.Contains(err.Error(), "terminal input read failed") {
+				t.Fatalf("handle() error = %v, want terminal read error", err)
+			}
+			if finishErr := span.finish(ctx, err); !errors.Is(finishErr, err) {
+				t.Fatalf("finish implementing Activity span error = %v, want input error %v", finishErr, err)
+			}
+
+			var questionStart *runrecord.ActivitySpanStart
+			var questionEnd *runrecord.ActivitySpanEnd
+			for _, event := range recorder.activities {
+				if event.Start != nil && event.Start.Activity == runrecord.AwaitingAnswer {
+					questionStart = event.Start
+				}
+				if event.End != nil && event.End.Answer == "" && questionStart != nil && event.End.SpanID == questionStart.SpanID {
+					questionEnd = event.End
+				}
+			}
+			if questionStart == nil || questionEnd == nil {
+				t.Fatalf("Activity events = %#v, want a closed awaiting-answer span", recorder.activities)
+			}
+			if questionEnd.Outcome != string(test.wantOutcome) {
+				t.Fatalf("question span outcome = %q, want %q", questionEnd.Outcome, test.wantOutcome)
+			}
+			if questionEnd.EndedAt.Before(questionStart.StartedAt) {
+				t.Fatalf("question span end = %v before start %v", questionEnd.EndedAt, questionStart.StartedAt)
+			}
+		})
+	}
+}
+
+type questionInputErrorReader struct {
+	err    error
+	onRead func()
+}
+
+func (reader questionInputErrorReader) Read([]byte) (int, error) {
+	if reader.onRead != nil {
+		reader.onRead()
+	}
+	return 0, reader.err
+}
+
+type terminalEchoReader struct {
+	output io.Writer
+	answer string
+}
+
+func (reader *terminalEchoReader) Read(buffer []byte) (int, error) {
+	if reader.answer == "" {
+		return 0, io.EOF
+	}
+	n := copy(buffer, reader.answer)
+	if _, err := reader.output.Write([]byte(reader.answer[:n])); err != nil {
+		return 0, err
+	}
+	reader.answer = reader.answer[n:]
+	return n, nil
+}
+
+type fixedConversationClock struct {
+	now time.Time
+}
+
+func (clock fixedConversationClock) Now() time.Time {
+	return clock.now
+}
+
+func (fixedConversationClock) NewTicker(time.Duration) ui.Ticker {
+	return fixedConversationTicker{}
+}
+
+type fixedConversationTicker struct{}
+
+func (fixedConversationTicker) C() <-chan time.Time { return nil }
+func (fixedConversationTicker) Stop()               {}
 
 func TestQuestionAnswerSupportsBackslashContinuation(t *testing.T) {
 	adapter := &scriptedConversationAdapter{

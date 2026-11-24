@@ -30,6 +30,7 @@ type activitySpan struct {
 	iteration  int
 	children   map[string]*childActivitySpan
 	childOrder []string
+	question   *childActivitySpan
 	ended      bool
 }
 
@@ -147,24 +148,95 @@ func (span *activitySpan) SubagentStarted(id, label string) error {
 		return nil
 	}
 	startedAt := spanNow(span.clock)
-	start, err := span.state.startChildActivitySpan(
-		span.start.SpanID, span.iteration, span.start.Activity, label, startedAt,
-	)
+	child, err := span.registerChild(span.start.Activity, label, startedAt)
 	if err != nil {
 		return err
 	}
-	child := &childActivitySpan{start: start}
 	span.children[id] = child
 	span.childOrder = append(span.childOrder, id)
 	if span.view == nil {
 		return nil
 	}
 	if err := span.view.SubagentStarted(id, label, startedAt); err != nil {
-		child.ended = true
-		closeErr := span.state.endChildActivitySpan(start.SpanID, activitySpanFailed, spanNow(span.clock))
-		return errors.Join(err, closeErr)
+		return errors.Join(err, span.finishChild(child, activitySpanFailed, spanNow(span.clock), ""))
 	}
 	return nil
+}
+
+func (span *activitySpan) startAwaitingAnswer(question string) (*childActivitySpan, error) {
+	if span == nil || span.state == nil {
+		return nil, nil
+	}
+	child, err := span.registerChild(runrecord.AwaitingAnswer, question, spanNow(span.clock))
+	if err != nil {
+		return nil, err
+	}
+	span.question = child
+	return child, nil
+}
+
+func (span *activitySpan) registerChild(activity runrecord.Activity, label string, startedAt time.Time) (*childActivitySpan, error) {
+	start, err := span.state.startChildActivitySpan(
+		span.start.SpanID, span.iteration, activity, label, startedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return &childActivitySpan{start: start}, nil
+}
+
+func (span *activitySpan) finishAwaitingAnswer(child *childActivitySpan, answer string, outcome activitySpanOutcome) error {
+	if span == nil || span.state == nil || child == nil || child.ended {
+		return nil
+	}
+	if err := span.finishChild(child, outcome, spanNow(span.clock), answer); err != nil {
+		return fmt.Errorf("close awaiting-answer span %q: %w", child.start.SpanID, err)
+	}
+	span.question = nil
+	return nil
+}
+
+func (span *activitySpan) pauseForQuestion() error {
+	if span == nil || span.view == nil {
+		return nil
+	}
+	return span.view.PauseForQuestion()
+}
+
+func (span *activitySpan) pauseForFramedQuestion() {
+	if span == nil || span.view == nil {
+		return
+	}
+	span.view.Pause()
+}
+
+func (span *activitySpan) resumeAfterQuestion() error {
+	if span == nil || span.view == nil {
+		return nil
+	}
+	return span.view.ResumeAfterQuestion()
+}
+
+func (span *activitySpan) resumeAfterFramedQuestion() {
+	if span == nil || span.view == nil {
+		return
+	}
+	span.view.Resume()
+}
+
+func (span *activitySpan) recordOutput(value string) {
+	if span == nil || span.view == nil {
+		return
+	}
+	span.view.RecordOutput(value)
+}
+
+func (span *activitySpan) finishChild(child *childActivitySpan, outcome activitySpanOutcome, endedAt time.Time, answer string) error {
+	if child == nil || child.ended {
+		return nil
+	}
+	child.ended = true
+	return span.state.endChildActivitySpan(child.start.SpanID, outcome, endedAt, answer)
 }
 
 func (span *activitySpan) SubagentTool(id, name, gist string) {
@@ -184,7 +256,7 @@ func (span *activitySpan) SubagentFinished(id string) error {
 	}
 	endedAt := spanNow(span.clock)
 	child.ended = true
-	stateErr := span.state.endChildActivitySpan(child.start.SpanID, activitySpanCompleted, endedAt)
+	stateErr := span.state.endChildActivitySpan(child.start.SpanID, activitySpanCompleted, endedAt, "")
 	var viewErr error
 	if span.view != nil {
 		viewErr = span.view.SubagentFinished(id, endedAt, string(activitySpanCompleted))
@@ -200,13 +272,18 @@ func (span *activitySpan) finishOpenChildren(endedAt time.Time, outcome activity
 			continue
 		}
 		child.ended = true
-		if err := span.state.endChildActivitySpan(child.start.SpanID, outcome, endedAt); err != nil {
+		if err := span.state.endChildActivitySpan(child.start.SpanID, outcome, endedAt, ""); err != nil {
 			childErrors = append(childErrors, err)
 		}
 		if span.view != nil {
 			if err := span.view.SubagentFinished(id, endedAt, string(outcome)); err != nil {
 				childErrors = append(childErrors, err)
 			}
+		}
+	}
+	if span.question != nil && !span.question.ended {
+		if err := span.finishChild(span.question, outcome, endedAt, ""); err != nil {
+			childErrors = append(childErrors, err)
 		}
 	}
 	return errors.Join(childErrors...)

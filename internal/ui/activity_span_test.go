@@ -2,6 +2,7 @@ package ui
 
 import (
 	"bytes"
+	"io"
 	"regexp"
 	"strings"
 	"testing"
@@ -30,6 +31,43 @@ func TestActivitySpanViewWritesStartAndEndLinesForRedirectedOutput(t *testing.T)
 	lines := strings.Split(strings.TrimSuffix(got, "\n"), "\n")
 	if len(lines) != 2 || lines[0] != "starting 2/3 — revising 4 finding(s)" || lines[1] != "finished 2/3 — revising 4 finding(s) — completed (2m03s)" {
 		t.Fatalf("span lines = %#v, want one start and one outcome/duration line", lines)
+	}
+}
+
+func TestActivitySpanViewClearsAndPausesLiveRegionForQuestion(t *testing.T) {
+	previousTerminal := isTerminal
+	isTerminal = func(fd uintptr) bool { return fd == 42 }
+	t.Cleanup(func() { isTerminal = previousTerminal })
+	started := time.Date(2026, 11, 24, 18, 0, 0, 0, time.UTC)
+	clock := &testClock{now: started}
+	terminal := &testTerminal{}
+	span := NewActivitySpanView(terminal, Caps{Width: 100, Height: 24, Unicode: true}, clock, time.Second)
+	if err := span.Start("1/5 — implementing", started); err != nil {
+		t.Fatal(err)
+	}
+	if err := span.PauseForQuestion(); err != nil {
+		t.Fatalf("PauseForQuestion() error = %v", err)
+	}
+	pausedOutput := terminal.String()
+	if !strings.Contains(pausedOutput, "1/5 — implementing\n") {
+		t.Fatalf("paused output = %q, want a cleared live region replaced with the Role label", pausedOutput)
+	}
+	if _, err := io.WriteString(terminal, "    awaiting answer\n    ┃ Which retry budget?\nanswer> "); err != nil {
+		t.Fatalf("write awaiting-answer child: %v", err)
+	}
+	questionOutput := terminal.String()
+	span.draw()
+	if got := terminal.String(); got != questionOutput {
+		t.Fatalf("live region redrew while awaiting answer: before=%q after=%q", questionOutput, got)
+	}
+	if err := span.ResumeAfterQuestion(); err != nil {
+		t.Fatalf("ResumeAfterQuestion() error = %v", err)
+	}
+	if got := terminal.String(); got == questionOutput || !strings.Contains(got[len(questionOutput):], "⠋ 1/5 — implementing") {
+		t.Fatalf("resumed output = %q, want the Role spinner after the question block", got)
+	}
+	if err := span.End(started.Add(time.Second), "completed"); err != nil {
+		t.Fatalf("End() error = %v", err)
 	}
 }
 
