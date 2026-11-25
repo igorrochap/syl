@@ -35,14 +35,7 @@ func (r *Renderer) ReviewVerdict(value ReviewVerdict) error {
 	if status == "" {
 		status = "unknown"
 	}
-	statusStyle := r.style.muted
-	if strings.EqualFold(status, "approve") {
-		statusStyle = r.style.positive
-	}
-	if strings.EqualFold(status, "revise") {
-		statusStyle = r.style.negative
-	}
-	lines := []outputLine{{text: "VERDICT: " + status, style: statusStyle}}
+	lines := []outputLine{{text: "VERDICT: " + status, style: r.verdictStyle(status)}}
 	lines = append(lines, outputLine{text: "SUMMARY: " + value.Summary, style: r.style.label})
 	lines = append(lines, outputLine{text: "FINDINGS:", style: r.style.heading})
 	lines = append(lines, reviewFindingLines(r, value.Findings)...)
@@ -53,7 +46,7 @@ func (r *Renderer) ReviewVerdict(value ReviewVerdict) error {
 func (r *Renderer) RunSummary(value RunSummary) error {
 	lines := []outputLine{
 		{text: fmt.Sprintf("Iterations: %d", value.Iterations), style: r.style.heading},
-		{text: "Final verdict: " + value.FinalVerdict, style: r.style.label},
+		{text: "Final verdict: " + value.FinalVerdict, style: r.verdictStyle(value.FinalVerdict)},
 		{text: "Summary: " + value.Summary, style: r.style.label},
 	}
 	for _, override := range value.NitBudgetOverrides {
@@ -91,6 +84,17 @@ func (r *Renderer) RunSummary(value RunSummary) error {
 		}
 	}
 	return r.writeReviewLines(lines)
+}
+
+func (r *Renderer) verdictStyle(status string) lipgloss.Style {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "approve":
+		return r.style.positive
+	case "revise":
+		return r.style.negative
+	default:
+		return r.style.muted
+	}
 }
 
 func (r *Renderer) writeReviewLines(lines []outputLine) error {

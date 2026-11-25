@@ -880,6 +880,11 @@ var activityToneStyles = []lipgloss.Style{
 
 var activitySpanLabelStyle = newActivitySpanLabelStyle()
 
+var (
+	activitySpanPositiveStyle = activitySpanLabelStyle.Foreground(lipgloss.Color(positiveColor))
+	activitySpanNegativeStyle = activitySpanLabelStyle.Foreground(lipgloss.Color(negativeColor))
+)
+
 func newActivityToneStyle(color string) lipgloss.Style {
 	renderer := lipgloss.NewRenderer(io.Discard, termenv.WithProfile(termenv.TrueColor), termenv.WithUnsafe())
 	renderer.SetColorProfile(termenv.TrueColor)

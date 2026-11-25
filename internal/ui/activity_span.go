@@ -18,6 +18,7 @@ const activitySpanLiveChildLimit = 4
 const (
 	activityChildOutcomeCompleted = "completed"
 	activityChildOutcomeGreen     = "green"
+	activitySpanOutcomeRed        = "red"
 )
 
 type activitySpanChild struct {
@@ -388,7 +389,7 @@ func (view *ActivitySpanView) finishTerminalSpan(stopCh chan struct{}, doneCh ch
 	lines := permanentActivitySpanLines(label, started, ended, outcome, children)
 	lines = truncateActivitySpanLines(lines, view.caps.Width)
 	if view.caps.Color {
-		lines = styleActivitySpanFrame(lines, 0)
+		lines = styleActivitySpanFrame(lines, 0, finishedActivitySpanStyle(label, outcome))
 	}
 	if !anchored {
 		view.finishUnanchoredTerminalSpan(lines, renderedRows)
@@ -461,7 +462,7 @@ func (view *ActivitySpanView) drawLocked() {
 	view.mu.Unlock()
 	lines := renderActivitySpanFrame(label, gist, view.clock.Now().Sub(started), frame, view.caps.Width, children, view.clock.Now())
 	if view.caps.Color {
-		lines = styleActivitySpanFrame(lines, frame)
+		lines = styleActivitySpanFrame(lines, frame, activitySpanLabelStyle)
 	}
 	if anchored && !anchorVisible {
 		view.mu.Lock()
@@ -791,9 +792,23 @@ func truncateActivitySpanLines(lines []string, width int) []string {
 	return truncated
 }
 
-func styleActivitySpanFrame(lines []string, frame int) []string {
+func finishedActivitySpanStyle(label, outcome string) lipgloss.Style {
+	switch outcome {
+	case activityChildOutcomeGreen:
+		return activitySpanPositiveStyle
+	case activitySpanOutcomeRed:
+		return activitySpanNegativeStyle
+	case activityChildOutcomeCompleted:
+		if strings.HasPrefix(label, "approved — ") {
+			return activitySpanPositiveStyle
+		}
+	}
+	return activitySpanLabelStyle
+}
+
+func styleActivitySpanFrame(lines []string, frame int, labelStyle lipgloss.Style) []string {
 	styled := append([]string(nil), lines...)
-	styled[0] = activitySpanLabelStyle.Render(styled[0])
+	styled[0] = labelStyle.Render(styled[0])
 	for index := 1; index < len(styled); index++ {
 		tone := positiveModulo(frame/activityToneFrameCount+index-1, len(activityToneStyles))
 		styled[index] = activityToneStyles[tone].Render(styled[index])

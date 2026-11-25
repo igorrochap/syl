@@ -355,21 +355,40 @@ func TestActivitySpanViewKeepsMutedColorForLiveAndPermanentLines(t *testing.T) {
 	}
 }
 
-func TestActivitySpanViewFailureEndShowsOutcomeOnTerminal(t *testing.T) {
+func TestActivitySpanViewShowsFinishedOutcomesOnTerminal(t *testing.T) {
 	previousTerminal := isTerminal
 	isTerminal = func(fd uintptr) bool { return fd == 42 }
 	t.Cleanup(func() { isTerminal = previousTerminal })
 	clock := &testClock{now: time.Date(2026, 11, 23, 18, 0, 0, 0, time.UTC)}
-	terminal := &testTerminal{}
-	span := NewActivitySpanView(terminal, Caps{Width: 80}, clock, time.Second)
-	if err := span.Start("reviewing", clock.Now()); err != nil {
-		t.Fatalf("Start() error = %v", err)
-	}
-	if err := span.End(clock.Now().Add(time.Second), "failed"); err != nil {
-		t.Fatalf("End() error = %v", err)
-	}
-	if !strings.HasSuffix(terminal.String(), "\r\x1b[Kreviewing — failed (1.0s)\n") {
-		t.Fatalf("terminal output = %q, want failed outcome in permanent line", terminal.String())
+	for _, test := range []struct {
+		name, label, outcome, want string
+		color                      bool
+	}{
+		{name: "failure", label: "reviewing", outcome: "failed", want: "reviewing — failed (1.0s)"},
+		{name: "red gate", label: "1/3 — running Gates (attempt 1)", outcome: "red", color: true,
+			want: "\x1b[1;38;2;255;70;113m1/3 — running Gates (attempt 1) — red (1.0s)\x1b[0m"},
+		{name: "green gate", label: "1/3 — running Gates (attempt 2)", outcome: "green", color: true,
+			want: "\x1b[1;38;2;4;181;117m1/3 — running Gates (attempt 2) — green (1.0s)\x1b[0m"},
+		{name: "gate without color", label: "1/3 — running Gates (attempt 1)", outcome: "red",
+			want: "1/3 — running Gates (attempt 1) — red (1.0s)"},
+		{name: "approved", label: "approved — opening PR", outcome: "completed", color: true,
+			want: "\x1b[1;38;2;4;181;117mapproved — opening PR (1.0s)\x1b[0m"},
+		{name: "failed publication", label: "approved — opening PR", outcome: "failed", color: true,
+			want: "\x1b[1;38;2;125;211;252mapproved — opening PR — failed (1.0s)\x1b[0m"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			terminal := &testTerminal{}
+			span := NewActivitySpanView(terminal, Caps{Color: test.color, Width: 80}, clock, time.Second)
+			if err := span.Start(test.label, clock.Now()); err != nil {
+				t.Fatal(err)
+			}
+			if err := span.End(clock.Now().Add(time.Second), test.outcome); err != nil {
+				t.Fatal(err)
+			}
+			if want := "\r\x1b[K" + test.want + "\n"; !strings.HasSuffix(terminal.String(), want) {
+				t.Fatalf("terminal output = %q, want final row %q", terminal.String(), want)
+			}
+		})
 	}
 }
 

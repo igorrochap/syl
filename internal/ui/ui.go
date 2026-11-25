@@ -105,6 +105,11 @@ type styleSet struct {
 	italic   lipgloss.Style
 }
 
+const (
+	positiveColor = "#04B575"
+	negativeColor = "#FF4672"
+)
+
 type outputLine struct {
 	text  string
 	style lipgloss.Style
@@ -138,8 +143,8 @@ func New(output io.Writer, caps Caps) *Renderer {
 			title:    lipglossRenderer.NewStyle().Bold(true).Foreground(lipgloss.Color("#7DD3FC")),
 			heading:  lipglossRenderer.NewStyle().Bold(true).Foreground(lipgloss.Color("#7DD3FC")),
 			label:    lipglossRenderer.NewStyle().Foreground(lipgloss.Color("#626262")),
-			positive: lipglossRenderer.NewStyle().Bold(true).Foreground(lipgloss.Color("#04B575")),
-			negative: lipglossRenderer.NewStyle().Bold(true).Foreground(lipgloss.Color("#FF4672")),
+			positive: lipglossRenderer.NewStyle().Bold(true).Foreground(lipgloss.Color(positiveColor)),
+			negative: lipglossRenderer.NewStyle().Bold(true).Foreground(lipgloss.Color(negativeColor)),
 			muted:    lipglossRenderer.NewStyle().Foreground(lipgloss.Color("#626262")),
 			code:     lipglossRenderer.NewStyle().Foreground(lipgloss.Color("#04B575")),
 			bold:     lipglossRenderer.NewStyle().Bold(true),
