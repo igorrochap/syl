@@ -282,58 +282,6 @@ func TestImplementResetsGateAttemptNumberAfterGreen(t *testing.T) {
 	}
 }
 
-func TestGateDrivenTurnKeepsRolloverAndQuestionProtocol(t *testing.T) {
-	repo, branchPoint := newGateTestRepo(t, "#!/bin/sh\necho gate\n", true)
-	recorder := newMemoryRunRecorder()
-	recorder.dir = t.TempDir()
-	handoffPath := recorder.ImplementHandoffPath(1)
-	implementer := &scriptedConversationAdapter{
-		runs: [][]harness.Event{
-			{{Type: harness.EventSession, SessionID: "implement-1"}},
-			{{Type: harness.EventSession, SessionID: "implement-2"}},
-		},
-		runHooks: []func(harness.Request){func(harness.Request) {
-			if err := os.WriteFile(handoffPath, []byte("Rollover context"), 0o644); err != nil {
-				t.Fatal(err)
-			}
-		}},
-	}
-	reviewer := gateReviewer("VERDICT: approve\nSUMMARY: Ready\nFINDINGS:\n")
-	gateRunner := &scriptedGateRunner{
-		t: t, recorder: recorder, workRoot: repo, branchPoint: branchPoint,
-		results: []GateExecution{
-			{ExitStatus: 1, Output: "old gate output"},
-			{ExitStatus: 0, Output: qualitySummary("PASS")},
-		},
-	}
-	_, final, _, _, err := runImplementIterations(context.Background(), implementIterationsParams{
-		git: gitadapter.ExecGitRunner{Dir: repo}, workRoot: repo,
-		implementer: implementer, reviewer: reviewer, projectConfig: gateTestConfig(1),
-		ticket:      tracker.Ticket{Number: 270, Title: "Keep rollover", Body: "Retain the ticket."},
-		branchPoint: branchPoint, recorder: recorder, gateRunner: gateRunner,
-		output: io.Discard, allowEmptyDiff: true,
-	})
-	if err != nil || final.Status != verdict.Approve {
-		t.Fatalf("runImplementIterations() = (%q, %v), want approve", final.Status, err)
-	}
-	if implementer.runCalls != 2 || len(implementer.resumeCalls) != 0 {
-		t.Fatalf("implementer calls = (%d runs, %d resumes), want fresh Rollover turn", implementer.runCalls, len(implementer.resumeCalls))
-	}
-	prompt := implementer.runRequests[1].Prompt
-	for _, want := range []string{
-		handoffPath,
-		"Keep rollover",
-		"Per-Gate results are unavailable",
-		filepath.Join(recorder.dir, "iteration-01-gate-attempt-01.output.txt"),
-		"QUESTION:",
-		"END QUESTION",
-	} {
-		if !strings.Contains(prompt, want) {
-			t.Errorf("Gate Rollover prompt = %q, want %q", prompt, want)
-		}
-	}
-}
-
 func TestNonExecutableBranchPointGateIsRecordedAsRed(t *testing.T) {
 	repo, branchPoint := newGateTestRepo(t, "#!/bin/sh\necho gate\n", false)
 	recorder := newMemoryRunRecorder()

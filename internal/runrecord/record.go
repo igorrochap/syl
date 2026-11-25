@@ -767,6 +767,8 @@ func parseHandoffArtifact(name string) (Artifact, bool) {
 	if !found {
 		return Artifact{}, false
 	}
+	// syl no longer writes per-Gate-attempt handoff documents (ADR 0008), but
+	// Run records from earlier versions still contain them.
 	iterationPart, attemptPart, isGateHandoff := strings.Cut(number, "-gate-")
 	if isGateHandoff {
 		number = iterationPart

@@ -30,8 +30,6 @@ Implement the ticket below in the current project. Use the vendored implement sk
 
 ` + questionProtocolInstruction + `
 
-At the end of this turn, self-assess your remaining context. Only if you judge that you are low on context, invoke ` + "`/handoff %s`" + ` to prepare the next iteration. Do not invoke it otherwise.
-
 ` + implementerEvidenceInstruction + `
 
 Ticket: %s
@@ -46,8 +44,6 @@ Fix every [blocking] finding; you cannot decline a [blocking] finding. Fix every
 
 ` + questionProtocolInstruction + `
 
-At the end of this turn, self-assess your remaining context. Only if you judge that you are low on context, invoke ` + "`/handoff %s`" + ` to prepare the next iteration. Do not invoke it otherwise.
-
 ` + implementerEvidenceInstruction + `
 
 Ticket: %s
@@ -61,8 +57,6 @@ Nits:
 	gateAttemptImplementPrompt = `Continue implementing the ticket below to address the red Gate attempt. Use the vendored implement skill and leave the working tree with changes for review. Do not commit or push changes. No reviewer findings apply to this Gate attempt.
 
 ` + questionProtocolInstruction + `
-
-At the end of this turn, self-assess your remaining context. Only if you judge that you are low on context, invoke ` + "`/handoff %s`" + ` to prepare the next implementer turn. Do not invoke it otherwise.
 
 ` + implementerEvidenceInstruction + `
 
@@ -82,12 +76,9 @@ Title: %s
 Ticket body (including acceptance criteria):
 %s`
 
-	gateAttemptRolloverSeedPrompt = `Before doing any work, read the Rollover handoff document at %s. It supplements the ticket and Gate attempt result in this prompt; it does not replace them.
+	handoffTurnPrompt = `/handoff %s
 
-Title: %s
-
-Ticket body (including acceptance criteria):
-%s`
+This iteration is over and the next iteration starts a fresh implementer session. Write only the handoff document at the path above, so that session can continue this ticket from the current working tree. Make no code changes, do not run the Gates, and record no Evidence.`
 
 	reviewPrompt = `/code-review
 
@@ -105,7 +96,6 @@ Nits:
 )
 
 type implementPromptOptions struct {
-	handoffPath       string
 	evidenceDirectory string
 	rolloverSeedPath  string
 	additionalContext string
@@ -129,13 +119,13 @@ func composeImplementPrompt(
 	if iteration == 1 {
 		prompt = fmt.Sprintf(
 			implementPrompt,
-			options.handoffPath, options.evidenceDirectory,
+			options.evidenceDirectory,
 			"#"+strconv.Itoa(ticket.Number), ticket.Title, ticket.Body,
 		)
 	} else {
 		prompt = fmt.Sprintf(
 			reviseImplementPrompt,
-			options.handoffPath, options.evidenceDirectory, "#"+strconv.Itoa(ticket.Number),
+			options.evidenceDirectory, "#"+strconv.Itoa(ticket.Number),
 			formatFindings(findings, verdict.Blocking), formatFindings(findings, verdict.Nit),
 		)
 	}
@@ -156,17 +146,14 @@ func composeGateAttemptPrompt(
 ) string {
 	prompt := fmt.Sprintf(
 		gateAttemptImplementPrompt,
-		options.handoffPath, options.evidenceDirectory,
+		options.evidenceDirectory,
 		"#"+strconv.Itoa(ticket.Number), ticket.Title, ticket.Body, gateAttemptResult,
 	)
-	if options.rolloverSeedPath != "" {
-		prompt = fmt.Sprintf(
-			"%s\n\n%s",
-			prompt,
-			fmt.Sprintf(gateAttemptRolloverSeedPrompt, options.rolloverSeedPath, ticket.Title, ticket.Body),
-		)
-	}
 	return appendPromptContext(prompt, options.additionalContext)
+}
+
+func composeHandoffTurnPrompt(handoffPath string) string {
+	return fmt.Sprintf(handoffTurnPrompt, handoffPath)
 }
 
 func composeReviewPrompt(ticketRef string, ticket *tracker.Ticket, branchPoint string, context reviewPromptContext) string {

@@ -947,6 +947,13 @@ type scriptedConversationAdapter struct {
 	runCalls          int
 	runRequests       []harness.Request
 	resumeCalls       []conversationResumeCall
+	// Handoff turns resume a session with a /handoff prompt. They are answered
+	// apart from the scripted resumes so the implementer turns keep their order.
+	handoffCalls []conversationResumeCall
+	// writeHandoff makes the handoff turn write its handoff document.
+	writeHandoff bool
+	handoffErr   error
+	handoffHook  func()
 }
 
 func (a *scriptedConversationAdapter) SessionTranscriptPath(sessionID string) string {
@@ -1013,6 +1020,9 @@ func (a *scriptedConversationAdapter) Run(_ context.Context, request harness.Req
 }
 
 func (a *scriptedConversationAdapter) Resume(_ context.Context, sessionID string, request harness.Request) (harness.Stream, error) {
+	if handoffPath, isHandoff := handoffTurnPath(request.Prompt); isHandoff {
+		return a.resumeHandoff(sessionID, handoffPath, request)
+	}
 	a.resumeCalls = append(a.resumeCalls, conversationResumeCall{sessionID: sessionID, prompt: request.Prompt, mcp: request.MCP})
 	index := len(a.resumeCalls) - 1
 	if index >= len(a.resumes) {
@@ -1029,6 +1039,29 @@ func (a *scriptedConversationAdapter) Resume(_ context.Context, sessionID string
 		waitErr = a.resumeWaitErrors[index]
 	}
 	return scriptedConversationStream{events: a.resumes[index], err: waitErr}, nil
+}
+
+func handoffTurnPath(prompt string) (string, bool) {
+	rest, isHandoff := strings.CutPrefix(prompt, "/handoff ")
+	if !isHandoff {
+		return "", false
+	}
+	path, _, _ := strings.Cut(rest, "\n")
+	return path, true
+}
+
+func (a *scriptedConversationAdapter) resumeHandoff(sessionID, handoffPath string, request harness.Request) (harness.Stream, error) {
+	a.handoffCalls = append(a.handoffCalls, conversationResumeCall{sessionID: sessionID, prompt: request.Prompt, mcp: request.MCP})
+	if a.handoffHook != nil {
+		a.handoffHook()
+	}
+	if a.writeHandoff {
+		if err := os.WriteFile(handoffPath, []byte("handoff for the next iteration"), 0o644); err != nil {
+			return nil, err
+		}
+	}
+	events := []harness.Event{{Type: harness.EventSession, SessionID: sessionID}}
+	return scriptedConversationStream{events: events, err: a.handoffErr}, nil
 }
 
 func (*scriptedConversationAdapter) Attach(context.Context, harness.Request) error { return nil }

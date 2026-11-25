@@ -115,11 +115,6 @@ func (writer *Writer) HandoffPath(iteration int) string {
 	return filepath.Join(writer.directory, ArtifactName(ImplementHandoff, iteration))
 }
 
-// GateHandoffPath returns a distinct handoff path for a Gate-driven turn.
-func (writer *Writer) GateHandoffPath(iteration, turn int) string {
-	return filepath.Join(writer.directory, fmt.Sprintf("handoff-%02d-gate-%02d.md", iteration, turn))
-}
-
 // EvidenceDirectory returns the Evidence directory for one implementer iteration.
 func (writer *Writer) EvidenceDirectory(iteration int) string {
 	return filepath.Join(writer.directory, ArtifactName(EvidenceDirectory, iteration))

@@ -1940,6 +1940,9 @@ func TestImplementLoopResumesPreviousReviewerSession(t *testing.T) {
 	if len(loop.requests) != 2 {
 		t.Fatalf("harness Run requests = %d, want fresh implement and review turns only", len(loop.requests))
 	}
+	if len(loop.handoffCalls) != 1 || loop.handoffCalls[0].sessionID != "implement-1" {
+		t.Fatalf("handoff turns = %#v, want one handoff turn in implement-1 after the revise Verdict", loop.handoffCalls)
+	}
 	if len(loop.implementResumeCalls) != 1 || loop.implementResumeCalls[0].sessionID != "implement-1" {
 		t.Fatalf("implement Resume calls = %#v, want iteration 2 to resume implement-1", loop.implementResumeCalls)
 	}
@@ -2784,6 +2787,7 @@ type resumingLoopHarness struct {
 	requests             []harness.Request
 	implementResumeCalls []resumeCall
 	resumeCalls          []resumeCall
+	handoffCalls         []resumeCall
 	resumeErr            error
 	resumeWaitErr        error
 }
@@ -2811,6 +2815,12 @@ func (h *resumingLoopHarness) Run(_ context.Context, request harness.Request) (h
 }
 
 func (h *resumingLoopHarness) Resume(_ context.Context, sessionID string, request harness.Request) (harness.Stream, error) {
+	if strings.HasPrefix(request.Prompt, "/handoff ") {
+		// The handoff turn writes no handoff document here, so the next
+		// iteration keeps resuming the same implementer session.
+		h.handoffCalls = append(h.handoffCalls, resumeCall{sessionID: sessionID, request: request})
+		return scriptedHarnessStream{events: []harness.Event{{Type: harness.EventSession, SessionID: sessionID}}}, nil
+	}
 	if strings.Contains(request.Prompt, "/implement") || strings.Contains(request.Prompt, "/fix-review") {
 		h.implementResumeCalls = append(h.implementResumeCalls, resumeCall{sessionID: sessionID, request: request})
 		if err := os.WriteFile(filepath.Join(h.root, "change.txt"), []byte(fmt.Sprintf("implemented-resume-%d\n", len(h.implementResumeCalls))), 0o644); err != nil {

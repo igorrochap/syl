@@ -1,5 +1,12 @@
 # Persist the implementer session across iterations, with agent-driven context rollover
 
+> **Status: superseded in part by [ADR 0008](0008-rollover-at-every-iteration-boundary.md).**
+> The agent-driven trigger — the implementer self-assessing at the end of a turn
+> and invoking `/handoff` only when it judges itself low on context — is replaced
+> by a deterministic Rollover at every iteration boundary. The rest of this
+> decision (session persistence, file-existence signal, seed supplements, resume
+> fallback, the `handoff` skill changes) still stands.
+
 The implementer now resumes its Harness session across loop iterations, the same
 way the reviewer already does, instead of starting a fresh `adapter.Run` each
 iteration. This removes the per-iteration cost of reloading every skill and rule

@@ -15,7 +15,7 @@ func TestComposeImplementPromptFirstIteration(t *testing.T) {
 	ticket := tracker.Ticket{Number: 42, Title: "Concentrate prompts", Body: "Keep every byte.\n\nDo not change wording."}
 
 	got := composeImplementPrompt(ticket, nil, 1, implementPromptOptions{
-		handoffPath: "/tmp/handoff-1.md", evidenceDirectory: "/tmp/evidence-1",
+		evidenceDirectory: "/tmp/evidence-1",
 	})
 	want := `/implement
 
@@ -29,8 +29,6 @@ END QUESTION
 
 The QUESTION: marker must begin at the start of its own line; the block format is otherwise unchanged.
 Ambiguity should have been resolved during planning, and trivial choices should be decided without asking. After emitting the block, stop working.
-
-At the end of this turn, self-assess your remaining context. Only if you judge that you are low on context, invoke ` + "`/handoff /tmp/handoff-1.md`" + ` to prepare the next iteration. Do not invoke it otherwise.
 
 Before ending this implementer turn, use the vendored verify skill to exercise the change in the running software and save Evidence to /tmp/evidence-1. Do not commit Evidence; it stays with this Run.
 
@@ -159,7 +157,7 @@ func TestComposeImplementPromptRevisionWithBlockingFindings(t *testing.T) {
 	}
 
 	got := composeImplementPrompt(ticket, findings, 2, implementPromptOptions{
-		handoffPath: "/tmp/handoff-2.md", evidenceDirectory: "/tmp/evidence-2",
+		evidenceDirectory: "/tmp/evidence-2",
 	})
 	assertContainsAll(t, got,
 		"Fix every [blocking] finding", "cannot decline a [blocking]", "decline a [nit] only with a reason",
@@ -185,12 +183,11 @@ func TestComposeImplementPromptWhitespaceOnlyContextMatchesWithoutContext(t *tes
 		{name: "revision", iteration: 2, blocking: findings},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			handoffPath := "/tmp/handoff.md"
 			evidencePath := "/tmp/evidence-1"
 			if test.iteration > 1 {
 				evidencePath = "/tmp/evidence-2"
 			}
-			options := implementPromptOptions{handoffPath: handoffPath, evidenceDirectory: evidencePath}
+			options := implementPromptOptions{evidenceDirectory: evidencePath}
 			withoutContext := composeImplementPrompt(ticket, test.blocking, test.iteration, options)
 			options.additionalContext = " \n\t "
 			withWhitespaceContext := composeImplementPrompt(ticket, test.blocking, test.iteration, options)
@@ -204,7 +201,7 @@ func TestComposeImplementPromptPreservesMultilineContext(t *testing.T) {
 	context := "Use the existing GitRunner seam.\nDo not add a new adapter."
 
 	got := composeImplementPrompt(ticket, nil, 1, implementPromptOptions{
-		handoffPath: "/tmp/handoff-1.md", evidenceDirectory: "/tmp/evidence-1", additionalContext: context,
+		evidenceDirectory: "/tmp/evidence-1", additionalContext: context,
 	})
 
 	if !strings.Contains(got, context) {
@@ -217,7 +214,7 @@ func TestComposeImplementPromptSeedsFreshRolloverSession(t *testing.T) {
 	findings := []verdict.Finding{{Kind: verdict.Blocking, Location: "worker.go:10", Issue: "handle the error"}}
 
 	got := composeImplementPrompt(ticket, findings, 2, implementPromptOptions{
-		handoffPath: "/tmp/handoff-2.md", evidenceDirectory: "/tmp/evidence-2", rolloverSeedPath: "/tmp/handoff-1.md",
+		evidenceDirectory: "/tmp/evidence-2", rolloverSeedPath: "/tmp/handoff-1.md",
 	})
 
 	assertContainsAll(t, got,
@@ -226,15 +223,41 @@ func TestComposeImplementPromptSeedsFreshRolloverSession(t *testing.T) {
 		"Title: Preserve context",
 		"Ticket body (including acceptance criteria):\nKeep the session decisions.",
 		"Blocking findings:\n- [blocking] worker.go:10 — handle the error",
-		"/handoff /tmp/handoff-2.md",
 	)
+}
+
+func TestImplementerPromptsHaveNoSelfAssessedHandoff(t *testing.T) {
+	ticket := tracker.Ticket{Number: 42, Title: "Roll over", Body: "Every revise boundary."}
+	findings := []verdict.Finding{{Kind: verdict.Blocking, Location: "worker.go:10", Issue: "handle the error"}}
+	options := implementPromptOptions{evidenceDirectory: "/tmp/evidence-1", rolloverSeedPath: "/tmp/rollover-seed.md"}
+
+	for name, prompt := range map[string]string{
+		"implementPrompt":            composeImplementPrompt(ticket, nil, 1, options),
+		"reviseImplementPrompt":      composeImplementPrompt(ticket, findings, 2, options),
+		"gateAttemptImplementPrompt": composeGateAttemptPrompt(ticket, options, "tests failed"),
+	} {
+		for _, forbidden := range []string{"/handoff", "low on context", "self-assess"} {
+			if strings.Contains(prompt, forbidden) {
+				t.Errorf("%s contains %q: %q", name, forbidden, prompt)
+			}
+		}
+	}
+}
+
+func TestComposeHandoffTurnPromptAsksOnlyForTheHandoffDocument(t *testing.T) {
+	got := composeHandoffTurnPrompt("/tmp/handoff-1.md")
+
+	if !strings.HasPrefix(got, "/handoff /tmp/handoff-1.md\n") {
+		t.Fatalf("handoff turn prompt = %q, want it to invoke /handoff with the iteration handoff path", got)
+	}
+	assertContainsAll(t, got, "Write only the handoff document", "Make no code changes", "do not run the Gates", "record no Evidence")
 }
 
 func TestComposeGateAttemptPromptIncludesEvidenceDirectory(t *testing.T) {
 	ticket := tracker.Ticket{Number: 42, Title: "Exercise failed Gate fixes", Body: "Keep behavior visible."}
 
 	got := composeGateAttemptPrompt(ticket, implementPromptOptions{
-		handoffPath: "/tmp/handoff-1-gate-2.md", evidenceDirectory: "/tmp/evidence-1",
+		evidenceDirectory: "/tmp/evidence-1",
 	}, "tests failed")
 
 	assertContainsAll(t, got,
@@ -470,7 +493,7 @@ func assertPromptEqual(t *testing.T, got, want string) {
 func TestRevisionPromptsCarryNits(t *testing.T) {
 	findings := []verdict.Finding{{Kind: verdict.Blocking, Location: "a.go:1", Issue: "block"}, {Kind: verdict.Nit, Location: "b.go:2", Issue: "nit issue"}}
 	implement := composeImplementPrompt(tracker.Ticket{Number: 42}, findings, 2, implementPromptOptions{
-		handoffPath: "handoff", evidenceDirectory: "evidence-2", rolloverSeedPath: "seed",
+		evidenceDirectory: "evidence-2", rolloverSeedPath: "seed",
 	})
 	review := composeReviewCarryoverPrompt(reviewPromptContext{diffPath: "diff", findings: findings})
 	for _, prompt := range []string{implement, review} {
