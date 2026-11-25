@@ -54,6 +54,7 @@ type sessionParams struct {
 	sessionID          string
 	subagentSizes      map[string]int64
 	subagentStartState subagentStartState
+	subagentIDs        map[string]string
 	seenEntries        int
 	completion         harness.CompletionSignal
 }
@@ -133,13 +134,9 @@ func (a *PTYAdapter) start(
 	if err != nil {
 		return nil, fmt.Errorf("resolve Claude transcript path: %w", err)
 	}
-	seenEntries := 0
-	if mode == transcriptStartResume {
-		entries, readErr := reader.Read(transcriptPath)
-		if readErr != nil {
-			return nil, fmt.Errorf("read Claude transcript before resume: %w", readErr)
-		}
-		seenEntries = len(entries)
+	seenEntries, subagentIDs, err := resumedTranscriptState(reader, transcriptPath, mode)
+	if err != nil {
+		return nil, err
 	}
 	subagentStartState, err := snapshotSubagents(reader, a.projectRoot, sessionID)
 	if err != nil {
@@ -151,6 +148,7 @@ func (a *PTYAdapter) start(
 		sessionID:          sessionID,
 		subagentSizes:      subagentStartState.sizes,
 		subagentStartState: subagentStartState,
+		subagentIDs:        subagentIDs,
 		seenEntries:        seenEntries,
 		completion:         completion,
 	}
@@ -183,11 +181,45 @@ func (a *PTYAdapter) start(
 	}, nil
 }
 
+func resumedTranscriptState(
+	reader transcript.Reader,
+	transcriptPath string,
+	mode transcriptStartMode,
+) (int, map[string]string, error) {
+	subagentIDs := make(map[string]string)
+	if mode != transcriptStartResume {
+		return 0, subagentIDs, nil
+	}
+	entries, err := reader.Read(transcriptPath)
+	if err != nil {
+		return 0, nil, fmt.Errorf("read Claude transcript before resume: %w", err)
+	}
+	for _, entry := range entries {
+		if agentID, toolUseID := transcriptSubagentLink(entry.Raw); agentID != "" && toolUseID != "" {
+			subagentIDs[agentID] = toolUseID
+		}
+	}
+	return len(entries), subagentIDs, nil
+}
+
 func (s ptyStream) Events() <-chan harness.Event { return s.stream.Events() }
 
 func (s ptyStream) Wait() error { return s.stream.Wait() }
 
 func (s ptyStream) SessionID() string { return s.sessionID }
+
+// SessionTranscriptPath returns the expected Claude transcript path for a session.
+func (a *PTYAdapter) SessionTranscriptPath(sessionID string) string {
+	path, err := transcript.New(a.homeDir).Find(a.projectRoot, sessionID)
+	if err != nil {
+		return ""
+	}
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return path
+	}
+	return absolute
+}
 
 func (a *PTYAdapter) runSession(
 	ctx context.Context,
@@ -246,15 +278,18 @@ func (a *PTYAdapter) monitorSession(
 		readState: func() (SessionState, error) {
 			return a.ReadSessionStateSince(session.sessionID, session.seenEntries)
 		},
-		subagentSizes:      session.subagentSizes,
-		subagentStartState: session.subagentStartState,
-		output:             output,
-		events:             events,
-		noProgress:         noProgress,
-		stallWindow:        stallWindow,
-		noProgressLimit:    noProgressLimit,
-		seenEntries:        session.seenEntries,
-		completion:         session.completion,
+		subagentSizes:       session.subagentSizes,
+		subagentSeenEntries: make(map[string]int),
+		subagentIDs:         session.subagentIDs,
+		finishedSubagents:   make(map[string]bool),
+		subagentStartState:  session.subagentStartState,
+		output:              output,
+		events:              events,
+		noProgress:          noProgress,
+		stallWindow:         stallWindow,
+		noProgressLimit:     noProgressLimit,
+		seenEntries:         session.seenEntries,
+		completion:          session.completion,
 	}
 
 	for {
@@ -308,17 +343,20 @@ type transcriptProgress struct {
 }
 
 type transcriptMonitor struct {
-	reader             transcript.Reader
-	path               string
-	projectRoot        string
-	sessionID          string
-	readState          func() (SessionState, error)
-	subagentSizes      map[string]int64
-	subagentStartState subagentStartState
-	output             *terminalOutput
-	events             chan<- harness.Event
-	seenEntries        int
-	completion         harness.CompletionSignal
+	reader              transcript.Reader
+	path                string
+	projectRoot         string
+	sessionID           string
+	readState           func() (SessionState, error)
+	subagentSizes       map[string]int64
+	subagentSeenEntries map[string]int
+	subagentIDs         map[string]string
+	finishedSubagents   map[string]bool
+	subagentStartState  subagentStartState
+	output              *terminalOutput
+	events              chan<- harness.Event
+	seenEntries         int
+	completion          harness.CompletionSignal
 	// Completion stays latched across later polls that contain no new entries.
 	complete              bool
 	noProgress            *time.Timer
@@ -464,11 +502,13 @@ func (m *transcriptMonitor) describeSessionFailure(err error) error {
 			details += "\n" + tail
 		}
 	}
-	return fmt.Errorf("%w\n%s", err, details)
+	return &harness.SessionTranscriptError{Cause: err, Path: m.path, Details: details}
 }
 
 func (m *transcriptMonitor) checkProgress() (transcriptProgress, error) {
-	entryCount, complete, err := readTranscript(m.reader, m.path, m.seenEntries, m.events, m.completion)
+	entryCount, complete, err := readTranscript(
+		m.reader, m.path, m.seenEntries, m.events, m.completion, m.linkSubagent,
+	)
 	if err != nil {
 		if !errors.Is(err, os.ErrNotExist) {
 			return transcriptProgress{}, err
@@ -511,14 +551,89 @@ func (m *transcriptMonitor) checkSubagentProgress() (bool, error) {
 	}
 	hasProgress := false
 	for path, size := range sizes {
+		m.linkSubagentFromMetadata(path)
 		previousSize, exists := m.subagentSizes[path]
 		isNewOrGrown := !exists || size > previousSize
 		if isNewOrGrown {
 			hasProgress = true
 		}
+		if err := m.processSubagentTranscript(path, isNewOrGrown); err != nil {
+			return false, err
+		}
 	}
 	m.subagentSizes = sizes
 	return hasProgress, nil
+}
+
+func (m *transcriptMonitor) linkSubagentFromMetadata(path string) {
+	metadata, ok := readSubagentSpanMetadata(path)
+	if !ok || metadata.ToolUseID == "" {
+		return
+	}
+	m.linkSubagent(agentTranscriptID(path), metadata.ToolUseID)
+}
+
+func (m *transcriptMonitor) processSubagentTranscript(path string, hasTranscriptChanges bool) error {
+	roleSubagentID := m.subagentIDs[agentTranscriptID(path)]
+	if roleSubagentID == "" {
+		return nil
+	}
+	if hasTranscriptChanges {
+		if err := m.emitSubagentToolEvents(path, roleSubagentID); err != nil {
+			return err
+		}
+	}
+	return m.emitSubagentFinished(path, roleSubagentID)
+}
+
+func (m *transcriptMonitor) emitSubagentToolEvents(path, roleSubagentID string) error {
+	entries, err := m.reader.Read(path)
+	if err != nil {
+		return err
+	}
+	seenEntries := m.subagentSeenEntries[path]
+	if seenEntries > len(entries) {
+		seenEntries = 0
+	}
+	for _, entry := range entries[seenEntries:] {
+		decoded, decodeErr := decodeTranscriptEntry(entry.Raw)
+		if decodeErr != nil {
+			return fmt.Errorf("decode Claude subagent transcript %s line %d: %w", path, entry.Line, decodeErr)
+		}
+		m.emitSubagentToolUses(decoded, roleSubagentID)
+	}
+	m.subagentSeenEntries[path] = len(entries)
+	return nil
+}
+
+func (m *transcriptMonitor) emitSubagentToolUses(events []harness.Event, roleSubagentID string) {
+	for _, event := range events {
+		if event.Type != harness.EventToolUse {
+			continue
+		}
+		event.SubagentID = roleSubagentID
+		event.ArgumentGist = subagentToolGist(json.RawMessage(event.ArgumentGist))
+		event.Raw = ""
+		m.events <- event
+	}
+}
+
+func (m *transcriptMonitor) emitSubagentFinished(path, roleSubagentID string) error {
+	if m.finishedSubagents[path] || !subagentIsFinished(path) {
+		return nil
+	}
+	m.events <- harness.Event{Type: harness.EventSubagentFinished, SubagentID: roleSubagentID}
+	m.finishedSubagents[path] = true
+	return nil
+}
+
+func (m *transcriptMonitor) linkSubagent(agentID, toolUseID string) {
+	agentID = strings.TrimSpace(agentID)
+	toolUseID = strings.TrimSpace(toolUseID)
+	if agentID == "" || toolUseID == "" {
+		return
+	}
+	m.subagentIDs[agentID] = toolUseID
 }
 
 func subagentTranscriptSizes(reader transcript.Reader, projectRoot, sessionID string) (map[string]int64, error) {
@@ -894,6 +1009,7 @@ func readTranscript(
 	seenEntries int,
 	events chan<- harness.Event,
 	completion harness.CompletionSignal,
+	linkSubagent func(agentID, toolUseID string),
 ) (int, bool, error) {
 	entries, err := reader.Read(path)
 	if err != nil {
@@ -904,6 +1020,9 @@ func readTranscript(
 	}
 	newEntries := entries[seenEntries:]
 	for _, entry := range newEntries {
+		if agentID, toolUseID := transcriptSubagentLink(entry.Raw); agentID != "" && linkSubagent != nil {
+			linkSubagent(agentID, toolUseID)
+		}
 		decoded, decodeErr := decodeTranscriptEntry(entry.Raw)
 		if decodeErr != nil {
 			return seenEntries, false, fmt.Errorf(
@@ -945,6 +1064,12 @@ func decodeTranscriptEntry(raw json.RawMessage) ([]harness.Event, error) {
 					ToolName:     block.Name,
 					ArgumentGist: argumentGist(block.Input),
 				})
+				if isSubagentTool(block.Name) && block.ID != "" {
+					events = append(events, harness.Event{
+						Type: harness.EventSubagentStarted, SubagentID: block.ID,
+						SubagentLabel: subagentToolLabel(block.Input),
+					})
+				}
 			}
 		}
 	}

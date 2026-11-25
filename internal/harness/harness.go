@@ -66,21 +66,32 @@ func (e *SessionStalledError) Is(target error) bool {
 type EventType string
 
 const (
+	// EventAssistantText identifies streamed assistant prose from a Harness.
 	EventAssistantText EventType = "assistant_text"
-	EventToolUse       EventType = "tool_use"
-	EventSession       EventType = "session"
-	EventResult        EventType = "result"
-	EventRaw           EventType = "raw"
+	// EventToolUse identifies a tool call made by a Harness.
+	EventToolUse EventType = "tool_use"
+	// EventSubagentStarted identifies a newly spawned sub-agent.
+	EventSubagentStarted EventType = "subagent_started"
+	// EventSubagentFinished identifies a completed sub-agent.
+	EventSubagentFinished EventType = "subagent_finished"
+	// EventSession identifies the active Harness session.
+	EventSession EventType = "session"
+	// EventResult identifies the final result from a Harness.
+	EventResult EventType = "result"
+	// EventRaw identifies unclassified Harness output.
+	EventRaw EventType = "raw"
 )
 
 type Event struct {
-	Type         EventType
-	Text         string
-	ToolName     string
-	ArgumentGist string
-	SessionID    string
-	IsError      bool
-	Raw          string
+	Type          EventType
+	Text          string
+	ToolName      string
+	ArgumentGist  string
+	SubagentID    string
+	SubagentLabel string
+	SessionID     string
+	IsError       bool
+	Raw           string
 }
 
 // CompletionSignal names the transcript signal a role expects.
@@ -120,6 +131,24 @@ type SessionStream interface {
 	Stream
 	SessionID() string
 }
+
+// SessionTranscriptPathProvider returns the durable transcript path for a session.
+type SessionTranscriptPathProvider interface {
+	SessionTranscriptPath(sessionID string) string
+}
+
+// SessionTranscriptError includes the durable transcript path in a session failure.
+type SessionTranscriptError struct {
+	Cause   error
+	Path    string
+	Details string
+}
+
+func (e *SessionTranscriptError) Error() string {
+	return fmt.Sprintf("%v\n%s", e.Cause, e.Details)
+}
+
+func (e *SessionTranscriptError) Unwrap() error { return e.Cause }
 
 type Adapter interface {
 	Run(ctx context.Context, request Request) (Stream, error)

@@ -59,12 +59,16 @@ type ImplementOptions struct {
 	Notifier             Notifier
 	Input                io.Reader
 	Output               io.Writer
+	ErrorOutput          io.Writer
 	Context              string
 	ReviewContext        string
 	Verbose              bool
+	Raw                  bool
+	Clock                ui.Clock
 	PublishOnApprove     bool
 	GateRunner           GateRunner
 	ProvisionedWorktree  *Worktree
+	WorktreeSetup        string
 	IdentificationBanner func(artifactDir string) error
 }
 
@@ -77,6 +81,9 @@ type implementRunState struct {
 }
 
 func RunImplement(ctx context.Context, options ImplementOptions) (returnErr error) {
+	if options.Raw && options.Verbose {
+		return errors.New("implement: --raw and --verbose are mutually exclusive")
+	}
 	originGit := options.OriginGit
 	if originGit == nil {
 		originGit = options.Git
@@ -93,7 +100,7 @@ func RunImplement(ctx context.Context, options ImplementOptions) (returnErr erro
 			}
 		}()
 	}
-	run, err := prepareImplementRun(ctx, options, originGit)
+	run, err := prepareImplementRunWithWorktree(ctx, options, originGit)
 	if err != nil {
 		return finishFailedImplementRun(ctx, options, run, err)
 	}
@@ -165,6 +172,8 @@ func executeImplementRun(ctx context.Context, options ImplementOptions, run impl
 		additionalContext:    options.Context,
 		reviewContext:        options.ReviewContext,
 		verbose:              options.Verbose,
+		raw:                  options.Raw,
+		clock:                options.Clock,
 		allowEmptyDiff:       options.PublishOnApprove,
 		gateRunner:           options.GateRunner,
 	})
@@ -190,7 +199,7 @@ func executeImplementRun(ctx context.Context, options ImplementOptions, run impl
 		exhaustionReason:   run.runState.state.ExhaustionReason,
 		nitBudgetOverrides: run.runState.state.NitBudgetOverrides,
 	}
-	publicationErr := publishApprovedSummary(ctx, options, run.setup, run.recorder, &summary)
+	publicationErr := publishApprovedSummary(ctx, options, run.setup, run.recorder, run.runState, &summary)
 	if err := completeImplementRun(ctx, options, run, summary); err != nil {
 		return err
 	}
@@ -202,6 +211,7 @@ func publishApprovedSummary(
 	options ImplementOptions,
 	setup implementSetup,
 	recorder RunRecorder,
+	runState *runStateTracker,
 	summary *implementSummary,
 ) error {
 	if !options.PublishOnApprove {
@@ -223,7 +233,7 @@ func publishApprovedSummary(
 	}
 
 	var notices, attachmentNotices []string
-	summary.publication, notices, attachmentNotices = publishApprovedImplement(ctx, options, setup, *summary)
+	summary.publication, notices, attachmentNotices = publishApprovedImplement(ctx, options, setup, *summary, runState)
 	summary.publishNotice = strings.Join(notices, "\n")
 	summary.attachmentNotice = strings.Join(attachmentNotices, "\n")
 	if evidenceErr != nil {
@@ -263,21 +273,81 @@ func prepareImplementRun(ctx context.Context, options ImplementOptions, originGi
 	if err := validateImplementOptions(options); err != nil {
 		return implementRunState{}, err
 	}
-	var (
-		setup implementSetup
-		err   error
+	preparationSpan, err := startUnrecordedActivitySpan(
+		options.Output, harnessOutputMode(options.Verbose, options.Raw), options.Clock, "preparing worktree",
 	)
-	if options.ProvisionedWorktree != nil {
-		setup, err = prepareProvisionedImplement(ctx, options.Git, options.IssueTracker, options.Ticket, *options.ProvisionedWorktree)
-	} else {
-		setup, err = prepareImplementWithPullRequestBase(
-			ctx, options.Git, originGit, options.IssueTracker, options.Ticket, options.PublishOnApprove,
-		)
-	}
 	if err != nil {
 		return implementRunState{}, err
 	}
-	return initializeImplementRun(options, setup)
+	setup, err := prepareImplementWithPullRequestBase(
+		ctx, options.Git, originGit, options.IssueTracker, options.Ticket, options.PublishOnApprove,
+	)
+	preparation, preparationErr := preparationSpan.finishUnrecorded(ctx, err)
+	if preparationErr != nil {
+		return implementRunState{}, preparationErr
+	}
+	return initializePreparedImplementRun(options, setup, preparation)
+}
+
+func initializePreparedImplementRun(
+	options ImplementOptions,
+	setup implementSetup,
+	preparation activitySpanTiming,
+) (implementRunState, error) {
+	run, err := initializeImplementRun(options, setup)
+	if err != nil {
+		return run, err
+	}
+	if err := recordActivitySpan(run.runState, 0, runrecord.Preparing, "preparing worktree", preparation); err != nil {
+		return run, fmt.Errorf("record worktree preparation Activity: %w", err)
+	}
+	return run, nil
+}
+
+func prepareImplementRunWithWorktree(
+	ctx context.Context,
+	options ImplementOptions,
+	originGit GitRunner,
+) (implementRunState, error) {
+	if options.ProvisionedWorktree == nil {
+		return prepareImplementRun(ctx, options, originGit)
+	}
+	if err := validateImplementOptions(options); err != nil {
+		return implementRunState{}, err
+	}
+	setup, err := prepareProvisionedImplement(ctx, options.Git, options.Ticket, *options.ProvisionedWorktree)
+	if err != nil {
+		return implementRunState{}, err
+	}
+	preparation, err := prepareImplementWorktree(ctx, options)
+	if err != nil {
+		return implementRunState{}, err
+	}
+	if err := options.IssueTracker.UpdateStatus(ctx, options.Ticket.Number, "doing"); err != nil {
+		return implementRunState{}, fmt.Errorf("mark ticket #%d as doing: %w", options.Ticket.Number, err)
+	}
+	return initializePreparedImplementRun(options, setup, preparation)
+}
+
+func prepareImplementWorktree(ctx context.Context, options ImplementOptions) (activitySpanTiming, error) {
+	mode := harnessOutputMode(options.Verbose, options.Raw)
+	span, err := startUnrecordedActivitySpan(options.Output, mode, options.Clock, "preparing worktree")
+	if err != nil {
+		return activitySpanTiming{}, err
+	}
+	stdout, stderr := options.Output, options.ErrorOutput
+	var trackedStdout *lineTrackingWriter
+	if span.view != nil {
+		trackedStdout = newLineTrackingWriter(activitySpanOutput{output: stdout, view: span.view})
+		stdout = trackedStdout
+		stderr = activitySpanOutput{output: stderr, view: span.view}
+	}
+	setupErr := RunWorktreeSetup(ctx, options.WorktreeSetup, options.WorkRoot, stdout, stderr)
+	if trackedStdout != nil && !trackedStdout.AtLineStart() {
+		_, lineErr := io.WriteString(trackedStdout, "\n")
+		setupErr = errors.Join(setupErr, lineErr)
+	}
+	return span.finishUnrecorded(ctx, setupErr)
 }
 
 func validateImplementOptions(options ImplementOptions) error {
@@ -459,7 +529,6 @@ func prepareImplementWithPullRequestBase(
 func prepareProvisionedImplement(
 	ctx context.Context,
 	workGit GitRunner,
-	issueTracker tracker.Tracker,
 	ticket tracker.Ticket,
 	worktree Worktree,
 ) (implementSetup, error) {
@@ -477,9 +546,6 @@ func prepareProvisionedImplement(
 	branch := strings.TrimSpace(worktree.Branch)
 	if branch == "" {
 		return implementSetup{}, errors.New("implement worktree branch is required")
-	}
-	if err := issueTracker.UpdateStatus(ctx, ticket.Number, "doing"); err != nil {
-		return implementSetup{}, fmt.Errorf("mark ticket #%d as doing: %w", ticket.Number, err)
 	}
 	return implementSetup{
 		git: workGit, branch: branch, branchPoint: branchPoint,
@@ -503,6 +569,8 @@ type implementIterationsParams struct {
 	additionalContext    string
 	reviewContext        string
 	verbose              bool
+	raw                  bool
+	clock                ui.Clock
 	allowEmptyDiff       bool
 	gateRunner           GateRunner
 }
@@ -545,10 +613,7 @@ func runImplementIterations(
 	iterations := 0
 	for iteration := 1; iteration <= params.projectConfig.Loop.MaxIterations; iteration++ {
 		iterations = iteration
-		mode := QuietHarnessOutput
-		if params.verbose {
-			mode = ParsedHarnessOutput
-		}
+		mode := harnessOutputMode(params.verbose, params.raw)
 		handoffPath, err := prepareIterationHandoffPath(params, iteration)
 		if err != nil {
 			return 0, verdict.Verdict{}, nil, publicationGateVerification{}, err
@@ -713,7 +778,6 @@ func runImplementerGateTurn(
 	if err != nil {
 		return implementGateTurnResult{}, err
 	}
-	params.runState.setActivity(runrecord.Verifying)
 	rolloverSeedPath, previousSession, err := nextImplementerTurn(handoffPath, implementResult.SessionIDs)
 	if err != nil {
 		return implementGateTurnResult{}, err
@@ -784,7 +848,12 @@ func ensureImplementRunState(params implementIterationsParams) *runStateTracker 
 }
 
 func runImplementReview(ctx context.Context, params implementIterationsParams, reviewParams implementReviewParams) (ReviewExecution, error) {
-	params.runState.setActivity(runrecord.Reviewing)
+	label := fmt.Sprintf("%d/%d — reviewing", reviewParams.iteration, params.projectConfig.Loop.MaxIterations)
+	if reviewParams.mode != RawHarnessOutput {
+		if err := writeRoleSection(params.output, "Reviewer"); err != nil {
+			return ReviewExecution{}, err
+		}
+	}
 	promptContext := reviewPromptContext{
 		diffPath:             reviewParams.diffPath,
 		evidence:             inspectReviewEvidence(params.recorder.EvidenceDirectory(reviewParams.iteration)),
@@ -810,13 +879,6 @@ func runImplementReview(ctx context.Context, params implementIterationsParams, r
 		MCP:         params.projectConfig.Roles.Review.MCP,
 		SandboxMode: params.projectConfig.Roles.Review.SandboxMode,
 	}
-	renderer := ui.New(params.output, ui.DetectCaps(params.output))
-	if err := writeRoleSection(params.output, "Reviewer"); err != nil {
-		return ReviewExecution{}, fmt.Errorf("write review role: %w", err)
-	}
-	if err := renderer.Step(ui.Step{Label: fmt.Sprintf("iteration %d/%d — reviewing", reviewParams.iteration, params.projectConfig.Loop.MaxIterations)}); err != nil {
-		return ReviewExecution{}, fmt.Errorf("write review progress: %w", err)
-	}
 	reviewOptions := reviewResumeOptions{
 		sessionID: reviewParams.previousReviewerSession,
 		request:   reviewRequest,
@@ -829,12 +891,24 @@ func runImplementReview(ctx context.Context, params implementIterationsParams, r
 		resumePrompt = appendProtectedPaths(resumePrompt, reviewParams.protectedPaths)
 		reviewOptions.resumePrompt = appendGateResultPath(resumePrompt, reviewParams.gateResultPath)
 	}
-	reviewStartedAt := time.Now().UTC()
+	span, err := startActivitySpan(
+		params.runState, params.output, reviewParams.mode, params.clock,
+		reviewParams.iteration, runrecord.Reviewing, label,
+	)
+	if err != nil {
+		return ReviewExecution{}, err
+	}
+	params.questions.setActivitySpan(span)
+	defer params.questions.setActivitySpan(nil)
+	reviewOptions.span = span.view
+	reviewOptions.childSpans = span
+	reviewStartedAt := span.start.StartedAt
 	reviewResult, err := runReviewExecutionWithResumeFallback(ctx, params.reviewer, reviewOptions)
-	reviewEndedAt := time.Now().UTC()
+	err = span.finish(ctx, err)
+	reviewEndedAt := spanNow(params.clock)
 	if err != nil {
 		return ReviewExecution{}, recordImplementReviewFailure(
-			params, reviewParams, reviewResult, reviewStartedAt, reviewEndedAt, err,
+			ctx, params, reviewParams, reviewResult, reviewStartedAt, reviewEndedAt, err,
 		)
 	}
 	reviewResult.Verdict = verifyVerdictLocations(params.workRoot, reviewResult.Verdict)
@@ -860,6 +934,7 @@ func runImplementReview(ctx context.Context, params implementIterationsParams, r
 }
 
 func recordImplementReviewFailure(
+	ctx context.Context,
 	params implementIterationsParams,
 	reviewParams implementReviewParams,
 	execution ReviewExecution,
@@ -881,12 +956,12 @@ func recordImplementReviewFailure(
 		endedAt:   endedAt,
 	})
 	if err := recordFailedReviewTurn(params.recorder, reviewParams.iteration, execution, failure); err != nil {
-		return fmt.Errorf("%w; save partial review artifacts: %v", failure, err)
+		failure = fmt.Errorf("%w; save partial review artifacts: %v", failure, err)
 	}
 	if errors.As(failure, &unparseable) {
-		return reviewTranscriptSavedError(failure, recorderArtifactDir(params.recorder))
+		failure = reviewTranscriptSavedError(failure, recorderArtifactDir(params.recorder))
 	}
-	return failure
+	return reportRoleFailure(ctx, failure, execution.FailureTail, params.reviewer, execution.SessionIDs, params.recorder)
 }
 
 func recordReviewSessions(recorder RunRecorder, iteration int, review ReviewExecution) (ReviewExecution, error) {
@@ -979,25 +1054,42 @@ func runImplementTurn(
 	params implementIterationsParams,
 	turn implementTurnParams,
 ) (implementExecution, error) {
-	params.runState.startActivity(turn.iteration, runrecord.Implementing)
-	if err := presentImplementTurn(params, turn); err != nil {
+	implementRequest := buildImplementRequest(params, turn)
+	activity := implementActivityLabel(turn)
+	label := fmt.Sprintf("%d/%d — %s", turn.iteration, params.projectConfig.Loop.MaxIterations, activity)
+	if turn.mode != RawHarnessOutput {
+		if err := writeRoleSection(params.output, "Implementer"); err != nil {
+			return implementExecution{}, err
+		}
+	}
+	span, err := startActivitySpan(params.runState, params.output, turn.mode, params.clock, turn.iteration, runrecord.Implementing, label)
+	if err != nil {
 		return implementExecution{}, err
 	}
-	implementRequest := buildImplementRequest(params, turn)
-	implementStartedAt := time.Now().UTC()
+	params.questions.setActivitySpan(span)
+	implementStartedAt := span.start.StartedAt
 	implementResult, err := runImplementRoleWithResumeFallback(
 		ctx,
 		params.implementer,
-		implementRequest,
-		turn.previousSession,
-		params.output,
-		turn.mode,
-		params.questions,
+		implementExecutionOptions{
+			request:          implementRequest,
+			initialSessionID: turn.previousSession,
+			output:           params.output,
+			mode:             turn.mode,
+			questions:        params.questions,
+			span:             span.view,
+			childSpans:       span,
+		},
 	)
-	implementEndedAt := time.Now().UTC()
+	params.questions.setActivitySpan(nil)
+	err = span.finish(ctx, err)
+	implementEndedAt := spanNow(params.clock)
 	if err != nil {
 		recordRoleUsage(params.recorder, implementUsage(params, turn, implementResult, implementStartedAt, implementEndedAt))
-		return implementExecution{}, recordFailedImplementExecution(params.recorder, turn.iteration, implementResult, err)
+		failure := recordFailedImplementExecution(params.recorder, turn.iteration, implementResult, err)
+		return implementExecution{}, reportRoleFailure(
+			ctx, failure, implementResult.FailureTail, params.implementer, implementResult.SessionIDs, params.recorder,
+		)
 	}
 	recordRoleUsage(params.recorder, implementUsage(params, turn, implementResult, implementStartedAt, implementEndedAt))
 	if err := recordSuccessfulImplementTurn(ctx, params, turn, implementResult); err != nil {
@@ -1006,21 +1098,14 @@ func runImplementTurn(
 	return implementResult, nil
 }
 
-func presentImplementTurn(params implementIterationsParams, turn implementTurnParams) error {
-	activity := "implementing"
+func implementActivityLabel(turn implementTurnParams) string {
 	if turn.gateAttemptFeedback != nil {
-		activity = "addressing Gate failure"
-	} else if turn.iteration > 1 {
-		activity = fmt.Sprintf("revising %d finding(s)", len(turn.findings))
+		return "addressing Gate failure"
 	}
-	renderer := ui.New(params.output, ui.DetectCaps(params.output))
-	if err := writeRoleSection(params.output, "Implementer"); err != nil {
-		return fmt.Errorf("write implement role: %w", err)
+	if turn.iteration > 1 {
+		return fmt.Sprintf("revising %d finding(s)", len(turn.findings))
 	}
-	if err := renderer.Step(ui.Step{Label: fmt.Sprintf("iteration %d/%d — %s", turn.iteration, params.projectConfig.Loop.MaxIterations, activity)}); err != nil {
-		return fmt.Errorf("write implement progress: %w", err)
-	}
-	return nil
+	return "implementing"
 }
 
 func buildImplementRequest(params implementIterationsParams, turn implementTurnParams) harness.Request {
@@ -1107,9 +1192,10 @@ func recordRoleUsage(recorder RunRecorder, entry usage.Entry) {
 }
 
 type implementExecution struct {
-	Feed       string
-	Transcript string
-	SessionIDs []string
+	Feed        string
+	Transcript  string
+	FailureTail string
+	SessionIDs  []string
 }
 
 type implementExecutionOptions struct {
@@ -1117,57 +1203,35 @@ type implementExecutionOptions struct {
 	output           io.Writer
 	mode             HarnessOutputMode
 	questions        *QuestionHandler
+	span             *ui.ActivitySpanView
+	childSpans       subagentEventSink
 	initialSessionID string
 	start            harnessStreamStarter
 }
 
-func runImplementRole(
-	ctx context.Context,
-	adapter harness.Adapter,
-	request harness.Request,
-	output io.Writer,
-	mode HarnessOutputMode,
-	questions *QuestionHandler,
-) (implementExecution, error) {
-	return runImplementRoleFrom(ctx, adapter, implementExecutionOptions{
-		request:   request,
-		output:    output,
-		mode:      mode,
-		questions: questions,
-		start: func(runContext context.Context) (harness.Stream, error) {
-			return adapter.Run(runContext, request)
-		},
-	})
+func runImplementRole(ctx context.Context, adapter harness.Adapter, options implementExecutionOptions) (implementExecution, error) {
+	options.initialSessionID = ""
+	options.start = func(runContext context.Context) (harness.Stream, error) {
+		return adapter.Run(runContext, options.request)
+	}
+	return runImplementRoleFrom(ctx, adapter, options)
 }
 
-func runImplementRoleWithResumeFallback(
-	ctx context.Context,
-	adapter harness.Adapter,
-	request harness.Request,
-	sessionID string,
-	output io.Writer,
-	mode HarnessOutputMode,
-	questions *QuestionHandler,
-) (implementExecution, error) {
-	sessionID, hasSession := normalizeSessionID(sessionID)
+func runImplementRoleWithResumeFallback(ctx context.Context, adapter harness.Adapter, options implementExecutionOptions) (implementExecution, error) {
+	sessionID, hasSession := normalizeSessionID(options.initialSessionID)
 	if !hasSession {
-		return runImplementRole(ctx, adapter, request, output, mode, questions)
+		return runImplementRole(ctx, adapter, options)
 	}
 
-	result, err := runImplementRoleFrom(ctx, adapter, implementExecutionOptions{
-		request:          request,
-		output:           output,
-		mode:             mode,
-		questions:        questions,
-		initialSessionID: sessionID,
-		start: func(runContext context.Context) (harness.Stream, error) {
-			stream, resumeErr := adapter.Resume(runContext, sessionID, request)
-			if resumeErr != nil {
-				return nil, &implementResumeError{cause: resumeErr}
-			}
-			return stream, nil
-		},
-	})
+	options.initialSessionID = sessionID
+	options.start = func(runContext context.Context) (harness.Stream, error) {
+		stream, resumeErr := adapter.Resume(runContext, sessionID, options.request)
+		if resumeErr != nil {
+			return nil, &implementResumeError{cause: resumeErr}
+		}
+		return stream, nil
+	}
+	result, err := runImplementRoleFrom(ctx, adapter, options)
 	if err == nil {
 		return result, nil
 	}
@@ -1176,7 +1240,7 @@ func runImplementRoleWithResumeFallback(
 	if !errors.As(err, &resumeErr) {
 		return result, err
 	}
-	fresh, freshErr := runImplementRole(ctx, adapter, request, output, mode, questions)
+	fresh, freshErr := runImplementRole(ctx, adapter, options)
 	if freshErr != nil {
 		return appendImplementExecutions(result, fresh), freshErr
 	}
@@ -1201,21 +1265,23 @@ func runImplementRoleFrom(
 	var feed bytes.Buffer
 	visibleOutput := options.output
 	if options.mode != RawHarnessOutput {
-		visibleOutput = newLiveHarnessOutput(options.output, options.mode, "implement")
+		visibleOutput = newLiveHarnessOutput(options.output, options.mode, "implement", options.span)
 	}
 	artifactOutput := newPlainHarnessOutput(&feed, options.mode)
 	result, err := runHarnessConversation(ctx, adapter, options.start, conversationOptions{
-		request:   options.request,
-		output:    visibleOutput,
-		artifact:  artifactOutput,
-		mode:      options.mode,
-		questions: options.questions,
-		role:      "implement",
-		sessionID: options.initialSessionID,
+		request:    options.request,
+		output:     visibleOutput,
+		artifact:   artifactOutput,
+		mode:       options.mode,
+		questions:  options.questions,
+		role:       "implement",
+		sessionID:  options.initialSessionID,
+		childSpans: options.childSpans,
 	})
 	if err != nil {
 		execution := implementExecution{
-			Feed: feed.String(), Transcript: result.Transcript, SessionIDs: result.SessionIDs,
+			Feed: feed.String(), Transcript: result.Transcript, FailureTail: result.FailureTail,
+			SessionIDs: result.SessionIDs,
 		}
 		if errors.Is(err, harness.ErrSessionStalled) {
 			return recoverStalledImplementer(ctx, adapter, options, execution, err, visibleOutput)
@@ -1227,9 +1293,10 @@ func runImplementRoleFrom(
 		return execution, implementErr
 	}
 	return implementExecution{
-		Feed:       feed.String(),
-		Transcript: result.Transcript,
-		SessionIDs: result.SessionIDs,
+		Feed:        feed.String(),
+		Transcript:  result.Transcript,
+		FailureTail: result.FailureTail,
+		SessionIDs:  result.SessionIDs,
 	}, nil
 }
 
@@ -1263,21 +1330,29 @@ func recoverStalledImplementer(
 	}
 	request.Prompt += "Continue the requested implementation from the existing session. End your turn normally when the work is complete."
 	request.Prompt = appendImplementerReports(request.Prompt, stalled.Reports)
+	recoveryChild, err := startStalledSessionRecoveryChild(options.childSpans)
+	if err != nil {
+		return first, err
+	}
 	var recoveryFeed bytes.Buffer
 	recoveryArtifact := newPlainHarnessOutput(&recoveryFeed, options.mode)
 	recovery, err := runHarnessConversation(ctx, adapter, func(runContext context.Context) (harness.Stream, error) {
 		return adapter.Resume(runContext, sessionID, request)
 	}, conversationOptions{
-		request:   request,
-		output:    output,
-		artifact:  recoveryArtifact,
-		mode:      options.mode,
-		questions: options.questions,
-		role:      "implement",
-		sessionID: sessionID,
+		request:    request,
+		output:     output,
+		artifact:   recoveryArtifact,
+		mode:       options.mode,
+		questions:  options.questions,
+		role:       "implement",
+		sessionID:  sessionID,
+		childSpans: options.childSpans,
 	})
+	recoverySpanErr := finishStalledSessionRecoveryChild(ctx, recoveryChild, err)
+	err = errors.Join(err, recoverySpanErr)
 	resumed := implementExecution{
-		Feed: recoveryFeed.String(), Transcript: recovery.Transcript, SessionIDs: recovery.SessionIDs,
+		Feed: recoveryFeed.String(), Transcript: recovery.Transcript, FailureTail: recovery.FailureTail,
+		SessionIDs: recovery.SessionIDs,
 	}
 	combined := appendImplementExecutions(first, resumed)
 	if err != nil {
@@ -1333,9 +1408,10 @@ func recordFailedImplementTurn(recorder RunRecorder, iteration int, execution im
 
 func appendImplementExecutions(first, next implementExecution) implementExecution {
 	return implementExecution{
-		Feed:       appendTranscriptString(first.Feed, next.Feed),
-		Transcript: appendTranscriptString(first.Transcript, next.Transcript),
-		SessionIDs: append(append([]string(nil), first.SessionIDs...), next.SessionIDs...),
+		Feed:        appendTranscriptString(first.Feed, next.Feed),
+		Transcript:  appendTranscriptString(first.Transcript, next.Transcript),
+		FailureTail: appendTranscriptString(first.FailureTail, next.FailureTail),
+		SessionIDs:  append(append([]string(nil), first.SessionIDs...), next.SessionIDs...),
 	}
 }
 

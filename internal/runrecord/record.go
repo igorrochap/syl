@@ -175,6 +175,7 @@ type Record struct {
 	HasState         bool
 	UsageContents    []byte
 	UsageExists      bool
+	Activities       []ActivityEvent
 	Artifacts        []Artifact
 	Verdicts         map[int]verdict.Verdict
 	VerdictText      map[int]string
@@ -222,7 +223,9 @@ func (reader *Reader) Read(runDir string) (Record, error) {
 	record := Record{
 		Directory: runDir, Verdicts: make(map[int]verdict.Verdict), VerdictText: make(map[int]string),
 	}
-	reader.readRecordFiles(&record, runDir)
+	if err := reader.readRecordFiles(&record, runDir); err != nil {
+		return Record{}, err
+	}
 	for _, entry := range entries {
 		reader.readEntry(&record, runDir, entry)
 	}
@@ -233,7 +236,7 @@ func (reader *Reader) Read(runDir string) (Record, error) {
 }
 
 // readRecordFiles fills the record from the fixed-name files, skipping any that are absent.
-func (reader *Reader) readRecordFiles(record *Record, runDir string) {
+func (reader *Reader) readRecordFiles(record *Record, runDir string) error {
 	if contents, err := reader.files.ReadFile(filePath(runDir, metadataFile)); err == nil {
 		record.Metadata = ParseMetadata(contents)
 	}
@@ -252,6 +255,17 @@ func (reader *Reader) readRecordFiles(record *Record, runDir string) {
 		record.State = state
 		record.HasState = true
 	}
+	activities, err := ReadActivities(runDir, reader.files)
+	if err != nil {
+		var readError *activityLogReadError
+		if errors.As(err, &readError) {
+			// Optional Activity-log read failures retain the Reader's previous behavior.
+			return nil
+		}
+		return err
+	}
+	record.Activities = activities
+	return nil
 }
 
 // readEntry adds one directory entry to the record when it is a known artifact.

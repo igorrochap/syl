@@ -4,14 +4,108 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/creack/pty"
 	"github.com/igorrochap/syl/internal/harness"
+	"github.com/igorrochap/syl/internal/runrecord"
+	"github.com/igorrochap/syl/internal/ui"
 	"github.com/igorrochap/syl/internal/verdict"
 )
 
 const conversationTestVerdict = "VERDICT: approve\nSUMMARY: The working tree is ready\nFINDINGS:\n"
+
+func TestProcessSubagentEventNormalizesAndValidatesIdentifiers(t *testing.T) {
+	sink := &recordingSubagentEventSink{}
+	events := []harness.Event{
+		{Type: harness.EventSubagentStarted, SubagentID: " child-1 ", SubagentLabel: " Child review "},
+		{Type: harness.EventToolUse, SubagentID: " child-1 ", ToolName: "Read", ArgumentGist: "file.go"},
+		{Type: harness.EventSubagentFinished, SubagentID: " child-1 "},
+	}
+	for _, event := range events {
+		if err := processSubagentEvent(event, sink); err != nil {
+			t.Fatalf("process event %#v: %v", event, err)
+		}
+	}
+	if len(sink.started) != 1 || sink.started[0] != (recordingSubagentStart{id: "child-1", label: "Child review"}) {
+		t.Fatalf("started children = %#v, want normalized id and label", sink.started)
+	}
+	if len(sink.tools) != 1 || sink.tools[0] != (recordedSubagentTool{id: "child-1", name: "Read", gist: "file.go"}) {
+		t.Fatalf("tool events = %#v, want normalized child id", sink.tools)
+	}
+	if len(sink.finished) != 1 || sink.finished[0] != "child-1" {
+		t.Fatalf("finished child ids = %#v, want normalized id", sink.finished)
+	}
+}
+
+func TestProcessSubagentEventRejectsEmptyStartAndIgnoresEmptyFollowupIDs(t *testing.T) {
+	for _, event := range []harness.Event{
+		{Type: harness.EventSubagentStarted, SubagentID: " ", SubagentLabel: "Child"},
+		{Type: harness.EventSubagentStarted, SubagentID: "child-1", SubagentLabel: "\t"},
+	} {
+		t.Run("invalid start "+event.SubagentID+"/"+event.SubagentLabel, func(t *testing.T) {
+			sink := &recordingSubagentEventSink{}
+			if err := processSubagentEvent(event, sink); err == nil || !strings.Contains(err.Error(), "id and label are required") {
+				t.Fatalf("processSubagentEvent() error = %v, want empty id/label validation", err)
+			}
+			if len(sink.started) != 0 {
+				t.Fatalf("started children = %#v, want no start for invalid event", sink.started)
+			}
+		})
+	}
+
+	sink := &recordingSubagentEventSink{}
+	for _, event := range []harness.Event{
+		{Type: harness.EventSubagentFinished, SubagentID: " \t "},
+		{Type: harness.EventToolUse, SubagentID: "  ", ToolName: "Read", ArgumentGist: "file.go"},
+	} {
+		if err := processSubagentEvent(event, sink); err != nil {
+			t.Fatalf("process empty-id event %#v: %v", event, err)
+		}
+	}
+	if len(sink.finished) != 0 || len(sink.tools) != 0 {
+		t.Fatalf("empty-id follow-up events reached sink: finished=%#v tools=%#v", sink.finished, sink.tools)
+	}
+}
+
+type recordingSubagentStart struct {
+	id    string
+	label string
+}
+
+type recordedSubagentTool struct {
+	id   string
+	name string
+	gist string
+}
+
+type recordingSubagentEventSink struct {
+	started  []recordingSubagentStart
+	finished []string
+	tools    []recordedSubagentTool
+}
+
+func (sink *recordingSubagentEventSink) SubagentStarted(id, label string) error {
+	sink.started = append(sink.started, recordingSubagentStart{id: id, label: label})
+	return nil
+}
+
+func (sink *recordingSubagentEventSink) SubagentTool(id, name, gist string) {
+	sink.tools = append(sink.tools, recordedSubagentTool{id: id, name: name, gist: gist})
+}
+
+func (sink *recordingSubagentEventSink) SubagentFinished(id string) error {
+	sink.finished = append(sink.finished, id)
+	return nil
+}
+
+func (*recordingSubagentEventSink) startTimedChild(string) (timedActivityChild, error) {
+	return nil, nil
+}
 
 func TestRunReviewExecutionKeepsPartialOutputWhenHarnessWaitFails(t *testing.T) {
 	adapter := &failedConversationAdapter{
@@ -56,7 +150,7 @@ func TestRunReviewExecutionRecoversStalledSessionWithFinishedSubagentReports(t *
 	}
 
 	review, err := RunReviewExecution(
-		context.Background(), adapter, harness.Request{Prompt: "original review"}, io.Discard, QuietHarnessOutput, nil,
+		context.Background(), adapter, harness.Request{Prompt: "original review"}, io.Discard, ProgressHarnessOutput, nil,
 	)
 	if err != nil {
 		t.Fatalf("RunReviewExecution() error = %v", err)
@@ -107,7 +201,7 @@ func TestRunReviewExecutionFailsWhenStalledRecoveryAlsoStalls(t *testing.T) {
 		resumeWaitErrors: []error{secondStall},
 	}
 
-	review, err := RunReviewExecution(context.Background(), adapter, harness.Request{}, io.Discard, QuietHarnessOutput, nil)
+	review, err := RunReviewExecution(context.Background(), adapter, harness.Request{}, io.Discard, ProgressHarnessOutput, nil)
 	if err == nil || !strings.Contains(err.Error(), "no-progress limit") || !strings.Contains(err.Error(), "second session summary") {
 		t.Fatalf("RunReviewExecution() error = %v, want second no-progress limit and session summary", err)
 	}
@@ -146,7 +240,7 @@ func TestRunReviewExecutionResumesAfterNoProgressLimit(t *testing.T) {
 		runWaitErrors: []error{stall},
 	}
 
-	review, err := RunReviewExecution(context.Background(), adapter, harness.Request{}, io.Discard, QuietHarnessOutput, nil)
+	review, err := RunReviewExecution(context.Background(), adapter, harness.Request{}, io.Discard, ProgressHarnessOutput, nil)
 	if err != nil {
 		t.Fatalf("RunReviewExecution() error = %v", err)
 	}
@@ -197,7 +291,7 @@ func TestRunReviewExecutionFallsBackWhenStalledSessionResumeCannotStart(t *testi
 		resumeStartErrors: []error{errors.New("session is unavailable")},
 	}
 
-	review, err := RunReviewExecution(context.Background(), adapter, harness.Request{Prompt: "original review"}, io.Discard, QuietHarnessOutput, nil)
+	review, err := RunReviewExecution(context.Background(), adapter, harness.Request{Prompt: "original review"}, io.Discard, ProgressHarnessOutput, nil)
 	if err != nil {
 		t.Fatalf("RunReviewExecution() error = %v", err)
 	}
@@ -240,7 +334,9 @@ func TestConsumeHarnessStreamSeparatesToolsWithoutSplittingAssistantChunks(t *te
 	}}
 	var output strings.Builder
 
-	if _, err := consumeHarnessStream(stream, &output, ParsedHarnessOutput); err != nil {
+	if _, err := consumeHarnessStream(stream, streamEventOptions{
+		output: &output, mode: ParsedHarnessOutput, captureSessionEvents: true,
+	}); err != nil {
 		t.Fatalf("consumeHarnessStream() error = %v", err)
 	}
 
@@ -317,7 +413,7 @@ func TestRunReviewExecutionRecoversWhenVerdictReaskStalls(t *testing.T) {
 		resumeWaitErrors: []error{stall, nil},
 	}
 
-	review, err := RunReviewExecution(context.Background(), adapter, harness.Request{}, io.Discard, QuietHarnessOutput, nil)
+	review, err := RunReviewExecution(context.Background(), adapter, harness.Request{}, io.Discard, ProgressHarnessOutput, nil)
 	if err != nil {
 		t.Fatalf("RunReviewExecution() error = %v, want recovery after stalled verdict re-ask", err)
 	}
@@ -367,7 +463,9 @@ func TestConsumeHarnessStreamPreservesResultErrorsWithAndWithoutDeltas(t *testin
 				events = append([]harness.Event{{Type: harness.EventAssistantText, Text: tt.assistant}}, events...)
 			}
 
-			_, err := consumeHarnessStream(scriptedConversationStream{events: events}, io.Discard, ParsedHarnessOutput)
+			_, err := consumeHarnessStream(scriptedConversationStream{events: events}, streamEventOptions{
+				output: io.Discard, mode: ParsedHarnessOutput, captureSessionEvents: true,
+			})
 			if err == nil || !strings.Contains(err.Error(), "harness returned an error: "+tt.resultError) {
 				t.Fatalf("consumeHarnessStream() error = %v, want harness error %q", err, tt.resultError)
 			}
@@ -501,6 +599,224 @@ func TestRunHarnessConversationRendersQuestionAndConfirmsResume(t *testing.T) {
 	}
 }
 
+func TestRunHarnessConversationQuestionOutputMatchesGolden(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		mode HarnessOutputMode
+	}{
+		{name: "default", mode: ProgressHarnessOutput},
+		{name: "verbose", mode: ParsedHarnessOutput},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			adapter := &scriptedConversationAdapter{
+				runs: [][]harness.Event{{
+					{Type: harness.EventSession, SessionID: "implement-session"},
+					{Type: harness.EventAssistantText, Text: "The implementation plan has a decision.\nQUESTION:\nWhich retry budget should apply per Gate attempt or per iteration?\nShould this be per iteration?\nEND QUESTION"},
+				}},
+				resumes: [][]harness.Event{{
+					{Type: harness.EventSession, SessionID: "implement-session"},
+					{Type: harness.EventAssistantText, Text: "The implementation continues."},
+				}},
+			}
+			var output strings.Builder
+			recorder := newMemoryRunRecorder()
+			state := newRunStateTracker(recorder, newRunState(RunSpec{Kind: runrecord.Implement}))
+			span, err := startActivitySpan(
+				state, &output, test.mode,
+				fixedConversationClock{now: time.Date(2026, 11, 24, 18, 0, 0, 0, time.UTC)},
+				1, runrecord.Implementing, "1/1 — implementing",
+			)
+			if err != nil {
+				t.Fatalf("start implementing Activity span: %v", err)
+			}
+			questions := NewQuestionHandler(strings.NewReader("Per iteration.\n"), &output, "#300", nil, nil)
+			questions.setActivitySpan(span)
+			defer questions.setActivitySpan(nil)
+			_, err = runHarnessConversation(context.Background(), adapter, func(ctx context.Context) (harness.Stream, error) {
+				return adapter.Run(ctx, harness.Request{})
+			}, conversationOptions{
+				output: &output, mode: test.mode, questions: questions, role: "implement",
+			})
+			if err != nil {
+				t.Fatalf("runHarnessConversation() error = %v", err)
+			}
+			if err := span.finish(context.Background(), nil); err != nil {
+				t.Fatalf("finish implementing Activity span: %v", err)
+			}
+
+			goldenPath := filepath.Join("testdata", "question-"+test.name+".golden")
+			want, err := os.ReadFile(goldenPath)
+			if err != nil {
+				t.Fatalf("read question golden: %v", err)
+			}
+			if got := output.String(); got != string(want) {
+				t.Fatalf("question output mismatch:\n got: %q\nwant: %q", got, string(want))
+			}
+		})
+	}
+}
+
+func TestVerboseQuestionAccountsForTerminalAnswerEchoBeforeResume(t *testing.T) {
+	master, terminal, err := pty.Open()
+	if err != nil {
+		t.Fatalf("open PTY: %v", err)
+	}
+	defer func() {
+		if err := master.Close(); err != nil {
+			t.Errorf("close PTY master: %v", err)
+		}
+	}()
+	terminalClosed := false
+	defer func() {
+		if !terminalClosed {
+			if err := terminal.Close(); err != nil {
+				t.Errorf("close PTY terminal: %v", err)
+			}
+		}
+	}()
+	if err := pty.Setsize(terminal, &pty.Winsize{Rows: 24, Cols: 80}); err != nil {
+		t.Fatalf("size PTY: %v", err)
+	}
+	outputCh := make(chan []byte, 1)
+	go func() {
+		output, _ := io.ReadAll(master)
+		outputCh <- output
+	}()
+
+	recorder := newMemoryRunRecorder()
+	state := newRunStateTracker(recorder, newRunState(RunSpec{Kind: runrecord.Implement}))
+	clock := fixedConversationClock{now: time.Date(2026, 11, 24, 18, 0, 0, 0, time.UTC)}
+	span, err := startActivitySpan(state, terminal, ParsedHarnessOutput, clock, 1, runrecord.Implementing, "1/1 — implementing")
+	if err != nil {
+		t.Fatalf("start implementing Activity span: %v", err)
+	}
+	questions := NewQuestionHandler(&terminalEchoReader{output: terminal, answer: "Per iteration.\n"}, terminal, "#300", nil, nil)
+	questions.setActivitySpan(span)
+	if _, err := questions.handle(context.Background(), "implement", "Which retry budget?", framedQuestionPresentation{}); err != nil {
+		t.Fatalf("handle verbose question: %v", err)
+	}
+	if err := span.finish(context.Background(), nil); err != nil {
+		t.Fatalf("finish implementing Activity span: %v", err)
+	}
+	if err := terminal.Close(); err != nil {
+		t.Fatalf("close PTY terminal: %v", err)
+	}
+	terminalClosed = true
+	output := <-outputCh
+	if !strings.Contains(string(output), "\x1b[9A\r\x1b[K") {
+		t.Fatalf("verbose terminal output = %q, want the live region redrawn nine rows above the cursor after the echoed answer", output)
+	}
+}
+
+func TestQuestionSpanClosesWhenAnswerReadFailsOrContextIsCancelled(t *testing.T) {
+	for _, test := range []struct {
+		name         string
+		cancelOnRead bool
+		wantOutcome  activitySpanOutcome
+	}{
+		{name: "read fails", wantOutcome: activitySpanFailed},
+		{name: "context is cancelled during read", cancelOnRead: true, wantOutcome: activitySpanCancelled},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			recorder := newMemoryRunRecorder()
+			state := newRunStateTracker(recorder, newRunState(RunSpec{Kind: runrecord.Implement}))
+			clock := fixedConversationClock{now: time.Date(2026, 11, 24, 18, 0, 0, 0, time.UTC)}
+			span, err := startActivitySpan(state, io.Discard, RawHarnessOutput, clock, 1, runrecord.Implementing, "1/1 — implementing")
+			if err != nil {
+				t.Fatalf("start implementing Activity span: %v", err)
+			}
+			ctx := context.Background()
+			var cancel context.CancelFunc
+			if test.cancelOnRead {
+				ctx, cancel = context.WithCancel(ctx)
+				defer cancel()
+			}
+			reader := questionInputErrorReader{
+				err: errors.New("terminal input read failed"),
+			}
+			if cancel != nil {
+				reader.onRead = cancel
+			}
+			questions := NewQuestionHandler(reader, io.Discard, "#300", nil, nil)
+			questions.setActivitySpan(span)
+
+			_, err = questions.handle(ctx, "implement", "Which option?", compactQuestionPresentation{})
+			if err == nil || !strings.Contains(err.Error(), "terminal input read failed") {
+				t.Fatalf("handle() error = %v, want terminal read error", err)
+			}
+			if finishErr := span.finish(ctx, err); !errors.Is(finishErr, err) {
+				t.Fatalf("finish implementing Activity span error = %v, want input error %v", finishErr, err)
+			}
+
+			var questionStart *runrecord.ActivitySpanStart
+			var questionEnd *runrecord.ActivitySpanEnd
+			for _, event := range recorder.activities {
+				if event.Start != nil && event.Start.Activity == runrecord.AwaitingAnswer {
+					questionStart = event.Start
+				}
+				if event.End != nil && event.End.Answer == "" && questionStart != nil && event.End.SpanID == questionStart.SpanID {
+					questionEnd = event.End
+				}
+			}
+			if questionStart == nil || questionEnd == nil {
+				t.Fatalf("Activity events = %#v, want a closed awaiting-answer span", recorder.activities)
+			}
+			if questionEnd.Outcome != string(test.wantOutcome) {
+				t.Fatalf("question span outcome = %q, want %q", questionEnd.Outcome, test.wantOutcome)
+			}
+			if questionEnd.EndedAt.Before(questionStart.StartedAt) {
+				t.Fatalf("question span end = %v before start %v", questionEnd.EndedAt, questionStart.StartedAt)
+			}
+		})
+	}
+}
+
+type questionInputErrorReader struct {
+	err    error
+	onRead func()
+}
+
+func (reader questionInputErrorReader) Read([]byte) (int, error) {
+	if reader.onRead != nil {
+		reader.onRead()
+	}
+	return 0, reader.err
+}
+
+type terminalEchoReader struct {
+	output io.Writer
+	answer string
+}
+
+func (reader *terminalEchoReader) Read(buffer []byte) (int, error) {
+	if reader.answer == "" {
+		return 0, io.EOF
+	}
+	n := copy(buffer, reader.answer)
+	if _, err := reader.output.Write([]byte(reader.answer[:n])); err != nil {
+		return 0, err
+	}
+	reader.answer = reader.answer[n:]
+	return n, nil
+}
+
+type fixedConversationClock struct {
+	now time.Time
+}
+
+func (clock fixedConversationClock) Now() time.Time {
+	return clock.now
+}
+
+func (fixedConversationClock) NewTicker(time.Duration) ui.Ticker {
+	return fixedConversationTicker{}
+}
+
+type fixedConversationTicker struct{}
+
+func (fixedConversationTicker) C() <-chan time.Time { return nil }
+func (fixedConversationTicker) Stop()               {}
+
 func TestQuestionAnswerSupportsBackslashContinuation(t *testing.T) {
 	adapter := &scriptedConversationAdapter{
 		runs: [][]harness.Event{{
@@ -614,11 +930,15 @@ func TestRunReviewExecutionRawOutputStillForwardsBothHarnessLines(t *testing.T) 
 	if review.Transcript != conversationTestVerdict {
 		t.Fatalf("transcript = %q, want one assistant message", review.Transcript)
 	}
+	if got, want := review.Feed, deltaRaw+resultRaw; got != want {
+		t.Fatalf("raw feed = %q, want unchanged harness lines %q", got, want)
+	}
 }
 
 type scriptedConversationAdapter struct {
 	runs              [][]harness.Event
 	resumes           [][]harness.Event
+	transcriptPaths   map[string]string
 	runWaitErrors     []error
 	resumeWaitErrors  []error
 	resumeStartErrors []error
@@ -627,6 +947,10 @@ type scriptedConversationAdapter struct {
 	runCalls          int
 	runRequests       []harness.Request
 	resumeCalls       []conversationResumeCall
+}
+
+func (a *scriptedConversationAdapter) SessionTranscriptPath(sessionID string) string {
+	return a.transcriptPaths[sessionID]
 }
 
 type failedConversationAdapter struct {

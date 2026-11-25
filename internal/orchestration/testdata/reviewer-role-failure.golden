@@ -1,0 +1,25 @@
+run review harness: harness returned an error: fake reviewer exploded
+
+Failure transcript (last 20 lines):
+tool: Read — file-06.go
+review prose 07
+tool: Read — file-08.go
+review prose 09
+tool: Read — file-10.go
+review prose 11
+tool: Read — file-12.go
+review prose 13
+tool: Read — file-14.go
+review prose 15
+tool: Read — file-16.go
+review prose 17
+tool: Read — file-18.go
+review prose 19
+tool: Read — file-20.go
+review prose 21
+tool: Read — file-22.go
+review prose 23
+tool: Read — file-24.go
+review prose 25
+Session transcript: <session-transcript>
+Run directory: <run-directory>

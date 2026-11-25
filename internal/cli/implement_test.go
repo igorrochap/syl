@@ -18,6 +18,7 @@ import (
 	"github.com/igorrochap/syl/internal/config"
 	"github.com/igorrochap/syl/internal/harness"
 	"github.com/igorrochap/syl/internal/harness/codex"
+	"github.com/igorrochap/syl/internal/runrecord"
 	"github.com/igorrochap/syl/internal/usage"
 )
 
@@ -36,6 +37,7 @@ func TestImplementOutputMatchesPlainAndStyledGolden(t *testing.T) {
 				t.Setenv("NO_COLOR", "1")
 			}
 			fixture := newImplementLoopFixture(t)
+			fixture.app.deps.Clock = fixedActivityClock{}
 			loop := &loopHarness{
 				root: fixture.root,
 				streams: [][]harness.Event{
@@ -63,6 +65,54 @@ func TestImplementOutputMatchesPlainAndStyledGolden(t *testing.T) {
 			}
 			actual := normalizeImplementGoldenOutput(output.(interface{ String() string }).String())
 			assertCLIGolden(t, test.name+"-implement.golden", []byte(actual))
+		})
+	}
+}
+
+func TestImplementDefaultOutputMatchesPlainAndStyledGolden(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		styled bool
+	}{
+		{name: "plain"},
+		{name: "styled", styled: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if test.styled {
+				t.Setenv("NO_COLOR", "")
+			} else {
+				t.Setenv("NO_COLOR", "1")
+			}
+			fixture := newImplementLoopFixture(t)
+			fixture.app.deps.Clock = fixedActivityClock{}
+			loop := &loopHarness{
+				root: fixture.root,
+				streams: [][]harness.Event{
+					{
+						{Type: harness.EventSession, SessionID: "implement-session"},
+						{Type: harness.EventToolUse, ToolName: "Bash", ArgumentGist: "go test ./..."},
+						{Type: harness.EventAssistantText, Text: "Implementer internal prose.\n"},
+					},
+					{
+						{Type: harness.EventSession, SessionID: "review-session"},
+						{Type: harness.EventAssistantText, Text: "Reviewer internal prose.\n" + approveVerdictText},
+					},
+				},
+			}
+			fixture.harnesses["codex"] = loop
+			fixture.harnesses["claude"] = loop
+			fixture.app.deps.GH = fixedGH(&loopGHRunner{})
+
+			var output io.Writer = &strings.Builder{}
+			if test.styled {
+				output = newStyledTerminalCapture(t)
+			}
+			code := fixture.app.Run(context.Background(), []string{"implement", "#42"}, output, &fixture.stderr)
+			if code != 0 {
+				t.Fatalf("implement code = %d, stderr = %q", code, fixture.stderr.String())
+			}
+			actual := normalizeImplementGoldenOutput(output.(interface{ String() string }).String())
+			assertCLIGolden(t, test.name+"-default-implement.golden", []byte(actual))
 		})
 	}
 }
@@ -104,6 +154,12 @@ func TestImplementLoopApprovesOnFirstIteration(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("implement code = %d, want 0; stderr = %q", code, fixture.stderr.String())
 	}
+	output := fixture.stdout.String()
+	preparingIndex := strings.Index(output, "finished preparing worktree — completed (")
+	implementingIndex := strings.Index(output, "starting 1/3 — implementing")
+	if preparingIndex < 0 || implementingIndex < 0 || preparingIndex >= implementingIndex {
+		t.Fatalf("Activity output = %q, want preparation span before direct-workroot implementation", output)
+	}
 
 	if got := gitOutput(t, fixture.root, "branch", "--show-current"); got != "feat/add-resilient-workflow" {
 		t.Fatalf("branch = %q, want feat/add-resilient-workflow", got)
@@ -143,6 +199,30 @@ func TestImplementLoopApprovesOnFirstIteration(t *testing.T) {
 	runDirs, err := filepath.Glob(filepath.Join(fixture.root, ".syl", "runs", "*-42"))
 	if err != nil || len(runDirs) != 1 {
 		t.Fatalf("run directories = %v, err = %v; want one issue artifact directory", runDirs, err)
+	}
+	activities, err := runrecord.ReadActivities(runDirs[0], nil)
+	if err != nil {
+		t.Fatalf("ReadActivities() error = %v", err)
+	}
+	if len(activities) == 0 || activities[0].Start == nil || activities[0].Start.Label != "preparing worktree" {
+		t.Fatalf("first Activity = %#v, want preparing worktree", activities)
+	}
+	for _, artifact := range []struct {
+		name string
+		want string
+	}{
+		{name: "iteration-01-implement.feed", want: "Implemented the ticket.\n"},
+		{name: "iteration-01-implement.transcript", want: "Implemented the ticket.\n"},
+		{name: "iteration-01-review.feed", want: approveVerdictText},
+		{name: "iteration-01-review.transcript", want: approveVerdictText},
+	} {
+		contents, err := os.ReadFile(filepath.Join(runDirs[0], artifact.name))
+		if err != nil {
+			t.Fatalf("read %s: %v", artifact.name, err)
+		}
+		if string(contents) != artifact.want {
+			t.Errorf("%s = %q, want current parsed harness content %q", artifact.name, contents, artifact.want)
+		}
 	}
 	artifactText := readAllFiles(t, runDirs[0])
 	for _, expected := range []string{"implement-session", "review-session", "VERDICT: approve"} {
@@ -1394,6 +1474,7 @@ func TestImplementLoopStreamsImplementerAndReviewerProgress(t *testing.T) {
 }
 
 func TestImplementLoopQuietlyShowsProgressWithoutToolCalls(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
 	fixture := newImplementLoopFixture(t)
 	loop := &loopHarness{
 		root: fixture.root,
@@ -1415,17 +1496,18 @@ func TestImplementLoopQuietlyShowsProgressWithoutToolCalls(t *testing.T) {
 	fixture.harnesses["claude"] = loop
 	fixture.app.deps.GH = fixedGH(&loopGHRunner{})
 
-	code := fixture.app.Run(context.Background(), []string{"implement", "#42"}, &fixture.stdout, &fixture.stderr)
+	terminal := newStyledTerminalCapture(t)
+	code := fixture.app.Run(context.Background(), []string{"implement", "#42"}, terminal, &fixture.stderr)
 	if code != 0 {
 		t.Fatalf("implement code = %d, stderr = %q", code, fixture.stderr.String())
 	}
 
-	output := fixture.stdout.String()
+	output := terminal.String()
 	for _, expected := range []string{
-		"iteration 1/3 — implementing",
-		"iteration 1/3 — reviewing",
-		"Implementer internal prose.",
-		"Reviewer internal prose.",
+		"1/3 — implementing",
+		"1/3 — reviewing",
+		"edit — change.txt",
+		"cat — iteration review diff",
 		"VERDICT: approve",
 		"SUMMARY: The working tree is ready",
 	} {
@@ -1433,13 +1515,75 @@ func TestImplementLoopQuietlyShowsProgressWithoutToolCalls(t *testing.T) {
 			t.Fatalf("stdout = %q, want %q", output, expected)
 		}
 	}
-	if strings.Contains(output, "│ ") || strings.Contains(output, "◆ Implementer") || strings.Contains(output, "◆ Reviewer") {
-		t.Fatalf("stdout = %q, want plain output without role decoration", output)
-	}
-	for _, suppressed := range []string{"tool: edit — change.txt", "tool: cat — iteration review diff"} {
+	for _, suppressed := range []string{
+		"Implementer internal prose.", "Reviewer internal prose.", "tool: edit", "tool: cat",
+	} {
 		if strings.Contains(output, suppressed) {
 			t.Fatalf("stdout = %q, want tool call %q suppressed", output, suppressed)
 		}
+	}
+	if !strings.Contains(output, "\r\x1b[K") {
+		t.Fatalf("stdout = %q, want terminal live-region redraws", output)
+	}
+}
+
+func TestImplementRawPassesHarnessEventsWithoutActivityLines(t *testing.T) {
+	fixture := newImplementLoopFixture(t)
+	implementRaw := `{"type":"assistant","message":"implement raw"}` + "\n"
+	reviewRaw := `{"type":"assistant","message":"review raw"}` + "\n"
+	loop := &loopHarness{
+		root: fixture.root,
+		streams: [][]harness.Event{
+			{{Type: harness.EventAssistantText, Text: "implemented", Raw: implementRaw}},
+			{{Type: harness.EventAssistantText, Text: approveVerdictText, Raw: reviewRaw}},
+		},
+	}
+	fixture.harnesses["codex"] = loop
+	fixture.harnesses["claude"] = loop
+	fixture.app.deps.GH = fixedGH(&loopGHRunner{})
+
+	code := fixture.app.Run(context.Background(), []string{"implement", "--raw", "#42"}, &fixture.stdout, &fixture.stderr)
+	if code != 0 {
+		t.Fatalf("implement code = %d, stderr = %q", code, fixture.stderr.String())
+	}
+	output := fixture.stdout.String()
+	for _, rawLine := range []string{implementRaw, reviewRaw} {
+		if !strings.Contains(output, rawLine) {
+			t.Fatalf("stdout = %q, want untouched harness line %q", output, rawLine)
+		}
+	}
+	if strings.Contains(output, "starting ") || strings.Contains(output, "finished ") || strings.Contains(output, "⠋") {
+		t.Fatalf("stdout = %q, want no Activity span lines in raw mode", output)
+	}
+	runDirs, err := filepath.Glob(filepath.Join(fixture.root, ".syl", "runs", "*-42"))
+	if err != nil || len(runDirs) != 1 {
+		t.Fatalf("run directories = %v, error = %v; want one Run", runDirs, err)
+	}
+	for _, artifact := range []struct {
+		name string
+		want string
+	}{
+		{name: "iteration-01-implement.feed", want: implementRaw},
+		{name: "iteration-01-review.feed", want: reviewRaw},
+	} {
+		contents, err := os.ReadFile(filepath.Join(runDirs[0], artifact.name))
+		if err != nil {
+			t.Fatalf("read %s: %v", artifact.name, err)
+		}
+		if string(contents) != artifact.want {
+			t.Errorf("%s = %q, want unchanged raw harness content %q", artifact.name, contents, artifact.want)
+		}
+	}
+}
+
+func TestImplementRawAndVerboseAreMutuallyExclusive(t *testing.T) {
+	fixture := newImplementLoopFixture(t)
+	code := fixture.app.Run(context.Background(), []string{"implement", "--raw", "--verbose", "#42"}, &fixture.stdout, &fixture.stderr)
+	if code == 0 || !strings.Contains(fixture.stderr.String(), "[raw verbose]") {
+		t.Fatalf("implement code = %d, stderr = %q, want mutually-exclusive flag error", code, fixture.stderr.String())
+	}
+	if fixture.stdout.String() != "" {
+		t.Fatalf("stdout = %q, want no output for invalid flag combination", fixture.stdout.String())
 	}
 }
 
@@ -1482,7 +1626,7 @@ func TestImplementLoopUsesCodexAdapterAtProcessBoundary(t *testing.T) {
 	}
 	t.Setenv("PATH", commandDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
-	fixture.harnesses["codex"] = codex.New(fixture.root)
+	fixture.harnesses["codex"] = codex.New(fixture.root, home)
 	fixture.harnesses["claude"] = &scriptedHarness{first: []harness.Event{
 		{Type: harness.EventSession, SessionID: "review-session"},
 		{Type: harness.EventAssistantText, Text: approveVerdictText},
@@ -1990,7 +2134,7 @@ func TestImplementLoopStillIteratesForNitOnlyRevisionAndSummarizesNits(t *testin
 	if strings.Contains(finalSummary, "style could be clearer") {
 		t.Fatalf("final summary = %q, want earlier nit omitted", finalSummary)
 	}
-	if !strings.Contains(fixture.stdout.String(), "iteration 2/3 — revising 1 finding(s)") {
+	if !strings.Contains(fixture.stdout.String(), "starting 2/3 — revising 1 finding(s)") {
 		t.Fatalf("stdout = %q, want revision transition with one finding", fixture.stdout.String())
 	}
 	if got := strings.Count(fixture.stdout.String(), "style could be clearer"); got != 1 {
@@ -2118,8 +2262,8 @@ func TestImplementLoopCapReturnsNonZeroAfterThreeRevisions(t *testing.T) {
 		t.Fatalf("stdout = %q, want capped revise summary", fixture.stdout.String())
 	}
 	for _, expected := range []string{
-		"iteration 2/3 — revising 1 finding(s)",
-		"iteration 3/3 — revising 1 finding(s)",
+		"starting 2/3 — revising 1 finding(s)",
+		"starting 3/3 — revising 1 finding(s)",
 	} {
 		if !strings.Contains(fixture.stdout.String(), expected) {
 			t.Fatalf("stdout = %q, want %q", fixture.stdout.String(), expected)
@@ -2313,6 +2457,28 @@ func TestImplementWorktreeRunsSetupBeforeHarnessInWorktree(t *testing.T) {
 	if !strings.Contains(fixture.stderr.String(), "setup-stderr") {
 		t.Fatalf("stderr = %q, want setup stderr streamed to the user", fixture.stderr.String())
 	}
+	output := fixture.stdout.String()
+	preparingIndex := strings.Index(output, "finished preparing worktree — completed (")
+	implementingIndex := strings.Index(output, "starting 1/3 — implementing")
+	if preparingIndex < 0 || implementingIndex < 0 || preparingIndex >= implementingIndex {
+		t.Fatalf("Activity output = %q, want timed worktree preparation before implementation", output)
+	}
+	preparingLine := strings.SplitN(output[preparingIndex:], "\n", 2)[0]
+	if !strings.HasSuffix(preparingLine, "s)") {
+		t.Fatalf("worktree preparation line = %q, want duration", preparingLine)
+	}
+	runDirs, err := filepath.Glob(filepath.Join(fixture.root, ".syl", "runs", "*-42"))
+	if err != nil || len(runDirs) != 1 {
+		t.Fatalf("Run directories = %v, error = %v; want one Run", runDirs, err)
+	}
+	activities, err := runrecord.ReadActivities(runDirs[0], nil)
+	if err != nil {
+		t.Fatalf("ReadActivities() error = %v", err)
+	}
+	if len(activities) < 2 || activities[0].Start == nil || activities[0].Start.Activity != runrecord.Preparing ||
+		activities[0].Start.Label != "preparing worktree" {
+		t.Fatalf("first Activity events = %#v, want preparing worktree start", activities[:min(2, len(activities))])
+	}
 }
 
 func TestImplementWorktreeSetupFailureRollsBackBeforeHarnessStarts(t *testing.T) {
@@ -2321,19 +2487,33 @@ func TestImplementWorktreeSetupFailureRollsBackBeforeHarnessStarts(t *testing.T)
 	configureWorktreeSetup(t, fixture.root, worktreeRoot, "printf setup-failed >&2; exit 17")
 
 	harnessCalled := false
-	fixture.app.deps.Harnesses = func(string) map[string]harness.Adapter {
+	var loop *loopHarness
+	fixture.app.deps.Harnesses = func(root string) map[string]harness.Adapter {
+		loop = &loopHarness{root: root}
 		harnessCalled = true
-		return map[string]harness.Adapter{}
+		return map[string]harness.Adapter{"codex": loop, "claude": loop}
 	}
-	fixture.app.deps.GH = fixedGH(&loopGHRunner{})
+	github := &loopGHRunner{}
+	fixture.app.deps.GH = fixedGH(github)
 
 	code := fixture.app.Run(context.Background(), []string{"implement", "#42", "--worktree"}, &fixture.stdout, &fixture.stderr)
 	if code == 0 || !strings.Contains(fixture.stderr.String(), "run worktree setup") ||
 		!strings.Contains(fixture.stderr.String(), "setup-failed") {
 		t.Fatalf("implement worktree code = %d, stderr = %q, want setup failure", code, fixture.stderr.String())
 	}
-	if harnessCalled {
-		t.Fatal("harness factory was called after setup failed")
+	if !harnessCalled || loop == nil || len(loop.requests) != 0 {
+		t.Fatalf("harness setup = (called %v, loop %#v), want adapters initialized but no Harness turn", harnessCalled, loop)
+	}
+	if !strings.Contains(fixture.stdout.String(), "finished preparing worktree — failed (") {
+		t.Fatalf("stdout = %q, want failed worktree Activity span", fixture.stdout.String())
+	}
+	if runDirs, err := filepath.Glob(filepath.Join(fixture.root, ".syl", "runs", "*-42")); err != nil || len(runDirs) != 0 {
+		t.Fatalf("Run directories after setup failure = %v, error = %v; want no Run", runDirs, err)
+	}
+	for _, call := range github.calls {
+		if strings.Contains(call, "issue edit 42 --add-label doing") {
+			t.Fatalf("GitHub calls after setup failure = %v, want no ticket status update", github.calls)
+		}
 	}
 
 	worktreePath := filepath.Join(worktreeRoot, filepath.Base(fixture.root), "feat-add-resilient-workflow")
@@ -2352,7 +2532,12 @@ func TestImplementWorktreeSetupCancellationRollsBack(t *testing.T) {
 	fixture := newImplementLoopFixture(t)
 	worktreeRoot := filepath.Join(t.TempDir(), "worktrees")
 	configureWorktreeSetup(t, fixture.root, worktreeRoot, "touch setup-started; sleep 30")
-	fixture.app.deps.GH = fixedGH(&loopGHRunner{})
+	fixture.app.deps.Harnesses = func(root string) map[string]harness.Adapter {
+		loop := &loopHarness{root: root}
+		return map[string]harness.Adapter{"codex": loop, "claude": loop}
+	}
+	github := &loopGHRunner{}
+	fixture.app.deps.GH = fixedGH(github)
 	worktreePath := filepath.Join(worktreeRoot, filepath.Base(fixture.root), "feat-add-resilient-workflow")
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -2367,7 +2552,7 @@ func TestImplementWorktreeSetupCancellationRollsBack(t *testing.T) {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("setup process did not start")
+			t.Fatalf("setup process did not start; stdout=%q stderr=%q", fixture.stdout.String(), fixture.stderr.String())
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -2384,6 +2569,14 @@ func TestImplementWorktreeSetupCancellationRollsBack(t *testing.T) {
 
 	if _, err := os.Stat(worktreePath); !os.IsNotExist(err) {
 		t.Fatalf("worktree path stat error = %v, want path removed after cancellation", err)
+	}
+	if runDirs, err := filepath.Glob(filepath.Join(fixture.root, ".syl", "runs", "*-42")); err != nil || len(runDirs) != 0 {
+		t.Fatalf("Run directories after setup cancellation = %v, error = %v; want no Run", runDirs, err)
+	}
+	for _, call := range github.calls {
+		if strings.Contains(call, "issue edit 42 --add-label doing") {
+			t.Fatalf("GitHub calls after setup cancellation = %v, want no ticket status update", github.calls)
+		}
 	}
 }
 
@@ -2800,9 +2993,9 @@ func readAllFiles(t *testing.T, root string) string {
 		if info.IsDir() {
 			return nil
 		}
-		// Lifecycle timestamps and process metadata are intentionally run-specific;
+		// Lifecycle state and Activity spans contain run-specific timestamps;
 		// this helper compares the stable role artifacts.
-		if filepath.Base(path) == "run-state.json" {
+		if filepath.Base(path) == "run-state.json" || filepath.Base(path) == "activities.jsonl" {
 			return nil
 		}
 		data, err := os.ReadFile(path)

@@ -151,9 +151,14 @@ func TestRunReviewSeparatesRenderedVerdictForOpaqueOutputWriter(t *testing.T) {
 		t.Fatalf("RunReview() error = %v, want nil", err)
 	}
 
-	want := "Reviewer prose.\nVERDICT: approve\nSUMMARY: Ready\nFINDINGS:\n- (none)\n"
-	if output.value.String() != want {
-		t.Fatalf("standalone review output = %q, want %q", output.value.String(), want)
+	got := output.value.String()
+	for _, want := range []string{"starting reviewing", "Reviewer prose.", "finished reviewing — completed (", "VERDICT: approve", "SUMMARY: Ready"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("standalone review output = %q, want %q", got, want)
+		}
+	}
+	if strings.Contains(got, "1/1 — reviewing") {
+		t.Fatalf("standalone review output = %q, want no iteration prefix", got)
 	}
 }
 
@@ -400,6 +405,51 @@ func TestRunReviewSavesUnparseableReviewArtifacts(t *testing.T) {
 	}
 }
 
+func TestRunReviewHarnessFailureReportsTranscriptTailAndPaths(t *testing.T) {
+	root := t.TempDir()
+	transcriptPath := "/sessions/standalone-review.jsonl"
+	git := &reviewDiffGit{responses: map[string]reviewDiffResponse{
+		"rev-parse HEAD":                          {output: "branch-point\n"},
+		"diff branch-point":                       {output: "diff --git a/change.txt b/change.txt\n+reviewed\n"},
+		"ls-files --others --exclude-standard -z": {},
+	}}
+	adapter := &scriptedConversationAdapter{
+		runs: [][]harness.Event{{
+			{Type: harness.EventSession, SessionID: "standalone-review"},
+			{Type: harness.EventAssistantText, Text: "Standalone reviewer partial response."},
+			{Type: harness.EventResult, Text: "fake standalone reviewer exploded", IsError: true},
+		}},
+		transcriptPaths: map[string]string{"standalone-review": transcriptPath},
+	}
+
+	err := RunReview(context.Background(), ReviewOptions{
+		OriginRoot: root,
+		WorkRoot:   root,
+		OpenRun:    NewDiskRunOpener(root, sylhome.Dir{}, io.Discard),
+		ProjectConfig: config.Config{
+			Tracker: config.TrackerConfig{Reviews: config.TrackerLocal},
+			Roles:   config.RolesConfig{Review: config.RoleConfig{Harness: config.HarnessClaude}},
+		},
+		Adapter: adapter,
+		Input:   strings.NewReader(""),
+		Output:  io.Discard,
+		Git:     git,
+	})
+	if err == nil {
+		t.Fatal("RunReview() error = nil, want harness failure")
+	}
+	for _, want := range []string{
+		"fake standalone reviewer exploded",
+		"Failure transcript (last 20 lines):\nStandalone reviewer partial response.",
+		"Session transcript: " + transcriptPath,
+		"Run directory: " + filepath.Dir(onlyRunStatePath(t, root)),
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("RunReview() error = %q, want %q", err, want)
+		}
+	}
+}
+
 func TestRecordImplementReviewFailureSavesUnparseableExecution(t *testing.T) {
 	recorder := newMemoryRunRecorder()
 	recorder.dir = t.TempDir()
@@ -410,7 +460,7 @@ func TestRecordImplementReviewFailureSavesUnparseableExecution(t *testing.T) {
 	}
 	failure := &UnparseableVerdictError{Execution: execution, Cause: errors.New("verdict missing")}
 	err := recordImplementReviewFailure(
-		implementIterationsParams{recorder: recorder, workRoot: t.TempDir()},
+		context.Background(), implementIterationsParams{recorder: recorder, workRoot: t.TempDir()},
 		implementReviewParams{iteration: 2},
 		ReviewExecution{Transcript: "discarded execution"},
 		time.Time{},
@@ -440,14 +490,16 @@ func TestRecordImplementReviewFailureReportsArtifactWriteError(t *testing.T) {
 		err:               artifactFailure,
 	}
 	err := recordImplementReviewFailure(
-		implementIterationsParams{recorder: recorder},
+		context.Background(), implementIterationsParams{recorder: recorder},
 		implementReviewParams{iteration: 1},
-		ReviewExecution{},
+		ReviewExecution{FailureTail: "partial reviewer tail"},
 		time.Time{},
 		time.Time{},
 		failure,
 	)
-	if !errors.Is(err, failure) || !strings.Contains(err.Error(), "save partial review artifacts") || !strings.Contains(err.Error(), artifactFailure.Error()) {
+	if !errors.Is(err, failure) || !strings.Contains(err.Error(), "save partial review artifacts") ||
+		!strings.Contains(err.Error(), artifactFailure.Error()) ||
+		!strings.Contains(err.Error(), "Failure transcript (last 20 lines):\npartial reviewer tail") {
 		t.Fatalf("recordImplementReviewFailure() error = %v, want harness and artifact failures", err)
 	}
 }

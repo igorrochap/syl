@@ -301,16 +301,20 @@ func TestDetectCapsUsesEnvironmentAndTerminalWriter(t *testing.T) {
 		_ = master.Close()
 		_ = terminal.Close()
 	})
+	if err := pty.Setsize(terminal, &pty.Winsize{Cols: 80, Rows: 24}); err != nil {
+		t.Fatal(err)
+	}
 
 	tests := []struct {
-		name      string
-		noColor   string
-		output    io.Writer
-		wantColor bool
-		wantWidth bool
+		name       string
+		noColor    string
+		output     io.Writer
+		wantColor  bool
+		wantWidth  bool
+		wantHeight bool
 	}{
-		{name: "terminal with unset NO_COLOR", output: terminal, wantColor: true, wantWidth: true},
-		{name: "terminal with empty NO_COLOR", noColor: "", output: terminal, wantColor: true, wantWidth: true},
+		{name: "terminal with unset NO_COLOR", output: terminal, wantColor: true, wantWidth: true, wantHeight: true},
+		{name: "terminal with empty NO_COLOR", noColor: "", output: terminal, wantColor: true, wantWidth: true, wantHeight: true},
 		{name: "terminal with NO_COLOR", noColor: "1", output: terminal},
 		{name: "buffer with unset NO_COLOR", output: &bytes.Buffer{}},
 		{name: "buffer with NO_COLOR", noColor: "1", output: &bytes.Buffer{}},
@@ -324,6 +328,9 @@ func TestDetectCapsUsesEnvironmentAndTerminalWriter(t *testing.T) {
 			}
 			if test.wantWidth && caps.Width < 0 {
 				t.Fatalf("Width = %d, want a non-negative terminal width", caps.Width)
+			}
+			if test.wantHeight && caps.Height != 24 {
+				t.Fatalf("Height = %d, want terminal height 24", caps.Height)
 			}
 		})
 	}
@@ -1007,6 +1014,12 @@ func (t *testTerminal) Write(value []byte) (int, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return t.Buffer.Write(value)
+}
+
+func (t *testTerminal) WriteString(value string) (int, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.Buffer.WriteString(value)
 }
 
 func (t *testTerminal) String() string {

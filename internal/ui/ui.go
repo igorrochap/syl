@@ -19,6 +19,7 @@ import (
 type Caps struct {
 	Color   bool
 	Width   int
+	Height  int
 	Unicode bool
 }
 
@@ -104,6 +105,11 @@ type styleSet struct {
 	italic   lipgloss.Style
 }
 
+const (
+	positiveColor = "#04B575"
+	negativeColor = "#FF4672"
+)
+
 type outputLine struct {
 	text  string
 	style lipgloss.Style
@@ -137,8 +143,8 @@ func New(output io.Writer, caps Caps) *Renderer {
 			title:    lipglossRenderer.NewStyle().Bold(true).Foreground(lipgloss.Color("#7DD3FC")),
 			heading:  lipglossRenderer.NewStyle().Bold(true).Foreground(lipgloss.Color("#7DD3FC")),
 			label:    lipglossRenderer.NewStyle().Foreground(lipgloss.Color("#626262")),
-			positive: lipglossRenderer.NewStyle().Bold(true).Foreground(lipgloss.Color("#04B575")),
-			negative: lipglossRenderer.NewStyle().Bold(true).Foreground(lipgloss.Color("#FF4672")),
+			positive: lipglossRenderer.NewStyle().Bold(true).Foreground(lipgloss.Color(positiveColor)),
+			negative: lipglossRenderer.NewStyle().Bold(true).Foreground(lipgloss.Color(negativeColor)),
 			muted:    lipglossRenderer.NewStyle().Foreground(lipgloss.Color("#626262")),
 			code:     lipglossRenderer.NewStyle().Foreground(lipgloss.Color("#04B575")),
 			bold:     lipglossRenderer.NewStyle().Bold(true),
@@ -527,7 +533,7 @@ func DetectCaps(output io.Writer) Caps {
 	}
 
 	caps.Color = true
-	caps.Width = terminalWidth(fileDescriptor)
+	caps.Width, caps.Height = terminalSize(fileDescriptor)
 	return caps
 }
 
@@ -553,10 +559,10 @@ func terminalFileDescriptor(output io.Writer) (uintptr, bool) {
 	return 0, false
 }
 
-func terminalWidth(fileDescriptor uintptr) int {
-	width, _, err := term.GetSize(fileDescriptor)
-	if err != nil || width < 1 {
-		return 0
+func terminalSize(fileDescriptor uintptr) (int, int) {
+	width, height, err := term.GetSize(fileDescriptor)
+	if err != nil || width < 1 || height < 1 {
+		return 0, 0
 	}
-	return width
+	return width, height
 }

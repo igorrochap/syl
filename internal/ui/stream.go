@@ -18,6 +18,7 @@ type StreamOptions struct {
 	Gutter         string
 	ShowTools      bool
 	Activity       bool
+	Span           *ActivitySpanView
 	Role           string
 	Clock          Clock
 	TickerInterval time.Duration
@@ -28,6 +29,21 @@ type StreamOptions struct {
 type Clock interface {
 	Now() time.Time
 	NewTicker(time.Duration) Ticker
+}
+
+// DefaultActivityTickerInterval is the default cadence for live Activity redraws.
+const DefaultActivityTickerInterval = 100 * time.Millisecond
+
+// ClockNow returns a UTC timestamp from clock, or the wall clock when nil.
+func ClockNow(clock Clock) time.Time {
+	return normalizeClock(clock).Now().UTC()
+}
+
+func normalizeClock(clock Clock) Clock {
+	if clock == nil {
+		return wallClock{}
+	}
+	return clock
 }
 
 // Ticker is the clock's periodic signal for refreshing an activity line.
@@ -53,16 +69,15 @@ type Stream struct {
 	literalLine           bool
 	mu                    sync.Mutex
 	activity              *activityLine
+	span                  *ActivitySpanView
 }
 
 // NewStream constructs a live Role renderer.
 func NewStream(output io.Writer, caps Caps, options StreamOptions) *Stream {
 	renderer := New(output, caps)
-	if options.Clock == nil {
-		options.Clock = wallClock{}
-	}
+	options.Clock = normalizeClock(options.Clock)
 	if options.TickerInterval <= 0 {
-		options.TickerInterval = 100 * time.Millisecond
+		options.TickerInterval = DefaultActivityTickerInterval
 	}
 	stream := &Stream{
 		output:        renderer.output,
@@ -70,6 +85,7 @@ func NewStream(output io.Writer, caps Caps, options StreamOptions) *Stream {
 		style:         renderer.style,
 		gutter:        streamGutter(renderer.caps, options.Gutter),
 		showTools:     options.ShowTools,
+		span:          options.Span,
 		eventBoundary: true,
 		atLineStart:   true,
 	}
@@ -107,6 +123,7 @@ func (s *Stream) AtLineStart() bool {
 // a buffered partial word, and records the next event boundary.
 func (s *Stream) BeforeEvent() error {
 	s.activity.Stop()
+	s.pauseSpan()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := s.flushPendingLocked(); err != nil {
@@ -126,28 +143,61 @@ func (s *Stream) Assistant(text string) error {
 		s.mu.Unlock()
 		return nil
 	}
-	s.activity.Stop()
+	s.pauseForOutput()
 	s.mu.Lock()
-	resume := false
+	resume := assistantResume{}
 	defer func() {
 		s.mu.Unlock()
-		if resume {
-			s.activity.Resume()
-		}
+		s.resumeAfterOutput(resume)
 	}()
-	separatorWritten := false
-	if s.eventBoundary && s.lastEventWasAssistant {
-		if err := s.writeAssistantSeparatorLocked(); err != nil {
-			return err
-		}
-		separatorWritten = true
+	separatorWritten, err := s.writeAssistantSeparatorIfNeededLocked()
+	if err != nil {
+		return err
 	}
 	s.eventBoundary = false
 	s.lastEventWasAssistant = true
 	s.pending += text
-	err := s.flushCompleteWordsLocked()
-	resume = err == nil && s.atLineStart && !separatorWritten
-	return err
+	if err := s.flushCompleteWordsLocked(); err != nil {
+		return err
+	}
+	if err := s.finishAssistantSpanLineLocked(); err != nil {
+		return err
+	}
+	resume = assistantResume{activity: s.atLineStart && !separatorWritten, span: s.span != nil}
+	return nil
+}
+
+type assistantResume struct {
+	activity bool
+	span     bool
+}
+
+func (s *Stream) pauseForOutput() {
+	s.activity.Stop()
+	s.pauseSpan()
+}
+
+func (s *Stream) resumeAfterOutput(resume assistantResume) {
+	if resume.activity {
+		s.activity.Resume()
+	}
+	if resume.span {
+		s.span.Resume()
+	}
+}
+
+func (s *Stream) writeAssistantSeparatorIfNeededLocked() (bool, error) {
+	if !s.eventBoundary || !s.lastEventWasAssistant {
+		return false, nil
+	}
+	return true, s.writeAssistantSeparatorLocked()
+}
+
+func (s *Stream) finishAssistantSpanLineLocked() error {
+	if s.span != nil && !s.atLineStart {
+		return s.writeLineBreakLocked()
+	}
+	return nil
 }
 
 // Tool renders a permanent tool line or starts the terminal-only activity
@@ -155,23 +205,51 @@ func (s *Stream) Assistant(text string) error {
 func (s *Stream) Tool(name, gist string) error {
 	s.activity.Stop()
 	if !s.showTools {
-		s.mu.Lock()
-		if err := s.flushPendingLocked(); err != nil {
-			s.mu.Unlock()
-			return err
-		}
-		if err := s.ensureLineStartLocked(); err != nil {
-			s.mu.Unlock()
-			return err
-		}
-		// The activity line is transient, so preserve the previous assistant state.
-		s.eventBoundary = false
-		s.mu.Unlock()
-		s.activity.Start(name, gist)
-		return nil
+		return s.toolActivity(name, gist)
 	}
+	s.pauseSpan()
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	defer func() {
+		s.mu.Unlock()
+		s.resumeToolSpan(name, gist)
+	}()
+	return s.writeToolLineLocked(name, gist)
+}
+
+func (s *Stream) toolActivity(name, gist string) error {
+	s.mu.Lock()
+	if err := s.flushPendingLocked(); err != nil {
+		s.mu.Unlock()
+		return err
+	}
+	if err := s.ensureLineStartLocked(); err != nil {
+		s.mu.Unlock()
+		return err
+	}
+	// The activity line is transient, so preserve the previous assistant state.
+	s.eventBoundary = false
+	s.mu.Unlock()
+	if s.span != nil {
+		s.span.Tool(name, gist)
+	}
+	s.activity.Start(name, gist)
+	return nil
+}
+
+func (s *Stream) pauseSpan() {
+	if s.span != nil {
+		s.span.Pause()
+	}
+}
+
+func (s *Stream) resumeToolSpan(name, gist string) {
+	if s.span != nil {
+		s.span.Tool(name, gist)
+		s.span.Resume()
+	}
+}
+
+func (s *Stream) writeToolLineLocked(name, gist string) error {
 	if err := s.flushPendingLocked(); err != nil {
 		return err
 	}
@@ -193,6 +271,10 @@ func (s *Stream) Tool(name, gist string) error {
 // EndTurn flushes the final partial word and clears transient activity.
 func (s *Stream) EndTurn() error {
 	s.activity.EndTurn()
+	resumeSpan := s.pauseSpanForPendingText()
+	if resumeSpan {
+		defer s.span.Resume()
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := s.flushPendingLocked(); err != nil {
@@ -207,6 +289,19 @@ func (s *Stream) EndTurn() error {
 	s.eventBoundary = true
 	s.lastEventWasAssistant = false
 	return nil
+}
+
+func (s *Stream) pauseSpanForPendingText() bool {
+	if s.span == nil {
+		return false
+	}
+	s.mu.Lock()
+	pending := s.pending != ""
+	s.mu.Unlock()
+	if pending {
+		s.span.Pause()
+	}
+	return pending
 }
 
 // StartTurn starts the transient activity for a new Role turn. It is safe to
@@ -433,6 +528,9 @@ func (s *Stream) writeLocked(value string) error {
 	}
 	if written != len(value) {
 		return io.ErrShortWrite
+	}
+	if s.span != nil {
+		s.span.RecordOutput(value)
 	}
 	return nil
 }
@@ -780,10 +878,23 @@ var activityToneStyles = []lipgloss.Style{
 	newActivityToneStyle("#858585"),
 }
 
+var activitySpanLabelStyle = newActivitySpanLabelStyle()
+
+var (
+	activitySpanPositiveStyle = activitySpanLabelStyle.Foreground(lipgloss.Color(positiveColor))
+	activitySpanNegativeStyle = activitySpanLabelStyle.Foreground(lipgloss.Color(negativeColor))
+)
+
 func newActivityToneStyle(color string) lipgloss.Style {
 	renderer := lipgloss.NewRenderer(io.Discard, termenv.WithProfile(termenv.TrueColor), termenv.WithUnsafe())
 	renderer.SetColorProfile(termenv.TrueColor)
 	return renderer.NewStyle().Foreground(lipgloss.Color(color))
+}
+
+func newActivitySpanLabelStyle() lipgloss.Style {
+	renderer := lipgloss.NewRenderer(io.Discard, termenv.WithProfile(termenv.TrueColor), termenv.WithUnsafe())
+	renderer.SetColorProfile(termenv.TrueColor)
+	return renderer.NewStyle().Bold(true).Foreground(lipgloss.Color("#7DD3FC"))
 }
 
 // renderActivityFrame produces one complete transient activity line. The
@@ -795,6 +906,10 @@ func renderActivityFrame(label, gist string, elapsed time.Duration, frameIndex i
 		line += " — " + shortGist(gist, 48)
 	}
 	line += " (" + formatElapsed(elapsed) + ")"
+	return renderActivityTone(line, frameIndex)
+}
+
+func renderActivityTone(line string, frameIndex int) string {
 	tone := positiveModulo(frameIndex/activityToneFrameCount, len(activityToneStyles))
 	return activityToneStyles[tone].Render(line)
 }

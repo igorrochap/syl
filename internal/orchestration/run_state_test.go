@@ -1,6 +1,7 @@
 package orchestration
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -20,6 +21,42 @@ import (
 	"github.com/igorrochap/syl/internal/tracker"
 )
 
+func TestRunStateTrackerRejectsInvalidActivitySpanLifecycle(t *testing.T) {
+	now := time.Date(2026, time.November, 23, 18, 0, 0, 0, time.UTC)
+	newTracker := func() *runStateTracker {
+		return newRunStateTracker(newMemoryRunRecorder(), newRunState(RunSpec{Kind: runrecord.Implement}))
+	}
+
+	t.Run("end with no open span", func(t *testing.T) {
+		tracker := newTracker()
+		err := tracker.endActivitySpan("span-000001", activitySpanCompleted, now)
+		if err == nil || !strings.Contains(err.Error(), "no span is open") {
+			t.Fatalf("endActivitySpan() error = %v, want no-open-span error", err)
+		}
+	})
+
+	t.Run("end a non-innermost span", func(t *testing.T) {
+		tracker := newTracker()
+		opened, err := tracker.startActivitySpan(1, runrecord.Implementing, "1/1 — implementing", now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = tracker.endActivitySpan("span-other", activitySpanCompleted, now)
+		if err == nil || !strings.Contains(err.Error(), opened.SpanID) {
+			t.Fatalf("endActivitySpan() error = %v, want innermost-open-span mismatch", err)
+		}
+	})
+
+	t.Run("start after finalization", func(t *testing.T) {
+		tracker := newTracker()
+		tracker.finish(runrecord.Approved)
+		_, err := tracker.startActivitySpan(1, runrecord.Implementing, "1/1 — implementing", now)
+		if err == nil || !strings.Contains(err.Error(), "after Run finished") {
+			t.Fatalf("startActivitySpan() error = %v, want finalized-Run error", err)
+		}
+	})
+}
+
 func TestRunImplementRecordsRunStateLifecycle(t *testing.T) {
 	root := t.TempDir()
 	var observations []runrecord.State
@@ -32,6 +69,17 @@ func TestRunImplementRecordsRunStateLifecycle(t *testing.T) {
 		}
 		return state
 	}
+	assertLatestActivitySpanOpen := func() {
+		t.Helper()
+		path := onlyRunStatePath(t, root)
+		record, err := runrecord.NewReader(nil).Read(filepath.Dir(path))
+		if err != nil {
+			t.Fatalf("read Run activity log during Role turn: %v", err)
+		}
+		if len(record.Activities) == 0 || record.Activities[len(record.Activities)-1].Type != runrecord.ActivityStart {
+			t.Fatalf("latest Activity log events = %#v, want a persisted open span before Role turn ends", record.Activities)
+		}
+	}
 	implementer := &scriptedConversationAdapter{
 		runs: [][]harness.Event{{
 			{Type: harness.EventSession, SessionID: "implement-1"},
@@ -42,6 +90,7 @@ func TestRunImplementRecordsRunStateLifecycle(t *testing.T) {
 			{Type: harness.EventAssistantText, Text: "revised"},
 		}},
 		runHooks: []func(harness.Request){func(request harness.Request) {
+			assertLatestActivitySpanOpen()
 			if request.SandboxMode != config.SandboxModeWorkspaceWrite {
 				t.Fatalf("implementer sandbox = %q, want workspace-write", request.SandboxMode)
 			}
@@ -51,6 +100,7 @@ func TestRunImplementRecordsRunStateLifecycle(t *testing.T) {
 			observations = append(observations, readState())
 		}},
 		resumeHooks: []func(harness.Request){func(request harness.Request) {
+			assertLatestActivitySpanOpen()
 			if request.SandboxMode != config.SandboxModeWorkspaceWrite {
 				t.Fatalf("implementer sandbox = %q, want workspace-write", request.SandboxMode)
 			}
@@ -87,6 +137,7 @@ func TestRunImplementRecordsRunStateLifecycle(t *testing.T) {
 			},
 		}},
 		runHooks: []func(harness.Request){func(request harness.Request) {
+			assertLatestActivitySpanOpen()
 			if request.SandboxMode != config.SandboxModeReadOnly {
 				t.Fatalf("reviewer sandbox = %q, want read-only", request.SandboxMode)
 			}
@@ -97,6 +148,7 @@ func TestRunImplementRecordsRunStateLifecycle(t *testing.T) {
 		}},
 		resumeHooks: []func(harness.Request){
 			func(request harness.Request) {
+				assertLatestActivitySpanOpen()
 				if request.SandboxMode != config.SandboxModeReadOnly || request.Completion != harness.CompletionReviewVerdict {
 					t.Fatalf("review recovery request = %#v, want read-only review", request)
 				}
@@ -106,6 +158,7 @@ func TestRunImplementRecordsRunStateLifecycle(t *testing.T) {
 				recoveryState = readState()
 			},
 			func(request harness.Request) {
+				assertLatestActivitySpanOpen()
 				if request.SandboxMode != config.SandboxModeReadOnly || request.Completion != harness.CompletionReviewVerdict {
 					t.Fatalf("review resume request = %#v, want read-only review", request)
 				}
@@ -180,6 +233,51 @@ func TestRunImplementRecordsRunStateLifecycle(t *testing.T) {
 		t.Fatalf("final identity = %#v", final)
 	}
 	runDir := filepath.Dir(onlyRunStatePath(t, root))
+	activityRecord, err := runrecord.NewReader(nil).Read(runDir)
+	if err != nil {
+		t.Fatalf("read Run Activity log: %v", err)
+	}
+	if len(activityRecord.Activities) != 12 {
+		t.Fatalf("Activity log has %d events, want preparation, four Role spans, and one recovery child span", len(activityRecord.Activities))
+	}
+	preparationStart, preparationEnd := activityRecord.Activities[0], activityRecord.Activities[1]
+	if preparationStart.Type != runrecord.ActivityStart || preparationStart.Start == nil ||
+		preparationStart.Start.Activity != runrecord.Preparing || preparationStart.Start.Label != "preparing worktree" ||
+		preparationEnd.Type != runrecord.ActivityEnd || preparationEnd.End == nil ||
+		preparationEnd.End.SpanID != preparationStart.Start.SpanID || preparationEnd.End.Outcome != "completed" {
+		t.Fatalf("preparation Activity events = %#v, want completed preparing-worktree span", activityRecord.Activities[:2])
+	}
+	wantActivitySpans := []struct {
+		startIndex int
+		endIndex   int
+		label      string
+	}{
+		{startIndex: 2, endIndex: 3, label: "1/2 — implementing"},
+		{startIndex: 4, endIndex: 7, label: "1/2 — reviewing"},
+		{startIndex: 8, endIndex: 9, label: "2/2 — revising 1 finding(s)"},
+		{startIndex: 10, endIndex: 11, label: "2/2 — reviewing"},
+	}
+	for spanIndex, expected := range wantActivitySpans {
+		start := activityRecord.Activities[expected.startIndex]
+		end := activityRecord.Activities[expected.endIndex]
+		if start.Type != runrecord.ActivityStart || start.Start == nil || end.Type != runrecord.ActivityEnd || end.End == nil {
+			t.Fatalf("Activity events for span %d = %#v and %#v, want start then end", spanIndex, start, end)
+		}
+		if start.Start.Label != expected.label || start.Start.ParentSpanID != "" || start.Start.Iteration == "" {
+			t.Errorf("Activity start %d = %#v, want label %q and loop metadata", spanIndex, *start.Start, expected.label)
+		}
+		if end.End.SpanID != start.Start.SpanID || end.End.Outcome != "completed" || start.Start.StartedAt.IsZero() || end.End.EndedAt.IsZero() {
+			t.Errorf("Activity end %d = %#v, want matching completed span with times", spanIndex, *end.End)
+		}
+	}
+	recoveryStart := activityRecord.Activities[5]
+	recoveryEnd := activityRecord.Activities[6]
+	if recoveryStart.Start == nil || recoveryEnd.End == nil ||
+		recoveryStart.Start.Label != "recovering stalled session" ||
+		recoveryStart.Start.ParentSpanID != activityRecord.Activities[4].Start.SpanID ||
+		recoveryEnd.End.SpanID != recoveryStart.Start.SpanID {
+		t.Fatalf("recovery Activity events = %#v and %#v, want child span under the first reviewer", recoveryStart, recoveryEnd)
+	}
 	verdictContents, err := os.ReadFile(filepath.Join(runDir, "iteration-01-verdict.txt"))
 	if err != nil {
 		t.Fatalf("read checked verdict artifact: %v", err)
@@ -268,6 +366,7 @@ func TestRunImplementFailsAfterSecondStalledReviewTurn(t *testing.T) {
 		runWaitErrors:    []error{firstStall},
 		resumeWaitErrors: []error{secondStall},
 	}
+	var output bytes.Buffer
 	err := RunImplement(context.Background(), ImplementOptions{
 		OriginRoot: root, WorkRoot: root,
 		OpenRun:      NewDiskRunOpener(root, sylhome.Dir{}, io.Discard),
@@ -282,7 +381,7 @@ func TestRunImplementFailsAfterSecondStalledReviewTurn(t *testing.T) {
 		Implementer: &capturingImplementAdapter{response: "Implemented the requested changes."},
 		Reviewer:    reviewer,
 		Git:         &implementRunGit{}, OriginGit: &implementRunGit{},
-		Input: strings.NewReader(""), Output: io.Discard,
+		Input: strings.NewReader(""), Output: &output,
 	})
 	if err == nil || !strings.Contains(err.Error(), "stall window") || !strings.Contains(err.Error(), "second stalled session summary") {
 		t.Fatalf("RunImplement() error = %v, want second stall-window error and session summary", err)
@@ -294,7 +393,40 @@ func TestRunImplementFailsAfterSecondStalledReviewTurn(t *testing.T) {
 	if state.Status != runrecord.Failed || state.Iteration != 1 {
 		t.Fatalf("final Run state = %#v, want failed at iteration 1", state)
 	}
+	if !strings.Contains(output.String(), "× recovering stalled session (0.0s)") {
+		t.Fatalf("terminal output = %q, want the recovery child span and its duration", output.String())
+	}
 	runDir := filepath.Dir(onlyRunStatePath(t, root))
+	activities, err := runrecord.ReadActivities(runDir, nil)
+	if err != nil {
+		t.Fatalf("read activities.jsonl: %v", err)
+	}
+	starts := make(map[string]runrecord.ActivitySpanStart)
+	ends := make(map[string]runrecord.ActivitySpanEnd)
+	for _, event := range activities {
+		if event.Start != nil {
+			starts[event.Start.SpanID] = *event.Start
+		}
+		if event.End != nil {
+			ends[event.End.SpanID] = *event.End
+		}
+	}
+	var recoverySpan *runrecord.ActivitySpanStart
+	for _, start := range starts {
+		if start.Label == "recovering stalled session" {
+			recoverySpan = &start
+			break
+		}
+	}
+	if recoverySpan == nil {
+		t.Fatal("activities.jsonl has no recovering-stalled-session child span")
+	}
+	parent, parentExists := starts[recoverySpan.ParentSpanID]
+	recoveryEnd, recoveryEnded := ends[recoverySpan.SpanID]
+	if !parentExists || parent.Activity != runrecord.Reviewing || !recoveryEnded ||
+		recoveryEnd.Outcome != string(activitySpanFailed) || recoveryEnd.EndedAt.IsZero() {
+		t.Fatalf("recovery span = %#v end = %#v parent = %#v; want timed reviewer child span", recoverySpan, recoveryEnd, parent)
+	}
 	for name, want := range map[string]string{
 		"iteration-01-review.feed":        "First review turn.\nRecovery review turn.",
 		"iteration-01-review.transcript":  "First review turn.\nRecovery review turn.",
@@ -385,8 +517,8 @@ func TestRunImplementRecordsLifecycleThroughMemoryOpenRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunImplement() error = %v", err)
 	}
-	if len(recorder.states) != 8 {
-		t.Fatalf("recorded states = %#v, want eight lifecycle states", recorder.states)
+	if len(recorder.states) != 12 {
+		t.Fatalf("recorded states = %#v, want preparation and span start/end states between workflow activities", recorder.states)
 	}
 	want := []struct {
 		activity  runrecord.Activity
@@ -394,12 +526,16 @@ func TestRunImplementRecordsLifecycleThroughMemoryOpenRun(t *testing.T) {
 		status    runrecord.Status
 	}{
 		{activity: runrecord.Preparing, status: runrecord.Running},
+		{activity: runrecord.Preparing, status: runrecord.Running},
+		{status: runrecord.Running},
 		{activity: runrecord.Implementing, iteration: 1, status: runrecord.Running},
-		{activity: runrecord.Verifying, iteration: 1, status: runrecord.Running},
+		{iteration: 1, status: runrecord.Running},
 		{activity: runrecord.Reviewing, iteration: 1, status: runrecord.Running},
+		{iteration: 1, status: runrecord.Running},
 		{activity: runrecord.Implementing, iteration: 2, status: runrecord.Running},
-		{activity: runrecord.Verifying, iteration: 2, status: runrecord.Running},
+		{iteration: 2, status: runrecord.Running},
 		{activity: runrecord.Reviewing, iteration: 2, status: runrecord.Running},
+		{iteration: 2, status: runrecord.Running},
 		{iteration: 2, status: runrecord.Approved},
 	}
 	for index, expected := range want {
@@ -456,10 +592,46 @@ func TestRunImplementRecordsQuestionPauseAndResume(t *testing.T) {
 		t.Fatalf("RunImplement() error = %v", err)
 	}
 	if questionState.Activity != runrecord.AwaitingAnswer || questionState.Question != "Which option?" {
-		t.Fatalf("question state = %#v, want awaiting answer", questionState)
+		t.Fatalf("question state = %#v, want awaiting-answer while the implementing span remains open", questionState)
 	}
 	if resumedState.Activity != runrecord.Implementing || resumedState.Question != "" {
 		t.Fatalf("resumed state = %#v, want implementing without question", resumedState)
+	}
+
+	activities, err := runrecord.ReadActivities(filepath.Dir(statePath()), nil)
+	if err != nil {
+		t.Fatalf("read Activity log: %v", err)
+	}
+	starts := make(map[string]runrecord.ActivitySpanStart)
+	ends := make(map[string]runrecord.ActivitySpanEnd)
+	for _, event := range activities {
+		if event.Start != nil {
+			starts[event.Start.SpanID] = *event.Start
+		}
+		if event.End != nil {
+			ends[event.End.SpanID] = *event.End
+		}
+	}
+	var questionSpan *runrecord.ActivitySpanStart
+	for _, start := range starts {
+		if start.Activity == runrecord.AwaitingAnswer {
+			questionSpan = &start
+			break
+		}
+	}
+	if questionSpan == nil {
+		t.Fatal("Activity log has no awaiting-answer child span")
+	}
+	parent, parentExists := starts[questionSpan.ParentSpanID]
+	if !parentExists || parent.Activity != runrecord.Implementing {
+		t.Fatalf("question span parent = %#v, want implementing Role span", parent)
+	}
+	if questionSpan.Label != "Which option?" || questionSpan.StartedAt.IsZero() {
+		t.Fatalf("question span = %#v, want full question and start time", questionSpan)
+	}
+	end, ended := ends[questionSpan.SpanID]
+	if !ended || end.Answer != "Use option A" || end.EndedAt.IsZero() || end.EndedAt.Before(questionSpan.StartedAt) {
+		t.Fatalf("question span end = %#v, want answer and end time after start", end)
 	}
 }
 
@@ -497,17 +669,17 @@ func TestRunImplementRecordsQuestionPauseThroughMemoryOpenRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunImplement() error = %v", err)
 	}
-	var awaiting, restored bool
+	var questionRecorded, restored bool
 	for _, state := range recorder.states {
 		if state.Activity == runrecord.AwaitingAnswer && state.Question == "Which option?" {
-			awaiting = true
+			questionRecorded = true
 		}
-		if awaiting && state.Activity == runrecord.Implementing && state.Question == "" {
+		if questionRecorded && state.Activity == runrecord.Implementing && state.Question == "" {
 			restored = true
 		}
 	}
-	if !awaiting || !restored {
-		t.Fatalf("recorded states = %#v, want awaiting-answer and restored implementing states", recorder.states)
+	if !questionRecorded || !restored {
+		t.Fatalf("recorded states = %#v, want question and open-span Activity states", recorder.states)
 	}
 }
 
@@ -537,6 +709,16 @@ func TestRunReviewRecordsStandaloneRunState(t *testing.T) {
 	if state.Kind != runrecord.Review || state.Iteration != 1 || state.MaxIterations != 1 || state.Status != runrecord.Approved || state.EndedAt == nil {
 		t.Fatalf("standalone review state = %#v", state)
 	}
+	record, err := runrecord.NewReader(nil).Read(filepath.Dir(onlyRunStatePath(t, root)))
+	if err != nil {
+		t.Fatalf("read standalone review Activity log: %v", err)
+	}
+	if len(record.Activities) != 2 || record.Activities[0].Start == nil || record.Activities[1].End == nil {
+		t.Fatalf("standalone review Activity events = %#v, want one start/end pair", record.Activities)
+	}
+	if record.Activities[0].Start.Label != "reviewing" || record.Activities[0].Start.Iteration != "" {
+		t.Fatalf("standalone review Activity start = %#v, want unprefixed label and empty iteration", record.Activities[0].Start)
+	}
 }
 
 func TestRunReviewRecordsLifecycleThroughMemoryOpenRun(t *testing.T) {
@@ -558,13 +740,16 @@ func TestRunReviewRecordsLifecycleThroughMemoryOpenRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunReview() error = %v", err)
 	}
-	if len(recorder.states) != 3 {
-		t.Fatalf("recorded states = %#v, want preparing, reviewing, approved", recorder.states)
+	if len(recorder.states) != 4 {
+		t.Fatalf("recorded states = %#v, want preparing, reviewing span, span end, approved", recorder.states)
 	}
 	if got := recorder.states[1]; got.Activity != runrecord.Reviewing || got.Iteration != 1 || got.MaxIterations != 1 {
 		t.Fatalf("reviewing state = %#v, want reviewing at iteration 1/1", got)
 	}
-	if got := recorder.states[2]; got.Status != runrecord.Approved || got.Activity != "" {
+	if got := recorder.states[2]; got.Activity != "" || got.Status != runrecord.Running {
+		t.Fatalf("span end state = %#v, want running without an open Activity", got)
+	}
+	if got := recorder.states[3]; got.Status != runrecord.Approved || got.Activity != "" {
 		t.Fatalf("final state = %#v, want approved without activity", got)
 	}
 }

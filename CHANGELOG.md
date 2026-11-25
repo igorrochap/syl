@@ -6,6 +6,8 @@
 
 ### Features
 
+- **orchestration**: Show compact Activity span progress by default; `--verbose` streams assistant prose and tool lines under the spans, while `--raw` passes harness output through unchanged
+
 - **orchestration**: Add verification section to published pull requests
   ([#293](https://github.com/igorrochap/syl/pull/293),
   [`879fb36`](https://github.com/igorrochap/syl/commit/879fb364deb94657bfd81e962621685e66972834))

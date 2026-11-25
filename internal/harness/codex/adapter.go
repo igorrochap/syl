@@ -17,6 +17,8 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/igorrochap/syl/internal/config"
@@ -26,10 +28,12 @@ import (
 type Adapter struct {
 	command     string
 	projectRoot string
+	homeDir     string
 }
 
-func New(projectRoot string) *Adapter {
-	return &Adapter{command: "codex", projectRoot: projectRoot}
+// New returns a Codex adapter rooted at projectRoot with session paths under homeDir.
+func New(projectRoot, homeDir string) *Adapter {
+	return &Adapter{command: "codex", projectRoot: projectRoot, homeDir: homeDir}
 }
 
 var _ harness.Adapter = (*Adapter)(nil)
@@ -160,6 +164,25 @@ func (a *Adapter) executable() string {
 		return "codex"
 	}
 	return a.command
+}
+
+// SessionTranscriptPath returns the Codex rollout path when the session is persisted.
+func (a *Adapter) SessionTranscriptPath(sessionID string) string {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return ""
+	}
+	homeDir := strings.TrimSpace(a.homeDir)
+	if homeDir == "" {
+		return ""
+	}
+	pattern := filepath.Join(homeDir, ".codex", "sessions", "*", "*", "*", "rollout-*-"+sessionID+".jsonl")
+	paths, err := filepath.Glob(pattern)
+	if err != nil || len(paths) == 0 {
+		return ""
+	}
+	sort.Strings(paths)
+	return paths[0]
 }
 
 func (a *Adapter) start(ctx context.Context, args []string) (harness.Stream, error) {

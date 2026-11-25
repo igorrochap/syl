@@ -71,6 +71,7 @@ type memoryRunRecorder struct {
 	dir         string
 	files       map[string]string
 	states      []runrecord.State
+	activities  []runrecord.ActivityEvent
 	usage       []usage.Entry
 	sessions    []string
 	sessionKeys map[sessionKey]struct{}
@@ -154,6 +155,16 @@ func (r *memoryRunRecorder) RecordNoGate(iteration int) (string, error) {
 
 func (r *memoryRunRecorder) RecordState(state runrecord.State) {
 	r.states = append(r.states, state)
+}
+
+func (r *memoryRunRecorder) RecordActivityStart(start runrecord.ActivitySpanStart) error {
+	r.activities = append(r.activities, runrecord.ActivityEvent{Type: runrecord.ActivityStart, Start: &start})
+	return nil
+}
+
+func (r *memoryRunRecorder) RecordActivityEnd(end runrecord.ActivitySpanEnd) error {
+	r.activities = append(r.activities, runrecord.ActivityEvent{Type: runrecord.ActivityEnd, End: &end})
+	return nil
 }
 
 func (r *memoryRunRecorder) RecordUsage(entry usage.Entry) error {
@@ -1032,6 +1043,12 @@ func TestRunImplementPublishesApprovedDiffAndSkipsEmptyDiff(t *testing.T) {
 				if len(notifier.messages) != 1 || !strings.Contains(notifier.messages[0], "https://github.com/example/project/pull/23") {
 					t.Fatalf("notifications = %v, want pull request URL", notifier.messages)
 				}
+				assertPublicationActivityOrder(t, recorder.activities,
+					"approved — committing", "approved — pushing", "approved — opening PR",
+				)
+				assertActivityOutputOrder(t, output.String(),
+					"finished approved — committing — completed (", "finished approved — pushing — completed (", "finished approved — opening PR — completed (",
+				)
 			} else {
 				publication := runrecord.ParseSummary([]byte(recorder.files[artifactFilename(summaryArtifact, 0)])).Publication
 				if publication.Status != runrecord.PublicationSkipped {
@@ -1043,6 +1060,7 @@ func TestRunImplementPublishesApprovedDiffAndSkipsEmptyDiff(t *testing.T) {
 				if !strings.Contains(output.String(), "No changes to publish") {
 					t.Fatalf("summary output = %q, want empty-diff notice", output.String())
 				}
+				assertPublicationActivityOrder(t, recorder.activities, "approved — committing")
 			}
 			for _, expected := range test.wantCalls {
 				if !slices.Contains(git.calls, expected) {
@@ -1116,6 +1134,13 @@ func TestRunImplementUsesCommitgenForPublication(t *testing.T) {
 	if len(commitgen.calls) != 2 || commitgen.calls[0].workRoot != root || commitgen.calls[1].workRoot != root {
 		t.Fatalf("commitgen calls = %#v, want commit and PR in the work root", commitgen.calls)
 	}
+	assertPublicationActivityOrder(
+		t, recorder.activities,
+		"approved — committing", "approved — pushing", "approved — opening PR",
+	)
+	assertActivitySpanOutcome(t, recorder.activities, "approved — committing", string(activitySpanCompleted))
+	assertActivitySpanOutcome(t, recorder.activities, "approved — pushing", string(activitySpanCompleted))
+	assertActivitySpanOutcome(t, recorder.activities, "approved — opening PR", string(activitySpanCompleted))
 	if !slices.Equal(commitgen.calls[0].args, []string{"--agent", "--context", "Ticket #42: Add resilient workflow"}) {
 		t.Fatalf("commitgen commit arguments = %#v", commitgen.calls[0].args)
 	}
@@ -1681,6 +1706,7 @@ func TestRunImplementReportsCommitFailureAndRemainingCommands(t *testing.T) {
 		}
 	}
 	assertPublicationFailureRun(t, recorder, runrecord.PublicationStepCommit)
+	assertActivitySpanOutcome(t, recorder.activities, "approved — committing", "failed")
 }
 
 func TestRunImplementReportsPullRequestFailureCommandOnly(t *testing.T) {
@@ -1701,6 +1727,9 @@ func TestRunImplementReportsPullRequestFailureCommandOnly(t *testing.T) {
 		t.Fatalf("publication output = %q, want only the failed pull request command", output.String())
 	}
 	assertPublicationFailureRun(t, recorder, runrecord.PublicationStepPullRequest)
+	assertActivitySpanOutcome(t, recorder.activities, "approved — committing", "completed")
+	assertActivitySpanOutcome(t, recorder.activities, "approved — pushing", "completed")
+	assertActivitySpanOutcome(t, recorder.activities, "approved — opening PR", "failed")
 }
 
 func TestRunImplementPushFailureKeepsApprovedCommitAndPrintsRemainingCommands(t *testing.T) {
@@ -1729,6 +1758,9 @@ func TestRunImplementPushFailureKeepsApprovedCommitAndPrintsRemainingCommands(t 
 	if err == nil || !strings.Contains(err.Error(), "publication failed during push:") {
 		t.Fatalf("RunImplement() error = %v, want push publication failure", err)
 	}
+	if !strings.Contains(output.String(), "finished approved — pushing — failed (") {
+		t.Fatalf("publication output = %q, want failed push Activity span", output.String())
+	}
 	for _, want := range []string{"git push -u origin feat/add-resilient-workflow", "gh pr create --draft"} {
 		if !strings.Contains(output.String(), want) {
 			t.Errorf("publication output = %q, want %q", output.String(), want)
@@ -1755,6 +1787,65 @@ func TestRunImplementPushFailureKeepsApprovedCommitAndPrintsRemainingCommands(t 
 		summary.Publication.Step != runrecord.PublicationStepPush || !strings.Contains(summary.Publication.Error, "push implementation branch") {
 		t.Fatalf("recorded publication = %#v, error = %v, want push failure details", summary.Publication, err)
 	}
+	activities, err := runrecord.ReadActivities(runDirs[0], nil)
+	if err != nil {
+		t.Fatalf("ReadActivities() error = %v", err)
+	}
+	assertPublicationActivityOrder(t, activities, "approved — committing", "approved — pushing")
+	assertActivitySpanOutcome(t, activities, "approved — committing", "completed")
+	assertActivitySpanOutcome(t, activities, "approved — pushing", "failed")
+}
+
+func assertPublicationActivityOrder(t *testing.T, events []runrecord.ActivityEvent, labels ...string) {
+	t.Helper()
+	var gotLabels []string
+	var gotActivities []runrecord.Activity
+	for _, event := range events {
+		if event.Start == nil || !strings.HasPrefix(event.Start.Label, "approved — ") {
+			continue
+		}
+		gotLabels = append(gotLabels, event.Start.Label)
+		gotActivities = append(gotActivities, event.Start.Activity)
+	}
+	if strings.Join(gotLabels, "|") != strings.Join(labels, "|") {
+		t.Fatalf("publication Activity labels = %q, want %q", strings.Join(gotLabels, "|"), strings.Join(labels, "|"))
+	}
+	wantActivities := []runrecord.Activity{runrecord.Committing, runrecord.Pushing, runrecord.Publishing}[:len(labels)]
+	if !slices.Equal(gotActivities, wantActivities) {
+		t.Fatalf("publication Activity values = %v, want %v", gotActivities, wantActivities)
+	}
+}
+
+func assertActivityOutputOrder(t *testing.T, output string, fragments ...string) {
+	t.Helper()
+	previousIndex := -1
+	for _, fragment := range fragments {
+		index := strings.Index(output, fragment)
+		if index <= previousIndex {
+			t.Fatalf("Activity output = %q, want %q after index %d", output, fragment, previousIndex)
+		}
+		previousIndex = index
+	}
+}
+
+func assertActivitySpanOutcome(t *testing.T, events []runrecord.ActivityEvent, label, want string) {
+	t.Helper()
+	for _, event := range events {
+		if event.Start == nil || event.Start.Label != label {
+			continue
+		}
+		for _, end := range events {
+			if end.End == nil || end.End.SpanID != event.Start.SpanID {
+				continue
+			}
+			if end.End.Outcome != want {
+				t.Fatalf("Activity span %q outcome = %q, want %q", label, end.End.Outcome, want)
+			}
+			return
+		}
+		t.Fatalf("Activity span %q has no end event", label)
+	}
+	t.Fatalf("Activity span %q was not recorded", label)
 }
 
 func newPublicationTestRepository(t *testing.T) (string, string, gitadapter.ExecGitRunner) {
