@@ -132,6 +132,24 @@ type SessionStream interface {
 	SessionID() string
 }
 
+// SessionTranscriptPathProvider returns the durable transcript path for a session.
+type SessionTranscriptPathProvider interface {
+	SessionTranscriptPath(sessionID string) string
+}
+
+// SessionTranscriptError includes the durable transcript path in a session failure.
+type SessionTranscriptError struct {
+	Cause   error
+	Path    string
+	Details string
+}
+
+func (e *SessionTranscriptError) Error() string {
+	return fmt.Sprintf("%v\n%s", e.Cause, e.Details)
+}
+
+func (e *SessionTranscriptError) Unwrap() error { return e.Cause }
+
 type Adapter interface {
 	Run(ctx context.Context, request Request) (Stream, error)
 	Resume(ctx context.Context, sessionID string, request Request) (Stream, error)

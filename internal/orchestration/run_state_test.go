@@ -1,6 +1,7 @@
 package orchestration
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -236,8 +237,8 @@ func TestRunImplementRecordsRunStateLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read Run Activity log: %v", err)
 	}
-	if len(activityRecord.Activities) != 10 {
-		t.Fatalf("Activity log has %d events, want preparation and four Role start/end span pairs", len(activityRecord.Activities))
+	if len(activityRecord.Activities) != 12 {
+		t.Fatalf("Activity log has %d events, want preparation, four Role spans, and one recovery child span", len(activityRecord.Activities))
 	}
 	preparationStart, preparationEnd := activityRecord.Activities[0], activityRecord.Activities[1]
 	if preparationStart.Type != runrecord.ActivityStart || preparationStart.Start == nil ||
@@ -246,22 +247,36 @@ func TestRunImplementRecordsRunStateLifecycle(t *testing.T) {
 		preparationEnd.End.SpanID != preparationStart.Start.SpanID || preparationEnd.End.Outcome != "completed" {
 		t.Fatalf("preparation Activity events = %#v, want completed preparing-worktree span", activityRecord.Activities[:2])
 	}
-	wantActivityLabels := []string{
-		"1/2 — implementing", "1/2 — reviewing", "2/2 — revising 1 finding(s)", "2/2 — reviewing",
+	wantActivitySpans := []struct {
+		startIndex int
+		endIndex   int
+		label      string
+	}{
+		{startIndex: 2, endIndex: 3, label: "1/2 — implementing"},
+		{startIndex: 4, endIndex: 7, label: "1/2 — reviewing"},
+		{startIndex: 8, endIndex: 9, label: "2/2 — revising 1 finding(s)"},
+		{startIndex: 10, endIndex: 11, label: "2/2 — reviewing"},
 	}
-	for spanIndex, wantLabel := range wantActivityLabels {
-		start := activityRecord.Activities[(spanIndex+1)*2]
-		end := activityRecord.Activities[(spanIndex+1)*2+1]
+	for spanIndex, expected := range wantActivitySpans {
+		start := activityRecord.Activities[expected.startIndex]
+		end := activityRecord.Activities[expected.endIndex]
 		if start.Type != runrecord.ActivityStart || start.Start == nil || end.Type != runrecord.ActivityEnd || end.End == nil {
-			eventIndex := (spanIndex + 1) * 2
-			t.Fatalf("Activity events for span %d = %#v, want start then end", spanIndex, activityRecord.Activities[eventIndex:eventIndex+2])
+			t.Fatalf("Activity events for span %d = %#v and %#v, want start then end", spanIndex, start, end)
 		}
-		if start.Start.Label != wantLabel || start.Start.ParentSpanID != "" || start.Start.Iteration == "" {
-			t.Errorf("Activity start %d = %#v, want label %q and loop metadata", spanIndex, *start.Start, wantLabel)
+		if start.Start.Label != expected.label || start.Start.ParentSpanID != "" || start.Start.Iteration == "" {
+			t.Errorf("Activity start %d = %#v, want label %q and loop metadata", spanIndex, *start.Start, expected.label)
 		}
 		if end.End.SpanID != start.Start.SpanID || end.End.Outcome != "completed" || start.Start.StartedAt.IsZero() || end.End.EndedAt.IsZero() {
 			t.Errorf("Activity end %d = %#v, want matching completed span with times", spanIndex, *end.End)
 		}
+	}
+	recoveryStart := activityRecord.Activities[5]
+	recoveryEnd := activityRecord.Activities[6]
+	if recoveryStart.Start == nil || recoveryEnd.End == nil ||
+		recoveryStart.Start.Label != "recovering stalled session" ||
+		recoveryStart.Start.ParentSpanID != activityRecord.Activities[4].Start.SpanID ||
+		recoveryEnd.End.SpanID != recoveryStart.Start.SpanID {
+		t.Fatalf("recovery Activity events = %#v and %#v, want child span under the first reviewer", recoveryStart, recoveryEnd)
 	}
 	verdictContents, err := os.ReadFile(filepath.Join(runDir, "iteration-01-verdict.txt"))
 	if err != nil {
@@ -351,6 +366,7 @@ func TestRunImplementFailsAfterSecondStalledReviewTurn(t *testing.T) {
 		runWaitErrors:    []error{firstStall},
 		resumeWaitErrors: []error{secondStall},
 	}
+	var output bytes.Buffer
 	err := RunImplement(context.Background(), ImplementOptions{
 		OriginRoot: root, WorkRoot: root,
 		OpenRun:      NewDiskRunOpener(root, sylhome.Dir{}, io.Discard),
@@ -365,7 +381,7 @@ func TestRunImplementFailsAfterSecondStalledReviewTurn(t *testing.T) {
 		Implementer: &capturingImplementAdapter{response: "Implemented the requested changes."},
 		Reviewer:    reviewer,
 		Git:         &implementRunGit{}, OriginGit: &implementRunGit{},
-		Input: strings.NewReader(""), Output: io.Discard,
+		Input: strings.NewReader(""), Output: &output,
 	})
 	if err == nil || !strings.Contains(err.Error(), "stall window") || !strings.Contains(err.Error(), "second stalled session summary") {
 		t.Fatalf("RunImplement() error = %v, want second stall-window error and session summary", err)
@@ -377,7 +393,40 @@ func TestRunImplementFailsAfterSecondStalledReviewTurn(t *testing.T) {
 	if state.Status != runrecord.Failed || state.Iteration != 1 {
 		t.Fatalf("final Run state = %#v, want failed at iteration 1", state)
 	}
+	if !strings.Contains(output.String(), "× recovering stalled session (0.0s)") {
+		t.Fatalf("terminal output = %q, want the recovery child span and its duration", output.String())
+	}
 	runDir := filepath.Dir(onlyRunStatePath(t, root))
+	activities, err := runrecord.ReadActivities(runDir, nil)
+	if err != nil {
+		t.Fatalf("read activities.jsonl: %v", err)
+	}
+	starts := make(map[string]runrecord.ActivitySpanStart)
+	ends := make(map[string]runrecord.ActivitySpanEnd)
+	for _, event := range activities {
+		if event.Start != nil {
+			starts[event.Start.SpanID] = *event.Start
+		}
+		if event.End != nil {
+			ends[event.End.SpanID] = *event.End
+		}
+	}
+	var recoverySpan *runrecord.ActivitySpanStart
+	for _, start := range starts {
+		if start.Label == "recovering stalled session" {
+			recoverySpan = &start
+			break
+		}
+	}
+	if recoverySpan == nil {
+		t.Fatal("activities.jsonl has no recovering-stalled-session child span")
+	}
+	parent, parentExists := starts[recoverySpan.ParentSpanID]
+	recoveryEnd, recoveryEnded := ends[recoverySpan.SpanID]
+	if !parentExists || parent.Activity != runrecord.Reviewing || !recoveryEnded ||
+		recoveryEnd.Outcome != string(activitySpanFailed) || recoveryEnd.EndedAt.IsZero() {
+		t.Fatalf("recovery span = %#v end = %#v parent = %#v; want timed reviewer child span", recoverySpan, recoveryEnd, parent)
+	}
 	for name, want := range map[string]string{
 		"iteration-01-review.feed":        "First review turn.\nRecovery review turn.",
 		"iteration-01-review.transcript":  "First review turn.\nRecovery review turn.",

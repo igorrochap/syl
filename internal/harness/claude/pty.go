@@ -208,6 +208,19 @@ func (s ptyStream) Wait() error { return s.stream.Wait() }
 
 func (s ptyStream) SessionID() string { return s.sessionID }
 
+// SessionTranscriptPath returns the expected Claude transcript path for a session.
+func (a *PTYAdapter) SessionTranscriptPath(sessionID string) string {
+	path, err := transcript.New(a.homeDir).Find(a.projectRoot, sessionID)
+	if err != nil {
+		return ""
+	}
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return path
+	}
+	return absolute
+}
+
 func (a *PTYAdapter) runSession(
 	ctx context.Context,
 	process *exec.Cmd,
@@ -489,7 +502,7 @@ func (m *transcriptMonitor) describeSessionFailure(err error) error {
 			details += "\n" + tail
 		}
 	}
-	return fmt.Errorf("%w\n%s", err, details)
+	return &harness.SessionTranscriptError{Cause: err, Path: m.path, Details: details}
 }
 
 func (m *transcriptMonitor) checkProgress() (transcriptProgress, error) {

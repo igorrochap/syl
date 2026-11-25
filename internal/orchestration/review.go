@@ -36,15 +36,17 @@ func (e *UnparseableVerdictError) Error() string {
 func (e *UnparseableVerdictError) Unwrap() error { return e.Cause }
 
 type ReviewExecution struct {
-	Verdict    verdict.Verdict
-	Transcript string
-	Feed       string
-	SessionIDs []string
+	Verdict     verdict.Verdict
+	Transcript  string
+	Feed        string
+	FailureTail string
+	SessionIDs  []string
 }
 
 type harnessTranscript struct {
-	Transcript string
-	SessionIDs []string
+	Transcript  string
+	FailureTail string
+	SessionIDs  []string
 }
 
 type HarnessOutputMode uint8
@@ -118,7 +120,7 @@ func RunReview(ctx context.Context, options ReviewOptions) (returnErr error) {
 	}
 	run, err := runStandaloneReview(ctx, options, preparation)
 	if err != nil {
-		return handleStandaloneReviewError(options, preparation, run, err)
+		return handleStandaloneReviewError(ctx, options, preparation, run, err)
 	}
 	return completeStandaloneReview(ctx, options, preparation, run)
 }
@@ -177,7 +179,7 @@ func recordStandaloneReviewVerdict(ctx context.Context, options ReviewOptions, p
 	return nil
 }
 
-func handleStandaloneReviewError(options ReviewOptions, preparation reviewPreparation, run standaloneReviewRun, err error) error {
+func handleStandaloneReviewError(ctx context.Context, options ReviewOptions, preparation reviewPreparation, run standaloneReviewRun, err error) error {
 	execution := run.review
 	var unparseable *UnparseableVerdictError
 	if errors.As(err, &unparseable) {
@@ -191,12 +193,12 @@ func handleStandaloneReviewError(options ReviewOptions, preparation reviewPrepar
 		run.endedAt,
 	)
 	if artifactErr := recordFailedReviewTurn(preparation.recorder, 0, execution, err); artifactErr != nil {
-		return fmt.Errorf("%w; save review run artifacts: %v", err, artifactErr)
+		err = fmt.Errorf("%w; save review run artifacts: %v", err, artifactErr)
 	}
 	if errors.As(err, &unparseable) {
-		return reviewTranscriptSavedError(err, recorderArtifactDir(preparation.recorder))
+		err = reviewTranscriptSavedError(err, recorderArtifactDir(preparation.recorder))
 	}
-	return err
+	return reportRoleFailure(ctx, err, execution.FailureTail, options.Adapter, execution.SessionIDs, preparation.recorder)
 }
 
 func runStandaloneReview(ctx context.Context, options ReviewOptions, preparation reviewPreparation) (standaloneReviewRun, error) {
@@ -515,7 +517,10 @@ func runReviewExecutionFrom(ctx context.Context, adapter harness.Adapter, option
 		return handleReviewConversationError(ctx, adapter, options, first, &feed, artifactOutput, err)
 	}
 	if err := endReviewTurn(options.turnOutput); err != nil {
-		return ReviewExecution{Transcript: first.Transcript, Feed: feed.String(), SessionIDs: first.SessionIDs}, err
+		return ReviewExecution{
+			Transcript: first.Transcript, Feed: feed.String(), FailureTail: first.FailureTail,
+			SessionIDs: first.SessionIDs,
+		}, err
 	}
 	return finishReviewExecution(ctx, adapter, options, first, &feed, artifactOutput)
 }
@@ -530,9 +535,10 @@ func handleReviewConversationError(
 	conversationErr error,
 ) (ReviewExecution, error) {
 	execution := ReviewExecution{
-		Transcript: transcript.Transcript,
-		Feed:       feed.String(),
-		SessionIDs: transcript.SessionIDs,
+		Transcript:  transcript.Transcript,
+		Feed:        feed.String(),
+		FailureTail: transcript.FailureTail,
+		SessionIDs:  transcript.SessionIDs,
 	}
 	var resumeStartErr *reviewResumeStartError
 	if errors.As(conversationErr, &resumeStartErr) {
@@ -566,10 +572,16 @@ func finishReviewExecution(
 ) (ReviewExecution, error) {
 	reviewVerdict, parseErr := verdict.Parse(first.Transcript)
 	if parseErr == nil {
-		return ReviewExecution{Verdict: reviewVerdict, Transcript: first.Transcript, Feed: feed.String(), SessionIDs: first.SessionIDs}, nil
+		return ReviewExecution{
+			Verdict: reviewVerdict, Transcript: first.Transcript, Feed: feed.String(),
+			FailureTail: first.FailureTail, SessionIDs: first.SessionIDs,
+		}, nil
 	}
 	if len(first.SessionIDs) == 0 {
-		execution := ReviewExecution{Transcript: first.Transcript, Feed: feed.String(), SessionIDs: first.SessionIDs}
+		execution := ReviewExecution{
+			Transcript: first.Transcript, Feed: feed.String(), FailureTail: first.FailureTail,
+			SessionIDs: first.SessionIDs,
+		}
 		return execution, &UnparseableVerdictError{Execution: execution, Cause: parseErr}
 	}
 
@@ -584,12 +596,12 @@ func finishReviewExecution(
 	}
 	retryOptions.request.Prompt = "emit the verdict block"
 	retry, err := retryReviewDetails(ctx, adapter, retryOptions)
+	initial := ReviewExecution{
+		Transcript: first.Transcript, Feed: feed.String(), FailureTail: first.FailureTail,
+		SessionIDs: first.SessionIDs,
+	}
+	execution := mergeReviewExecution(initial, retry)
 	if err != nil {
-		execution := ReviewExecution{
-			Transcript: appendReviewTranscript(first.Transcript, retry.Transcript),
-			Feed:       feed.String(),
-			SessionIDs: append(append([]string(nil), first.SessionIDs...), retry.SessionIDs...),
-		}
 		var stalled *harness.SessionStalledError
 		if !errors.As(err, &stalled) || options.disableRecovery {
 			return execution, err
@@ -601,20 +613,13 @@ func finishReviewExecution(
 		return recoverStalledReview(ctx, adapter, options, execution, stalled, feed, artifact)
 	}
 	if err := endReviewTurn(options.turnOutput); err != nil {
-		return ReviewExecution{
-			Transcript: appendReviewTranscript(first.Transcript, retry.Transcript),
-			Feed:       feed.String(),
-			SessionIDs: append(append([]string(nil), first.SessionIDs...), retry.SessionIDs...),
-		}, err
+		return execution, err
 	}
-	transcript := appendReviewTranscript(first.Transcript, retry.Transcript)
-	sessions := append(append([]string(nil), first.SessionIDs...), retry.SessionIDs...)
-	reviewVerdict, parseErr = verdict.Parse(transcript)
+	reviewVerdict, parseErr = verdict.Parse(execution.Transcript)
 	if parseErr == nil {
-		return ReviewExecution{Verdict: reviewVerdict, Transcript: transcript, Feed: feed.String(), SessionIDs: sessions}, nil
+		execution.Verdict = reviewVerdict
+		return execution, nil
 	}
-
-	execution := ReviewExecution{Transcript: transcript, Feed: feed.String(), SessionIDs: sessions}
 	return execution, &UnparseableVerdictError{Execution: execution, Cause: parseErr}
 }
 
@@ -636,6 +641,10 @@ func recoverStalledReview(
 	}
 	request := options.request
 	request.Prompt = stalledReviewRecoveryPrompt(stalled.Reports, stalled.Limit)
+	recoveryChild, err := startStalledSessionRecoveryChild(options.childSpans)
+	if err != nil {
+		return first, err
+	}
 	retryOptions := conversationOptions{
 		request:    request,
 		output:     options.output,
@@ -647,9 +656,12 @@ func recoverStalledReview(
 		childSpans: options.childSpans,
 	}
 	retry, retryErr := retryReviewDetails(ctx, adapter, retryOptions)
+	recoverySpanErr := finishStalledSessionRecoveryChild(ctx, recoveryChild, retryErr)
+	retryErr = errors.Join(retryErr, recoverySpanErr)
 	turnErr := endReviewTurn(options.turnOutput)
+	combined := mergeReviewExecution(first, retry)
+	combined.Feed = feed.String()
 	if retryErr != nil {
-		combined := appendStalledReviewTurn(first, retry, feed.String())
 		if turnErr != nil {
 			return combined, errors.Join(retryErr, turnErr)
 		}
@@ -660,17 +672,15 @@ func recoverStalledReview(
 		return combined, retryErr
 	}
 	if turnErr != nil {
-		return appendStalledReviewTurn(first, retry, feed.String()), turnErr
+		return combined, turnErr
 	}
 
-	transcript := appendReviewTranscript(first.Transcript, retry.Transcript)
-	sessions := append(append([]string(nil), first.SessionIDs...), retry.SessionIDs...)
-	reviewVerdict, parseErr := verdict.Parse(transcript)
+	reviewVerdict, parseErr := verdict.Parse(combined.Transcript)
 	if parseErr != nil {
-		execution := ReviewExecution{Transcript: transcript, Feed: feed.String(), SessionIDs: sessions}
-		return execution, &UnparseableVerdictError{Execution: execution, Cause: parseErr}
+		return combined, &UnparseableVerdictError{Execution: combined, Cause: parseErr}
 	}
-	return ReviewExecution{Verdict: reviewVerdict, Transcript: transcript, Feed: feed.String(), SessionIDs: sessions}, nil
+	combined.Verdict = reviewVerdict
+	return combined, nil
 }
 
 func rerunStalledReviewInFreshSession(
@@ -702,11 +712,9 @@ func rerunStalledReviewInFreshSession(
 }
 
 func appendStalledReviewTurn(first ReviewExecution, retry harnessTranscript, feed string) ReviewExecution {
-	return ReviewExecution{
-		Transcript: appendReviewTranscript(first.Transcript, retry.Transcript),
-		Feed:       feed,
-		SessionIDs: append(append([]string(nil), first.SessionIDs...), retry.SessionIDs...),
-	}
+	combined := mergeReviewExecution(first, retry)
+	combined.Feed = feed
+	return combined
 }
 
 func stalledReviewRecoveryPrompt(reports []harness.SubagentReport, limit harness.SessionStallLimit) string {
@@ -750,10 +758,19 @@ func stalledReviewRecoveryPrompt(reports []harness.SubagentReport, limit harness
 }
 
 func appendReviewExecutions(first, next ReviewExecution) ReviewExecution {
+	combined := mergeReviewExecution(first, harnessTranscript{
+		Transcript: next.Transcript, FailureTail: next.FailureTail, SessionIDs: next.SessionIDs,
+	})
+	combined.Feed = appendReviewTranscript(first.Feed, next.Feed)
+	return combined
+}
+
+func mergeReviewExecution(first ReviewExecution, next harnessTranscript) ReviewExecution {
 	return ReviewExecution{
-		Transcript: appendReviewTranscript(first.Transcript, next.Transcript),
-		Feed:       appendReviewTranscript(first.Feed, next.Feed),
-		SessionIDs: append(append([]string(nil), first.SessionIDs...), next.SessionIDs...),
+		Transcript:  appendReviewTranscript(first.Transcript, next.Transcript),
+		Feed:        first.Feed,
+		FailureTail: appendReviewTranscript(first.FailureTail, next.FailureTail),
+		SessionIDs:  append(append([]string(nil), first.SessionIDs...), next.SessionIDs...),
 	}
 }
 

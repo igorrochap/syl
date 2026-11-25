@@ -74,6 +74,41 @@ func TestRunInvokesCodexWithModelEffortAndComposedSkillPrompt(t *testing.T) {
 	}
 }
 
+func TestSessionTranscriptPathFindsAndOrdersRollouts(t *testing.T) {
+	homeDir := t.TempDir()
+	rolloutDir := filepath.Join(homeDir, ".codex", "sessions", "2026", "11", "24")
+	if err := os.MkdirAll(rolloutDir, 0o755); err != nil {
+		t.Fatalf("create rollout directory: %v", err)
+	}
+	want := filepath.Join(rolloutDir, "rollout-20261124T000000-session-1.jsonl")
+	other := filepath.Join(rolloutDir, "rollout-20261124T000001-session-1.jsonl")
+	for _, path := range []string{other, want} {
+		if err := os.WriteFile(path, nil, 0o600); err != nil {
+			t.Fatalf("create rollout file: %v", err)
+		}
+	}
+
+	adapter := &Adapter{homeDir: homeDir}
+	if got := adapter.SessionTranscriptPath("session-1"); got != want {
+		t.Fatalf("SessionTranscriptPath() = %q, want %q", got, want)
+	}
+	if got := adapter.SessionTranscriptPath(" "); got != "" {
+		t.Fatalf("SessionTranscriptPath(blank) = %q, want empty path", got)
+	}
+	if got := adapter.SessionTranscriptPath("["); got != "" {
+		t.Fatalf("SessionTranscriptPath(invalid pattern) = %q, want empty path", got)
+	}
+}
+
+func TestSessionTranscriptPathUsesUserHomeFallback(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+
+	if got := New(t.TempDir()).SessionTranscriptPath("session-1"); got != "" {
+		t.Fatalf("SessionTranscriptPath() = %q, want empty path when no rollout exists", got)
+	}
+}
+
 func TestCodexEffortMapping(t *testing.T) {
 	tests := []struct {
 		effort config.Effort

@@ -1,6 +1,7 @@
 package orchestration
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -36,7 +37,7 @@ func TestRunImplementFailureReportsUncommittedWork(t *testing.T) {
 	if !errors.Is(err, cause) {
 		t.Fatalf("RunImplement() error = %v, want original harness error", err)
 	}
-	want := "run implement harness: harness stopped unexpectedly\n\n" +
+	want := "run implement harness: harness stopped unexpectedly\n\n" + noTranscriptFailureDetails(t, options) + "\n\n" +
 		"Uncommitted changes are kept in the work root: " + options.WorkRoot + "\n" +
 		"   M modified.go\n  A  staged.go\n  ?? new file.go\n  R  old.go -> renamed.go\n"
 	if err.Error() != want {
@@ -51,6 +52,8 @@ func TestRunImplementFailureReportsUncommittedWork(t *testing.T) {
 
 func TestRunImplementCancellationReportsUncommittedWork(t *testing.T) {
 	options, git := failedImplementOptions(t)
+	var output bytes.Buffer
+	options.Output = &output
 	git.status = " M cancelled.go\n"
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -68,14 +71,152 @@ func TestRunImplementCancellationReportsUncommittedWork(t *testing.T) {
 	if err.Error() != want {
 		t.Fatalf("error output = %q, want %q", err.Error(), want)
 	}
+	if !strings.Contains(output.String(), "cancelled (0.0s)") {
+		t.Fatalf("terminal output = %q, want a cancelled Activity span with duration", output.String())
+	}
+	for _, detail := range []string{"Failure transcript (", "Session transcript:", "Run directory:"} {
+		if strings.Contains(err.Error(), detail) || strings.Contains(output.String(), detail) {
+			t.Fatalf("cancellation output includes failure detail %q: error=%q output=%q", detail, err, output.String())
+		}
+	}
 	assertFailedImplementState(t, options, git, runrecord.Cancelled)
+	activities, err := runrecord.ReadActivities(onlyRunDirectory(t, options.OriginRoot), nil)
+	if err != nil {
+		t.Fatalf("read activities.jsonl: %v", err)
+	}
+	if !activityLogHasOutcome(activities, activitySpanCancelled) {
+		t.Fatalf("Activity log = %#v, want a cancelled span outcome", activities)
+	}
+}
+
+func TestRunImplementFailureReportsVerboseTranscriptTailAndPaths(t *testing.T) {
+	options, _ := failedImplementOptions(t)
+	var output bytes.Buffer
+	options.Output = &output
+	const transcriptPath = "/sessions/failed-role.jsonl"
+	events := []harness.Event{{Type: harness.EventSession, SessionID: "failed-role"}}
+	for line := 1; line <= 25; line++ {
+		if line%2 == 0 {
+			events = append(events, harness.Event{Type: harness.EventToolUse, ToolName: "Read", ArgumentGist: fmt.Sprintf("file-%02d.go", line)})
+			continue
+		}
+		events = append(events, harness.Event{Type: harness.EventAssistantText, Text: fmt.Sprintf("failed prose %02d\n", line)})
+	}
+	events = append(events, harness.Event{Type: harness.EventResult, Text: "fake harness exploded", IsError: true})
+	options.Implementer = &scriptedConversationAdapter{
+		runs:            [][]harness.Event{events},
+		transcriptPaths: map[string]string{"failed-role": transcriptPath},
+	}
+
+	err := RunImplement(context.Background(), options)
+	if err == nil || !strings.Contains(err.Error(), "harness returned an error: fake harness exploded") {
+		t.Fatalf("RunImplement() error = %v, want the harness error", err)
+	}
+	if !strings.Contains(err.Error(), "run implement harness: harness returned an error: fake harness exploded") {
+		t.Fatalf("RunImplement() error = %v, want the current Run failure message", err)
+	}
+	if !strings.Contains(err.Error(), "Session transcript: "+transcriptPath) {
+		t.Fatalf("RunImplement() error = %v, want the Session transcript path", err)
+	}
+	runDirectory := onlyRunDirectory(t, options.OriginRoot)
+	if !strings.Contains(err.Error(), "Run directory: "+runDirectory) {
+		t.Fatalf("RunImplement() error = %v, want the Run directory", err)
+	}
+	if !strings.Contains(output.String(), "failed (0.0s)") {
+		t.Fatalf("terminal output = %q, want a failed Role span with duration", output.String())
+	}
+	activities, readActivitiesErr := runrecord.ReadActivities(runDirectory, nil)
+	if readActivitiesErr != nil {
+		t.Fatalf("read activities.jsonl: %v", readActivitiesErr)
+	}
+	if !activityLogHasOutcome(activities, activitySpanFailed) {
+		t.Fatalf("Activity log = %#v, want a failed span outcome", activities)
+	}
+	marker := "Failure transcript (last 20 lines):\n"
+	start := strings.Index(err.Error(), marker)
+	if start < 0 {
+		t.Fatalf("RunImplement() error = %v, want a transcript tail", err)
+	}
+	tailStart := start + len(marker)
+	pathStart := strings.Index(err.Error()[tailStart:], "\nSession transcript:")
+	if pathStart < 0 {
+		t.Fatalf("RunImplement() error = %v, want the tail to end before the Session transcript path", err)
+	}
+	tail := strings.TrimSuffix(err.Error()[tailStart:tailStart+pathStart], "\n")
+	lines := strings.Split(tail, "\n")
+	if len(lines) > 20 {
+		t.Fatalf("failure tail has %d lines, want at most 20: %q", len(lines), tail)
+	}
+	if strings.Contains(tail, "failed prose 01") || strings.Contains(tail, "Earlier span") {
+		t.Fatalf("failure tail contains old transcript lines: %q", tail)
+	}
+	if !strings.Contains(tail, "failed prose 25") || !strings.Contains(tail, "tool: Read — file-24.go") {
+		t.Fatalf("failure tail = %q, want the newest prose and rendered tool lines", tail)
+	}
+}
+
+func TestRunImplementReviewerFailureMatchesGoldenTailWithoutEarlierSpan(t *testing.T) {
+	options, _ := failedImplementOptions(t)
+	options.Git = &implementRunGit{}
+	options.OriginGit = &implementRunGit{}
+	const earlierSpan = "Earlier implementer span transcript."
+	const transcriptPath = "/sessions/reviewer-failure.jsonl"
+	options.Implementer = &scriptedConversationAdapter{runs: [][]harness.Event{{
+		{Type: harness.EventSession, SessionID: "implement-session"},
+		{Type: harness.EventAssistantText, Text: earlierSpan},
+	}}}
+	reviewerEvents := []harness.Event{{Type: harness.EventSession, SessionID: "review-failure"}}
+	for line := 1; line <= 25; line++ {
+		if line%2 == 0 {
+			reviewerEvents = append(reviewerEvents, harness.Event{
+				Type: harness.EventToolUse, ToolName: "Read", ArgumentGist: fmt.Sprintf("file-%02d.go", line),
+			})
+			continue
+		}
+		reviewerEvents = append(reviewerEvents, harness.Event{
+			Type: harness.EventAssistantText, Text: fmt.Sprintf("review prose %02d\n", line),
+		})
+	}
+	reviewerEvents = append(reviewerEvents, harness.Event{
+		Type: harness.EventResult, Text: "fake reviewer exploded", IsError: true,
+	})
+	options.Reviewer = &scriptedConversationAdapter{
+		runs:            [][]harness.Event{reviewerEvents},
+		transcriptPaths: map[string]string{"review-failure": transcriptPath},
+	}
+
+	err := RunImplement(context.Background(), options)
+	if err == nil {
+		t.Fatal("RunImplement() error = nil, want reviewer harness failure")
+	}
+	runDirectory := onlyRunDirectory(t, options.OriginRoot)
+	implementTranscript, readErr := os.ReadFile(filepath.Join(runDirectory, "iteration-01-implement.transcript"))
+	if readErr != nil {
+		t.Fatalf("read earlier implementer transcript: %v", readErr)
+	}
+	if !strings.Contains(string(implementTranscript), earlierSpan) {
+		t.Fatalf("implementer transcript = %q, want the earlier-span marker", implementTranscript)
+	}
+	actual := strings.ReplaceAll(err.Error(), transcriptPath, "<session-transcript>")
+	actual = strings.ReplaceAll(actual, runDirectory, "<run-directory>")
+	want, readErr := os.ReadFile(filepath.Join("testdata", "reviewer-role-failure.golden"))
+	if readErr != nil {
+		t.Fatalf("read reviewer failure golden: %v", readErr)
+	}
+	if actual+"\n" != string(want) {
+		t.Fatalf("reviewer failure = %q, want golden %q", actual, want)
+	}
+	if strings.Contains(actual, earlierSpan) {
+		t.Fatalf("reviewer failure tail contains earlier Role transcript %q", earlierSpan)
+	}
 }
 
 func TestRunImplementFailureWithCleanWorkRootLeavesErrorUnchanged(t *testing.T) {
 	options, git := failedImplementOptions(t)
 	err := RunImplement(context.Background(), options)
-	if err == nil || err.Error() != "run implement harness: harness failed" {
-		t.Fatalf("RunImplement() error = %v, want only original error", err)
+	want := "run implement harness: harness failed\n\n" + noTranscriptFailureDetails(t, options)
+	if err == nil || err.Error() != want {
+		t.Fatalf("RunImplement() error = %v, want failure details with the original error", err)
 	}
 	assertFailedImplementState(t, options, git, runrecord.Failed)
 }
@@ -123,6 +264,7 @@ func TestRunImplementFailsWhenStalledRecoveryResumeStallsAgain(t *testing.T) {
 
 func TestRunImplementRecoversStalledImplementerOnce(t *testing.T) {
 	root := t.TempDir()
+	var output bytes.Buffer
 	implementer := &scriptedConversationAdapter{
 		runs: [][]harness.Event{{
 			{Type: harness.EventSession, SessionID: "implement-session"},
@@ -168,7 +310,7 @@ func TestRunImplementRecoversStalledImplementerOnce(t *testing.T) {
 		Git:          &implementRunGit{},
 		OriginGit:    &implementRunGit{},
 		Input:        strings.NewReader(""),
-		Output:       io.Discard,
+		Output:       &output,
 	})
 	if err != nil {
 		t.Fatalf("RunImplement() error = %v, want successful recovery and review", err)
@@ -206,6 +348,37 @@ func TestRunImplementRecoversStalledImplementerOnce(t *testing.T) {
 		strings.Contains(string(sessions), "iteration 2 implement:") {
 		t.Fatalf("recorded sessions = %q, want recovered implement turn in iteration 1", sessions)
 	}
+	if !strings.Contains(output.String(), "recovering stalled session (0.0s)") {
+		t.Fatalf("terminal output = %q, want the implementer recovery child span and duration", output.String())
+	}
+	runDir := filepath.Dir(onlyRunStatePath(t, root))
+	activities, err := runrecord.ReadActivities(runDir, nil)
+	if err != nil {
+		t.Fatalf("read activities.jsonl: %v", err)
+	}
+	starts := make(map[string]runrecord.ActivitySpanStart)
+	ends := make(map[string]runrecord.ActivitySpanEnd)
+	for _, event := range activities {
+		if event.Start != nil {
+			starts[event.Start.SpanID] = *event.Start
+		}
+		if event.End != nil {
+			ends[event.End.SpanID] = *event.End
+		}
+	}
+	for _, start := range starts {
+		if start.Label != "recovering stalled session" {
+			continue
+		}
+		parent, parentExists := starts[start.ParentSpanID]
+		end, endExists := ends[start.SpanID]
+		if parentExists && parent.Activity == runrecord.Implementing && endExists &&
+			end.Outcome == string(activitySpanCompleted) && !end.EndedAt.IsZero() {
+			return
+		}
+		t.Fatalf("implementer recovery span = %#v end = %#v parent = %#v; want a completed child under the implementer", start, end, parent)
+	}
+	t.Fatal("activities.jsonl has no implementer recovery child span")
 }
 
 func TestRunImplementFailureReportsWorktreeChanges(t *testing.T) {
@@ -217,7 +390,7 @@ func TestRunImplementFailureReportsWorktreeChanges(t *testing.T) {
 	options.OriginGit = originGit
 
 	err := RunImplement(context.Background(), options)
-	want := "run implement harness: harness failed\n\n" +
+	want := "run implement harness: harness failed\n\n" + noTranscriptFailureDetails(t, options) + "\n\n" +
 		"Uncommitted changes are kept in the work root: " + options.WorkRoot + "\n  ?? worktree-only.go\n"
 	if err == nil || err.Error() != want {
 		t.Fatalf("error output = %v, want %q", err, want)
@@ -239,7 +412,7 @@ func TestRunImplementFailureBoundsReportedPaths(t *testing.T) {
 	}
 	git.status = status.String()
 	err := RunImplement(context.Background(), options)
-	want := "run implement harness: harness failed\n\n" +
+	want := "run implement harness: harness failed\n\n" + noTranscriptFailureDetails(t, options) + "\n\n" +
 		"Uncommitted changes are kept in the work root: " + options.WorkRoot + "\n" +
 		listed.String() + "  ... and 3 more paths\n"
 	if err == nil || err.Error() != want {
@@ -257,7 +430,7 @@ func TestRunImplementStatusCheckFailurePreservesOriginalError(t *testing.T) {
 	if !errors.Is(err, cause) {
 		t.Fatalf("RunImplement() error = %v, want original harness error", err)
 	}
-	want := "run implement harness: original harness error\n\n" +
+	want := "run implement harness: original harness error\n\n" + noTranscriptFailureDetails(t, options) + "\n\n" +
 		"Could not check the work root for uncommitted changes (" + options.WorkRoot + ")"
 	if err.Error() != want {
 		t.Fatalf("error output = %q, want %q", err.Error(), want)
@@ -285,6 +458,27 @@ func failedImplementOptions(t *testing.T) (ImplementOptions, *failureReportGit) 
 		Git:         git, OriginGit: &branchSetupGit{},
 		Input: strings.NewReader(""), Output: io.Discard,
 	}, git
+}
+
+func onlyRunDirectory(t *testing.T, root string) string {
+	t.Helper()
+	return filepath.Dir(onlyRunStatePath(t, root))
+}
+
+func noTranscriptFailureDetails(t *testing.T, options ImplementOptions) string {
+	t.Helper()
+	return "Failure transcript (last 20 lines):\n(no transcript lines captured)\n" +
+		"Session transcript: unavailable (no session ID was captured)\n" +
+		"Run directory: " + onlyRunDirectory(t, options.OriginRoot)
+}
+
+func activityLogHasOutcome(activities []runrecord.ActivityEvent, want activitySpanOutcome) bool {
+	for _, event := range activities {
+		if event.End != nil && event.End.Outcome == string(want) {
+			return true
+		}
+	}
+	return false
 }
 
 func assertFailedImplementState(t *testing.T, options ImplementOptions, git *failureReportGit, want runrecord.Status) {

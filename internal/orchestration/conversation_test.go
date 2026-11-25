@@ -103,6 +103,10 @@ func (sink *recordingSubagentEventSink) SubagentFinished(id string) error {
 	return nil
 }
 
+func (*recordingSubagentEventSink) startTimedChild(string) (timedActivityChild, error) {
+	return nil, nil
+}
+
 func TestRunReviewExecutionKeepsPartialOutputWhenHarnessWaitFails(t *testing.T) {
 	adapter := &failedConversationAdapter{
 		events: []harness.Event{
@@ -330,7 +334,9 @@ func TestConsumeHarnessStreamSeparatesToolsWithoutSplittingAssistantChunks(t *te
 	}}
 	var output strings.Builder
 
-	if _, err := consumeHarnessStream(stream, &output, ParsedHarnessOutput); err != nil {
+	if _, err := consumeHarnessStream(stream, streamEventOptions{
+		output: &output, mode: ParsedHarnessOutput, captureSessionEvents: true,
+	}); err != nil {
 		t.Fatalf("consumeHarnessStream() error = %v", err)
 	}
 
@@ -457,7 +463,9 @@ func TestConsumeHarnessStreamPreservesResultErrorsWithAndWithoutDeltas(t *testin
 				events = append([]harness.Event{{Type: harness.EventAssistantText, Text: tt.assistant}}, events...)
 			}
 
-			_, err := consumeHarnessStream(scriptedConversationStream{events: events}, io.Discard, ParsedHarnessOutput)
+			_, err := consumeHarnessStream(scriptedConversationStream{events: events}, streamEventOptions{
+				output: io.Discard, mode: ParsedHarnessOutput, captureSessionEvents: true,
+			})
 			if err == nil || !strings.Contains(err.Error(), "harness returned an error: "+tt.resultError) {
 				t.Fatalf("consumeHarnessStream() error = %v, want harness error %q", err, tt.resultError)
 			}
@@ -930,6 +938,7 @@ func TestRunReviewExecutionRawOutputStillForwardsBothHarnessLines(t *testing.T) 
 type scriptedConversationAdapter struct {
 	runs              [][]harness.Event
 	resumes           [][]harness.Event
+	transcriptPaths   map[string]string
 	runWaitErrors     []error
 	resumeWaitErrors  []error
 	resumeStartErrors []error
@@ -938,6 +947,10 @@ type scriptedConversationAdapter struct {
 	runCalls          int
 	runRequests       []harness.Request
 	resumeCalls       []conversationResumeCall
+}
+
+func (a *scriptedConversationAdapter) SessionTranscriptPath(sessionID string) string {
+	return a.transcriptPaths[sessionID]
 }
 
 type failedConversationAdapter struct {
