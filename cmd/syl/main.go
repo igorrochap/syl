@@ -32,6 +32,10 @@ func main() {
 		_, _ = fmt.Fprintf(os.Stderr, "syl: open syl home: %s\n", err)
 		os.Exit(1)
 	}
+	userHomeDir, err := os.UserHomeDir()
+	if err != nil {
+		userHomeDir = ""
+	}
 	app := cli.New(originRoot, originRoot, sylHome, cli.Dependencies{
 		Input: os.Stdin,
 		GH: func(root string) tracker.GHRunner {
@@ -45,7 +49,7 @@ func main() {
 		Harnesses: func(root string) map[string]harness.Adapter {
 			return map[string]harness.Adapter{
 				"claude": claude.New(root),
-				"codex":  codex.New(root),
+				"codex":  codex.New(root, userHomeDir),
 			}
 		},
 	})

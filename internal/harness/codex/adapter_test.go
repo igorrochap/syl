@@ -88,7 +88,7 @@ func TestSessionTranscriptPathFindsAndOrdersRollouts(t *testing.T) {
 		}
 	}
 
-	adapter := &Adapter{homeDir: homeDir}
+	adapter := New(t.TempDir(), homeDir)
 	if got := adapter.SessionTranscriptPath("session-1"); got != want {
 		t.Fatalf("SessionTranscriptPath() = %q, want %q", got, want)
 	}
@@ -100,12 +100,19 @@ func TestSessionTranscriptPathFindsAndOrdersRollouts(t *testing.T) {
 	}
 }
 
-func TestSessionTranscriptPathUsesUserHomeFallback(t *testing.T) {
+func TestSessionTranscriptPathRequiresInjectedHomeDirectory(t *testing.T) {
 	homeDir := t.TempDir()
 	t.Setenv("HOME", homeDir)
-
-	if got := New(t.TempDir()).SessionTranscriptPath("session-1"); got != "" {
-		t.Fatalf("SessionTranscriptPath() = %q, want empty path when no rollout exists", got)
+	rolloutDir := filepath.Join(homeDir, ".codex", "sessions", "2026", "11", "25")
+	if err := os.MkdirAll(rolloutDir, 0o755); err != nil {
+		t.Fatalf("create rollout directory: %v", err)
+	}
+	rolloutPath := filepath.Join(rolloutDir, "rollout-20261125T000000-session-1.jsonl")
+	if err := os.WriteFile(rolloutPath, nil, 0o600); err != nil {
+		t.Fatalf("create rollout file: %v", err)
+	}
+	if got := New(t.TempDir(), "").SessionTranscriptPath("session-1"); got != "" {
+		t.Fatalf("SessionTranscriptPath() = %q, want no process-home fallback", got)
 	}
 }
 

@@ -31,8 +31,9 @@ type Adapter struct {
 	homeDir     string
 }
 
-func New(projectRoot string) *Adapter {
-	return &Adapter{command: "codex", projectRoot: projectRoot}
+// New returns a Codex adapter rooted at projectRoot with session paths under homeDir.
+func New(projectRoot, homeDir string) *Adapter {
+	return &Adapter{command: "codex", projectRoot: projectRoot, homeDir: homeDir}
 }
 
 var _ harness.Adapter = (*Adapter)(nil)
@@ -173,11 +174,7 @@ func (a *Adapter) SessionTranscriptPath(sessionID string) string {
 	}
 	homeDir := strings.TrimSpace(a.homeDir)
 	if homeDir == "" {
-		var err error
-		homeDir, err = os.UserHomeDir()
-		if err != nil {
-			return ""
-		}
+		return ""
 	}
 	pattern := filepath.Join(homeDir, ".codex", "sessions", "*", "*", "*", "rollout-*-"+sessionID+".jsonl")
 	paths, err := filepath.Glob(pattern)
