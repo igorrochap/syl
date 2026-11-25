@@ -2,6 +2,65 @@
 
 <!-- version list -->
 
+## v1.51.0 (2026-11-25)
+
+### Bug Fixes
+
+- **ui**: Apply muted color tone to activity span lines
+  ([#313](https://github.com/igorrochap/syl/pull/313),
+  [`15b31ad`](https://github.com/igorrochap/syl/commit/15b31add3ea746b98cef9550ad4e5e730a2cc81a))
+
+### Features
+
+- **orchestration**: Show deterministic Activity spans
+  ([#313](https://github.com/igorrochap/syl/pull/313),
+  [`15b31ad`](https://github.com/igorrochap/syl/commit/15b31add3ea746b98cef9550ad4e5e730a2cc81a))
+
+- **orchestration**: Show failure tail and stall recovery on spans
+  ([#313](https://github.com/igorrochap/syl/pull/313),
+  [`15b31ad`](https://github.com/igorrochap/syl/commit/15b31add3ea746b98cef9550ad4e5e730a2cc81a))
+
+- **orchestration**: Show Role questions as awaiting-answer child spans
+  ([#313](https://github.com/igorrochap/syl/pull/313),
+  [`15b31ad`](https://github.com/igorrochap/syl/commit/15b31add3ea746b98cef9550ad4e5e730a2cc81a))
+
+- **orchestration**: Show sub-agent child spans under role spans
+  ([#313](https://github.com/igorrochap/syl/pull/313),
+  [`15b31ad`](https://github.com/igorrochap/syl/commit/15b31add3ea746b98cef9550ad4e5e730a2cc81a))
+
+- **orchestration**: Support span failure display and stall recovery
+  ([#313](https://github.com/igorrochap/syl/pull/313),
+  [`15b31ad`](https://github.com/igorrochap/syl/commit/15b31add3ea746b98cef9550ad4e5e730a2cc81a))
+
+- **ui**: Add compact activity span view and record activity log
+  ([#313](https://github.com/igorrochap/syl/pull/313),
+  [`15b31ad`](https://github.com/igorrochap/syl/commit/15b31add3ea746b98cef9550ad4e5e730a2cc81a))
+
+- **ui**: Add semantic styling for verdicts and activity spans
+  ([#313](https://github.com/igorrochap/syl/pull/313),
+  [`15b31ad`](https://github.com/igorrochap/syl/commit/15b31add3ea746b98cef9550ad4e5e730a2cc81a))
+
+### Refactoring
+
+- **codex**: Inject home directory into adapter ([#313](https://github.com/igorrochap/syl/pull/313),
+  [`15b31ad`](https://github.com/igorrochap/syl/commit/15b31add3ea746b98cef9550ad4e5e730a2cc81a))
+
+- **orchestration**: Record worktree preparation activity
+  ([#313](https://github.com/igorrochap/syl/pull/313),
+  [`15b31ad`](https://github.com/igorrochap/syl/commit/15b31add3ea746b98cef9550ad4e5e730a2cc81a))
+
+- **runrecord**: Inject file system into activity reader
+  ([#313](https://github.com/igorrochap/syl/pull/313),
+  [`15b31ad`](https://github.com/igorrochap/syl/commit/15b31add3ea746b98cef9550ad4e5e730a2cc81a))
+
+- **ui**: Refactor activity span view and add geometry tests
+  ([#313](https://github.com/igorrochap/syl/pull/313),
+  [`15b31ad`](https://github.com/igorrochap/syl/commit/15b31add3ea746b98cef9550ad4e5e730a2cc81a))
+
+- **ui**: Render tool gists on separate rows ([#313](https://github.com/igorrochap/syl/pull/313),
+  [`15b31ad`](https://github.com/igorrochap/syl/commit/15b31add3ea746b98cef9550ad4e5e730a2cc81a))
+
+
 ## v1.50.0 (2026-11-23)
 
 ### Features
