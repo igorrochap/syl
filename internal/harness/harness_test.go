@@ -27,3 +27,19 @@ func TestSessionStalledErrorUsesFallbackForEmptySummary(t *testing.T) {
 		t.Fatalf("Error() = %q, want unavailable summary", message)
 	}
 }
+
+func TestSessionTranscriptErrorIncludesDetailsAndWrapsCause(t *testing.T) {
+	cause := errors.New("session failed")
+	failure := &SessionTranscriptError{
+		Cause:   cause,
+		Path:    "/sessions/review.jsonl",
+		Details: "Session transcript: /sessions/review.jsonl",
+	}
+
+	if got, want := failure.Error(), "session failed\nSession transcript: /sessions/review.jsonl"; got != want {
+		t.Fatalf("Error() = %q, want %q", got, want)
+	}
+	if !errors.Is(failure, cause) {
+		t.Fatalf("errors.Is() = false, want wrapped cause %v", cause)
+	}
+}

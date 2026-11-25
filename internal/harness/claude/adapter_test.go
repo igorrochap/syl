@@ -561,6 +561,42 @@ while :; do sleep 0.05; done
 	}
 }
 
+func TestSessionTranscriptPathReturnsClaudeTranscriptPath(t *testing.T) {
+	projectRoot := t.TempDir()
+	homeDir := t.TempDir()
+	adapter := &PTYAdapter{projectRoot: projectRoot, homeDir: homeDir}
+
+	transcriptPath, err := transcript.New(homeDir).Find(projectRoot, "session-1")
+	if err != nil {
+		t.Fatalf("find Claude transcript path: %v", err)
+	}
+	want, err := filepath.Abs(transcriptPath)
+	if err != nil {
+		t.Fatalf("resolve Claude transcript path: %v", err)
+	}
+	if got := adapter.SessionTranscriptPath("session-1"); got != want {
+		t.Fatalf("SessionTranscriptPath() = %q, want %q", got, want)
+	}
+}
+
+func TestDescribeSessionFailureReturnsTypedTranscriptPathError(t *testing.T) {
+	transcriptPath := filepath.Join(t.TempDir(), "session.jsonl")
+	cause := errors.New("session stopped making progress")
+	monitor := transcriptMonitor{path: transcriptPath, sessionID: "session-1"}
+
+	failure := monitor.describeSessionFailure(cause)
+	var transcriptError *harness.SessionTranscriptError
+	if !errors.As(failure, &transcriptError) {
+		t.Fatalf("describeSessionFailure() = %T, want *harness.SessionTranscriptError", failure)
+	}
+	if transcriptError.Path != transcriptPath {
+		t.Fatalf("transcript error path = %q, want %q", transcriptError.Path, transcriptPath)
+	}
+	if !errors.Is(failure, cause) {
+		t.Fatalf("describeSessionFailure() = %v, want it to wrap %v", failure, cause)
+	}
+}
+
 func TestPTYRunSubagentTranscriptGrowthResetsNoProgressLimit(t *testing.T) {
 	root := t.TempDir()
 	home := t.TempDir()

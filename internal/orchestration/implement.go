@@ -908,7 +908,7 @@ func runImplementReview(ctx context.Context, params implementIterationsParams, r
 	reviewEndedAt := spanNow(params.clock)
 	if err != nil {
 		return ReviewExecution{}, recordImplementReviewFailure(
-			params, reviewParams, reviewResult, reviewStartedAt, reviewEndedAt, err,
+			ctx, params, reviewParams, reviewResult, reviewStartedAt, reviewEndedAt, err,
 		)
 	}
 	reviewResult.Verdict = verifyVerdictLocations(params.workRoot, reviewResult.Verdict)
@@ -934,6 +934,7 @@ func runImplementReview(ctx context.Context, params implementIterationsParams, r
 }
 
 func recordImplementReviewFailure(
+	ctx context.Context,
 	params implementIterationsParams,
 	reviewParams implementReviewParams,
 	execution ReviewExecution,
@@ -955,12 +956,12 @@ func recordImplementReviewFailure(
 		endedAt:   endedAt,
 	})
 	if err := recordFailedReviewTurn(params.recorder, reviewParams.iteration, execution, failure); err != nil {
-		return fmt.Errorf("%w; save partial review artifacts: %v", failure, err)
+		failure = fmt.Errorf("%w; save partial review artifacts: %v", failure, err)
 	}
 	if errors.As(failure, &unparseable) {
-		return reviewTranscriptSavedError(failure, recorderArtifactDir(params.recorder))
+		failure = reviewTranscriptSavedError(failure, recorderArtifactDir(params.recorder))
 	}
-	return failure
+	return reportRoleFailure(ctx, failure, execution.FailureTail, params.reviewer, execution.SessionIDs, params.recorder)
 }
 
 func recordReviewSessions(recorder RunRecorder, iteration int, review ReviewExecution) (ReviewExecution, error) {
@@ -1085,7 +1086,10 @@ func runImplementTurn(
 	implementEndedAt := spanNow(params.clock)
 	if err != nil {
 		recordRoleUsage(params.recorder, implementUsage(params, turn, implementResult, implementStartedAt, implementEndedAt))
-		return implementExecution{}, recordFailedImplementExecution(params.recorder, turn.iteration, implementResult, err)
+		failure := recordFailedImplementExecution(params.recorder, turn.iteration, implementResult, err)
+		return implementExecution{}, reportRoleFailure(
+			ctx, failure, implementResult.FailureTail, params.implementer, implementResult.SessionIDs, params.recorder,
+		)
 	}
 	recordRoleUsage(params.recorder, implementUsage(params, turn, implementResult, implementStartedAt, implementEndedAt))
 	if err := recordSuccessfulImplementTurn(ctx, params, turn, implementResult); err != nil {
@@ -1188,9 +1192,10 @@ func recordRoleUsage(recorder RunRecorder, entry usage.Entry) {
 }
 
 type implementExecution struct {
-	Feed       string
-	Transcript string
-	SessionIDs []string
+	Feed        string
+	Transcript  string
+	FailureTail string
+	SessionIDs  []string
 }
 
 type implementExecutionOptions struct {
@@ -1275,7 +1280,8 @@ func runImplementRoleFrom(
 	})
 	if err != nil {
 		execution := implementExecution{
-			Feed: feed.String(), Transcript: result.Transcript, SessionIDs: result.SessionIDs,
+			Feed: feed.String(), Transcript: result.Transcript, FailureTail: result.FailureTail,
+			SessionIDs: result.SessionIDs,
 		}
 		if errors.Is(err, harness.ErrSessionStalled) {
 			return recoverStalledImplementer(ctx, adapter, options, execution, err, visibleOutput)
@@ -1287,9 +1293,10 @@ func runImplementRoleFrom(
 		return execution, implementErr
 	}
 	return implementExecution{
-		Feed:       feed.String(),
-		Transcript: result.Transcript,
-		SessionIDs: result.SessionIDs,
+		Feed:        feed.String(),
+		Transcript:  result.Transcript,
+		FailureTail: result.FailureTail,
+		SessionIDs:  result.SessionIDs,
 	}, nil
 }
 
@@ -1323,6 +1330,10 @@ func recoverStalledImplementer(
 	}
 	request.Prompt += "Continue the requested implementation from the existing session. End your turn normally when the work is complete."
 	request.Prompt = appendImplementerReports(request.Prompt, stalled.Reports)
+	recoveryChild, err := startStalledSessionRecoveryChild(options.childSpans)
+	if err != nil {
+		return first, err
+	}
 	var recoveryFeed bytes.Buffer
 	recoveryArtifact := newPlainHarnessOutput(&recoveryFeed, options.mode)
 	recovery, err := runHarnessConversation(ctx, adapter, func(runContext context.Context) (harness.Stream, error) {
@@ -1337,8 +1348,11 @@ func recoverStalledImplementer(
 		sessionID:  sessionID,
 		childSpans: options.childSpans,
 	})
+	recoverySpanErr := finishStalledSessionRecoveryChild(ctx, recoveryChild, err)
+	err = errors.Join(err, recoverySpanErr)
 	resumed := implementExecution{
-		Feed: recoveryFeed.String(), Transcript: recovery.Transcript, SessionIDs: recovery.SessionIDs,
+		Feed: recoveryFeed.String(), Transcript: recovery.Transcript, FailureTail: recovery.FailureTail,
+		SessionIDs: recovery.SessionIDs,
 	}
 	combined := appendImplementExecutions(first, resumed)
 	if err != nil {
@@ -1394,9 +1408,10 @@ func recordFailedImplementTurn(recorder RunRecorder, iteration int, execution im
 
 func appendImplementExecutions(first, next implementExecution) implementExecution {
 	return implementExecution{
-		Feed:       appendTranscriptString(first.Feed, next.Feed),
-		Transcript: appendTranscriptString(first.Transcript, next.Transcript),
-		SessionIDs: append(append([]string(nil), first.SessionIDs...), next.SessionIDs...),
+		Feed:        appendTranscriptString(first.Feed, next.Feed),
+		Transcript:  appendTranscriptString(first.Transcript, next.Transcript),
+		FailureTail: appendTranscriptString(first.FailureTail, next.FailureTail),
+		SessionIDs:  append(append([]string(nil), first.SessionIDs...), next.SessionIDs...),
 	}
 }
 

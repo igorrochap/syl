@@ -35,14 +35,21 @@ type activitySpan struct {
 }
 
 type childActivitySpan struct {
-	start runrecord.ActivitySpanStart
-	ended bool
+	start  runrecord.ActivitySpanStart
+	parent *activitySpan
+	viewID string
+	ended  bool
+}
+
+type timedActivityChild interface {
+	finish(ctx context.Context, operationErr error) error
 }
 
 type subagentEventSink interface {
 	SubagentStarted(id, label string) error
 	SubagentTool(id, name, gist string)
 	SubagentFinished(id string) error
+	startTimedChild(label string) (timedActivityChild, error)
 }
 
 func startActivitySpan(
@@ -152,6 +159,7 @@ func (span *activitySpan) SubagentStarted(id, label string) error {
 	if err != nil {
 		return err
 	}
+	child.viewID = id
 	span.children[id] = child
 	span.childOrder = append(span.childOrder, id)
 	if span.view == nil {
@@ -182,7 +190,7 @@ func (span *activitySpan) registerChild(activity runrecord.Activity, label strin
 	if err != nil {
 		return nil, err
 	}
-	return &childActivitySpan{start: start}, nil
+	return &childActivitySpan{start: start, parent: span}, nil
 }
 
 func (span *activitySpan) finishAwaitingAnswer(child *childActivitySpan, answer string, outcome activitySpanOutcome) error {
@@ -255,11 +263,49 @@ func (span *activitySpan) SubagentFinished(id string) error {
 		return nil
 	}
 	endedAt := spanNow(span.clock)
+	return span.finishChildView(child, activitySpanCompleted, endedAt)
+}
+
+func (span *activitySpan) startTimedChild(label string) (timedActivityChild, error) {
+	if span == nil || span.state == nil {
+		return nil, nil
+	}
+	startedAt := spanNow(span.clock)
+	child, err := span.registerChild(span.start.Activity, label, startedAt)
+	if err != nil {
+		return nil, err
+	}
+	child.viewID = "activity-" + child.start.SpanID
+	span.children[child.viewID] = child
+	span.childOrder = append(span.childOrder, child.viewID)
+	if span.view == nil {
+		return child, nil
+	}
+	if err := span.view.SubagentStarted(child.viewID, label, startedAt); err != nil {
+		return nil, errors.Join(err, span.finishTimedChild(context.Background(), child, err))
+	}
+	return child, nil
+}
+
+func (child *childActivitySpan) finish(ctx context.Context, operationErr error) error {
+	return child.parent.finishTimedChild(ctx, child, operationErr)
+}
+
+func (span *activitySpan) finishTimedChild(ctx context.Context, child *childActivitySpan, operationErr error) error {
+	if child.ended {
+		return nil
+	}
+	endedAt := spanNow(span.clock)
+	outcome := activitySpanOutcomeFor(ctx, operationErr, activitySpanCompleted)
+	return span.finishChildView(child, outcome, endedAt)
+}
+
+func (span *activitySpan) finishChildView(child *childActivitySpan, outcome activitySpanOutcome, endedAt time.Time) error {
 	child.ended = true
-	stateErr := span.state.endChildActivitySpan(child.start.SpanID, activitySpanCompleted, endedAt, "")
+	stateErr := span.state.endChildActivitySpan(child.start.SpanID, outcome, endedAt, "")
 	var viewErr error
-	if span.view != nil {
-		viewErr = span.view.SubagentFinished(id, endedAt, string(activitySpanCompleted))
+	if span.view != nil && child.viewID != "" {
+		viewErr = span.view.SubagentFinished(child.viewID, endedAt, string(outcome))
 	}
 	return errors.Join(stateErr, viewErr)
 }
@@ -276,7 +322,7 @@ func (span *activitySpan) finishOpenChildren(endedAt time.Time, outcome activity
 			childErrors = append(childErrors, err)
 		}
 		if span.view != nil {
-			if err := span.view.SubagentFinished(id, endedAt, string(outcome)); err != nil {
+			if err := span.view.SubagentFinished(child.viewID, endedAt, string(outcome)); err != nil {
 				childErrors = append(childErrors, err)
 			}
 		}
@@ -287,6 +333,24 @@ func (span *activitySpan) finishOpenChildren(endedAt time.Time, outcome activity
 		}
 	}
 	return errors.Join(childErrors...)
+}
+
+func startStalledSessionRecoveryChild(sink subagentEventSink) (timedActivityChild, error) {
+	if sink == nil {
+		return nil, nil
+	}
+	return sink.startTimedChild("recovering stalled session")
+}
+
+func finishStalledSessionRecoveryChild(
+	ctx context.Context,
+	child timedActivityChild,
+	operationErr error,
+) error {
+	if child == nil {
+		return nil
+	}
+	return child.finish(ctx, operationErr)
 }
 
 type activitySpanContext struct {

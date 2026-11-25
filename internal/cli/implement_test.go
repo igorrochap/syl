@@ -1626,7 +1626,7 @@ func TestImplementLoopUsesCodexAdapterAtProcessBoundary(t *testing.T) {
 	}
 	t.Setenv("PATH", commandDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
-	fixture.harnesses["codex"] = codex.New(fixture.root)
+	fixture.harnesses["codex"] = codex.New(fixture.root, home)
 	fixture.harnesses["claude"] = &scriptedHarness{first: []harness.Event{
 		{Type: harness.EventSession, SessionID: "review-session"},
 		{Type: harness.EventAssistantText, Text: approveVerdictText},
