@@ -260,9 +260,13 @@ func TestWriteMetadataFormatsEachRunKind(t *testing.T) {
 		want string
 	}{
 		{
-			"implement", Spec{Kind: Implement, Branch: "b", BranchPoint: "p", WorkRoot: "/w", ImplementerHarness: "codex", ReviewerHarness: "claude", ImplementContext: "a\nb", ReviewContext: "c"},
-			"Branch: b\nBranch point: p\nWork root: /w\nImplementer harness: codex\nReviewer harness: claude\n" +
+			"implement", Spec{Kind: Implement, Branch: "b", BranchPoint: "p", WorkRoot: "/w", ImplementerHarness: "codex", ReviewerHarness: "claude", Rollover: "off", ImplementContext: "a\nb", ReviewContext: "c"},
+			"Branch: b\nBranch point: p\nWork root: /w\nImplementer harness: codex\nReviewer harness: claude\nRollover: off\n" +
 				"Implementer context:\n  a\n  b\nReviewer context:\n  c\n",
+		},
+		{
+			"implement with iteration-boundary Rollover", Spec{Kind: Implement, Branch: "b", BranchPoint: "p", WorkRoot: "/w", ImplementerHarness: "codex", ReviewerHarness: "claude", Rollover: "iteration-boundary"},
+			"Branch: b\nBranch point: p\nWork root: /w\nImplementer harness: codex\nReviewer harness: claude\nRollover: iteration-boundary\n",
 		},
 		{
 			"review", Spec{Kind: Review, TicketRef: " #7 ", BranchPoint: "p", WorkRoot: "/w", ReviewerHarness: "claude", ReviewContext: "c"},

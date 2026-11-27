@@ -59,6 +59,7 @@ func TestValidationErrorsMatchesLoadRules(t *testing.T) {
 	invalid.Roles.Review = RoleConfig{Harness: HarnessCodex, Model: "reviewer", Effort: Effort("extreme")}
 	invalid.Loop.MaxIterations = 0
 	invalid.Loop.NitBudget = -1
+	invalid.Loop.Rollover = Rollover("sometimes")
 	invalid.Worktree.Root = "  "
 
 	got := ValidationErrors(invalid)
@@ -71,6 +72,7 @@ func TestValidationErrorsMatchesLoadRules(t *testing.T) {
 		"roles.review.effort":   `roles.review.effort: invalid value "extreme"; want low, medium, high, or xhigh`,
 		"loop.max_iterations":   "loop.max_iterations must be positive; got 0",
 		"loop.nit_budget":       "loop.nit_budget must be non-negative; got -1",
+		"loop.rollover":         `loop.rollover: invalid value "sometimes"; want off or iteration-boundary`,
 		"worktree.root":         "worktree.root: is required",
 	}
 	if len(got) != len(want) {
@@ -569,6 +571,67 @@ func TestLoadRejectsMissingRoleValuesAndInvalidLoop(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestLoadReadsLoopRollover(t *testing.T) {
+	tests := []struct {
+		name     string
+		rollover string
+		want     Rollover
+	}{
+		{name: "missing key defaults to off", rollover: "", want: RolloverOff},
+		{name: "off", rollover: `rollover = "off"`, want: RolloverOff},
+		{name: "iteration boundary", rollover: `rollover = "iteration-boundary"`, want: RolloverIterationBoundary},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := writeLoopRolloverConfig(t, tt.rollover)
+
+			got, err := Load(root)
+			if err != nil {
+				t.Fatalf("Load() error = %v", err)
+			}
+			if got.Loop.RolloverMode() != tt.want {
+				t.Fatalf("Loop.RolloverMode() = %q, want %q", got.Loop.RolloverMode(), tt.want)
+			}
+		})
+	}
+}
+
+func TestLoadRejectsUnknownLoopRollover(t *testing.T) {
+	root := writeLoopRolloverConfig(t, `rollover = "large-context"`)
+
+	_, err := Load(root)
+	var fieldError FieldError
+	if !errors.As(err, &fieldError) || fieldError.Field != "loop.rollover" {
+		t.Fatalf("Load() error = %#v, want FieldError for loop.rollover", err)
+	}
+	want := `loop.rollover: invalid value "large-context"; want off or iteration-boundary`
+	if fieldError.Message != want {
+		t.Fatalf("Load() error = %q, want %q", fieldError.Message, want)
+	}
+}
+
+// writeLoopRolloverConfig writes the init configuration with its rollover line
+// replaced, so an empty replacement leaves the key out.
+func writeLoopRolloverConfig(t *testing.T, rolloverLine string) string {
+	t.Helper()
+	root := t.TempDir()
+	if _, err := Init(root); err != nil {
+		t.Fatal(err)
+	}
+	contents, err := os.ReadFile(Path(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(contents), `rollover = "off"`) {
+		t.Fatalf("init config has no default rollover line:\n%s", contents)
+	}
+	replaced := strings.Replace(string(contents), `rollover = "off"`, rolloverLine, 1)
+	if err := os.WriteFile(Path(root), []byte(replaced), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return root
 }
 
 func TestLoadRejectsUnknownKeys(t *testing.T) {

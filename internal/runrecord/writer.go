@@ -24,6 +24,8 @@ type Spec struct {
 	ImplementContext   string
 	ReviewContext      string
 	PublishOnApprove   bool
+	// Rollover is the implementer Rollover mode of an implement Run.
+	Rollover string
 }
 
 // SummaryInput contains the values that are formatted into summary.txt.
@@ -88,6 +90,9 @@ func (writer *Writer) WriteMetadata(spec Spec) error {
 			"Branch: %s\nBranch point: %s\nWork root: %s\nImplementer harness: %s\nReviewer harness: %s\n",
 			spec.Branch, spec.BranchPoint, spec.WorkRoot, spec.ImplementerHarness, spec.ReviewerHarness,
 		)
+		if spec.Rollover != "" {
+			metadata += fmt.Sprintf("Rollover: %s\n", spec.Rollover)
+		}
 		if spec.PublishOnApprove {
 			metadata += "Publish on approve: true\n"
 		}

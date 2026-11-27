@@ -39,6 +39,7 @@ type Values struct {
 	MaxIterations        int
 	MaxGateAttempts      int
 	NitBudget            int
+	Rollover             string
 	NotificationsEnabled bool
 	PublishLanguage      string
 
@@ -123,6 +124,7 @@ func Parse(form url.Values, defaults Values) (Values, FieldErrors) {
 		Review:               parseRole(form, "review", defaults.Review),
 		MaxGateAttempts:      defaults.MaxGateAttempts,
 		NitBudget:            defaults.NitBudget,
+		Rollover:             defaults.Rollover,
 		NotificationsEnabled: formBool(form, "notifications.enabled"),
 		PublishLanguage:      publishLanguage,
 		WorktreeRoot:         form.Get("worktree.root"),
@@ -133,6 +135,18 @@ func Parse(form url.Values, defaults Values) (Values, FieldErrors) {
 		values.MaxGateAttempts = 3
 	}
 
+	errors := parseLoopValues(form, &values)
+	for field, message := range Validate(values) {
+		if _, exists := errors[field]; !exists {
+			errors[field] = message
+		}
+	}
+	return values, errors
+}
+
+// parseLoopValues reads the [loop] fields into values. A field an older
+// dashboard form omits keeps its default.
+func parseLoopValues(form url.Values, values *Values) FieldErrors {
 	errors := FieldErrors{}
 	maxIterations, err := strconv.Atoi(form.Get("loop.max_iterations"))
 	if err != nil {
@@ -156,12 +170,10 @@ func Parse(form url.Values, defaults Values) (Values, FieldErrors) {
 			values.NitBudget = budget
 		}
 	}
-	for field, message := range Validate(values) {
-		if _, exists := errors[field]; !exists {
-			errors[field] = message
-		}
+	if _, submitted := form["loop.rollover"]; submitted {
+		values.Rollover = form.Get("loop.rollover")
 	}
-	return values, errors
+	return errors
 }
 
 func nonEmptyValues(values []string) []string {
@@ -259,6 +271,11 @@ func EffortOptions() []string {
 	return stringOptions(config.Efforts())
 }
 
+// RolloverOptions returns the loop.rollover values accepted by config.Load.
+func RolloverOptions() []string {
+	return stringOptions(config.Rollovers())
+}
+
 // SandboxOptions returns the sandbox values accepted by config.Load.
 func SandboxOptions() []string {
 	return stringOptions(config.SandboxModes())
@@ -282,6 +299,7 @@ func valuesFromConfig(loaded config.Config) Values {
 		MaxIterations:        loaded.Loop.MaxIterations,
 		MaxGateAttempts:      loaded.Loop.MaxGateAttempts,
 		NitBudget:            loaded.Loop.NitBudget,
+		Rollover:             string(loaded.Loop.RolloverMode()),
 		NotificationsEnabled: loaded.Notifications.Enabled,
 		PublishLanguage:      loaded.Publish.Language,
 		WorktreeRoot:         loaded.Worktree.Root,
@@ -305,7 +323,7 @@ func (values Values) config() config.Config {
 			Implement: values.Implement.config(),
 			Review:    values.Review.config(),
 		},
-		Loop:          config.LoopConfig{MaxIterations: values.MaxIterations, MaxGateAttempts: values.MaxGateAttempts, NitBudget: values.NitBudget},
+		Loop:          config.LoopConfig{MaxIterations: values.MaxIterations, MaxGateAttempts: values.MaxGateAttempts, NitBudget: values.NitBudget, Rollover: config.Rollover(values.Rollover)},
 		Notifications: config.NotificationsConfig{Enabled: values.NotificationsEnabled},
 		Publish:       config.PublishConfig{Language: values.PublishLanguage},
 		Worktree:      config.WorktreeConfig{Root: values.WorktreeRoot, Setup: values.WorktreeSetup, Copy: append([]string(nil), values.WorktreeCopy...)},

@@ -286,10 +286,15 @@ func TestHandlerConfigRoutesCoverContentFeedbackAndBadRequests(t *testing.T) {
 	if !strings.Contains(page, `name="loop.nit_budget"`) {
 		t.Fatal("missing Nit budget field")
 	}
+	if !regexp.MustCompile(`<option value="off"\s+selected>`).MatchString(page) ||
+		regexp.MustCompile(`<option value="iteration-boundary"\s+selected>`).MatchString(page) {
+		t.Fatal("missing Rollover field showing the current value off")
+	}
 	token := tokenFromPage(t, page)
 	form := configForm(t, project, token)
 	form.Set("loop.nit_budget", "2")
 	form.Set("loop.max_iterations", "6")
+	form.Set("loop.rollover", "iteration-boundary")
 	redirect := postMutation(t, handler, configSaveRoute(project), form, "http://localhost:7777")
 	if redirect.Code != http.StatusSeeOther || redirect.Header().Get("Location") != "/projects/config?path="+url.QueryEscape(project) {
 		t.Fatalf("non-HTMX save = %d/%q, want redirect to Config tab", redirect.Code, redirect.Header().Get("Location"))
@@ -298,6 +303,9 @@ func TestHandlerConfigRoutesCoverContentFeedbackAndBadRequests(t *testing.T) {
 	loaded, err := config.Load(project)
 	if err != nil || loaded.Loop.NitBudget != 2 {
 		t.Fatalf("saved Nit budget: %#v, %v", loaded.Loop, err)
+	}
+	if loaded.Loop.Rollover != config.RolloverIterationBoundary {
+		t.Fatalf("saved Rollover = %q, want iteration-boundary", loaded.Loop.Rollover)
 	}
 	page = serveProject(t, handler, project, "/projects/config")
 	token = tokenFromPage(t, page)
@@ -312,6 +320,21 @@ func TestHandlerConfigRoutesCoverContentFeedbackAndBadRequests(t *testing.T) {
 	invalidHX := rawMutation(t, handler, http.MethodPost, configSaveRoute(project), form.Encode(), token, true)
 	if invalidHX.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("HTMX validation status = %d, want unprocessable entity", invalidHX.Code)
+	}
+
+	form = configForm(t, project, token)
+	form.Set("loop.rollover", "sometimes")
+	invalidRollover := rawMutation(t, handler, http.MethodPost, configSaveRoute(project), form.Encode(), token, true)
+	if invalidRollover.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("invalid Rollover save status = %d, want unprocessable entity", invalidRollover.Code)
+	}
+	rolloverError := regexp.MustCompile(`<span class="config-error" id="rollover-error" data-config-error-for="loop.rollover">([^<]*)</span>`).FindStringSubmatch(invalidRollover.Body.String())
+	if rolloverError == nil || !strings.Contains(rolloverError[1], "loop.rollover") ||
+		!strings.Contains(rolloverError[1], "off") || !strings.Contains(rolloverError[1], "iteration-boundary") {
+		t.Fatalf("invalid Rollover error is not shown next to the control: %q", rolloverError)
+	}
+	if !strings.Contains(invalidRollover.Body.String(), `aria-describedby="rollover-error"`) {
+		t.Fatal("Rollover select is not marked invalid")
 	}
 
 	form = configForm(t, project, token)
@@ -978,6 +1001,7 @@ func configForm(t *testing.T, projectPath, token string) url.Values {
 	setRoleForm(form, "implement", snapshot.Values.Implement)
 	setRoleForm(form, "review", snapshot.Values.Review)
 	form.Set("loop.max_iterations", strconv.Itoa(snapshot.Values.MaxIterations))
+	form.Set("loop.rollover", snapshot.Values.Rollover)
 	if snapshot.Values.NotificationsEnabled {
 		form.Set("notifications.enabled", "true")
 	}
