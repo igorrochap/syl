@@ -1610,8 +1610,10 @@ func TestImplementLoopUsesCodexAdapterAtProcessBoundary(t *testing.T) {
 	script.WriteString("mkdir -p ")
 	script.WriteString(shellQuote(rolloutDir))
 	script.WriteByte('\n')
-	script.WriteString("printf '%s\\n' ")
-	script.WriteString(shellQuote(`{"payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":80,"cache_write_input_tokens":5,"output_tokens":10,"reasoning_output_tokens":4,"total_tokens":110}}}}`))
+	// The rollout event is timestamped while the turn runs, inside the usage window.
+	script.WriteString("printf '{\"timestamp\":\"%s\",%s\\n' ")
+	script.WriteString(`"$(perl -MTime::HiRes=time -MPOSIX=strftime -e '$t=time; printf "%s.%06dZ", strftime("%Y-%m-%dT%H:%M:%S", gmtime($t)), ($t-int($t))*1e6')" `)
+	script.WriteString(shellQuote(`"payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":80,"cache_write_input_tokens":5,"output_tokens":10,"reasoning_output_tokens":4,"total_tokens":110}}}}`))
 	script.WriteString(" > ")
 	script.WriteString(shellQuote(rolloutPath))
 	script.WriteByte('\n')

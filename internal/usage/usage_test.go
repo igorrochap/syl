@@ -2,6 +2,7 @@ package usage
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -131,7 +132,7 @@ func TestCollectCodexReadsLastCumulativeTokenCountFromAnyDateDirectory(t *testin
 		t.Fatal(err)
 	}
 
-	got, err := CollectCodex(home, []string{sessionID})
+	got, err := CollectCodex(home, []string{sessionID}, time.Time{}, time.Time{})
 	if err != nil {
 		t.Fatalf("CollectCodex() error = %v", err)
 	}
@@ -161,7 +162,7 @@ func TestCollectCodexUsesOneRolloutPerInvocation(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := CollectCodex(home, []string{firstSessionID, secondSessionID})
+	got, err := CollectCodex(home, []string{firstSessionID, secondSessionID}, time.Time{}, time.Time{})
 	if err != nil {
 		t.Fatalf("CollectCodex() error = %v", err)
 	}
@@ -171,33 +172,123 @@ func TestCollectCodexUsesOneRolloutPerInvocation(t *testing.T) {
 	}
 }
 
-func TestCollectInvocationTracksCodexUsageWithoutClaudeWindowRules(t *testing.T) {
-	home := t.TempDir()
-	sessionID := "codex-session"
+func codexTokenCountLine(timestamp string, input, cached, cacheWrite, output, reasoning int64) string {
+	return fmt.Sprintf(
+		`{"timestamp":%q,"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":%d,"cached_input_tokens":%d,"cache_write_input_tokens":%d,"output_tokens":%d,"reasoning_output_tokens":%d,"total_tokens":%d}}}}`,
+		timestamp, input, cached, cacheWrite, output, reasoning, input+output,
+	) + "\n"
+}
+
+func writeCodexRollout(t *testing.T, home, rollout string) {
+	const sessionID = "codex-session"
+	t.Helper()
 	rolloutDir := filepath.Join(home, ".codex", "sessions", "2026", "08", "19")
 	if err := os.MkdirAll(rolloutDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	rollout := `{"payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1000,"cached_input_tokens":900,"cache_write_input_tokens":25,"output_tokens":80,"reasoning_output_tokens":40,"total_tokens":1080}}}}` + "\n"
 	if err := os.WriteFile(filepath.Join(rolloutDir, "rollout-20260820T010203-"+sessionID+".jsonl"), []byte(rollout), 0o644); err != nil {
 		t.Fatal(err)
 	}
+}
 
-	entry := CollectInvocation(Invocation{
-		Iteration:  2,
-		Role:       "implement",
-		Harness:    "codex",
-		Model:      "gpt-5.6-luna",
-		SessionIDs: []string{sessionID},
-		StartedAt:  time.Now().Add(24 * time.Hour),
-		EndedAt:    time.Now().Add(48 * time.Hour),
-	}, t.TempDir(), home)
-	if !entry.Tracked || entry.Metrics == nil || entry.Reason != "" {
-		t.Fatalf("Codex entry = %#v, want tracked metrics", entry)
+// sharedCodexRollout simulates two iterations resuming one session: totals
+// 100/10 by the end of iteration 1 and 350/40 by the end of iteration 2.
+func sharedCodexRollout() string {
+	return codexTokenCountLine("2026-08-20T10:01:00.000Z", 60, 50, 1, 5, 2) +
+		codexTokenCountLine("2026-08-20T10:02:00.000Z", 100, 80, 2, 10, 4) +
+		codexTokenCountLine("2026-08-20T11:01:00.000Z", 250, 200, 3, 30, 9) +
+		codexTokenCountLine("2026-08-20T11:02:00.000Z", 350, 300, 5, 40, 12)
+}
+
+func codexInvocation(iteration int, start, end string) Invocation {
+	return Invocation{
+		Iteration: iteration, Role: "implement", Harness: "codex", Model: "gpt-5.6-luna",
+		SessionIDs: []string{"codex-session"},
+		StartedAt:  mustParseUsageTime(start), EndedAt: mustParseUsageTime(end),
 	}
-	if entry.Metrics.WeightedEstimate != 0 || entry.Metrics.InputTokens != 1000 || entry.Metrics.CachedInputTokens != 900 ||
-		entry.Metrics.ReasoningOutputTokens != 40 {
-		t.Fatalf("Codex entry metrics = %#v, want raw usage without weighted estimate", *entry.Metrics)
+}
+
+func mustParseUsageTime(value string) time.Time {
+	parsed, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil {
+		panic(err)
+	}
+	return parsed
+}
+
+func TestCollectInvocationCountsOnlyCodexUsageInsideTheIterationWindow(t *testing.T) {
+	home := t.TempDir()
+	writeCodexRollout(t, home, sharedCodexRollout())
+
+	entry := CollectInvocation(codexInvocation(2, "2026-08-20T11:00:00Z", "2026-08-20T11:05:00Z"), t.TempDir(), home)
+	want := Metrics{InputTokens: 250, CachedInputTokens: 220, CacheWriteInputTokens: 3, OutputTokens: 30, ReasoningOutputTokens: 8, TotalTokens: 280}
+	if !entry.Tracked || entry.Metrics == nil || *entry.Metrics != want {
+		t.Fatalf("iteration 2 entry = %#v, want only tokens after iteration 2 starts %#v", entry, want)
+	}
+}
+
+func TestCollectInvocationCountsFromZeroWhenCodexTotalsReset(t *testing.T) {
+	home := t.TempDir()
+	writeCodexRollout(t, home, codexTokenCountLine("2026-08-20T10:01:00.000Z", 100, 80, 2, 10, 4)+
+		codexTokenCountLine("2026-08-20T11:01:00.000Z", 30, 20, 1, 5, 1))
+
+	entry := CollectInvocation(codexInvocation(2, "2026-08-20T11:00:00Z", "2026-08-20T11:05:00Z"), t.TempDir(), home)
+	if entry.Metrics == nil || entry.Metrics.TotalTokens != 35 || entry.Metrics.InputTokens != 30 {
+		t.Fatalf("entry after reset = %#v, want the inside total 30/5", entry)
+	}
+}
+
+func TestCollectInvocationKeepsFreshCodexSessionTotals(t *testing.T) {
+	home := t.TempDir()
+	writeCodexRollout(t, home,
+		codexTokenCountLine("2026-08-20T10:01:00Z", 500, 400, 20, 80, 40)+
+			codexTokenCountLine("2026-08-20T10:02:00Z", 1000, 900, 25, 80, 40))
+
+	entry := CollectInvocation(codexInvocation(1, "2026-08-20T10:00:00Z", "2026-08-20T10:05:00Z"), t.TempDir(), home)
+	want := Metrics{InputTokens: 1000, CachedInputTokens: 900, CacheWriteInputTokens: 25, OutputTokens: 80, ReasoningOutputTokens: 40, TotalTokens: 1080}
+	if !entry.Tracked || entry.Metrics == nil || *entry.Metrics != want {
+		t.Fatalf("fresh session entry = %#v, want last cumulative total %#v", entry, want)
+	}
+}
+
+func TestCollectInvocationEntriesOfASharedCodexSessionSumToTheFinalTotal(t *testing.T) {
+	home := t.TempDir()
+	writeCodexRollout(t, home, sharedCodexRollout())
+
+	var sum Metrics
+	for _, invocation := range []Invocation{
+		codexInvocation(1, "2026-08-20T10:00:00Z", "2026-08-20T10:05:00Z"),
+		codexInvocation(2, "2026-08-20T11:00:00Z", "2026-08-20T11:05:00Z"),
+	} {
+		entry := CollectInvocation(invocation, t.TempDir(), home)
+		if !entry.Tracked || entry.Metrics == nil {
+			t.Fatalf("entry = %#v, want tracked", entry)
+		}
+		sum = addCodexMetrics(sum, *entry.Metrics)
+	}
+	final := Metrics{InputTokens: 350, CachedInputTokens: 300, CacheWriteInputTokens: 5, OutputTokens: 40, ReasoningOutputTokens: 12, TotalTokens: 390}
+	if sum != final {
+		t.Fatalf("sum of entries = %#v, want final total_token_usage %#v", sum, final)
+	}
+}
+
+func TestCollectInvocationGivesZeroCodexUsageForAWindowWithoutTokenCounts(t *testing.T) {
+	home := t.TempDir()
+	writeCodexRollout(t, home, sharedCodexRollout())
+
+	entry := CollectInvocation(codexInvocation(3, "2026-08-20T10:30:00Z", "2026-08-20T10:40:00Z"), t.TempDir(), home)
+	if !entry.Tracked || entry.Metrics == nil || *entry.Metrics != (Metrics{}) {
+		t.Fatalf("empty window entry = %#v, want tracked zero usage", entry)
+	}
+}
+
+func TestCollectInvocationKeepsNoTokenCountErrorInsideAWindow(t *testing.T) {
+	home := t.TempDir()
+	writeCodexRollout(t, home, `{"timestamp":"2026-08-20T10:01:00Z","type":"turn.completed"}`+"\n")
+
+	entry := CollectInvocation(codexInvocation(1, "2026-08-20T10:00:00Z", "2026-08-20T10:05:00Z"), t.TempDir(), home)
+	if entry.Tracked || entry.Reason != "Codex rollout could not be parsed" {
+		t.Fatalf("entry = %#v, want no-token_count parse failure", entry)
 	}
 }
 
@@ -276,4 +367,33 @@ func mustTime(t *testing.T, value string) time.Time {
 		t.Fatal(err)
 	}
 	return parsed
+}
+
+func TestCollectInvocationRejectsCodexTokenCountsWithoutUsableTimestampsInsideAWindow(t *testing.T) {
+	tokenCount := `"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1,"cached_input_tokens":0,"cache_write_input_tokens":0,"output_tokens":1,"reasoning_output_tokens":0,"total_tokens":2}}}}`
+	for name, rollout := range map[string]string{
+		"missing timestamp":   `{` + tokenCount + "\n",
+		"malformed timestamp": `{"timestamp":"yesterday",` + tokenCount + "\n",
+		"missing token field": `{"timestamp":"2026-08-20T10:01:00Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1}}}}` + "\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			home := t.TempDir()
+			writeCodexRollout(t, home, rollout)
+
+			entry := CollectInvocation(codexInvocation(1, "2026-08-20T10:00:00Z", "2026-08-20T10:05:00Z"), t.TempDir(), home)
+			if entry.Tracked || entry.Reason != "Codex rollout could not be parsed" {
+				t.Fatalf("entry = %#v, want parse failure", entry)
+			}
+		})
+	}
+}
+
+func addCodexMetrics(total, metrics Metrics) Metrics {
+	total.InputTokens += metrics.InputTokens
+	total.CachedInputTokens += metrics.CachedInputTokens
+	total.CacheWriteInputTokens += metrics.CacheWriteInputTokens
+	total.OutputTokens += metrics.OutputTokens
+	total.ReasoningOutputTokens += metrics.ReasoningOutputTokens
+	total.TotalTokens += metrics.TotalTokens
+	return total
 }
