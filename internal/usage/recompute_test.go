@@ -1,6 +1,7 @@
 package usage
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -188,5 +189,131 @@ func TestUsageArtifactRoundTripsAndUsesMarshalDefaults(t *testing.T) {
 	}
 	if _, err := ParseArtifact(path, []byte(`{"entries":[]}`)); err == nil {
 		t.Fatal("ParseArtifact(missing schema) error = nil, want validation error")
+	}
+}
+
+// writeSharedSessionRun records a Run whose two implement iterations share one
+// session, with each iteration's feed modified at its end in ends.
+func writeSharedSessionRun(t *testing.T, sessionID string, ends map[int]string) string {
+	t.Helper()
+	runDir := filepath.Join(t.TempDir(), ".syl", "runs", "20260820T100000.000000000Z-316")
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		t.Fatalf("create Run directory: %v", err)
+	}
+	writer := runrecord.NewWriter(runDir)
+	if err := writer.WriteMetadata(runrecord.Spec{Kind: runrecord.Implement, TicketRef: "#316"}); err != nil {
+		t.Fatalf("write metadata: %v", err)
+	}
+	for iteration := 1; iteration <= 2; iteration++ {
+		if err := writer.RecordSessions(iteration, "implement", []string{sessionID}); err != nil {
+			t.Fatalf("write session %d: %v", iteration, err)
+		}
+	}
+	for iteration, end := range ends {
+		if err := writer.WriteArtifact(runrecord.ImplementFeed, iteration, nil); err != nil {
+			t.Fatalf("write feed %d: %v", iteration, err)
+		}
+		path := filepath.Join(runDir, fmt.Sprintf("iteration-%02d-implement.feed", iteration))
+		if err := os.Chtimes(path, mustParseUsageTime(end), mustParseUsageTime(end)); err != nil {
+			t.Fatalf("set feed time %d: %v", iteration, err)
+		}
+	}
+	return runDir
+}
+
+func TestRecomputeArtifactSplitsSharedCodexSessionLikeRecordedUsage(t *testing.T) {
+	tests := map[string]map[int]string{
+		"windows cover every event": {1: "2026-08-20T10:05:00Z", 2: "2026-08-20T11:05:00Z"},
+		// Live collection also ignores usage reported after the last window.
+		"usage after the last window": {1: "2026-08-20T10:05:00Z", 2: "2026-08-20T11:01:30Z"},
+	}
+	for name, ends := range tests {
+		t.Run(name, func(t *testing.T) {
+			home := t.TempDir()
+			writeCodexRollout(t, home, sharedCodexRollout())
+			runDir := writeSharedSessionRun(t, "codex-session", ends)
+
+			got, err := RecomputeArtifact(runDir, t.TempDir(), home, map[string]RoleMetadata{
+				"implement": {Harness: "codex", Model: "gpt-5.6-luna"},
+			})
+			if err != nil {
+				t.Fatalf("RecomputeArtifact() error = %v", err)
+			}
+			recorded := []Entry{
+				CollectInvocation(codexInvocation(1, "2026-08-20T10:00:00Z", ends[1]), t.TempDir(), home),
+				CollectInvocation(codexInvocation(2, "2026-08-20T11:00:00Z", ends[2]), t.TempDir(), home),
+			}
+			if !reflect.DeepEqual(got.Entries, recorded) {
+				t.Fatalf("recomputed entries = %#v, want recorded entries %#v", got.Entries, recorded)
+			}
+		})
+	}
+}
+
+func TestRecomputeArtifactCombinesSharedCodexSessionWhenWindowsCannotSplitIt(t *testing.T) {
+	tests := map[string]map[int]string{
+		// Windows must advance; an earlier iteration-2 end leaves no window.
+		"windows out of order": {1: "2026-08-20T11:05:00Z", 2: "2026-08-20T10:05:00Z"},
+		// Without its role artifact, iteration 2 has no window end.
+		"missing role artifact": {1: "2026-08-20T10:05:00Z"},
+	}
+	for name, ends := range tests {
+		t.Run(name, func(t *testing.T) {
+			home := t.TempDir()
+			writeCodexRollout(t, home, sharedCodexRollout())
+			runDir := writeSharedSessionRun(t, "codex-session", ends)
+
+			got, err := RecomputeArtifact(runDir, t.TempDir(), home, map[string]RoleMetadata{
+				"implement": {Harness: "codex", Model: "gpt-5.6-luna"},
+			})
+			if err != nil {
+				t.Fatalf("RecomputeArtifact() error = %v", err)
+			}
+			final := Metrics{InputTokens: 350, CachedInputTokens: 300, CacheWriteInputTokens: 5, OutputTokens: 40, ReasoningOutputTokens: 12, TotalTokens: 390}
+			if len(got.Entries) != 1 || got.Entries[0].Role != "implement, iterations 1–2 combined" ||
+				got.Entries[0].Metrics == nil || *got.Entries[0].Metrics != final {
+				t.Fatalf("entries = %#v, want one combined row with the session total", got.Entries)
+			}
+		})
+	}
+}
+
+func TestRecomputeArtifactSplitsSharedClaudeSessionByWindow(t *testing.T) {
+	tests := map[string]struct {
+		ends     map[int]string
+		wantRows int
+	}{
+		"windows cover every record": {ends: map[int]string{1: "2026-08-20T10:05:00Z", 2: "2026-08-20T11:05:00Z"}, wantRows: 2},
+		// A record after the last window makes the split disagree with the total.
+		"record after the last window": {ends: map[int]string{1: "2026-08-20T10:05:00Z", 2: "2026-08-20T10:30:00Z"}, wantRows: 1},
+	}
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			home := t.TempDir()
+			projectRoot := t.TempDir()
+			path := claudeTranscriptPath(t, home, projectRoot, "claude-session")
+			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			transcript := `{"type":"assistant","timestamp":"2026-08-20T10:01:00Z","message":{"id":"message-1","role":"assistant","usage":{"input_tokens":10,"output_tokens":2}}}` + "\n" +
+				`{"type":"assistant","timestamp":"2026-08-20T11:01:00Z","message":{"id":"message-2","role":"assistant","usage":{"input_tokens":20,"output_tokens":3}}}` + "\n"
+			if err := os.WriteFile(path, []byte(transcript), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			runDir := writeSharedSessionRun(t, "claude-session", test.ends)
+
+			got, err := RecomputeArtifact(runDir, projectRoot, home, map[string]RoleMetadata{
+				"implement": {Harness: "claude", Model: "opus"},
+			})
+			if err != nil {
+				t.Fatalf("RecomputeArtifact() error = %v", err)
+			}
+			if len(got.Entries) != test.wantRows {
+				t.Fatalf("entries = %#v, want %d rows", got.Entries, test.wantRows)
+			}
+			if test.wantRows == 2 && (got.Entries[0].Metrics.InputTokens != 10 || got.Entries[1].Metrics.InputTokens != 20) {
+				t.Fatalf("entries = %#v, want 10 then 20 input tokens", got.Entries)
+			}
+		})
 	}
 }

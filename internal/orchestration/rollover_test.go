@@ -353,10 +353,13 @@ func TestFailedOrEmptyHandoffTurnKeepsTheSession(t *testing.T) {
 func TestImplementerUsageSplitsAtTheRollover(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	writeCodexRollout(t, home, "implement-1", 80)
-	writeCodexRollout(t, home, "implement-fresh", 30)
 	implementer := &scriptedConversationAdapter{
-		runs:         [][]harness.Event{implementerTurn("implement-1"), implementerTurn("implement-fresh")},
+		runs: [][]harness.Event{implementerTurn("implement-1"), implementerTurn("implement-fresh")},
+		// Each session reports its usage during its own turn.
+		runHooks: []func(harness.Request){
+			func(harness.Request) { writeCodexRollout(t, home, "implement-1", 80) },
+			func(harness.Request) { writeCodexRollout(t, home, "implement-fresh", 30) },
+		},
 		writeHandoff: true,
 		// The handoff turn grows the cumulative total of the iteration 1 session.
 		handoffHook: func() { writeCodexRollout(t, home, "implement-1", 100) },
@@ -382,7 +385,7 @@ func writeCodexRollout(t *testing.T, home, sessionID string, inputTokens int) {
 	if err := os.MkdirAll(directory, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	line := fmt.Sprintf(`{"payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":%d,"cached_input_tokens":0,"cache_write_input_tokens":0,"output_tokens":1,"reasoning_output_tokens":0,"total_tokens":%d}}}}`+"\n", inputTokens, inputTokens+1)
+	line := fmt.Sprintf(`{"timestamp":%q,"payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":%d,"cached_input_tokens":0,"cache_write_input_tokens":0,"output_tokens":1,"reasoning_output_tokens":0,"total_tokens":%d}}}}`+"\n", time.Now().UTC().Format(time.RFC3339Nano), inputTokens, inputTokens+1)
 	if err := os.WriteFile(filepath.Join(directory, "rollout-20261125T000000-"+sessionID+".jsonl"), []byte(line), 0o644); err != nil {
 		t.Fatal(err)
 	}
