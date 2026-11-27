@@ -384,6 +384,7 @@ func initializeImplementRun(options ImplementOptions, setup implementSetup) (imp
 		ImplementContext:   options.Context,
 		ReviewContext:      options.ReviewContext,
 		PublishOnApprove:   options.PublishOnApprove,
+		Rollover:           string(options.ProjectConfig.Loop.RolloverMode()),
 	}
 	recorder, err := options.OpenRun(spec)
 	if err != nil {
@@ -590,11 +591,11 @@ type implementTurnParams struct {
 	iteration           int
 	findings            []verdict.Finding
 	previousSession     string
-	handoffPath         string
 	evidenceDirectory   string
 	rolloverSeedPath    string
 	gateAttemptFeedback *gateAttemptFeedback
 	mode                HarnessOutputMode
+	usageStartedAt      time.Time
 }
 
 func runImplementIterations(
@@ -614,19 +615,15 @@ func runImplementIterations(
 	for iteration := 1; iteration <= params.projectConfig.Loop.MaxIterations; iteration++ {
 		iterations = iteration
 		mode := harnessOutputMode(params.verbose, params.raw)
-		handoffPath, err := prepareIterationHandoffPath(params, iteration)
-		if err != nil {
-			return 0, verdict.Verdict{}, nil, publicationGateVerification{}, err
-		}
-		gateCycle, err := runImplementerGateCycle(
-			ctx, params, iteration, handoffPath,
-			findings, previousImplementerSession, rolloverSeedPath, mode, &branchGate,
-		)
+		iterationStartedAt := spanNow(params.clock)
+		gateCycle, err := runImplementerGateCycle(ctx, params, implementGateCycleParams{
+			iteration: iteration, findings: findings, previousSession: previousImplementerSession,
+			rolloverSeedPath: rolloverSeedPath, usageStartedAt: iterationStartedAt, mode: mode,
+		}, &branchGate)
 		if err != nil {
 			return 0, verdict.Verdict{}, nil, publicationGateVerification{}, err
 		}
 		previousImplementerSession = gateCycle.previousSession
-		rolloverSeedPath = gateCycle.rolloverSeedPath
 		gateVerification = gateCycle.gateVerification
 		if gateCycle.exhausted {
 			return iterations, verdict.Verdict{}, nil, gateVerification, nil
@@ -661,6 +658,16 @@ func runImplementIterations(
 		}
 		findings = final.Findings
 		previousReviewerSession = lastUsableSessionID(reviewResult.SessionIDs)
+		if !rollsOverAtBoundary(params, iteration) {
+			continue
+		}
+		previousImplementerSession, rolloverSeedPath, err = rollOverImplementer(ctx, params, iterationHandoff{
+			iteration: iteration, sessionID: previousImplementerSession,
+			usageStartedAt: iterationStartedAt, mode: mode,
+		})
+		if err != nil {
+			return 0, verdict.Verdict{}, nil, publicationGateVerification{}, err
+		}
 	}
 	return iterations, final, nitFindings(final), gateVerification, nil
 }
@@ -686,9 +693,17 @@ type branchGateSource struct {
 	resolved bool
 }
 
+type implementGateCycleParams struct {
+	iteration        int
+	findings         []verdict.Finding
+	previousSession  string
+	rolloverSeedPath string
+	usageStartedAt   time.Time
+	mode             HarnessOutputMode
+}
+
 type implementGateCycleResult struct {
 	previousSession      string
-	rolloverSeedPath     string
 	gateResultPath       string
 	gateVerification     publicationGateVerification
 	implementerFeedPaths []string
@@ -697,7 +712,6 @@ type implementGateCycleResult struct {
 
 type implementGateTurnResult struct {
 	previousSession     string
-	rolloverSeedPath    string
 	gateResultPath      string
 	gateVerification    publicationGateVerification
 	implementerFeedPath string
@@ -709,32 +723,19 @@ type implementGateTurnResult struct {
 func runImplementerGateCycle(
 	ctx context.Context,
 	params implementIterationsParams,
-	iteration int,
-	firstHandoffPath string,
-	findings []verdict.Finding,
-	previousSession string,
-	rolloverSeedPath string,
-	mode HarnessOutputMode,
+	cycle implementGateCycleParams,
 	branchGate *branchGateSource,
 ) (implementGateCycleResult, error) {
-	result := implementGateCycleResult{
-		previousSession: previousSession, rolloverSeedPath: rolloverSeedPath,
-	}
+	iteration := cycle.iteration
+	result := implementGateCycleResult{previousSession: cycle.previousSession}
 	gateAttempts := 0
 	var previousGateAttemptFeedback *gateAttemptFeedback
-	for implementTurn := 1; ; implementTurn++ {
-		handoffPath, err := implementerTurnHandoffPath(params, iteration, implementTurn, firstHandoffPath)
-		if err != nil {
-			return implementGateCycleResult{}, err
-		}
-		turnResult, err := runImplementerGateTurn(
-			ctx, params, iteration, handoffPath, findings, result, previousGateAttemptFeedback, gateAttempts+1, mode, branchGate,
-		)
+	for {
+		turnResult, err := runImplementerGateTurn(ctx, params, cycle, result.previousSession, previousGateAttemptFeedback, gateAttempts+1, branchGate)
 		if err != nil {
 			return implementGateCycleResult{}, err
 		}
 		result.previousSession = turnResult.previousSession
-		result.rolloverSeedPath = turnResult.rolloverSeedPath
 		result.gateResultPath = turnResult.gateResultPath
 		result.gateVerification = turnResult.gateVerification
 		if turnResult.implementerFeedPath != "" {
@@ -756,36 +757,31 @@ func runImplementerGateCycle(
 func runImplementerGateTurn(
 	ctx context.Context,
 	params implementIterationsParams,
-	iteration int,
-	handoffPath string,
-	findings []verdict.Finding,
-	cycle implementGateCycleResult,
+	cycle implementGateCycleParams,
+	previousSession string,
 	previousGateAttemptFeedback *gateAttemptFeedback,
 	attemptNumber int,
-	mode HarnessOutputMode,
 	branchGate *branchGateSource,
 ) (implementGateTurnResult, error) {
-	turnFindings := findings
+	iteration := cycle.iteration
+	turnFindings := cycle.findings
 	if previousGateAttemptFeedback != nil {
 		turnFindings = nil
 	}
 	implementResult, err := runImplementTurn(ctx, params, implementTurnParams{
-		iteration: iteration, findings: turnFindings, previousSession: cycle.previousSession,
-		handoffPath: handoffPath, evidenceDirectory: params.recorder.EvidenceDirectory(iteration),
+		iteration: iteration, findings: turnFindings, previousSession: previousSession,
+		evidenceDirectory:   params.recorder.EvidenceDirectory(iteration),
 		rolloverSeedPath:    cycle.rolloverSeedPath,
-		gateAttemptFeedback: previousGateAttemptFeedback, mode: mode,
+		gateAttemptFeedback: previousGateAttemptFeedback, mode: cycle.mode,
+		usageStartedAt: cycle.usageStartedAt,
 	})
-	if err != nil {
-		return implementGateTurnResult{}, err
-	}
-	rolloverSeedPath, previousSession, err := nextImplementerTurn(handoffPath, implementResult.SessionIDs)
 	if err != nil {
 		return implementGateTurnResult{}, err
 	}
 	if err := resolveBranchGate(ctx, params, branchGate); err != nil {
 		return implementGateTurnResult{}, err
 	}
-	result := implementGateTurnResult{rolloverSeedPath: rolloverSeedPath, previousSession: previousSession}
+	result := implementGateTurnResult{previousSession: lastUsableSessionID(implementResult.SessionIDs)}
 	if iteration > 1 {
 		result.implementerFeedPath, err = recordImplementReviewFeed(params, iteration, attemptNumber, implementResult.Feed)
 		if err != nil {
@@ -810,17 +806,6 @@ func runImplementerGateTurn(
 		ran: true, feedback: result.gateFeedback,
 	}
 	return result, nil
-}
-
-func implementerTurnHandoffPath(
-	params implementIterationsParams,
-	iteration, turn int,
-	firstHandoffPath string,
-) (string, error) {
-	if turn == 1 {
-		return firstHandoffPath, nil
-	}
-	return prepareGateAttemptHandoffPath(params, iteration, turn)
 }
 
 func resolveBranchGate(ctx context.Context, params implementIterationsParams, branchGate *branchGateSource) error {
@@ -1015,18 +1000,6 @@ func prepareIterationHandoffPath(params implementIterationsParams, iteration int
 	return writer.HandoffPath(iteration), nil
 }
 
-func prepareGateAttemptHandoffPath(params implementIterationsParams, iteration, turn int) (string, error) {
-	handoffPath := params.recorder.ImplementGateHandoffPath(iteration, turn)
-	if params.worktreeArtifactRoot == "" {
-		return handoffPath, nil
-	}
-	writer, err := worktreeRunWriter(params.worktreeArtifactRoot, filepath.Dir(params.recorder.ImplementHandoffPath(iteration)))
-	if err != nil {
-		return "", fmt.Errorf("prepare worktree Gate attempt handoff path: %w", err)
-	}
-	return writer.GateHandoffPath(iteration, turn), nil
-}
-
 func handoffExists(handoffPath string) (bool, error) {
 	_, err := os.Stat(handoffPath)
 	if err == nil {
@@ -1038,64 +1011,87 @@ func handoffExists(handoffPath string) (bool, error) {
 	return false, fmt.Errorf("inspect implementer handoff %s: %w", handoffPath, err)
 }
 
-func nextImplementerTurn(handoffPath string, sessionIDs []string) (string, string, error) {
-	rolloverRequired, err := handoffExists(handoffPath)
-	if err != nil {
-		return "", "", err
-	}
-	if rolloverRequired {
-		return handoffPath, "", nil
-	}
-	return "", lastUsableSessionID(sessionIDs), nil
-}
-
 func runImplementTurn(
 	ctx context.Context,
 	params implementIterationsParams,
 	turn implementTurnParams,
 ) (implementExecution, error) {
-	implementRequest := buildImplementRequest(params, turn)
 	activity := implementActivityLabel(turn)
-	label := fmt.Sprintf("%d/%d — %s", turn.iteration, params.projectConfig.Loop.MaxIterations, activity)
+	execution, err := runImplementerHarnessTurn(ctx, params, implementerHarnessTurn{
+		iteration:      turn.iteration,
+		label:          fmt.Sprintf("%d/%d — %s", turn.iteration, params.projectConfig.Loop.MaxIterations, activity),
+		mode:           turn.mode,
+		request:        implementerRequest(params, implementTurnPrompt(params, turn)),
+		sessionID:      turn.previousSession,
+		resumeOnly:     turn.gateAttemptFeedback != nil,
+		usageStartedAt: turn.usageStartedAt,
+	})
+	if err != nil {
+		failure := recordFailedImplementExecution(params.recorder, turn.iteration, execution, err)
+		return implementExecution{}, reportRoleFailure(
+			ctx, failure, execution.FailureTail, params.implementer, execution.SessionIDs, params.recorder,
+		)
+	}
+	if err := recordSuccessfulImplementTurn(ctx, params, turn, execution); err != nil {
+		return implementExecution{}, err
+	}
+	return execution, nil
+}
+
+// implementerHarnessTurn is one implementer turn as the Harness sees it: the
+// request, the session it continues, and where its usage window opens.
+type implementerHarnessTurn struct {
+	iteration int
+	label     string
+	mode      HarnessOutputMode
+	request   harness.Request
+	sessionID string
+	// resumeOnly turns must continue sessionID and never fall back to a fresh
+	// session: Gate attempt turns and the handoff turn.
+	resumeOnly bool
+	// usageStartedAt opens the usage window of the whole iteration, so the
+	// iteration's single usage entry covers every implementer turn in it.
+	usageStartedAt time.Time
+}
+
+// runImplementerHarnessTurn runs one implementer turn inside its Activity span
+// and records its usage, whether or not the turn succeeds.
+func runImplementerHarnessTurn(ctx context.Context, params implementIterationsParams, turn implementerHarnessTurn) (implementExecution, error) {
 	if turn.mode != RawHarnessOutput {
 		if err := writeRoleSection(params.output, "Implementer"); err != nil {
 			return implementExecution{}, err
 		}
 	}
-	span, err := startActivitySpan(params.runState, params.output, turn.mode, params.clock, turn.iteration, runrecord.Implementing, label)
+	span, err := startActivitySpan(params.runState, params.output, turn.mode, params.clock, turn.iteration, runrecord.Implementing, turn.label)
 	if err != nil {
 		return implementExecution{}, err
 	}
 	params.questions.setActivitySpan(span)
-	implementStartedAt := span.start.StartedAt
-	implementResult, err := runImplementRoleWithResumeFallback(
-		ctx,
-		params.implementer,
-		implementExecutionOptions{
-			request:          implementRequest,
-			initialSessionID: turn.previousSession,
-			output:           params.output,
-			mode:             turn.mode,
-			questions:        params.questions,
-			span:             span.view,
-			childSpans:       span,
-		},
-	)
+	options := implementExecutionOptions{
+		request: turn.request, initialSessionID: turn.sessionID, output: params.output, mode: turn.mode,
+		questions: params.questions, span: span.view, childSpans: span,
+	}
+	execution, err := executeImplementerTurn(ctx, params.implementer, options, turn.resumeOnly)
 	params.questions.setActivitySpan(nil)
 	err = span.finish(ctx, err)
-	implementEndedAt := spanNow(params.clock)
-	if err != nil {
-		recordRoleUsage(params.recorder, implementUsage(params, turn, implementResult, implementStartedAt, implementEndedAt))
-		failure := recordFailedImplementExecution(params.recorder, turn.iteration, implementResult, err)
-		return implementExecution{}, reportRoleFailure(
-			ctx, failure, implementResult.FailureTail, params.implementer, implementResult.SessionIDs, params.recorder,
-		)
+	usageStartedAt := turn.usageStartedAt
+	if usageStartedAt.IsZero() {
+		usageStartedAt = span.start.StartedAt
 	}
-	recordRoleUsage(params.recorder, implementUsage(params, turn, implementResult, implementStartedAt, implementEndedAt))
-	if err := recordSuccessfulImplementTurn(ctx, params, turn, implementResult); err != nil {
-		return implementExecution{}, err
+	recordRoleUsage(params.recorder, implementUsage(params, turn.iteration, execution, usageStartedAt, spanNow(params.clock)))
+	return execution, err
+}
+
+func executeImplementerTurn(
+	ctx context.Context,
+	adapter harness.Adapter,
+	options implementExecutionOptions,
+	resumeOnly bool,
+) (implementExecution, error) {
+	if resumeOnly {
+		return runImplementRoleResumeOnly(ctx, adapter, options)
 	}
-	return implementResult, nil
+	return runImplementRoleWithResumeFallback(ctx, adapter, options)
 }
 
 func implementActivityLabel(turn implementTurnParams) string {
@@ -1108,27 +1104,23 @@ func implementActivityLabel(turn implementTurnParams) string {
 	return "implementing"
 }
 
-func buildImplementRequest(params implementIterationsParams, turn implementTurnParams) harness.Request {
+func implementTurnPrompt(params implementIterationsParams, turn implementTurnParams) string {
 	options := implementPromptOptions{
-		handoffPath: turn.handoffPath, evidenceDirectory: turn.evidenceDirectory,
-		rolloverSeedPath: turn.rolloverSeedPath, additionalContext: params.additionalContext,
+		evidenceDirectory: turn.evidenceDirectory,
+		rolloverSeedPath:  turn.rolloverSeedPath, additionalContext: params.additionalContext,
 	}
-	implementPrompt := ""
 	if turn.gateAttemptFeedback != nil {
-		implementPrompt = composeGateAttemptPrompt(
-			params.ticket, options,
-			formatGateAttemptFeedback(*turn.gateAttemptFeedback),
-		)
-	} else {
-		implementPrompt = composeImplementPrompt(
-			params.ticket, turn.findings, turn.iteration, options,
-		)
+		return composeGateAttemptPrompt(params.ticket, options, formatGateAttemptFeedback(*turn.gateAttemptFeedback))
 	}
+	return composeImplementPrompt(params.ticket, turn.findings, turn.iteration, options)
+}
+
+func implementerRequest(params implementIterationsParams, prompt string) harness.Request {
 	return harness.Request{
 		Completion:  harness.CompletionTurnEnd,
 		Model:       params.projectConfig.Roles.Implement.Model,
 		Effort:      params.projectConfig.Roles.Implement.Effort,
-		Prompt:      implementPrompt,
+		Prompt:      prompt,
 		MCP:         params.projectConfig.Roles.Implement.MCP,
 		SandboxMode: params.projectConfig.Roles.Implement.SandboxMode,
 	}
@@ -1136,12 +1128,12 @@ func buildImplementRequest(params implementIterationsParams, turn implementTurnP
 
 func implementUsage(
 	params implementIterationsParams,
-	turn implementTurnParams,
+	iteration int,
 	execution implementExecution,
 	startedAt, endedAt time.Time,
 ) usage.Entry {
 	return usage.CollectInvocation(usage.Invocation{
-		Iteration:  turn.iteration,
+		Iteration:  iteration,
 		Role:       "implement",
 		Harness:    string(params.projectConfig.Roles.Implement.Harness),
 		Model:      params.projectConfig.Roles.Implement.Model,
@@ -1245,6 +1237,20 @@ func runImplementRoleWithResumeFallback(ctx context.Context, adapter harness.Ada
 		return appendImplementExecutions(result, fresh), freshErr
 	}
 	return fresh, nil
+}
+
+// runImplementRoleResumeOnly continues the reported session and fails rather
+// than start a fresh one, because the turn depends on that session's context.
+func runImplementRoleResumeOnly(ctx context.Context, adapter harness.Adapter, options implementExecutionOptions) (implementExecution, error) {
+	sessionID, hasSession := normalizeSessionID(options.initialSessionID)
+	if !hasSession {
+		return implementExecution{}, errors.New("resume implementer session: the previous implementer turn reported no session")
+	}
+	options.initialSessionID = sessionID
+	options.start = func(runContext context.Context) (harness.Stream, error) {
+		return adapter.Resume(runContext, sessionID, options.request)
+	}
+	return runImplementRoleFrom(ctx, adapter, options)
 }
 
 type implementResumeError struct {

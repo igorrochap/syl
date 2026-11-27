@@ -126,6 +126,13 @@ func TestRunWithGitLabTrackersWritesLoadableConfig(t *testing.T) {
 	if err != nil || !strings.Contains(string(contents), "nit_budget = 5") {
 		t.Fatalf("init config = %q, error %v", contents, err)
 	}
+	wantRollover := "# Implementer Rollover: off or iteration-boundary (default: off).\nrollover = \"off\"\n\n[gate]"
+	if !strings.Contains(string(contents), wantRollover) {
+		t.Fatalf("init config = %q, want the [loop] table to end with %q", contents, wantRollover)
+	}
+	if got.Loop.RolloverMode() != config.RolloverOff {
+		t.Fatalf("Loop.Rollover = %q, want off", got.Loop.Rollover)
+	}
 	if got.Tracker.Issues != config.TrackerGitLab || got.Tracker.Reviews != config.TrackerGitLab {
 		t.Fatalf("tracker = %#v, want gitlab/gitlab", got.Tracker)
 	}

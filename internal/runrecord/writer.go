@@ -24,6 +24,8 @@ type Spec struct {
 	ImplementContext   string
 	ReviewContext      string
 	PublishOnApprove   bool
+	// Rollover is the implementer Rollover mode of an implement Run.
+	Rollover string
 }
 
 // SummaryInput contains the values that are formatted into summary.txt.
@@ -88,6 +90,9 @@ func (writer *Writer) WriteMetadata(spec Spec) error {
 			"Branch: %s\nBranch point: %s\nWork root: %s\nImplementer harness: %s\nReviewer harness: %s\n",
 			spec.Branch, spec.BranchPoint, spec.WorkRoot, spec.ImplementerHarness, spec.ReviewerHarness,
 		)
+		if spec.Rollover != "" {
+			metadata += fmt.Sprintf("Rollover: %s\n", spec.Rollover)
+		}
 		if spec.PublishOnApprove {
 			metadata += "Publish on approve: true\n"
 		}
@@ -113,11 +118,6 @@ func (writer *Writer) WriteState(state State) error {
 // HandoffPath returns the path for one implementer handoff document.
 func (writer *Writer) HandoffPath(iteration int) string {
 	return filepath.Join(writer.directory, ArtifactName(ImplementHandoff, iteration))
-}
-
-// GateHandoffPath returns a distinct handoff path for a Gate-driven turn.
-func (writer *Writer) GateHandoffPath(iteration, turn int) string {
-	return filepath.Join(writer.directory, fmt.Sprintf("handoff-%02d-gate-%02d.md", iteration, turn))
 }
 
 // EvidenceDirectory returns the Evidence directory for one implementer iteration.

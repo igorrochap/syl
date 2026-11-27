@@ -352,6 +352,9 @@ func TestImplementPrOnApprovePublishesApprovedChanges(t *testing.T) {
 	if err != nil || !strings.Contains(string(metadata), "Publish on approve: true") {
 		t.Fatalf("metadata = %q, error = %v; want Publish on approve", metadata, err)
 	}
+	if !strings.Contains(string(metadata), "Rollover: off\n") {
+		t.Fatalf("metadata = %q, want the default Rollover mode", metadata)
+	}
 	summary, err := os.ReadFile(filepath.Join(runDirs[0], "summary.txt"))
 	if err != nil || !strings.Contains(string(summary), "Pull request: https://github.com/example/project/pull/23") {
 		t.Fatalf("summary = %q, error = %v; want pull request URL", summary, err)
@@ -1607,8 +1610,10 @@ func TestImplementLoopUsesCodexAdapterAtProcessBoundary(t *testing.T) {
 	script.WriteString("mkdir -p ")
 	script.WriteString(shellQuote(rolloutDir))
 	script.WriteByte('\n')
-	script.WriteString("printf '%s\\n' ")
-	script.WriteString(shellQuote(`{"payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":80,"cache_write_input_tokens":5,"output_tokens":10,"reasoning_output_tokens":4,"total_tokens":110}}}}`))
+	// The rollout event is timestamped while the turn runs, inside the usage window.
+	script.WriteString("printf '{\"timestamp\":\"%s\",%s\\n' ")
+	script.WriteString(`"$(perl -MTime::HiRes=time -MPOSIX=strftime -e '$t=time; printf "%s.%06dZ", strftime("%Y-%m-%dT%H:%M:%S", gmtime($t)), ($t-int($t))*1e6')" `)
+	script.WriteString(shellQuote(`"payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":80,"cache_write_input_tokens":5,"output_tokens":10,"reasoning_output_tokens":4,"total_tokens":110}}}}`))
 	script.WriteString(" > ")
 	script.WriteString(shellQuote(rolloutPath))
 	script.WriteByte('\n')
@@ -1939,6 +1944,9 @@ func TestImplementLoopResumesPreviousReviewerSession(t *testing.T) {
 	}
 	if len(loop.requests) != 2 {
 		t.Fatalf("harness Run requests = %d, want fresh implement and review turns only", len(loop.requests))
+	}
+	if len(loop.handoffCalls) != 0 {
+		t.Fatalf("handoff turns = %#v, want none with the default Rollover mode off", loop.handoffCalls)
 	}
 	if len(loop.implementResumeCalls) != 1 || loop.implementResumeCalls[0].sessionID != "implement-1" {
 		t.Fatalf("implement Resume calls = %#v, want iteration 2 to resume implement-1", loop.implementResumeCalls)
@@ -2784,6 +2792,7 @@ type resumingLoopHarness struct {
 	requests             []harness.Request
 	implementResumeCalls []resumeCall
 	resumeCalls          []resumeCall
+	handoffCalls         []resumeCall
 	resumeErr            error
 	resumeWaitErr        error
 }
@@ -2811,6 +2820,12 @@ func (h *resumingLoopHarness) Run(_ context.Context, request harness.Request) (h
 }
 
 func (h *resumingLoopHarness) Resume(_ context.Context, sessionID string, request harness.Request) (harness.Stream, error) {
+	if strings.HasPrefix(request.Prompt, "/handoff ") {
+		// The handoff turn writes no handoff document here, so the next
+		// iteration keeps resuming the same implementer session.
+		h.handoffCalls = append(h.handoffCalls, resumeCall{sessionID: sessionID, request: request})
+		return scriptedHarnessStream{events: []harness.Event{{Type: harness.EventSession, SessionID: sessionID}}}, nil
+	}
 	if strings.Contains(request.Prompt, "/implement") || strings.Contains(request.Prompt, "/fix-review") {
 		h.implementResumeCalls = append(h.implementResumeCalls, resumeCall{sessionID: sessionID, request: request})
 		if err := os.WriteFile(filepath.Join(h.root, "change.txt"), []byte(fmt.Sprintf("implemented-resume-%d\n", len(h.implementResumeCalls))), 0o644); err != nil {

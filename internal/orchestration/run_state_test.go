@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -393,7 +394,7 @@ func TestRunImplementFailsAfterSecondStalledReviewTurn(t *testing.T) {
 	if state.Status != runrecord.Failed || state.Iteration != 1 {
 		t.Fatalf("final Run state = %#v, want failed at iteration 1", state)
 	}
-	if !strings.Contains(output.String(), "× recovering stalled session (0.0s)") {
+	if !regexp.MustCompile(`× recovering stalled session \(\d+\.\ds\)`).MatchString(output.String()) {
 		t.Fatalf("terminal output = %q, want the recovery child span and its duration", output.String())
 	}
 	runDir := filepath.Dir(onlyRunStatePath(t, root))

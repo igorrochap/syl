@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -71,7 +72,7 @@ func TestRunImplementCancellationReportsUncommittedWork(t *testing.T) {
 	if err.Error() != want {
 		t.Fatalf("error output = %q, want %q", err.Error(), want)
 	}
-	if !strings.Contains(output.String(), "cancelled (0.0s)") {
+	if !regexp.MustCompile(`cancelled \(\d+\.\ds\)`).MatchString(output.String()) {
 		t.Fatalf("terminal output = %q, want a cancelled Activity span with duration", output.String())
 	}
 	for _, detail := range []string{"Failure transcript (", "Session transcript:", "Run directory:"} {
@@ -122,7 +123,7 @@ func TestRunImplementFailureReportsVerboseTranscriptTailAndPaths(t *testing.T) {
 	if !strings.Contains(err.Error(), "Run directory: "+runDirectory) {
 		t.Fatalf("RunImplement() error = %v, want the Run directory", err)
 	}
-	if !strings.Contains(output.String(), "failed (0.0s)") {
+	if !regexp.MustCompile(`failed \(\d+\.\ds\)`).MatchString(output.String()) {
 		t.Fatalf("terminal output = %q, want a failed Role span with duration", output.String())
 	}
 	activities, readActivitiesErr := runrecord.ReadActivities(runDirectory, nil)
@@ -348,7 +349,7 @@ func TestRunImplementRecoversStalledImplementerOnce(t *testing.T) {
 		strings.Contains(string(sessions), "iteration 2 implement:") {
 		t.Fatalf("recorded sessions = %q, want recovered implement turn in iteration 1", sessions)
 	}
-	if !strings.Contains(output.String(), "recovering stalled session (0.0s)") {
+	if !regexp.MustCompile(`recovering stalled session \(\d+\.\ds\)`).MatchString(output.String()) {
 		t.Fatalf("terminal output = %q, want the implementer recovery child span and duration", output.String())
 	}
 	runDir := filepath.Dir(onlyRunStatePath(t, root))

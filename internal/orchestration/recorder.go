@@ -16,7 +16,6 @@ import (
 // RunRecorder records the domain events that make up a syl Run.
 type RunRecorder interface {
 	ImplementHandoffPath(iteration int) string
-	ImplementGateHandoffPath(iteration, turn int) string
 	EvidenceDirectory(iteration int) string
 	RecordGateScript(contents []byte, executable bool) (string, error)
 	RecordGateAttempt(iteration int, attempt runrecord.GateAttempt) (runrecord.GateAttemptPaths, error)
@@ -164,10 +163,6 @@ func (recorder *diskRunRecorder) warn(action string, err error) {
 
 func (recorder *diskRunRecorder) ImplementHandoffPath(iteration int) string {
 	return recorder.writer.HandoffPath(iteration)
-}
-
-func (recorder *diskRunRecorder) ImplementGateHandoffPath(iteration, turn int) string {
-	return recorder.writer.GateHandoffPath(iteration, turn)
 }
 
 func (recorder *diskRunRecorder) EvidenceDirectory(iteration int) string {

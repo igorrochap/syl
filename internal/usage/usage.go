@@ -151,8 +151,7 @@ func ParseArtifact(path string, contents []byte) (Artifact, error) {
 }
 
 // Invocation describes the live window in which a role was run. The window
-// is recorded at run time so resumed Claude sessions can be split correctly;
-// Codex sessions use their rollout's cumulative total instead.
+// is recorded at run time so resumed sessions can be split correctly.
 type Invocation struct {
 	Iteration  int
 	Role       string
@@ -179,7 +178,7 @@ func CollectInvocation(invocation Invocation, projectRoot, homeDir string) Entry
 		entry.Metrics = &metrics
 		return entry
 	case "codex":
-		metrics, err := CollectCodex(homeDir, invocation.SessionIDs)
+		metrics, err := CollectCodex(homeDir, invocation.SessionIDs, invocation.StartedAt, invocation.EndedAt)
 		if err != nil {
 			entry.Reason = shortReason(err)
 			return entry
@@ -244,10 +243,12 @@ func shortReason(err error) string {
 	return strings.TrimSpace(err.Error())
 }
 
-// CollectCodex reads the last cumulative token-count event from the Codex
-// rollout for the invocation's session. Unlike Claude, Codex does not need a
-// time window: a role invocation corresponds to one rollout file.
-func CollectCodex(homeDir string, sessionIDs []string) (Metrics, error) {
+// CollectCodex reads the usage that the invocation's Codex session reports
+// inside the window [start, end]. The rollout's total_token_usage is
+// cumulative across resumed turns, so the result is the last total inside the
+// window minus the last total before it. A zero start or end reads the whole
+// session.
+func CollectCodex(homeDir string, sessionIDs []string, start, end time.Time) (Metrics, error) {
 	sessionID := ""
 	for _, rawSessionID := range sessionIDs {
 		if sessionID = strings.TrimSpace(rawSessionID); sessionID != "" {
@@ -269,7 +270,7 @@ func CollectCodex(homeDir string, sessionIDs []string) (Metrics, error) {
 	if err != nil {
 		return Metrics{}, err
 	}
-	return collectCodexRollout(rolloutPath)
+	return collectCodexRollout(rolloutPath, newCodexWindow(start, end))
 }
 
 func findCodexRollout(homeDir, sessionID string) (string, error) {
@@ -289,7 +290,8 @@ func findCodexRollout(homeDir, sessionID string) (string, error) {
 }
 
 type codexRolloutLine struct {
-	Payload struct {
+	Timestamp string `json:"timestamp"`
+	Payload   struct {
 		Type string `json:"type"`
 		Info struct {
 			TotalTokenUsage *codexTokenUsage `json:"total_token_usage"`
@@ -306,7 +308,95 @@ type codexTokenUsage struct {
 	TotalTokens           *int64 `json:"total_tokens"`
 }
 
-func collectCodexRollout(path string) (Metrics, error) {
+// codexWindow selects token_count events by timestamp. An unbounded window
+// selects every event, so a rollout without timestamps still reads whole.
+type codexWindow struct {
+	start, end time.Time
+	bounded    bool
+}
+
+func newCodexWindow(start, end time.Time) codexWindow {
+	return codexWindow{start: start, end: end, bounded: !start.IsZero() && !end.IsZero()}
+}
+
+// codexWindowTotals tracks the last cumulative total before the window and the
+// last one inside it.
+type codexWindowTotals struct {
+	before, inside Metrics
+	insideFound    bool
+}
+
+func (totals *codexWindowTotals) observe(window codexWindow, at time.Time, total Metrics) {
+	if window.bounded && at.Before(window.start) {
+		totals.before = total
+		return
+	}
+	if window.bounded && at.After(window.end) {
+		return
+	}
+	totals.inside = total
+	totals.insideFound = true
+}
+
+func (totals codexWindowTotals) usage() Metrics {
+	if !totals.insideFound {
+		return Metrics{}
+	}
+	if totals.inside.TotalTokens < totals.before.TotalTokens {
+		// The cumulative total went down, so the session counter was reset
+		// inside the window and the inside total counts from zero.
+		return totals.inside
+	}
+	return subtractCodexMetrics(totals.inside, totals.before)
+}
+
+func subtractCodexMetrics(total, earlier Metrics) Metrics {
+	return Metrics{
+		InputTokens:           total.InputTokens - earlier.InputTokens,
+		CachedInputTokens:     total.CachedInputTokens - earlier.CachedInputTokens,
+		CacheWriteInputTokens: total.CacheWriteInputTokens - earlier.CacheWriteInputTokens,
+		OutputTokens:          total.OutputTokens - earlier.OutputTokens,
+		ReasoningOutputTokens: total.ReasoningOutputTokens - earlier.ReasoningOutputTokens,
+		TotalTokens:           total.TotalTokens - earlier.TotalTokens,
+	}
+}
+
+// observeLine records one rollout line and reports whether it was a
+// token_count event.
+func (totals *codexWindowTotals) observeLine(window codexWindow, line string) (bool, error) {
+	var record codexRolloutLine
+	if err := json.Unmarshal([]byte(line), &record); err != nil {
+		return false, err
+	}
+	if record.Payload.Type != "token_count" {
+		return false, nil
+	}
+	total, err := parseCodexTokenUsage(record.Payload.Info.TotalTokenUsage)
+	if err != nil {
+		return false, err
+	}
+	var at time.Time
+	if window.bounded {
+		if at, err = parseCodexTimestamp(record.Timestamp); err != nil {
+			return false, err
+		}
+	}
+	totals.observe(window, at, total)
+	return true, nil
+}
+
+func parseCodexTimestamp(raw string) (time.Time, error) {
+	if strings.TrimSpace(raw) == "" {
+		return time.Time{}, errors.New("token_count event has no timestamp")
+	}
+	at, err := time.Parse(time.RFC3339Nano, raw)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("parse token_count timestamp: %w", err)
+	}
+	return at, nil
+}
+
+func collectCodexRollout(path string, window codexWindow) (Metrics, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -318,7 +408,7 @@ func collectCodexRollout(path string) (Metrics, error) {
 
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 64*1024), 16*1024*1024)
-	var metrics Metrics
+	var totals codexWindowTotals
 	found := false
 	lineNumber := 0
 	for scanner.Scan() {
@@ -327,19 +417,11 @@ func collectCodexRollout(path string) (Metrics, error) {
 		if line == "" {
 			continue
 		}
-		var record codexRolloutLine
-		if err := json.Unmarshal([]byte(line), &record); err != nil {
-			return Metrics{}, codexRolloutParseError(path, lineNumber, err)
-		}
-		if record.Payload.Type != "token_count" {
-			continue
-		}
-		parsed, err := parseCodexTokenUsage(record.Payload.Info.TotalTokenUsage)
+		observed, err := totals.observeLine(window, line)
 		if err != nil {
 			return Metrics{}, codexRolloutParseError(path, lineNumber, err)
 		}
-		metrics = parsed
-		found = true
+		found = found || observed
 	}
 	if err := scanner.Err(); err != nil {
 		return Metrics{}, fmt.Errorf("read Codex rollout %s: %w", path, err)
@@ -347,7 +429,7 @@ func collectCodexRollout(path string) (Metrics, error) {
 	if !found {
 		return Metrics{}, codexRolloutParseError(path, 0, errors.New("rollout has no token_count event"))
 	}
-	return metrics, nil
+	return totals.usage(), nil
 }
 
 func codexRolloutParseError(path string, lineNumber int, cause error) error {

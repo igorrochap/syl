@@ -90,6 +90,29 @@ func TestReadIgnoresUnparseableState(t *testing.T) {
 	}
 }
 
+func TestReadAcceptsLegacyGateAttemptHandoffs(t *testing.T) {
+	_, runDir := newRunDirectory(t)
+	writeRunFile(t, runDir, "handoff-01.md", "iteration handoff")
+	writeRunFile(t, runDir, "handoff-01-gate-02.md", "Gate attempt handoff from an earlier syl")
+	writeRunFile(t, runDir, "handoff-01-gate-03.md", "Gate attempt handoff from an earlier syl")
+
+	record, err := NewReader(nil).Read(runDir)
+
+	if err != nil {
+		t.Fatalf("Read() error = %v, want a Run record with Gate attempt handoffs to read cleanly", err)
+	}
+	attempts := map[string]int{}
+	for _, artifact := range record.Artifacts {
+		if artifact.Kind == ImplementHandoff {
+			attempts[artifact.Name] = artifact.Attempt
+		}
+	}
+	want := map[string]int{"handoff-01.md": 0, "handoff-01-gate-02.md": 2, "handoff-01-gate-03.md": 3}
+	if !reflect.DeepEqual(attempts, want) {
+		t.Fatalf("handoff artifacts = %v, want %v", attempts, want)
+	}
+}
+
 func TestReadFailsForMissingDirectory(t *testing.T) {
 	if _, err := NewReader(nil).Read(filepath.Join(t.TempDir(), "missing")); err == nil {
 		t.Fatal("Read() error = nil for a missing directory")
@@ -237,9 +260,13 @@ func TestWriteMetadataFormatsEachRunKind(t *testing.T) {
 		want string
 	}{
 		{
-			"implement", Spec{Kind: Implement, Branch: "b", BranchPoint: "p", WorkRoot: "/w", ImplementerHarness: "codex", ReviewerHarness: "claude", ImplementContext: "a\nb", ReviewContext: "c"},
-			"Branch: b\nBranch point: p\nWork root: /w\nImplementer harness: codex\nReviewer harness: claude\n" +
+			"implement", Spec{Kind: Implement, Branch: "b", BranchPoint: "p", WorkRoot: "/w", ImplementerHarness: "codex", ReviewerHarness: "claude", Rollover: "off", ImplementContext: "a\nb", ReviewContext: "c"},
+			"Branch: b\nBranch point: p\nWork root: /w\nImplementer harness: codex\nReviewer harness: claude\nRollover: off\n" +
 				"Implementer context:\n  a\n  b\nReviewer context:\n  c\n",
+		},
+		{
+			"implement with iteration-boundary Rollover", Spec{Kind: Implement, Branch: "b", BranchPoint: "p", WorkRoot: "/w", ImplementerHarness: "codex", ReviewerHarness: "claude", Rollover: "iteration-boundary"},
+			"Branch: b\nBranch point: p\nWork root: /w\nImplementer harness: codex\nReviewer harness: claude\nRollover: iteration-boundary\n",
 		},
 		{
 			"review", Spec{Kind: Review, TicketRef: " #7 ", BranchPoint: "p", WorkRoot: "/w", ReviewerHarness: "claude", ReviewContext: "c"},

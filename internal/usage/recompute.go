@@ -228,13 +228,10 @@ func recomputeCluster(record runrecord.Record, projectRoot, homeDir string, role
 		return []Entry{unavailableEntry(cluster, metadata)}
 	}
 
-	if collected.harness == "claude" && len(cluster.invocations) > 1 {
-		if entries, ok := splitClaudeCluster(record, projectRoot, homeDir, metadata, collected.metrics, cluster); ok {
+	if len(cluster.invocations) > 1 {
+		if entries, ok := splitCluster(record, projectRoot, homeDir, metadata, collected, cluster); ok {
 			return entries
 		}
-		return []Entry{combinedEntry(cluster, metadata, collected.harness, collected.metrics)}
-	}
-	if len(cluster.invocations) > 1 {
 		return []Entry{combinedEntry(cluster, metadata, collected.harness, collected.metrics)}
 	}
 	invocation := cluster.invocations[0]
@@ -251,64 +248,102 @@ func collectRoleUsage(projectRoot, homeDir string, sessionIDs []string, metadata
 		return collectedRoleUsage{}, errors.New("no session ids")
 	}
 	claude, claudeErr := CollectClaudeAll(projectRoot, homeDir, sessionIDs)
-	codex, codexErr := CollectCodex(homeDir, sessionIDs)
+	codex, codexErr := CollectCodex(homeDir, sessionIDs, time.Time{}, time.Time{})
 
-	configured := strings.ToLower(strings.TrimSpace(metadata.Harness))
-	if configured == "claude" && claudeErr == nil {
-		return collectedRoleUsage{harness: "claude", metrics: claude}, nil
+	claudeUsage := collectedRoleUsage{harness: "claude", metrics: claude}
+	codexUsage := collectedRoleUsage{harness: "codex", metrics: codex}
+	switch configured := strings.ToLower(strings.TrimSpace(metadata.Harness)); {
+	case configured == "claude" && claudeErr == nil:
+		return claudeUsage, nil
+	case configured == "codex" && codexErr == nil:
+		return codexUsage, nil
+	case claudeErr == nil && codexErr != nil:
+		return claudeUsage, nil
+	case codexErr == nil && claudeErr != nil:
+		return codexUsage, nil
+	default:
+		return collectedRoleUsage{}, errors.New("usage reader could not identify a single harness")
 	}
-	if configured == "codex" && codexErr == nil {
-		return collectedRoleUsage{harness: "codex", metrics: codex}, nil
+}
+
+// splitCluster gives each invocation of a shared session the usage inside its
+// window. Both harnesses use the windows from clusterWindows.
+func splitCluster(record runrecord.Record, projectRoot, homeDir string, metadata RoleMetadata, collected collectedRoleUsage, cluster usageCluster) ([]Entry, bool) {
+	switch collected.harness {
+	case "claude":
+		return splitClaudeCluster(record, projectRoot, homeDir, metadata, collected.metrics, cluster)
+	case "codex":
+		return splitCodexCluster(record, homeDir, metadata, cluster)
+	default:
+		return nil, false
 	}
-	if claudeErr == nil && codexErr != nil {
-		return collectedRoleUsage{harness: "claude", metrics: claude}, nil
-	}
-	if codexErr == nil && claudeErr != nil {
-		return collectedRoleUsage{harness: "codex", metrics: codex}, nil
-	}
-	if claudeErr == nil && codexErr == nil && (configured == "claude" || configured == "codex") {
-		if configured == "claude" {
-			return collectedRoleUsage{harness: "claude", metrics: claude}, nil
-		}
-		return collectedRoleUsage{harness: "codex", metrics: codex}, nil
-	}
-	return collectedRoleUsage{}, errors.New("usage reader could not identify a single harness")
 }
 
 func splitClaudeCluster(record runrecord.Record, projectRoot, homeDir string, metadata RoleMetadata, full Metrics, cluster usageCluster) ([]Entry, bool) {
-	ends := make(map[int]time.Time, len(cluster.invocations))
-	for _, invocation := range cluster.invocations {
-		end, ok := roleArtifactModTime(record, invocation.iteration, cluster.role)
-		if !ok {
-			return nil, false
-		}
-		ends[invocation.iteration] = end
+	windows, ok := clusterWindows(record, cluster)
+	if !ok {
+		return nil, false
 	}
-
-	var previous time.Time
 	entries := make([]Entry, 0, len(cluster.invocations))
 	var combined Metrics
 	for index, invocation := range cluster.invocations {
-		start := time.Unix(0, 0).UTC()
-		if index > 0 {
-			start = previous.Add(time.Nanosecond)
-		}
-		end := ends[invocation.iteration]
-		if !end.After(start) {
-			return nil, false
-		}
-		metrics, err := CollectClaude(projectRoot, homeDir, invocation.sessions, start, end)
+		metrics, err := CollectClaude(projectRoot, homeDir, invocation.sessions, windows[index].start, windows[index].end)
 		if err != nil {
 			return nil, false
 		}
 		combined = addClaudeMetrics(combined, metrics)
 		entries = append(entries, trackedEntry(invocation.iteration, invocation.role, metadata, "claude", metrics))
-		previous = end
 	}
 	if !sameClaudeMetrics(combined, full) {
 		return nil, false
 	}
 	return entries, true
+}
+
+// splitCodexCluster gives each invocation of a shared Codex session the usage
+// reported inside its window. Like live collection, it ignores usage reported
+// after the last window, so recomputed rows match the recorded ones.
+func splitCodexCluster(record runrecord.Record, homeDir string, metadata RoleMetadata, cluster usageCluster) ([]Entry, bool) {
+	windows, ok := clusterWindows(record, cluster)
+	if !ok {
+		return nil, false
+	}
+	entries := make([]Entry, 0, len(cluster.invocations))
+	for index, invocation := range cluster.invocations {
+		metrics, err := CollectCodex(homeDir, invocation.sessions, windows[index].start, windows[index].end)
+		if err != nil {
+			return nil, false
+		}
+		entries = append(entries, trackedEntry(invocation.iteration, invocation.role, metadata, "codex", metrics))
+	}
+	return entries, true
+}
+
+type usageWindow struct {
+	start, end time.Time
+}
+
+// clusterWindows splits a shared session into consecutive windows that end at
+// each invocation's last role artifact modification.
+func clusterWindows(record runrecord.Record, cluster usageCluster) ([]usageWindow, bool) {
+	windows := make([]usageWindow, 0, len(cluster.invocations))
+	var previous time.Time
+	for index, invocation := range cluster.invocations {
+		end, ok := roleArtifactModTime(record, invocation.iteration, cluster.role)
+		if !ok {
+			return nil, false
+		}
+		start := time.Unix(0, 0).UTC()
+		if index > 0 {
+			start = previous.Add(time.Nanosecond)
+		}
+		if !end.After(start) {
+			return nil, false
+		}
+		windows = append(windows, usageWindow{start: start, end: end})
+		previous = end
+	}
+	return windows, true
 }
 
 func roleArtifactModTime(record runrecord.Record, iteration int, role string) (time.Time, bool) {

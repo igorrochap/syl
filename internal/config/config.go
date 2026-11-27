@@ -36,6 +36,14 @@ const (
 	EffortXHigh  Effort = "xhigh"
 )
 
+// Rollover modes control when an implementer session hands its context to a
+// fresh session (ADR 0008). The value is a string so later modes can roll over
+// on other triggers, such as a large session context.
+const (
+	RolloverOff               Rollover = "off"
+	RolloverIterationBoundary Rollover = "iteration-boundary"
+)
+
 // Sandbox modes control command execution in a Role's Codex sessions.
 const (
 	SandboxModeFullAccess     SandboxMode = "full-access"
@@ -48,6 +56,7 @@ var (
 	acceptedTrackers     = []Tracker{TrackerGitHub, TrackerLocal, TrackerGitLab}
 	acceptedHarnesses    = []Harness{HarnessClaude, HarnessCodex, HarnessOpenCode}
 	acceptedEfforts      = []Effort{EffortLow, EffortMedium, EffortHigh, EffortXHigh}
+	acceptedRollovers    = []Rollover{RolloverOff, RolloverIterationBoundary}
 )
 
 const (
@@ -65,6 +74,9 @@ var ErrNotFound = errors.New("syl config not found")
 type Tracker string
 type Harness string
 type Effort string
+
+// Rollover is the implementer Rollover mode of the loop.
+type Rollover string
 
 // SandboxMode is the command-execution policy for a Role's Codex sessions.
 type SandboxMode string
@@ -116,6 +128,16 @@ type LoopConfig struct {
 	MaxIterations   int
 	MaxGateAttempts int
 	NitBudget       int
+	Rollover        Rollover
+}
+
+// RolloverMode returns the configured Rollover mode, or "off" when the
+// configuration leaves it unset.
+func (loop LoopConfig) RolloverMode() Rollover {
+	if loop.Rollover == "" {
+		return RolloverOff
+	}
+	return loop.Rollover
 }
 
 type NotificationsConfig struct {
@@ -186,9 +208,10 @@ type rawRole struct {
 }
 
 type rawLoop struct {
-	MaxIterations   int `toml:"max_iterations"`
-	MaxGateAttempts int `toml:"max_gate_attempts"`
-	NitBudget       int `toml:"nit_budget"`
+	MaxIterations   int    `toml:"max_iterations"`
+	MaxGateAttempts int    `toml:"max_gate_attempts"`
+	NitBudget       int    `toml:"nit_budget"`
+	Rollover        string `toml:"rollover"`
 }
 
 type rawNotifications struct {
@@ -228,9 +251,19 @@ func Efforts() []Effort {
 	return append([]Effort(nil), acceptedEfforts...)
 }
 
+// Rollovers returns the loop.rollover values accepted by Load.
+func Rollovers() []Rollover {
+	return append([]Rollover(nil), acceptedRollovers...)
+}
+
 // SandboxModes returns the sandbox values accepted by Load.
 func SandboxModes() []SandboxMode {
 	return append([]SandboxMode(nil), acceptedSandboxModes...)
+}
+
+// ParseRollover validates a loop.rollover value using the rules accepted by Load.
+func ParseRollover(value string) (Rollover, error) {
+	return parseEnum("loop.rollover", value, acceptedRollovers, "off or iteration-boundary")
 }
 
 // ParseSandboxMode validates a sandbox value using the rules accepted by Load.
@@ -361,6 +394,8 @@ mcp = %t
 max_iterations = %d
 max_gate_attempts = %d
 nit_budget = %d
+# Implementer Rollover: off or iteration-boundary (default: off).
+rollover = %q
 
 [gate]
 # Additional project-relative paths or directory prefixes to protect.
@@ -392,7 +427,7 @@ copy = %s
 		cfg.Roles.Review.Harness, cfg.Roles.Review.Model, cfg.Roles.Review.Effort,
 		string(renderSandboxMode(cfg.Roles.Review.SandboxMode)),
 		cfg.Roles.Review.MCP,
-		cfg.Loop.MaxIterations, cfg.Loop.MaxGateAttempts, cfg.Loop.NitBudget, renderStringList(cfg.Gate.ProtectedPaths), cfg.Notifications.Enabled,
+		cfg.Loop.MaxIterations, cfg.Loop.MaxGateAttempts, cfg.Loop.NitBudget, cfg.Loop.RolloverMode(), renderStringList(cfg.Gate.ProtectedPaths), cfg.Notifications.Enabled,
 		publishLanguage,
 		worktreeRoot(cfg.Worktree.Root), cfg.Worktree.Setup, renderStringList(cfg.Worktree.Copy))
 }
@@ -544,6 +579,13 @@ func parseLoopConfig(raw rawLoop, metadata toml.MetaData) (LoopConfig, error) {
 	if metadata.IsDefined("loop", "nit_budget") {
 		loop.NitBudget = raw.NitBudget
 	}
+	if metadata.IsDefined("loop", "rollover") {
+		rollover, err := ParseRollover(raw.Rollover)
+		if err != nil {
+			return LoopConfig{}, err
+		}
+		loop.Rollover = rollover
+	}
 	if failures := validateNitBudget(loop.NitBudget); len(failures) > 0 {
 		return LoopConfig{}, failures[0]
 	}
@@ -584,23 +626,32 @@ func ValidationErrors(cfg Config) []FieldError {
 	errors = append(errors, validateRoleConfig("roles.plan", cfg.Roles.Plan)...)
 	errors = append(errors, validateRoleConfig("roles.implement", cfg.Roles.Implement)...)
 	errors = append(errors, validateRoleConfig("roles.review", cfg.Roles.Review)...)
-	if cfg.Loop.MaxIterations < 1 {
-		errors = append(errors, FieldError{
-			Field:   "loop.max_iterations",
-			Message: fmt.Sprintf("loop.max_iterations must be positive; got %d", cfg.Loop.MaxIterations),
-		})
-	}
-	if cfg.Loop.MaxGateAttempts < 1 {
-		errors = append(errors, FieldError{
-			Field:   "loop.max_gate_attempts",
-			Message: fmt.Sprintf("loop.max_gate_attempts must be positive; got %d", cfg.Loop.MaxGateAttempts),
-		})
-	}
-	errors = append(errors, validateNitBudget(cfg.Loop.NitBudget)...)
+	errors = append(errors, validateLoopConfig(cfg.Loop)...)
 	errors = append(errors, validateProtectedPaths(cfg.Gate.ProtectedPaths)...)
 	errors = append(errors, validatePublishConfig(cfg.Publish)...)
 	if strings.TrimSpace(cfg.Worktree.Root) == "" {
 		errors = append(errors, FieldError{Field: "worktree.root", Message: "worktree.root: is required"})
+	}
+	return errors
+}
+
+func validateLoopConfig(loop LoopConfig) []FieldError {
+	errors := make([]FieldError, 0)
+	if loop.MaxIterations < 1 {
+		errors = append(errors, FieldError{
+			Field:   "loop.max_iterations",
+			Message: fmt.Sprintf("loop.max_iterations must be positive; got %d", loop.MaxIterations),
+		})
+	}
+	if loop.MaxGateAttempts < 1 {
+		errors = append(errors, FieldError{
+			Field:   "loop.max_gate_attempts",
+			Message: fmt.Sprintf("loop.max_gate_attempts must be positive; got %d", loop.MaxGateAttempts),
+		})
+	}
+	errors = append(errors, validateNitBudget(loop.NitBudget)...)
+	if _, rolloverErr := ParseRollover(string(loop.RolloverMode())); rolloverErr != nil {
+		errors = append(errors, fieldError("loop.rollover", rolloverErr))
 	}
 	return errors
 }

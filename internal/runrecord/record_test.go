@@ -18,7 +18,7 @@ func TestWriterRoundTripsRunRecord(t *testing.T) {
 		Kind: Implement, TicketRef: "#204", MaxIterations: 2,
 		Branch: "refactor/run-record-module", BranchPoint: "abc123", WorkRoot: originRoot,
 		ImplementerHarness: "codex", ReviewerHarness: "claude",
-		PublishOnApprove: true,
+		PublishOnApprove: true, Rollover: "iteration-boundary",
 		ImplementContext: "Preserve the format.\nKeep context blocks.",
 		ReviewContext:    "Check the reader and writer.",
 	}
