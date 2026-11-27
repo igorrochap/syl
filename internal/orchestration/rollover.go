@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"time"
+
+	"github.com/igorrochap/syl/internal/config"
 )
 
 // iterationHandoff describes the implementer session that ends at an
@@ -13,6 +15,15 @@ type iterationHandoff struct {
 	sessionID      string
 	usageStartedAt time.Time
 	mode           HarnessOutputMode
+}
+
+// rollsOverAtBoundary reports whether the implementer rolls over after this
+// iteration. With loop.rollover = "off" the next iteration resumes the same
+// session: Codex caches resumed history, so a fresh session's cold start costs
+// more than it saves (ADR 0008). The last iteration has no next one to seed.
+func rollsOverAtBoundary(params implementIterationsParams, iteration int) bool {
+	loop := params.projectConfig.Loop
+	return loop.RolloverMode() == config.RolloverIterationBoundary && iteration < loop.MaxIterations
 }
 
 // rollOverImplementer runs the handoff turn at an iteration boundary (ADR

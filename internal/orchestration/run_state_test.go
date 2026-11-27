@@ -237,8 +237,8 @@ func TestRunImplementRecordsRunStateLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read Run Activity log: %v", err)
 	}
-	if len(activityRecord.Activities) != 14 {
-		t.Fatalf("Activity log has %d events, want preparation, four Role spans, the handoff span, and one recovery child span", len(activityRecord.Activities))
+	if len(activityRecord.Activities) != 12 {
+		t.Fatalf("Activity log has %d events, want preparation, four Role spans, and one recovery child span", len(activityRecord.Activities))
 	}
 	preparationStart, preparationEnd := activityRecord.Activities[0], activityRecord.Activities[1]
 	if preparationStart.Type != runrecord.ActivityStart || preparationStart.Start == nil ||
@@ -254,9 +254,8 @@ func TestRunImplementRecordsRunStateLifecycle(t *testing.T) {
 	}{
 		{startIndex: 2, endIndex: 3, label: "1/2 — implementing"},
 		{startIndex: 4, endIndex: 7, label: "1/2 — reviewing"},
-		{startIndex: 8, endIndex: 9, label: "1/2 — writing handoff"},
-		{startIndex: 10, endIndex: 11, label: "2/2 — revising 1 finding(s)"},
-		{startIndex: 12, endIndex: 13, label: "2/2 — reviewing"},
+		{startIndex: 8, endIndex: 9, label: "2/2 — revising 1 finding(s)"},
+		{startIndex: 10, endIndex: 11, label: "2/2 — reviewing"},
 	}
 	for spanIndex, expected := range wantActivitySpans {
 		start := activityRecord.Activities[expected.startIndex]
@@ -518,7 +517,7 @@ func TestRunImplementRecordsLifecycleThroughMemoryOpenRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunImplement() error = %v", err)
 	}
-	if len(recorder.states) != 14 {
+	if len(recorder.states) != 12 {
 		t.Fatalf("recorded states = %#v, want preparation and span start/end states between workflow activities", recorder.states)
 	}
 	want := []struct {
@@ -532,8 +531,6 @@ func TestRunImplementRecordsLifecycleThroughMemoryOpenRun(t *testing.T) {
 		{activity: runrecord.Implementing, iteration: 1, status: runrecord.Running},
 		{iteration: 1, status: runrecord.Running},
 		{activity: runrecord.Reviewing, iteration: 1, status: runrecord.Running},
-		{iteration: 1, status: runrecord.Running},
-		{activity: runrecord.Implementing, iteration: 1, status: runrecord.Running},
 		{iteration: 1, status: runrecord.Running},
 		{activity: runrecord.Implementing, iteration: 2, status: runrecord.Running},
 		{iteration: 2, status: runrecord.Running},

@@ -27,6 +27,9 @@ func TestOptionsComeFromConfigAcceptedValues(t *testing.T) {
 	if got, want := configedit.SandboxOptions(), stringify(config.SandboxModes()); !reflect.DeepEqual(got, want) {
 		t.Fatalf("sandbox options = %#v, want %#v", got, want)
 	}
+	if got, want := configedit.RolloverOptions(), []string{"off", "iteration-boundary"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("rollover options = %#v, want %#v", got, want)
+	}
 }
 
 func TestLoadAndSaveRoundTripsConfig(t *testing.T) {

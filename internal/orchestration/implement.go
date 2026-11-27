@@ -384,6 +384,7 @@ func initializeImplementRun(options ImplementOptions, setup implementSetup) (imp
 		ImplementContext:   options.Context,
 		ReviewContext:      options.ReviewContext,
 		PublishOnApprove:   options.PublishOnApprove,
+		Rollover:           string(options.ProjectConfig.Loop.RolloverMode()),
 	}
 	recorder, err := options.OpenRun(spec)
 	if err != nil {
@@ -657,7 +658,7 @@ func runImplementIterations(
 		}
 		findings = final.Findings
 		previousReviewerSession = lastUsableSessionID(reviewResult.SessionIDs)
-		if iteration == params.projectConfig.Loop.MaxIterations {
+		if !rollsOverAtBoundary(params, iteration) {
 			continue
 		}
 		previousImplementerSession, rolloverSeedPath, err = rollOverImplementer(ctx, params, iterationHandoff{

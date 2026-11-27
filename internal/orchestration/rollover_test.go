@@ -38,6 +38,10 @@ type rolloverScenario struct {
 	claude          bool
 	worktreeRoot    string
 	ctx             context.Context
+	// rollover overrides the loop.rollover mode. When it is empty, the
+	// harness uses iteration-boundary, the mode the ADR 0008 scenarios in this
+	// file exercise; production treats an empty value as off.
+	rollover config.Rollover
 	// onWorkRoot receives the scenario's Work root before the loop starts.
 	onWorkRoot func(workRoot string)
 }
@@ -88,6 +92,10 @@ func runRolloverScenario(t *testing.T, scenario rolloverScenario) rolloverOutcom
 		ctx = context.Background()
 	}
 	projectConfig.Loop.NitBudget = scenario.nitBudget
+	projectConfig.Loop.Rollover = config.RolloverIterationBoundary
+	if scenario.rollover != "" {
+		projectConfig.Loop.Rollover = scenario.rollover
+	}
 	if scenario.maxGateAttempts > 0 {
 		projectConfig.Loop.MaxGateAttempts = scenario.maxGateAttempts
 	}
@@ -210,6 +218,44 @@ func TestReviseVerdictRollsOverIntoFreshSeededSession(t *testing.T) {
 	if outcome.gateCallsAtHandoff != 2 || outcome.gate.calls != 3 {
 		t.Errorf("Gate runs = %d before the handoff turn and %d in total, want both Gate runs of iteration 1 before it and only iteration 2's Gate run after it",
 			outcome.gateCallsAtHandoff, outcome.gate.calls)
+	}
+	if strings.Contains(outcome.output, "warning") {
+		t.Errorf("output = %q, want no Rollover warning", outcome.output)
+	}
+}
+
+func TestRolloverOffResumesTheSameSessionWithoutHandoffTurn(t *testing.T) {
+	implementer := &scriptedConversationAdapter{
+		runs:         [][]harness.Event{implementerTurn("implement-1")},
+		resumes:      [][]harness.Event{implementerTurn("implement-1-gate"), implementerTurn("implement-2")},
+		writeHandoff: true,
+	}
+
+	outcome := runRolloverScenario(t, rolloverScenario{
+		maxIterations: 2, rollover: config.RolloverOff, implementer: implementer, verdicts: []string{reviseVerdict, approveVerdict},
+		gateResults: []GateExecution{{ExitStatus: 1, Output: qualitySummary("FAIL")}, {Output: qualitySummary("PASS")}, {Output: qualitySummary("PASS")}},
+	})
+
+	if outcome.err != nil || outcome.final.Status != verdict.Approve {
+		t.Fatalf("result = (%q, %v), want approve", outcome.final.Status, outcome.err)
+	}
+	if len(implementer.handoffCalls) != 0 {
+		t.Fatalf("handoff turns = %#v, want none", implementer.handoffCalls)
+	}
+	if implementer.runCalls != 1 || len(implementer.resumeCalls) != 2 {
+		t.Fatalf("implementer calls = (%d runs, %d resumes), want one fresh session resumed by the Gate attempt and iteration 2", implementer.runCalls, len(implementer.resumeCalls))
+	}
+	iterationTwo := implementer.resumeCalls[1]
+	if iterationTwo.sessionID != "implement-1-gate" {
+		t.Errorf("iteration 2 resumed %q, want the last implementer session of iteration 1", iterationTwo.sessionID)
+	}
+	if strings.Contains(iterationTwo.prompt, "Rollover handoff document") {
+		t.Errorf("iteration 2 prompt = %q, want no Rollover seed", iterationTwo.prompt)
+	}
+	assertContainsAll(t, iterationTwo.prompt, "[blocking] worker.go", "handle the error")
+	handoffPath := outcome.recorder.ImplementHandoffPath(1)
+	if _, err := os.Stat(handoffPath); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("stat %s error = %v, want no handoff document", handoffPath, err)
 	}
 	if strings.Contains(outcome.output, "warning") {
 		t.Errorf("output = %q, want no Rollover warning", outcome.output)

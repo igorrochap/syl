@@ -2,6 +2,12 @@
 
 Supersedes the agent-driven Rollover trigger of [ADR 0004](0004-implementer-session-rollover.md).
 
+**Status: opt-in.** The Rollover runs only when `.syl/config.toml` sets
+`loop.rollover = "iteration-boundary"`. The default, `loop.rollover = "off"`,
+keeps the behaviour from before this ADR: each iteration resumes the last
+implementer session of the previous iteration, and no handoff turn runs. See
+[Why the Rollover is opt-in](#why-the-rollover-is-opt-in).
+
 When the loop continues from iteration N to iteration N+1 — a revise Verdict, or
 an approve Verdict whose nits exceed the nit budget, with iterations remaining —
 syl resumes the last implementer session of iteration N for one **handoff turn**.
@@ -61,3 +67,29 @@ need the old exploration verbatim.
   entry. Iteration N+1's entry counts only its fresh session.
 - Applies to every implementer Harness (Codex and Claude). The reviewer does not
   roll over.
+
+## Why the Rollover is opt-in
+
+The Rollover works as described, but with Codex it does not save usage. Codex
+caches the resumed session history, so resending it is cheap. A fresh session
+pays a cold start instead: it reads the skills, `CONTEXT.md`, the spec, and the
+code again.
+
+Measured parkpulse Runs show the cost. Without the Rollover, iteration 2 used a
+median of about 0.4 times the input of iteration 1. With the Rollover, iteration
+2 used 0.62, 0.85, and 0.76 times the input of iteration 1. Three Runs with the
+Rollover used 14%, 13%, and 17% of the Codex 5-hour usage window.
+
+So `loop.rollover` defaults to `"off"`:
+
+- `"off"`: no handoff turn, no `handoff-<N>.md`, and no Rollover seed in the
+  implementer prompt. Each iteration resumes the last implementer session of the
+  previous iteration; a failed resume falls back to a fresh session as the
+  implementer turn always has.
+- `"iteration-boundary"`: the behaviour this ADR describes, including the
+  warnings for a failed or empty handoff turn.
+
+The value is a string, not a boolean, so a later mode can roll over only when
+the session context is large. Gate attempt turns resume the previous turn's
+session in both modes. The agent-driven `/handoff` trigger of ADR 0004 stays
+removed. Each Run records its mode in `metadata.txt` (`Rollover: off`).

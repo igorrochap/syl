@@ -352,6 +352,9 @@ func TestImplementPrOnApprovePublishesApprovedChanges(t *testing.T) {
 	if err != nil || !strings.Contains(string(metadata), "Publish on approve: true") {
 		t.Fatalf("metadata = %q, error = %v; want Publish on approve", metadata, err)
 	}
+	if !strings.Contains(string(metadata), "Rollover: off\n") {
+		t.Fatalf("metadata = %q, want the default Rollover mode", metadata)
+	}
 	summary, err := os.ReadFile(filepath.Join(runDirs[0], "summary.txt"))
 	if err != nil || !strings.Contains(string(summary), "Pull request: https://github.com/example/project/pull/23") {
 		t.Fatalf("summary = %q, error = %v; want pull request URL", summary, err)
@@ -1940,8 +1943,8 @@ func TestImplementLoopResumesPreviousReviewerSession(t *testing.T) {
 	if len(loop.requests) != 2 {
 		t.Fatalf("harness Run requests = %d, want fresh implement and review turns only", len(loop.requests))
 	}
-	if len(loop.handoffCalls) != 1 || loop.handoffCalls[0].sessionID != "implement-1" {
-		t.Fatalf("handoff turns = %#v, want one handoff turn in implement-1 after the revise Verdict", loop.handoffCalls)
+	if len(loop.handoffCalls) != 0 {
+		t.Fatalf("handoff turns = %#v, want none with the default Rollover mode off", loop.handoffCalls)
 	}
 	if len(loop.implementResumeCalls) != 1 || loop.implementResumeCalls[0].sessionID != "implement-1" {
 		t.Fatalf("implement Resume calls = %#v, want iteration 2 to resume implement-1", loop.implementResumeCalls)

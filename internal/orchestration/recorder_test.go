@@ -452,7 +452,7 @@ func TestRunImplementIterationsUsesWorktreeHandoffToStartFreshSeededSession(t *t
 		git:                  staticImplementGit{branchPoint: "branch-point", diff: "diff --git a/a b/a\n"},
 		implementer:          implementer,
 		reviewer:             reviewer,
-		projectConfig:        config.Config{Loop: config.LoopConfig{MaxIterations: 2}},
+		projectConfig:        config.Config{Loop: config.LoopConfig{MaxIterations: 2, Rollover: config.RolloverIterationBoundary}},
 		ticket:               ticket,
 		branchPoint:          "branch-point",
 		worktreeArtifactRoot: worktreeRoot,
@@ -525,7 +525,7 @@ func TestRunImplementIterationsRollsOverAfterRecoveredImplementTurn(t *testing.T
 		git:           staticImplementGit{branchPoint: "branch-point", diff: "diff --git a/worker.go b/worker.go\n"},
 		implementer:   implementer,
 		reviewer:      reviewer,
-		projectConfig: config.Config{Loop: config.LoopConfig{MaxIterations: 2}},
+		projectConfig: config.Config{Loop: config.LoopConfig{MaxIterations: 2, Rollover: config.RolloverIterationBoundary}},
 		ticket:        ticket,
 		branchPoint:   "branch-point",
 		recorder:      recorder,
@@ -643,7 +643,7 @@ func TestRunImplementIterationsStopsFailedResumeBeforeFreshRun(t *testing.T) {
 	}}
 	var resumeStoppedBeforeFallback bool
 	implementer.runHooks = []func(harness.Request){nil, func(harness.Request) {
-		resumeStoppedBeforeFallback = len(implementer.resumeContexts) == 2 && implementer.resumeContexts[1].Err() != nil
+		resumeStoppedBeforeFallback = len(implementer.resumeContexts) == 1 && implementer.resumeContexts[0].Err() != nil
 	}}
 	reviewer := &scriptedConversationAdapter{
 		runs: [][]harness.Event{{
