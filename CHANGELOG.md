@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v1.52.2 (2026-11-28)
+
+### Bug Fixes
+
+- **ui**: Preserve anchored activity span consistency on resize
+  ([#323](https://github.com/igorrochap/syl/pull/323),
+  [`8cb418d`](https://github.com/igorrochap/syl/commit/8cb418da1b1f5d8a2f07a07c8fe3a37e3d35e179))
+
+
 ## v1.52.1 (2026-11-28)
 
 ### Bug Fixes
