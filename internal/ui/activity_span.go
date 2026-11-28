@@ -40,6 +40,7 @@ type ActivitySpanView struct {
 	terminal io.Writer
 	caps     Caps
 	clock    Clock
+	size     TerminalSize
 	interval time.Duration
 
 	mu            sync.Mutex
@@ -51,6 +52,9 @@ type ActivitySpanView struct {
 	rowsBelow     int
 	outputColumn  int
 	renderedRows  int
+	// renderedWidth is the width the last live frame was drawn at, so a
+	// redraw can tell that the terminal was resized under the frame.
+	renderedWidth int
 	label         string
 	gist          string
 	children      []activitySpanChild
@@ -62,8 +66,41 @@ type ActivitySpanView struct {
 	writeErr      error
 }
 
+// TerminalSize reports the current terminal geometry. The live region asks
+// it before every redraw because the user can resize the terminal at any time.
+// It is an interface so resize handling can be tested without a real terminal.
+type TerminalSize interface {
+	Size() (width, height int, err error)
+}
+
+// ActivitySpanOption customizes an ActivitySpanView.
+type ActivitySpanOption interface {
+	apply(*ActivitySpanView)
+}
+
+type terminalSizeOption struct {
+	size TerminalSize
+}
+
+func (option terminalSizeOption) apply(view *ActivitySpanView) {
+	view.size = option.size
+}
+
+// WithTerminalSize replaces the terminal size source of the live region.
+func WithTerminalSize(size TerminalSize) ActivitySpanOption {
+	return terminalSizeOption{size: size}
+}
+
+type fileTerminalSize struct {
+	fileDescriptor uintptr
+}
+
+func (size fileTerminalSize) Size() (int, int, error) {
+	return term.GetSize(size.fileDescriptor)
+}
+
 // NewActivitySpanView constructs a renderer for Activity span events.
-func NewActivitySpanView(output io.Writer, caps Caps, clock Clock, interval time.Duration) *ActivitySpanView {
+func NewActivitySpanView(output io.Writer, caps Caps, clock Clock, interval time.Duration, options ...ActivitySpanOption) *ActivitySpanView {
 	if output == nil {
 		output = io.Discard
 	}
@@ -75,29 +112,33 @@ func NewActivitySpanView(output io.Writer, caps Caps, clock Clock, interval time
 		return view
 	}
 	view.terminal = terminal
-	view.caps = completeTerminalCaps(view.caps, terminal)
+	if file, ok := terminal.(interface{ Fd() uintptr }); ok {
+		view.size = fileTerminalSize{fileDescriptor: file.Fd()}
+	}
+	for _, option := range options {
+		option.apply(view)
+	}
+	view.mu.Lock()
+	view.refreshTerminalSizeLocked()
+	view.mu.Unlock()
 	return view
 }
 
-func completeTerminalCaps(caps Caps, terminal io.Writer) Caps {
-	if caps.Width > 0 && caps.Height > 0 {
-		return caps
+// refreshTerminalSizeLocked reads the live size, which wins over the Caps
+// given at construction because those go stale on a resize. A flaky size
+// source must not drop truncation mid-Run.
+func (view *ActivitySpanView) refreshTerminalSizeLocked() {
+	if view.size == nil {
+		return
 	}
-	file, ok := terminal.(interface{ Fd() uintptr })
-	if !ok {
-		return caps
+	width, height, err := view.size.Size()
+	if err != nil || width <= 0 {
+		return
 	}
-	width, height, err := term.GetSize(file.Fd())
-	if err != nil {
-		return caps
+	view.caps.Width = width
+	if height > 0 {
+		view.caps.Height = height
 	}
-	if caps.Width <= 0 && width > 0 {
-		caps.Width = width
-	}
-	if caps.Height <= 0 && height > 0 {
-		caps.Height = height
-	}
-	return caps
 }
 
 func normalizedTickerInterval(interval time.Duration) time.Duration {
@@ -146,6 +187,7 @@ func (view *ActivitySpanView) resetLiveRegionLocked() {
 	view.rowsBelow = 0
 	view.outputColumn = 0
 	view.renderedRows = 0
+	view.renderedWidth = 0
 }
 
 // SubagentStarted adds a child span under the open Activity span. The caller
@@ -384,21 +426,28 @@ func (view *ActivitySpanView) finishTerminalSpan(stopCh chan struct{}, doneCh ch
 	view.mu.Lock()
 	anchored, anchorVisible := view.anchored, view.anchorVisible
 	rowsBelow, outputColumn, renderedRows := view.rowsBelow, view.outputColumn, view.renderedRows
+	view.refreshTerminalSizeLocked()
+	caps := view.caps
+	resized := view.resizedUnderFrameLocked()
 	view.mu.Unlock()
 
 	lines := permanentActivitySpanLines(label, started, ended, outcome, children)
-	lines = truncateActivitySpanLines(lines, view.caps.Width)
-	if view.caps.Color {
+	lines = truncateActivitySpanLines(lines, caps.Width)
+	if caps.Color {
 		lines = styleActivitySpanFrame(lines, 0, finishedActivitySpanStyle(label, outcome))
 	}
 	if !anchored {
-		view.finishUnanchoredTerminalSpan(lines, renderedRows)
+		view.finishUnanchoredTerminalSpan(lines, renderedRows, resized)
 		return
 	}
 	view.finishAnchoredTerminalSpan(lines, anchorVisible, rowsBelow, outputColumn, renderedRows)
 }
 
-func (view *ActivitySpanView) finishUnanchoredTerminalSpan(lines []string, renderedRows int) {
+func (view *ActivitySpanView) finishUnanchoredTerminalSpan(lines []string, renderedRows int, resized bool) {
+	if resized {
+		view.recordWriteError(view.writeTerminal(clearScreenToTop + strings.Join(lines, "\r\n") + "\r\n"))
+		return
+	}
 	value := cursorUp(max(0, renderedRows-1)) + "\r\x1b[K" + strings.Join(lines, "\n\r\x1b[K") + "\n"
 	for range max(0, renderedRows-len(lines)) {
 		value += "\r\x1b[K"
@@ -460,8 +509,13 @@ func (view *ActivitySpanView) drawLocked() {
 	anchored, anchorVisible, rowsBelow, renderedRows := view.anchored, view.anchorVisible, view.rowsBelow, view.renderedRows
 	view.frame++
 	view.mu.Unlock()
-	lines := renderActivitySpanFrame(label, gist, view.clock.Now().Sub(started), frame, view.caps.Width, children, view.clock.Now())
-	if view.caps.Color {
+	view.mu.Lock()
+	view.refreshTerminalSizeLocked()
+	caps := view.caps
+	resized := view.resizedUnderFrameLocked()
+	view.mu.Unlock()
+	lines := renderActivitySpanFrame(label, gist, view.clock.Now().Sub(started), frame, caps.Width, children, view.clock.Now())
+	if caps.Color {
 		lines = styleActivitySpanFrame(lines, frame, activitySpanLabelStyle)
 	}
 	if anchored && !anchorVisible {
@@ -486,7 +540,10 @@ func (view *ActivitySpanView) drawLocked() {
 		}
 		value += anchoredActivityFrame(lines, renderedRows, rowsBelow)
 	} else {
-		value = unanchoredActivityFrame(lines, renderedRows)
+		value = unanchoredActivityFrame(lines, renderedRows, resized)
+		view.mu.Lock()
+		view.renderedWidth = caps.Width
+		view.mu.Unlock()
 	}
 	view.recordWriteError(view.writeTerminal(value))
 	view.mu.Lock()
@@ -494,7 +551,24 @@ func (view *ActivitySpanView) drawLocked() {
 	view.mu.Unlock()
 }
 
-func unanchoredActivityFrame(lines []string, previousRows int) string {
+// clearScreenToTop erases the whole visible screen and moves to its top. When
+// the terminal is resized under a frame, terminals reflow the frame's rows and
+// move the cursor in ways no row count or cursor report can follow: iTerm2
+// keeps the cursor's screen row while content shifts, and Terminal.app moves
+// the cursor to the bottom row. Clearing the screen is the only redraw that
+// leaves no stale frame rows; the cost, accepted for #319, is that earlier
+// output visible on screen is cleared on a resize. Frames a terminal wrapped
+// because it reflowed before reporting its new size are cleared with it.
+const clearScreenToTop = "\x1b[H\x1b[2J"
+
+func (view *ActivitySpanView) resizedUnderFrameLocked() bool {
+	return view.renderedRows > 0 && view.renderedWidth != view.caps.Width
+}
+
+func unanchoredActivityFrame(lines []string, previousRows int, resized bool) string {
+	if resized {
+		return clearScreenToTop + strings.Join(lines, "\r\n")
+	}
 	value := cursorUp(max(0, previousRows-1)) + "\r\x1b[K" + strings.Join(lines, "\n\r\x1b[K")
 	if previousRows > len(lines) {
 		for range previousRows - len(lines) {
