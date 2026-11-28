@@ -11,28 +11,32 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// virtualTerminal is a minimal terminal emulator for the escape sequences the
-// unanchored live region writes. It models auto-wrap with a pending-wrap
-// column and, on resize, either reflows wrapped rows or keeps rows and
-// truncates them, optionally moving the cursor away from the frame. Its own width and the
-// width the operating system reports are separate, because iTerm2 reflows its
-// screen before the program can read the new size.
+// virtualTerminal models the escape sequences the live region writes. It
+// models auto-wrap with a pending-wrap column and, on resize, either reflows
+// wrapped rows or keeps rows and truncates them, optionally moving the cursor
+// away from the frame. Its own width and the width the operating system
+// reports are separate because iTerm2 reflows its screen before the program
+// can read the new size.
 type virtualTerminal struct {
-	mu            sync.Mutex
-	writes        int
-	width         int
-	reportedWidth int
-	kind          terminalKind
-	rows          []virtualRow
-	row           int
-	column        int
-	pending       bool
+	mu             sync.Mutex
+	writes         int
+	width          int
+	reportedWidth  int
+	height         int
+	reportedHeight int
+	kind           terminalKind
+	rows           []virtualRow
+	row            int
+	column         int
+	pending        bool
 }
 
 type virtualRow struct {
 	cells   []rune
 	wrapped bool
 }
+
+const virtualTerminalHeight = 24
 
 // terminalKind is how an emulated terminal treats its screen on a resize.
 // The cursor placement follows what real terminals did in the #319 checks:
@@ -50,7 +54,14 @@ var terminalKinds = []terminalKind{
 }
 
 func newVirtualTerminal(width int, kind terminalKind) *virtualTerminal {
-	return &virtualTerminal{width: width, reportedWidth: width, kind: kind, rows: []virtualRow{{}}}
+	return &virtualTerminal{
+		width:          width,
+		reportedWidth:  width,
+		height:         virtualTerminalHeight,
+		reportedHeight: virtualTerminalHeight,
+		kind:           kind,
+		rows:           []virtualRow{{}},
+	}
 }
 
 func (terminal *virtualTerminal) Fd() uintptr { return 42 }
@@ -58,7 +69,7 @@ func (terminal *virtualTerminal) Fd() uintptr { return 42 }
 func (terminal *virtualTerminal) Size() (int, int, error) {
 	terminal.mu.Lock()
 	defer terminal.mu.Unlock()
-	return terminal.reportedWidth, 24, nil
+	return terminal.reportedWidth, terminal.reportedHeight, nil
 }
 
 func (terminal *virtualTerminal) Write(value []byte) (int, error) {
@@ -194,6 +205,14 @@ func (terminal *virtualTerminal) reportSize() {
 	terminal.mu.Lock()
 	defer terminal.mu.Unlock()
 	terminal.reportedWidth = terminal.width
+	terminal.reportedHeight = terminal.height
+}
+
+func (terminal *virtualTerminal) resizeHeight(height int) {
+	terminal.mu.Lock()
+	defer terminal.mu.Unlock()
+	terminal.height = height
+	terminal.reportedHeight = height
 }
 
 func (terminal *virtualTerminal) resizeBeforeReporting(width int) {
@@ -320,6 +339,39 @@ func (harness *resizeHarness) end() {
 	}
 }
 
+func (harness *resizeHarness) writeOutput(value string) {
+	harness.t.Helper()
+	value = "\r" + value
+	if _, err := harness.terminal.Write([]byte(value)); err != nil {
+		harness.t.Fatal(err)
+	}
+	harness.span.RecordOutput(value)
+}
+
+const (
+	resizeTerminalWidth            = 26
+	resizeOutcomeLineAtNarrowWidth = "1/5 — implementing the re…"
+	resizeSpanLabel                = "1/5 — implementing the resize-aware live region"
+)
+
+func assertActivityOutcome(t *testing.T, screen []string) {
+	t.Helper()
+	if got := countRowsContaining(screen, resizeOutcomeLineAtNarrowWidth); got != 1 {
+		t.Fatalf("permanent outcome rows = %d, want 1; screen = %q", got, screen)
+	}
+	assertRowsFit(t, screen, resizeTerminalWidth)
+}
+
+func assertResizedAnchorUnchanged(t *testing.T, before string, after []string) {
+	t.Helper()
+	if got := strings.Join(after, "\n"); got != before {
+		t.Fatalf("screen after anchored redraw = %q, want unchanged resized screen %q", got, before)
+	}
+	if got := countRowsContaining(after, "1/5 —"); got != 1 {
+		t.Fatalf("span label rows = %d, want 1; screen = %q", got, after)
+	}
+}
+
 func countRowsContaining(screen []string, text string) int {
 	count := 0
 	for _, row := range screen {
@@ -365,8 +417,6 @@ func eachTerminalKind(t *testing.T, test func(t *testing.T, kind terminalKind)) 
 		t.Run(kind.name, func(t *testing.T) { test(t, kind) })
 	}
 }
-
-const resizeSpanLabel = "1/5 — implementing the resize-aware live region"
 
 func TestActivitySpanRedrawsInPlaceAfterNarrowerResize(t *testing.T) {
 	eachTerminalKind(t, func(t *testing.T, kind terminalKind) {
@@ -565,4 +615,228 @@ func TestActivitySpanKeepsHistoryWhenWidthDoesNotChange(t *testing.T) {
 			t.Fatalf("label rows = %d, want 1; screen = %q", got, screen)
 		}
 	})
+}
+
+func TestActivitySpanResizePreservesOutputBelowAnchoredSpan(t *testing.T) {
+	eachTerminalKind(t, func(t *testing.T, kind terminalKind) {
+		harness := newResizeHarness(t, 90, kind)
+		harness.start()
+		harness.span.Pause()
+		harness.writeOutput("Assistant prose remains untouched after the terminal gets narrower.")
+		harness.terminal.resize(resizeTerminalWidth)
+
+		beforeRedraw := strings.Join(harness.terminal.screen(), "\n")
+		harness.span.Tool("Bash", "redraw after resize")
+		harness.span.Tool("Bash", "redraw again after resize")
+		afterRedraw := harness.terminal.screen()
+		assertResizedAnchorUnchanged(t, beforeRedraw, afterRedraw)
+		if !strings.Contains(strings.Join(afterRedraw, ""), "Assistant prose") {
+			t.Fatalf("screen = %q, want the assistant prose intact", afterRedraw)
+		}
+	})
+}
+
+func TestActivitySpanHeightResizePreservesOutputBelowAnchoredSpan(t *testing.T) {
+	harness := newResizeHarness(t, 90, terminalKinds[0])
+	harness.start()
+	harness.span.Pause()
+	harness.writeOutput("Assistant prose remains visible after the terminal gets shorter.")
+	harness.terminal.resizeHeight(5)
+
+	beforeRedraw := strings.Join(harness.terminal.screen(), "\n")
+	harness.span.Tool("Bash", "redraw after height resize")
+	afterRedraw := harness.terminal.screen()
+	assertResizedAnchorUnchanged(t, beforeRedraw, afterRedraw)
+}
+
+func TestActivitySpanQuestionPauseAfterResizePrintsLabelBelowProse(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		width       int
+		height      int
+		endsNewline bool
+	}{
+		{name: "width resize mid-line", width: resizeTerminalWidth},
+		{name: "width resize after newline", width: resizeTerminalWidth, endsNewline: true},
+		{name: "height resize mid-line", height: 5},
+		{name: "height resize after newline", height: 5, endsNewline: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			harness := newResizeHarness(t, 90, terminalKinds[0])
+			harness.start()
+			harness.span.Pause()
+			prose := "Assistant prose before question prose-tail-marker"
+			if test.endsNewline {
+				prose += "\r\n"
+			}
+			harness.writeOutput(prose)
+			if test.width > 0 {
+				harness.terminal.resize(test.width)
+			} else {
+				harness.terminal.resizeHeight(test.height)
+			}
+
+			if err := harness.span.PauseForQuestion(); err != nil {
+				t.Fatalf("PauseForQuestion() error = %v", err)
+			}
+			if _, err := harness.terminal.Write([]byte("\r    awaiting answer\n")); err != nil {
+				t.Fatal(err)
+			}
+
+			screen := harness.terminal.screen()
+			label := resizeSpanLabel
+			if test.width > 0 {
+				label = resizeOutcomeLineAtNarrowWidth
+			}
+			labelRow, proseRow, questionRow := -1, -1, -1
+			for index, row := range screen {
+				if row == label {
+					labelRow = index
+				}
+				if strings.Contains(row, "prose-tail-marker") {
+					proseRow = index
+				}
+				if strings.Contains(row, "awaiting answer") {
+					questionRow = index
+				}
+			}
+			if proseRow < 0 || labelRow <= proseRow || questionRow <= labelRow {
+				t.Fatalf("screen = %q, want prose, static Role label, and awaiting answer in order", screen)
+			}
+			if test.endsNewline && labelRow != proseRow+1 {
+				t.Fatalf("screen = %q, want no blank row before the static Role label", screen)
+			}
+			width := test.width
+			if width == 0 {
+				width = 90
+			}
+			assertRowsFit(t, screen, width)
+			harness.end()
+		})
+	}
+}
+
+func TestActivitySpanEndAfterAnchoredResizePrintsOneFittingOutcome(t *testing.T) {
+	eachTerminalKind(t, func(t *testing.T, kind terminalKind) {
+		harness := newResizeHarness(t, 90, kind)
+		harness.start()
+		harness.span.Pause()
+		harness.writeOutput("Assistant prose ends in the middle of this line")
+		harness.terminal.resize(resizeTerminalWidth)
+		harness.end()
+
+		screen := harness.terminal.screen()
+		assertActivityOutcome(t, screen)
+		proseRow, outcomeRow := -1, -1
+		permanentLine := resizeOutcomeLineAtNarrowWidth
+		for index, row := range screen {
+			if strings.Contains(row, "Assistant prose") {
+				proseRow = index
+			}
+			if row == permanentLine {
+				outcomeRow = index
+			}
+		}
+		if proseRow < 0 || outcomeRow <= proseRow {
+			t.Fatalf("screen = %q, want the permanent line after the partial prose line", screen)
+		}
+	})
+}
+
+func TestActivitySpanEndAfterHeightResizePrintsBelowMidLineProse(t *testing.T) {
+	harness := newResizeHarness(t, 90, terminalKinds[0])
+	harness.start()
+	harness.span.Pause()
+	harness.writeOutput("Assistant prose ends at a visible marker")
+	harness.terminal.resizeHeight(5)
+	harness.end()
+
+	screen := harness.terminal.screen()
+	proseRow, outcomeRow := -1, -1
+	for index, row := range screen {
+		if strings.Contains(row, "visible marker") {
+			proseRow = index
+		}
+		if strings.Contains(row, "1/5 — implementing the resize-aware live region (0.0s)") {
+			outcomeRow = index
+		}
+	}
+	if proseRow < 0 || outcomeRow <= proseRow {
+		t.Fatalf("screen = %q, want the outcome below the partial prose line", screen)
+	}
+	assertRowsFit(t, screen, 90)
+}
+
+func TestActivitySpanEndAfterWidthResizeAfterNewlineHasNoBlankRow(t *testing.T) {
+	harness := newResizeHarness(t, 90, terminalKinds[0])
+	harness.start()
+	harness.span.Pause()
+	harness.writeOutput("Assistant prose ends cleanly with a final marker\r\n")
+	harness.terminal.resize(resizeTerminalWidth)
+	harness.end()
+
+	screen := harness.terminal.screen()
+	proseRow, outcomeRow := -1, -1
+	for index, row := range screen {
+		if strings.Contains(row, "final marker") {
+			proseRow = index
+		}
+		if row == resizeOutcomeLineAtNarrowWidth {
+			outcomeRow = index
+		}
+	}
+	if proseRow < 0 || outcomeRow != proseRow+1 {
+		t.Fatalf("screen = %q, want the outcome immediately after the newline-terminated prose", screen)
+	}
+}
+
+func TestActivitySpanResizeWhilePausedPreservesOutputAndEndsBelowIt(t *testing.T) {
+	eachTerminalKind(t, func(t *testing.T, kind terminalKind) {
+		harness := newResizeHarness(t, 90, kind)
+		harness.start()
+		harness.span.Pause()
+		harness.writeOutput("Verbose output remains intact across a paused resize")
+		harness.terminal.resize(resizeTerminalWidth)
+
+		beforeResume := strings.Join(harness.terminal.screen(), "\n")
+		harness.span.Resume()
+		harness.span.Tool("Bash", "redraw after resume")
+		afterResume := harness.terminal.screen()
+		assertResizedAnchorUnchanged(t, beforeResume, afterResume)
+		if !strings.Contains(strings.Join(afterResume, ""), "Verbose output remains") {
+			t.Fatalf("screen = %q, want verbose output intact", afterResume)
+		}
+
+		harness.end()
+		assertActivityOutcome(t, harness.terminal.screen())
+	})
+}
+
+func TestActivitySpanQuestionResumeUsesCurrentTerminalWidth(t *testing.T) {
+	harness := newResizeHarness(t, 90, terminalKinds[0])
+	harness.start()
+	harness.span.Pause()
+	harness.writeOutput("Assistant prose before the framed question")
+	harness.terminal.resize(resizeTerminalWidth)
+
+	if err := harness.span.PauseForQuestion(); err != nil {
+		t.Fatalf("PauseForQuestion() error = %v", err)
+	}
+	pausedScreen := harness.terminal.screen()
+	if !strings.Contains(strings.Join(pausedScreen, ""), "Assistant prose before the framed question") ||
+		pausedScreen[len(pausedScreen)-1] != resizeOutcomeLineAtNarrowWidth {
+		t.Fatalf("screen after pausing for question = %q, want the static Role label below the prose", pausedScreen)
+	}
+	if _, err := harness.terminal.Write([]byte("\rFramed question?\n")); err != nil {
+		t.Fatal(err)
+	}
+	if err := harness.span.ResumeAfterQuestion(); err != nil {
+		t.Fatalf("ResumeAfterQuestion() error = %v", err)
+	}
+
+	screen := harness.terminal.screen()
+	assertRowsFit(t, screen, resizeTerminalWidth)
+	if len(screen) == 0 || !strings.Contains(screen[len(screen)-1], "1/5 —") {
+		t.Fatalf("screen = %q, want a new live region below the question at width 26", screen)
+	}
 }
