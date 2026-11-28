@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v1.52.1 (2026-11-28)
+
+### Bug Fixes
+
+- **ui**: Redraw activity span in place on terminal resize
+  ([#322](https://github.com/igorrochap/syl/pull/322),
+  [`a2144fc`](https://github.com/igorrochap/syl/commit/a2144fc5c36cbc65de79e22c6cf735a3f64ca4f0))
+
+
 ## v1.52.0 (2026-11-27)
 
 ### Features
