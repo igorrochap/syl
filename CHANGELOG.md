@@ -2,6 +2,34 @@
 
 <!-- version list -->
 
+## v1.52.0 (2026-11-27)
+
+### Features
+
+- **config**: Add opt-in implementer rollover setting
+  ([#314](https://github.com/igorrochap/syl/pull/314),
+  [`40b616b`](https://github.com/igorrochap/syl/commit/40b616b0ba0a4fc246dfba4885d2cc6aae3170db))
+
+- **orchestration**: Add opt-in implementer rollover at iteration boundaries
+  ([#314](https://github.com/igorrochap/syl/pull/314),
+  [`40b616b`](https://github.com/igorrochap/syl/commit/40b616b0ba0a4fc246dfba4885d2cc6aae3170db))
+
+- **usage**: Track codex usage per iteration ([#314](https://github.com/igorrochap/syl/pull/314),
+  [`40b616b`](https://github.com/igorrochap/syl/commit/40b616b0ba0a4fc246dfba4885d2cc6aae3170db))
+
+### Refactoring
+
+- **orchestration**: Roll over implementer at iteration boundaries
+  ([#314](https://github.com/igorrochap/syl/pull/314),
+  [`40b616b`](https://github.com/igorrochap/syl/commit/40b616b0ba0a4fc246dfba4885d2cc6aae3170db))
+
+### Testing
+
+- **orchestration**: Tolerate variable span durations in tests
+  ([#314](https://github.com/igorrochap/syl/pull/314),
+  [`40b616b`](https://github.com/igorrochap/syl/commit/40b616b0ba0a4fc246dfba4885d2cc6aae3170db))
+
+
 ## v1.51.0 (2026-11-25)
 
 ### Bug Fixes
