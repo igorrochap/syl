@@ -30,6 +30,13 @@ type activitySpanChild struct {
 	outcome string
 }
 
+type anchoredSpanEnd struct {
+	anchorVisible bool
+	rowsBelow     int
+	outputColumn  int
+	renderedRows  int
+}
+
 func (child activitySpanChild) finished() bool {
 	return !child.ended.IsZero()
 }
@@ -52,18 +59,21 @@ type ActivitySpanView struct {
 	rowsBelow     int
 	outputColumn  int
 	renderedRows  int
-	// renderedWidth is the width the last live frame was drawn at, so a
-	// redraw can tell that the terminal was resized under the frame.
-	renderedWidth int
-	label         string
-	gist          string
-	children      []activitySpanChild
-	childIndexes  map[string]int
-	started       time.Time
-	frame         int
-	stopCh        chan struct{}
-	doneCh        chan struct{}
-	writeErr      error
+	// renderedWidth and renderedHeight are the geometry of the last live frame.
+	renderedWidth  int
+	renderedHeight int
+	// anchorResizeDetected keeps the safe fallback active through End even if
+	// another redraw has already observed the new terminal geometry.
+	anchorResizeDetected bool
+	label                string
+	gist                 string
+	children             []activitySpanChild
+	childIndexes         map[string]int
+	started              time.Time
+	frame                int
+	stopCh               chan struct{}
+	doneCh               chan struct{}
+	writeErr             error
 }
 
 // TerminalSize reports the current terminal geometry. The live region asks
@@ -188,6 +198,8 @@ func (view *ActivitySpanView) resetLiveRegionLocked() {
 	view.outputColumn = 0
 	view.renderedRows = 0
 	view.renderedWidth = 0
+	view.renderedHeight = 0
+	view.anchorResizeDetected = false
 }
 
 // SubagentStarted adds a child span under the open Activity span. The caller
@@ -278,6 +290,7 @@ func (view *ActivitySpanView) Pause() {
 		view.mu.Unlock()
 		return
 	}
+	view.refreshTerminalSizeLocked()
 	firstPause := !view.anchored
 	view.paused = true
 	if firstPause {
@@ -293,7 +306,8 @@ func (view *ActivitySpanView) Pause() {
 }
 
 // PauseForQuestion clears the live frame and leaves a static Role label before
-// the caller prints an awaiting-answer child span.
+// the caller prints an awaiting-answer child span. When a resize invalidates an
+// anchored frame, it prints the static label below prose without addressing the old frame.
 func (view *ActivitySpanView) PauseForQuestion() error {
 	view.renderMu.Lock()
 	defer view.renderMu.Unlock()
@@ -303,10 +317,38 @@ func (view *ActivitySpanView) PauseForQuestion() error {
 		return errors.New("pause Activity span for question: no span is active")
 	}
 	view.paused = true
+	view.refreshTerminalSizeLocked()
 	if view.terminal == nil {
 		view.mu.Unlock()
 		return nil
 	}
+	if view.anchored && (view.anchorResizeDetected || view.terminalSizeChangedUnderFrameLocked()) {
+		return view.pauseForQuestionAfterAnchorResizeLocked()
+	}
+	return view.pauseForQuestionInPlaceLocked()
+}
+
+// pauseForQuestionAfterAnchorResizeLocked writes below the output because
+// reflow has made the anchored row counts unsafe.
+func (view *ActivitySpanView) pauseForQuestionAfterAnchorResizeLocked() error {
+	view.markAnchorResizedLocked()
+	label := truncateActivityLine(view.label, view.caps.Width)
+	lineBreak := ""
+	if view.outputColumn != 0 {
+		lineBreak = "\r\n"
+	}
+	view.mu.Unlock()
+	if err := view.writeTerminal(lineBreak + label + "\n"); err != nil {
+		return err
+	}
+	view.mu.Lock()
+	view.resetLiveRegionLocked()
+	view.mu.Unlock()
+	return nil
+}
+
+// pauseForQuestionInPlaceLocked clears the current frame with its known rows.
+func (view *ActivitySpanView) pauseForQuestionInPlaceLocked() error {
 	label := view.label
 	renderedRows := max(1, view.renderedRows)
 	anchored := view.anchored
@@ -424,10 +466,19 @@ func (view *ActivitySpanView) finishTerminalSpan(stopCh chan struct{}, doneCh ch
 	defer view.renderMu.Unlock()
 
 	view.mu.Lock()
-	anchored, anchorVisible := view.anchored, view.anchorVisible
-	rowsBelow, outputColumn, renderedRows := view.rowsBelow, view.outputColumn, view.renderedRows
 	view.refreshTerminalSizeLocked()
 	caps := view.caps
+	anchored := view.anchored
+	sizeChanged := view.terminalSizeChangedUnderFrameLocked()
+	if anchored && sizeChanged {
+		view.markAnchorResizedLocked()
+	}
+	anchoredEnd := anchoredSpanEnd{
+		anchorVisible: view.anchorVisible,
+		rowsBelow:     view.rowsBelow,
+		outputColumn:  view.outputColumn,
+		renderedRows:  view.renderedRows,
+	}
 	resized := view.resizedUnderFrameLocked()
 	view.mu.Unlock()
 
@@ -437,10 +488,10 @@ func (view *ActivitySpanView) finishTerminalSpan(stopCh chan struct{}, doneCh ch
 		lines = styleActivitySpanFrame(lines, 0, finishedActivitySpanStyle(label, outcome))
 	}
 	if !anchored {
-		view.finishUnanchoredTerminalSpan(lines, renderedRows, resized)
+		view.finishUnanchoredTerminalSpan(lines, anchoredEnd.renderedRows, resized)
 		return
 	}
-	view.finishAnchoredTerminalSpan(lines, anchorVisible, rowsBelow, outputColumn, renderedRows)
+	view.finishAnchoredTerminalSpan(lines, anchoredEnd)
 }
 
 func (view *ActivitySpanView) finishUnanchoredTerminalSpan(lines []string, renderedRows int, resized bool) {
@@ -455,26 +506,26 @@ func (view *ActivitySpanView) finishUnanchoredTerminalSpan(lines []string, rende
 	view.recordWriteError(view.writeTerminal(value))
 }
 
-func (view *ActivitySpanView) finishAnchoredTerminalSpan(lines []string, anchorVisible bool, rowsBelow, outputColumn, renderedRows int) {
-	if !anchorVisible {
+func (view *ActivitySpanView) finishAnchoredTerminalSpan(lines []string, end anchoredSpanEnd) {
+	if !end.anchorVisible {
 		lineBreak := ""
-		if outputColumn != 0 {
+		if end.outputColumn != 0 {
 			lineBreak = "\r\n"
 		}
 		view.recordWriteError(view.writeTerminal(lineBreak + strings.Join(lines, "\n") + "\n"))
 		return
 	}
-	extraRows := max(0, len(lines)-renderedRows)
+	extraRows := max(0, len(lines)-end.renderedRows)
 	value := ""
 	if extraRows > 0 {
-		value += cursorUp(max(0, rowsBelow-renderedRows)) + insertLines(extraRows) + cursorUp(renderedRows)
+		value += cursorUp(max(0, end.rowsBelow-end.renderedRows)) + insertLines(extraRows) + cursorUp(end.renderedRows)
 	}
-	value += cursorUp(rowsBelow) + "\r\x1b[K" + strings.Join(lines, "\n\r\x1b[K")
-	clearedRows := max(0, renderedRows-len(lines))
+	value += cursorUp(end.rowsBelow) + "\r\x1b[K" + strings.Join(lines, "\n\r\x1b[K")
+	clearedRows := max(0, end.renderedRows-len(lines))
 	for range clearedRows {
 		value += "\n\r\x1b[K"
 	}
-	value += cursorDown(max(0, rowsBelow+extraRows-max(len(lines), renderedRows)+1)) + "\r"
+	value += cursorDown(max(0, end.rowsBelow+extraRows-max(len(lines), end.renderedRows)+1)) + "\r"
 	view.recordWriteError(view.writeTerminal(value))
 }
 
@@ -513,6 +564,11 @@ func (view *ActivitySpanView) drawLocked() {
 	view.refreshTerminalSizeLocked()
 	caps := view.caps
 	resized := view.resizedUnderFrameLocked()
+	sizeChanged := view.terminalSizeChangedUnderFrameLocked()
+	if anchored && sizeChanged {
+		view.markAnchorResizedLocked()
+		anchorVisible = false
+	}
 	view.mu.Unlock()
 	lines := renderActivitySpanFrame(label, gist, view.clock.Now().Sub(started), frame, caps.Width, children, view.clock.Now())
 	if caps.Color {
@@ -521,34 +577,52 @@ func (view *ActivitySpanView) drawLocked() {
 	if anchored && !anchorVisible {
 		view.mu.Lock()
 		view.renderedRows = len(lines)
+		view.renderedWidth = caps.Width
+		view.renderedHeight = caps.Height
 		view.mu.Unlock()
 		return
 	}
-	var value string
 	if anchored {
-		extraRows := 0
-		if len(children) > 0 {
-			extraRows = max(0, len(lines)-renderedRows)
-		}
-		if extraRows > 0 {
-			outputRowsBelow := max(0, rowsBelow-renderedRows)
-			value = cursorUp(outputRowsBelow) + insertLines(extraRows) + cursorDown(outputRowsBelow+extraRows)
-			rowsBelow += extraRows
-			view.mu.Lock()
-			view.rowsBelow = rowsBelow
-			view.mu.Unlock()
-		}
-		value += anchoredActivityFrame(lines, renderedRows, rowsBelow)
+		view.drawAnchoredFrame(lines, children, renderedRows, rowsBelow)
 	} else {
-		value = unanchoredActivityFrame(lines, renderedRows, resized)
+		value := unanchoredActivityFrame(lines, renderedRows, resized)
 		view.mu.Lock()
 		view.renderedWidth = caps.Width
 		view.mu.Unlock()
+		view.recordWriteError(view.writeTerminal(value))
 	}
-	view.recordWriteError(view.writeTerminal(value))
 	view.mu.Lock()
 	view.renderedRows = len(lines)
+	view.renderedWidth = caps.Width
+	view.renderedHeight = caps.Height
 	view.mu.Unlock()
+}
+
+func (view *ActivitySpanView) drawAnchoredFrame(
+	lines []string,
+	children []activitySpanChild,
+	renderedRows, rowsBelow int,
+) {
+	extraRows := 0
+	if len(children) > 0 {
+		extraRows = max(0, len(lines)-renderedRows)
+	}
+	value := ""
+	if extraRows > 0 {
+		outputRowsBelow := max(0, rowsBelow-renderedRows)
+		value = cursorUp(outputRowsBelow) + insertLines(extraRows) + cursorDown(outputRowsBelow+extraRows)
+		rowsBelow += extraRows
+		view.mu.Lock()
+		view.rowsBelow = rowsBelow
+		view.mu.Unlock()
+	}
+	value += anchoredActivityFrame(lines, renderedRows, rowsBelow)
+	view.recordWriteError(view.writeTerminal(value))
+}
+
+func (view *ActivitySpanView) markAnchorResizedLocked() {
+	view.anchorVisible = false
+	view.anchorResizeDetected = true
 }
 
 // clearScreenToTop erases the whole visible screen and moves to its top. When
@@ -563,6 +637,13 @@ const clearScreenToTop = "\x1b[H\x1b[2J"
 
 func (view *ActivitySpanView) resizedUnderFrameLocked() bool {
 	return view.renderedRows > 0 && view.renderedWidth != view.caps.Width
+}
+
+func (view *ActivitySpanView) terminalSizeChangedUnderFrameLocked() bool {
+	if view.renderedRows == 0 {
+		return false
+	}
+	return view.renderedWidth != view.caps.Width || view.renderedHeight != view.caps.Height
 }
 
 func unanchoredActivityFrame(lines []string, previousRows int, resized bool) string {
